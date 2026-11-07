@@ -1,0 +1,117 @@
+name: NaSeed M203 real original Alpine graphical VT login and fbcon
+
+# M203 must independently observe a real GPU text terminal operated by real
+# VirtIO keyboard, signed original Alpine login and fbi KD takeover/restore.
+# Desktop work is paused: run only by workflow_dispatch until resumed.
+# General Makefile/syscall/VT changes are verified by active software gates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m203-original-alpine-fbcon-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  m203-host-contract:
+    name: Original ELF provenance, framebuffer text glyph and physical UART/QMP contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Check pure host contracts, strict source assembly and real virtual tty
+        run: |
+          set -eu
+          sh -n scripts/stage-m203-alpine-fbcon.sh
+          sh -n scripts/probe-m203-alpine-fbcon.sh
+          python3 -m py_compile scripts/m203-disk-fixture.py \
+            scripts/m203-qmp-alpine-fbcon.py scripts/m203-alpine-uart.py
+          python3 scripts/test-m203-fbcon-oracle.py
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m202-interactive-oracle.py
+          sh scripts/check-m203-fbcon.sh
+          sh scripts/check-m202-vt.sh
+          sh scripts/check-m202-input-routing.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+
+  original-physical-fbcon:
+    name: Native Alpine physical tty1 getty/login/fbi/text restore / ${{ matrix.port }}
+    needs: m203-host-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install QEMU, target compiler, EFI and ext4 stage tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'gcc:gcc' 'clang:clang' \
+                      'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: Native original Alpine graphical login and signed fbi KD_GRAPHICS/KD_TEXT
+        timeout-minutes: 64
+        run: sh scripts/probe-m203-alpine-fbcon.sh '${{ matrix.port }}'
+      - name: Archive physical GPU glyph and fbi frames, genuine Alpine UART and ELF hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m203-original-alpine-fbcon-${{ matrix.port }}
+          path: |
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-original-signed-fbi.sha256
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-official-installed-apk-db
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/physical-gpu/*.ppm
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-original-fbcon-qmp.log
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-native-runner.log
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-physical-qmp-*
+            build/busybox-source-parity-x86/m202-fbi.*.log
+            build/port-riscv64/full/matrix-source/m202-fbi.*.log
+            build/port-aarch64/full/matrix-source/m202-fbi.*.log
+          if-no-files-found: warn

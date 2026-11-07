@@ -36,10 +36,13 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_faccessat2: return NAS_SC_faccessat2;
     case __NR_brk: return NAS_SC_brk;
     case __NR_chdir: return NAS_SC_chdir;
+    case __NR_capget: return NAS_SC_capget;
+    case __NR_capset: return NAS_SC_capset;
     case __NR_chmod: return NAS_SC_chmod;
     case __NR_chown: return NAS_SC_chown;
     case __NR_fchmod: return NAS_SC_fchmod;
     case __NR_fchmodat: return NAS_SC_fchmodat;
+    case __NR_fchmodat2: return NAS_SC_fchmodat2;
     case __NR_fchown: return NAS_SC_fchown;
     case __NR_fchownat: return NAS_SC_fchownat;
     case __NR_lchown: return NAS_SC_lchown;
@@ -51,6 +54,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_timer_gettime: return NAS_SC_timer_gettime;
     case __NR_timer_getoverrun: return NAS_SC_timer_getoverrun;
     case __NR_timer_delete: return NAS_SC_timer_delete;
+    case __NR_getitimer: return NAS_SC_getitimer;
+    case __NR_setitimer: return NAS_SC_setitimer;
+    case __NR_pause: return NAS_SC_pause;
     case __NR_select: return NAS_SC_select;
     case __NR_nanosleep: return NAS_SC_nanosleep;
     case __NR_close: return NAS_SC_close;
@@ -68,23 +74,30 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_fdatasync: return NAS_SC_fdatasync;
     case __NR_ftruncate: return NAS_SC_ftruncate;
     case __NR_truncate: return NAS_SC_truncate;
+    case __NR_fadvise64: return NAS_SC_fadvise64;
+    case __NR_fallocate: return NAS_SC_fallocate;
     case __NR_fork: return NAS_SC_fork;
     case __NR_futex: return NAS_SC_futex;
     case __NR_set_robust_list: return NAS_SC_set_robust_list;
     case __NR_get_robust_list: return NAS_SC_get_robust_list;
     case __NR_vfork: return NAS_SC_vfork;
     case __NR_fstat: return NAS_SC_fstat;
+    case __NR_fstatfs: return NAS_SC_fstatfs;
     case __NR_getcwd: return NAS_SC_getcwd;
     case __NR_getrandom: return NAS_SC_getrandom;
     case __NR_getdents64: return NAS_SC_getdents64;
     case __NR_getegid: return NAS_SC_getegid;
     case __NR_geteuid: return NAS_SC_geteuid;
     case __NR_getgid: return NAS_SC_getgid;
+    case __NR_getresgid: return NAS_SC_getresgid;
+    case __NR_getresuid: return NAS_SC_getresuid;
+    case __NR_getgroups: return NAS_SC_getgroups;
     case __NR_getpgid: return NAS_SC_getpgid;
     case __NR_getpgrp: return NAS_SC_getpgrp;
     case __NR_getsid: return NAS_SC_getsid;
     case __NR_getpid: return NAS_SC_getpid;
     case __NR_getrlimit: return NAS_SC_getrlimit;
+    case __NR_getrusage: return NAS_SC_getrusage;
     case __NR_prlimit64: return NAS_SC_prlimit64;
     case __NR_prctl: return NAS_SC_prctl;
     case __NR_ptrace: return NAS_SC_ptrace;
@@ -92,7 +105,41 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_gettid: return NAS_SC_gettid;
     case __NR_gettimeofday: return NAS_SC_gettimeofday;
     case __NR_getuid: return NAS_SC_getuid;
+    case __NR_setfsuid: return NAS_SC_setfsuid;
+    case __NR_setfsgid: return NAS_SC_setfsgid;
+    case __NR_setgid: return NAS_SC_setgid;
+    case __NR_setgroups: return NAS_SC_setgroups;
+    case __NR_setregid: return NAS_SC_setregid;
+    case __NR_setresgid: return NAS_SC_setresgid;
+    case __NR_setresuid: return NAS_SC_setresuid;
+    case __NR_setreuid: return NAS_SC_setreuid;
+    case __NR_setuid: return NAS_SC_setuid;
     case __NR_ioctl: return NAS_SC_ioctl;
+    case __NR_ioprio_set: return NAS_SC_ioprio_set;
+    case __NR_ioprio_get: return NAS_SC_ioprio_get;
+    case __NR_shmget: return NAS_SC_shmget;
+    case __NR_shmctl: return NAS_SC_shmctl;
+    case __NR_shmat: return NAS_SC_shmat;
+    case __NR_shmdt: return NAS_SC_shmdt;
+    case __NR_semget: return NAS_SC_semget;
+    case __NR_semctl: return NAS_SC_semctl;
+    case __NR_semop: return NAS_SC_semop;
+    case __NR_msgget: return NAS_SC_msgget;
+    case __NR_msgctl: return NAS_SC_msgctl;
+    case __NR_msgsnd: return NAS_SC_msgsnd;
+    case __NR_msgrcv: return NAS_SC_msgrcv;
+    case __NR_setxattr: return NAS_SC_setxattr;
+    case __NR_lsetxattr: return NAS_SC_lsetxattr;
+    case __NR_fsetxattr: return NAS_SC_fsetxattr;
+    case __NR_getxattr: return NAS_SC_getxattr;
+    case __NR_lgetxattr: return NAS_SC_lgetxattr;
+    case __NR_fgetxattr: return NAS_SC_fgetxattr;
+    case __NR_listxattr: return NAS_SC_listxattr;
+    case __NR_llistxattr: return NAS_SC_llistxattr;
+    case __NR_flistxattr: return NAS_SC_flistxattr;
+    case __NR_removexattr: return NAS_SC_removexattr;
+    case __NR_lremovexattr: return NAS_SC_lremovexattr;
+    case __NR_fremovexattr: return NAS_SC_fremovexattr;
     case __NR_kill: return NAS_SC_kill;
     case __NR_tkill: return NAS_SC_tkill;
     case __NR_tgkill: return NAS_SC_tgkill;
@@ -103,6 +150,11 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mkdir: return NAS_SC_mkdir;
     case __NR_mkdirat: return NAS_SC_mkdirat;
     case __NR_mmap: return NAS_SC_mmap;
+    case __NR_mount: return NAS_SC_mount;
+    case __NR_memfd_create: return NAS_SC_memfd_create;
+    case __NR_mincore: return NAS_SC_mincore;
+    case __NR_msync: return NAS_SC_msync;
+    case __NR_madvise: return NAS_SC_madvise;
     case __NR_mprotect: return NAS_SC_mprotect;
     case __NR_munmap: return NAS_SC_munmap;
     case __NR_newfstatat: return NAS_SC_newfstatat;
@@ -112,11 +164,20 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_pipe2: return NAS_SC_pipe2;
     case __NR_eventfd: return NAS_SC_eventfd;
     case __NR_eventfd2: return NAS_SC_eventfd2;
+    case __NR_timerfd_create: return NAS_SC_timerfd_create;
+    case __NR_timerfd_settime: return NAS_SC_timerfd_settime;
+    case __NR_timerfd_gettime: return NAS_SC_timerfd_gettime;
+    case __NR_inotify_init: return NAS_SC_inotify_init;
+    case __NR_inotify_init1: return NAS_SC_inotify_init1;
+    case __NR_inotify_add_watch: return NAS_SC_inotify_add_watch;
+    case __NR_inotify_rm_watch: return NAS_SC_inotify_rm_watch;
+    case __NR_signalfd4: return NAS_SC_signalfd4;
     case __NR_epoll_create1: return NAS_SC_epoll_create1;
     case __NR_epoll_create: return NAS_SC_epoll_create;
     case __NR_epoll_ctl: return NAS_SC_epoll_ctl;
     case __NR_epoll_wait: return NAS_SC_epoll_wait;
     case __NR_epoll_pwait: return NAS_SC_epoll_pwait;
+    case __NR_pidfd_open: return NAS_SC_pidfd_open;
     case __NR_poll: return NAS_SC_poll;
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
@@ -140,39 +201,66 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_setsockopt: return NAS_SC_setsockopt;
     case __NR_sendmsg: return NAS_SC_sendmsg;
     case __NR_recvmsg: return NAS_SC_recvmsg;
+    case __NR_sendto: return NAS_SC_sendto;
+    case __NR_recvfrom: return NAS_SC_recvfrom;
+    case __NR_shutdown: return NAS_SC_shutdown;
     case __NR_rename: return NAS_SC_rename;
     case __NR_renameat: return NAS_SC_renameat;
     case __NR_renameat2: return NAS_SC_renameat2;
     case __NR_rmdir: return NAS_SC_rmdir;
     case __NR_rt_sigaction: return NAS_SC_rt_sigaction;
     case __NR_rt_sigpending: return NAS_SC_rt_sigpending;
+    case __NR_rt_sigtimedwait: return NAS_SC_rt_sigtimedwait;
     case __NR_rt_sigprocmask: return NAS_SC_rt_sigprocmask;
     case __NR_rt_sigsuspend: return NAS_SC_rt_sigsuspend;
     case __NR_rt_sigreturn: return NAS_SC_rt_sigreturn;
+    case __NR_sigaltstack: return NAS_SC_sigaltstack;
     case __NR_setpgid: return NAS_SC_setpgid;
     case __NR_setsid: return NAS_SC_setsid;
     case __NR_set_tid_address: return NAS_SC_set_tid_address;
     case __NR_sched_getaffinity: return NAS_SC_sched_getaffinity;
+    case __NR_sched_getscheduler: return NAS_SC_sched_getscheduler;
+    case __NR_sched_getparam: return NAS_SC_sched_getparam;
+    case __NR_sched_getattr: return NAS_SC_sched_getattr;
     case __NR_sched_setaffinity: return NAS_SC_sched_setaffinity;
     case __NR_stat: return NAS_SC_stat;
+    case __NR_statfs: return NAS_SC_statfs;
     case __NR_sysinfo: return NAS_SC_sysinfo;
     case __NR_uname: return NAS_SC_uname;
+    case __NR_sethostname: return NAS_SC_sethostname;
     case __NR_umask: return NAS_SC_umask;
+    case __NR_umount2: return NAS_SC_umount2;
     case __NR_unlink: return NAS_SC_unlink;
     case __NR_unlinkat: return NAS_SC_unlinkat;
     case __NR_utimensat: return NAS_SC_utimensat;
     case __NR_wait4: return NAS_SC_wait4;
+    case __NR_waitid: return NAS_SC_waitid;
     case __NR_write: return NAS_SC_write;
     case __NR_pwrite64: return NAS_SC_pwrite64;
     case __NR_writev: return NAS_SC_writev;
 #else
+    case 40U: return NAS_SC_mount; /* Linux asm-generic */
+#if defined(__riscv) && __riscv_xlen == 64
+    case 258U: return NAS_SC_riscv_hwprobe; /* RISC-V-specific Linux UAPI */
+#endif
+    case 39U: return NAS_SC_umount2;
     case 52U: return NAS_SC_fchmod;
     case 53U: return NAS_SC_fchmodat;
+    case 452U: return NAS_SC_fchmodat2; /* Linux asm-generic */
     case 54U: return NAS_SC_fchownat;
     case 55U: return NAS_SC_fchown;
     case 48U: return NAS_SC_faccessat; /* Linux asm-generic */
+    case 43U: return NAS_SC_statfs; /* Linux asm-generic */
+    case 44U: return NAS_SC_fstatfs;
     case 439U: return NAS_SC_faccessat2; /* same Linux syscall ID */
     case 19U: return NAS_SC_eventfd2;
+    case 85U: return NAS_SC_timerfd_create; /* Linux asm-generic LP64 */
+    case 86U: return NAS_SC_timerfd_settime;
+    case 87U: return NAS_SC_timerfd_gettime;
+    case 26U: return NAS_SC_inotify_init1;
+    case 27U: return NAS_SC_inotify_add_watch;
+    case 28U: return NAS_SC_inotify_rm_watch;
+    case 74U: return NAS_SC_signalfd4; /* asm-generic signalfd4 */
     case 20U: return NAS_SC_epoll_create1;
     case 21U: return NAS_SC_epoll_ctl;
     case 22U: return NAS_SC_epoll_pwait;
@@ -188,6 +276,8 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 108U: return NAS_SC_timer_gettime;
     case 109U: return NAS_SC_timer_getoverrun;
     case 111U: return NAS_SC_timer_delete;
+    case 102U: return NAS_SC_getitimer; /* asm-generic getitimer */
+    case 103U: return NAS_SC_setitimer; /* asm-generic setitimer */
     case 63U: return NAS_SC_read;
     case 67U: return NAS_SC_pread64; /* Linux asm-generic */
     case 68U: return NAS_SC_pwrite64;
@@ -215,6 +305,9 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 208U: return NAS_SC_setsockopt;
     case 211U: return NAS_SC_sendmsg;
     case 212U: return NAS_SC_recvmsg;
+    case 206U: return NAS_SC_sendto; /* asm-generic */
+    case 207U: return NAS_SC_recvfrom; /* asm-generic */
+    case 210U: return NAS_SC_shutdown; /* asm-generic */
     case 50U: return NAS_SC_fchdir;
     case 32U: return NAS_SC_flock; /* asm-generic flock */
     case 17U: return NAS_SC_getcwd;
@@ -226,10 +319,39 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 83U: return NAS_SC_fdatasync;
     case 46U: return NAS_SC_ftruncate;
     case 45U: return NAS_SC_truncate;
+    case 223U: return NAS_SC_fadvise64; /* asm-generic fadvise64 */
+    case 47U: return NAS_SC_fallocate; /* asm-generic fallocate */
     case 23U: return NAS_SC_dup;
     case 24U: return NAS_SC_dup3;
     case 49U: return NAS_SC_chdir;
+    case 90U: return NAS_SC_capget; /* Linux asm-generic capget */
+    case 91U: return NAS_SC_capset; /* Linux asm-generic capset */
     case 29U: return NAS_SC_ioctl;
+    case 30U: return NAS_SC_ioprio_set; /* asm-generic ioprio_set */
+    case 31U: return NAS_SC_ioprio_get; /* asm-generic ioprio_get */
+    case 186U: return NAS_SC_msgget;
+    case 187U: return NAS_SC_msgctl;
+    case 188U: return NAS_SC_msgrcv;
+    case 189U: return NAS_SC_msgsnd;
+    case 190U: return NAS_SC_semget;
+    case 191U: return NAS_SC_semctl;
+    case 193U: return NAS_SC_semop;
+    case 194U: return NAS_SC_shmget;
+    case 195U: return NAS_SC_shmctl;
+    case 196U: return NAS_SC_shmat;
+    case 197U: return NAS_SC_shmdt;
+    case 5U: return NAS_SC_setxattr;
+    case 6U: return NAS_SC_lsetxattr;
+    case 7U: return NAS_SC_fsetxattr;
+    case 8U: return NAS_SC_getxattr;
+    case 9U: return NAS_SC_lgetxattr;
+    case 10U: return NAS_SC_fgetxattr;
+    case 11U: return NAS_SC_listxattr;
+    case 12U: return NAS_SC_llistxattr;
+    case 13U: return NAS_SC_flistxattr;
+    case 14U: return NAS_SC_removexattr;
+    case 15U: return NAS_SC_lremovexattr;
+    case 16U: return NAS_SC_fremovexattr;
     case 129U: return NAS_SC_kill; /* Linux asm-generic kill */
     case 130U: return NAS_SC_tkill;
     case 131U: return NAS_SC_tgkill;
@@ -241,10 +363,13 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 88U: return NAS_SC_utimensat; /* Linux asm-generic */
     case 134U: return NAS_SC_rt_sigaction;
     case 136U: return NAS_SC_rt_sigpending;
+    case 137U: return NAS_SC_rt_sigtimedwait; /* Linux asm-generic */
     case 135U: return NAS_SC_rt_sigprocmask;
     case 133U: return NAS_SC_rt_sigsuspend; /* Linux asm-generic */
     case 139U: return NAS_SC_rt_sigreturn;
+    case 132U: return NAS_SC_sigaltstack; /* asm-generic Linux */
     case 160U: return NAS_SC_uname;
+    case 161U: return NAS_SC_sethostname; /* Linux asm-generic */
     case 166U: return NAS_SC_umask; /* Linux asm-generic */
     case 179U: return NAS_SC_sysinfo; /* Linux asm-generic sysinfo */
     case 96U: return NAS_SC_set_tid_address;
@@ -252,9 +377,13 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 99U: return NAS_SC_set_robust_list; /* asm-generic Linux */
     case 100U: return NAS_SC_get_robust_list;
     case 123U: return NAS_SC_sched_getaffinity;
+    case 120U: return NAS_SC_sched_getscheduler; /* asm-generic */
+    case 121U: return NAS_SC_sched_getparam;
+    case 275U: return NAS_SC_sched_getattr; /* asm-generic */
     case 122U: return NAS_SC_sched_setaffinity;
     case 172U: return NAS_SC_getpid;
     case 163U: return NAS_SC_getrlimit; /* Linux asm-generic */
+    case 165U: return NAS_SC_getrusage; /* Linux asm-generic */
     case 261U: return NAS_SC_prlimit64; /* Linux asm-generic */
     case 167U: return NAS_SC_prctl; /* Linux asm-generic prctl */
     case 117U: return NAS_SC_ptrace; /* asm-generic __NR_ptrace, all LP64 ports */
@@ -262,17 +391,35 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 174U: return NAS_SC_getuid;
     case 175U: return NAS_SC_geteuid;
     case 176U: return NAS_SC_getgid;
+    case 148U: return NAS_SC_getresuid; /* Linux asm-generic */
+    case 150U: return NAS_SC_getresgid; /* Linux asm-generic */
+    case 158U: return NAS_SC_getgroups; /* asm-generic supplementary groups */
     case 177U: return NAS_SC_getegid;
+    case 144U: return NAS_SC_setgid;
+    case 143U: return NAS_SC_setregid; /* Linux asm-generic */
+    case 145U: return NAS_SC_setreuid; /* Linux asm-generic */
+    case 147U: return NAS_SC_setresuid; /* Linux asm-generic */
+    case 149U: return NAS_SC_setresgid; /* Linux asm-generic */
+    case 151U: return NAS_SC_setfsuid; /* Linux asm-generic */
+    case 152U: return NAS_SC_setfsgid; /* Linux asm-generic */
+    case 159U: return NAS_SC_setgroups;
+    case 146U: return NAS_SC_setuid;
     case 178U: return NAS_SC_gettid;
     case 154U: return NAS_SC_setpgid;
     case 155U: return NAS_SC_getpgid;
     case 156U: return NAS_SC_getsid;
     case 157U: return NAS_SC_setsid;
     case 222U: return NAS_SC_mmap;
+    case 279U: return NAS_SC_memfd_create; /* asm-generic */
+    case 232U: return NAS_SC_mincore; /* asm-generic */
+    case 227U: return NAS_SC_msync; /* Linux asm-generic */
+    case 233U: return NAS_SC_madvise; /* Linux asm-generic */
     case 215U: return NAS_SC_munmap;
     case 226U: return NAS_SC_mprotect;
     case 214U: return NAS_SC_brk;
     case 260U: return NAS_SC_wait4;
+    case 95U: return NAS_SC_waitid; /* asm-generic waitid */
+    case 434U: return NAS_SC_pidfd_open; /* Linux asm-generic, all LP64 ports */
     case 221U: return NAS_SC_execve;
     case 93U: return NAS_SC_exit;
     case 94U: return NAS_SC_exit_group;
@@ -306,6 +453,13 @@ static inline uint64_t nas_linux_clone_child_tid(const uint64_t *call) {
     return call[5];
 #endif
 }
+static inline uint64_t nas_linux_raw_clone_nr(void) {
+#if defined(__x86_64__)
+    return __NR_clone;
+#else
+    return 220U; /* asm-generic Linux clone */
+#endif
+}
 /* The x86 legacy vfork number has NO user stack argument; clone does.
  * Keep this register-ABI decision out of the common process dispatcher. */
 static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
@@ -316,12 +470,7 @@ static inline uint64_t nas_linux_vfork_child_stack(const uint64_t *call) {
 }
 static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
     if (!args) return NAS_SC_NONE;
-#if defined(__x86_64__)
-    const uint64_t clone_nr = __NR_clone;
-#else
-    const uint64_t clone_nr = 220U; /* Linux asm-generic __NR_clone */
-#endif
-    if (args[0] == clone_nr) {
+    if (args[0] == nas_linux_raw_clone_nr()) {
         /* musl posix_spawn uses CLONE_VM|CLONE_VFORK|SIGCHLD with
          * its own userspace child stack. Unsupported thread clones are ENOSYS. */
         /* Native glibc and musl pthreads request the SAME shared thread
@@ -331,6 +480,13 @@ static inline enum nas_syscall_op nas_linux_decode_call(const uint64_t *args) {
         const uint64_t pthread_flags=0x100ULL|0x200ULL|0x400ULL|0x800ULL|
             0x10000ULL|0x40000ULL|0x80000ULL|0x100000ULL|0x200000ULL;
         if ((args[1] & ~0x400000ULL)==pthread_flags)
+            return NAS_SC_clone_thread;
+        /* Original Go age-keygen uses a shared Linux thread with no TID
+         * pointer side effects: 0x50f00 on AArch64 and 0xd0f00 on x86-64.
+         * The latter sets CLONE_SETTLS. The absence of SETTLS on ARM means
+         * arg4 is NOT a TLS value even when nonzero. Do not accept unrelated
+         * flags or assume pthread's PARENT_SETTID/CHILD_CLEARTID semantics. */
+        if (args[1]==0x00050f00ULL || args[1]==0x000d0f00ULL)
             return NAS_SC_clone_thread;
         if (args[1] == (0x00000100ULL|0x00004000ULL|17ULL))
             return NAS_SC_vfork;

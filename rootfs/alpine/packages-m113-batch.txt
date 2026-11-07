@@ -1,0 +1,11 @@
+# M113: nine original Alpine 3.23 APK packages supply fifteen distinct ELF
+# programs. Installed and verified on the Linux HOST, never inside NaSeed.
+dtc
+libwebp-tools
+tiff-tools
+qpdf
+poppler-utils
+discount
+md4c
+lzip
+lzop

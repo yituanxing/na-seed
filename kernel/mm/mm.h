@@ -13,6 +13,11 @@ struct nas_mm {
     uint64_t heap_break;
     struct nas_anon_regions mmap_vmas; /* typed VMAs for mmap-owned ranges */
 };
+/* Visit each live address-space owner exactly once, even when CLONE_VM
+ * threads share it.  Used by a backing-file invalidation transaction so a
+ * truncate cannot leave stale resident aliases in unrelated processes. */
+typedef bool (*nas_mm_live_visit)(struct nas_mm *,void *);
+bool nas_mm_walk_live(nas_mm_live_visit visit,void *ctx);
 
 void nas_mm_system_init(void);
 struct nas_mm *nas_mm_new(void); /* one owned reference, empty root */

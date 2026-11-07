@@ -1,0 +1,3 @@
+# case_id<TAB>rootfs<TAB>guest_argv<TAB>expected_marker<TAB>evidence<TAB>entrypoint
+# Eight independent signed original Alpine programs, exactly one x86 QEMU boot.
+m141-batch	cpio	sh -c '/bin/busybox sleep 4 && /bin/sh /tests/m141-system-cohort-run.sh'	M141_SIGNED_SYSTEM_COHORT_PASS	-	/bin/busybox

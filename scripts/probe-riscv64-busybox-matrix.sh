@@ -3,6 +3,10 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
+# Only interactive opt-in cases read host keyboard bytes. The default is
+# still detached stdin, preserving every historical QEMU regression.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 test -s build/port-riscv64/full/kernel.elf || sh scripts/build-riscv64-full.sh
 dir=build/port-riscv64/full
 if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
@@ -97,6 +101,14 @@ boot_case() {
         m83-replay) time_budget=${NAS_M83_REPLAY_QEMU_TIMEOUT:-180} ;;
         m84-build) time_budget=${NAS_M84_BUILD_QEMU_TIMEOUT:-7200} ;;
         m84-replay) time_budget=${NAS_M84_REPLAY_QEMU_TIMEOUT:-360} ;;
+        m109-batch) time_budget=${NAS_M109_QEMU_TIMEOUT:-240} ;;
+        m110-batch) time_budget=${NAS_M110_QEMU_TIMEOUT:-240} ;;
+        m111-batch) time_budget=${NAS_M111_QEMU_TIMEOUT:-240} ;;
+        m200-fbdev) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
+        m201-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
+        m202-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-260} ;;
+        m187-vt100) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-850} ;;
+        m1??-batch) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
         m105-*) time_budget=120 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
@@ -113,11 +125,136 @@ boot_case() {
     # Optional second REAL block drive (the first is the UEFI FAT ESP).
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || \
+       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ] || [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ] || \
+       [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+        # The shared MMIO probe binds modern VirtIO only (version 2).
+        set -- "$@" -global virtio-mmio.force-legacy=false
+    fi
     if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
         test -s "$NAS_VIRTIO_BLK_IMAGE"
-        set -- -global virtio-mmio.force-legacy=false \
-               -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+        set -- "$@" -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
                -device virtio-blk-device,drive=real_ext4
+    fi
+    if [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+        test -s "$NAS_QEMU_ASYNC_BLK_IMAGE"
+        set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
+            -device virtio-blk-device,drive=m178_async
+    fi
+    # M228: keep host TCP forward on THIS real slirp NIC only, opt-in.
+    hostfwd=
+    if [ -z "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ] &&
+       [ -n "${NAS_VIRTIO_NET_GUESTFWD_PORT:-}" ]; then
+        echo 'NAS_VIRTIO_NET_GUESTFWD_PORT requires NAS_VIRTIO_NET_HOSTFWD_PORT' >&2
+        return 2
+    fi
+    if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        hostfwd_port=$NAS_VIRTIO_NET_HOSTFWD_PORT
+        case "$hostfwd_port" in
+            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_PORT must be decimal 1..65535' >&2; return 2 ;;
+        esac
+        while [ "${hostfwd_port#0}" != "$hostfwd_port" ]; do
+            hostfwd_port=${hostfwd_port#0}
+        done
+        [ -n "$hostfwd_port" ] && [ "${#hostfwd_port}" -le 5 ] &&
+            [ "$hostfwd_port" -le 65535 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT out of range 1..65535' >&2
+            return 2
+        }
+        guestfwd_port=${NAS_VIRTIO_NET_GUESTFWD_PORT:-15432}
+        case "$guestfwd_port" in
+            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_PORT must be decimal 1..65535' >&2; return 2 ;;
+        esac
+        while [ "${guestfwd_port#0}" != "$guestfwd_port" ]; do
+            guestfwd_port=${guestfwd_port#0}
+        done
+        [ -n "$guestfwd_port" ] && [ "${#guestfwd_port}" -le 5 ] &&
+            [ "$guestfwd_port" -le 65535 ] || {
+            echo 'NAS_VIRTIO_NET_GUESTFWD_PORT out of range 1..65535' >&2
+            return 2
+        }
+        hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:${guestfwd_port}"
+    fi
+    # Opt-in host-local UDP ingress on the SAME VirtIO-MMIO NIC. The existing
+    # TCP/default builder is byte-for-byte unaffected with UDP envs unset.
+    if [ -z "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ] &&
+       [ -n "${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-}" ]; then
+        echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT requires NAS_VIRTIO_NET_HOSTFWD_UDP_PORT' >&2
+        return 2
+    fi
+    if [ -n "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        udp_host_port=$NAS_VIRTIO_NET_HOSTFWD_UDP_PORT
+        case "$udp_host_port" in
+            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT must be decimal 1..65535' >&2; return 2 ;;
+        esac
+        while [ "${udp_host_port#0}" != "$udp_host_port" ]; do
+            udp_host_port=${udp_host_port#0}
+        done
+        [ -n "$udp_host_port" ] && [ "${#udp_host_port}" -le 5 ] &&
+            [ "$udp_host_port" -le 65535 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT out of range 1..65535' >&2
+            return 2
+        }
+        udp_guest_port=${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-15453}
+        case "$udp_guest_port" in
+            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT must be decimal 1..65535' >&2; return 2 ;;
+        esac
+        while [ "${udp_guest_port#0}" != "$udp_guest_port" ]; do
+            udp_guest_port=${udp_guest_port#0}
+        done
+        [ -n "$udp_guest_port" ] && [ "${#udp_guest_port}" -le 5 ] &&
+            [ "$udp_guest_port" -le 65535 ] || {
+            echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT out of range 1..65535' >&2
+            return 2
+        }
+        hostfwd="${hostfwd},hostfwd=udp:127.0.0.1:${udp_host_port}-:${udp_guest_port}"
+    fi
+    if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
+        set -- "$@" -netdev "user,id=naseed_net${hostfwd}" \
+               -device virtio-net-device,netdev=naseed_net
+    fi
+    if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_SECOND_USER requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        set -- "$@" -netdev user,id=naseed_net2,net=10.0.3.0/24 \
+               -device virtio-net-device,netdev=naseed_net2
+    fi
+    if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_PCAP requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        set -- "$@" -object \
+            "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
+    fi
+    if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
+        set -- "$@" -device virtio-keyboard-device \
+            -device virtio-tablet-device -device virtio-mouse-device
+    fi
+    if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+        [ "${NAS_QEMU_RAMFB:-0}" != 1 ] || {
+            echo 'GPU and ramfb acceptance devices cannot be combined' >&2
+            return 2
+        }
+        set -- "$@" -device virtio-gpu-device,xres=800,yres=600
+    elif [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+        set -- "$@" -device ramfb
+    elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        echo 'NAS_QEMU_QMP_SOCKET requires a real graphics device' >&2
+        return 2
+    fi
+    if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
     fi
     set +e
     timeout "${time_budget}s" qemu-system-riscv64 \
@@ -126,7 +263,7 @@ boot_case() {
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$fw/RISCV_VIRT_CODE.fd" \
         -drive if=pflash,format=raw,unit=1,file="$work/$name.vars.fd" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < "$serial_input" &
     pid=$!
     if [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \

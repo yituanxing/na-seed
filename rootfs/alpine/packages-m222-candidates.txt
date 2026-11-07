@@ -1,0 +1,3 @@
+# Original official signed OpenSSH APK owner closure; no replacement binaries.
+openssh-client-default
+openssh-client-common

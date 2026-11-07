@@ -59,5 +59,7 @@ int nas_port_block_attach(struct nas_port_block *port, const char *name,
 }
 int nas_port_block_detach(struct nas_port_block *port) {
     if (!port) return -EINVAL;
+    int rc = nas_block_begin_remove(&port->block);
+    if (rc) return rc;
     return nas_block_unregister(&port->block);
 }

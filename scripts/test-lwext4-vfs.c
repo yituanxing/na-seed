@@ -9,11 +9,20 @@
 #include "../kernel/task/resources.h"
 #include <ext4.h>
 #include <ext4_inode.h>
+#include <ext4_misc.h>
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* The ext4 host bridge has no page-cache-backed MAP_SHARED yet. Ordinary
+ * truncate/fsync still notify MM, but this fixture owns no mapped tasks. */
+void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t size) {
+    (void)node;(void)size;
+}
+void nas_vm_rearm_file(const struct nas_fs_node *node) {
+    (void)node;
+}
 /* Traced driver backend: identical registered BlockDevice contract as any
  * VirtIO/PCI transport, with real ext4 bytes and fault-injectable hardware
  * cache completion. A successful lwext4 metadata flush alone is not fsync. */
@@ -22,6 +31,10 @@ struct traced_disk {
     uint8_t *image;
     unsigned reads,writes,flushes;
     bool fail_flush;
+    /* Target only the final durable flush AFTER ext4_umount closed the
+     * physical bridge, without depending on an exact flush call count. */
+    const struct nas_lwext4_mount *final_close_mount;
+    bool saw_upstream_close;
 };
 static int trace_read(struct nas_block_device *dev,uint64_t sector,
                       uint32_t count,void *destination) {
@@ -42,6 +55,11 @@ static int trace_write(struct nas_block_device *dev,uint64_t sector,
 static int trace_flush(struct nas_block_device *dev) {
     struct traced_disk *t=dev->context;
     ++t->flushes;
+    if(t->final_close_mount &&
+       !t->final_close_mount->device.interface.ph_refctr) {
+        if(t->saw_upstream_close)return -EIO;
+        t->saw_upstream_close=true;
+    }
     return t->fail_flush ? -EIO : 0;
 }
 static const struct nas_block_ops trace_ops={
@@ -90,6 +108,45 @@ static const struct nas_vfs_mount root_mount={
 };
 void nas_vfs_register_default_mounts(void) {
     assert(nas_vfs_register_mount(&root_mount)==0);
+}
+/* The persistent root used by genuine Alpine apk must report the REAL
+ * mutable upstream ext4 superblock counters from either an inode or dirfd.
+ * Compare VFS results with pinned lwext4's own mount-stat interface, not
+ * with synthetic block counts or a copied host filesystem's statvfs. */
+static struct nas_vfs_statfs check_ext4_statfs(
+    const struct nas_lwext4_mount *mounted,const struct nas_fs_node *node) {
+    struct ext4_mount_stats upstream={0};
+    assert(ext4_mount_point_stats(mounted->upstream_prefix,&upstream)==0);
+    struct nas_vfs_statfs fs={0};
+    assert(nas_vfs_statfs(node,&fs)==0);
+    assert(fs.magic==0xef53 && fs.block_size==upstream.block_size);
+    assert(fs.fragment_size==upstream.block_size && fs.name_max==255);
+    assert(fs.blocks==upstream.blocks_count);
+    assert(fs.free_blocks==upstream.free_blocks_count);
+    assert(fs.files==upstream.inodes_count);
+    assert(fs.free_files==upstream.free_inodes_count);
+    uint64_t reserved=ext4_get32(mounted->upstream_super,reserved_blocks_count_lo);
+    reserved|=(uint64_t)ext4_get32(mounted->upstream_super,reserved_blocks_count_hi)<<32;
+    assert(fs.available_blocks==(fs.free_blocks>reserved ?
+                                fs.free_blocks-reserved : 0));
+    return fs;
+}
+static void check_ext4_statfs_live_allocation(
+    const struct nas_lwext4_mount *mounted,const struct nas_fs_node *directory) {
+    struct nas_vfs_statfs before=check_ext4_statfs(mounted,directory);
+    const char *path="/mnt/sandbox/m205-live-statfs-data";
+    assert(nas_vfs_create(path,0600)==0);
+    struct nas_fs_node file={0};
+    char resolved[256];
+    assert(nas_fs_lookup_node(path,true,&file,resolved)==0);
+    static const uint8_t data[8192]={0};
+    assert(nas_vfs_write_at(&file,0,data,sizeof(data))==(int64_t)sizeof(data));
+    struct nas_vfs_statfs after=check_ext4_statfs(mounted,&file);
+    assert(after.free_blocks<before.free_blocks);
+    assert(after.free_files<before.free_files);
+    assert(after.blocks==before.blocks && after.files==before.files);
+    assert(nas_vfs_unlink(path,0)==0);
+    puts("[M205 LWEXT4 STATFS PASS] real mount counters, live allocation, inode and directory identity");
 }
 /* M82: Namespace mutations are observable by GNU make's directory
  * prerequisites and by find/rsync/tar metadata consumers. The fixture has a
@@ -299,11 +356,72 @@ static void m83_sparse_elf_verify_regressions(void) {
         m83_verify_sparse_file(&m83_sparse_cases[i]);
     puts("[LWEXT4 SPARSE ELF REMOUNT PASS] durable holes and payload verified");
 }
+/* M184: a failed mount does NOT grant permission to release the owned RAM
+ * source while its block bridge is still pinned. A subsequent ordinary
+ * cleanup call resumes at the failed stage without double-unregister. */
+static void m184_mount_rollback_regressions(uint8_t *image,uint64_t bytes,
+                                            bool valid_ext4_image) {
+    static struct nas_lwext4_mount rollback;
+    assert(nas_ramdisk_attach(&rollback.ramdisk,"m184-source",image,
+                              bytes,512,false)==0);
+    rollback.owns_ramdisk=true;
+    assert(nas_lwext4_device_attach(&rollback.device,"m184-source",
+                                    "m184-bridge")==0);
+    memcpy(rollback.device_name,"m184-bridge",sizeof("m184-bridge"));
+    rollback.cleanup_origin_error=-EIO;
+    rollback.cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    /* A partially initialized upstream mount may still hold this ref. */
+    rollback.device.interface.ph_refctr=1;
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==-EBUSY);
+    assert(rollback.cleanup_stage==NAS_LWEXT4_CLEANUP_DEVICE &&
+           rollback.cleanup_error==-EBUSY && rollback.device.registered &&
+           rollback.ramdisk.block.registered && rollback.owns_ramdisk &&
+           rollback.cleanup_origin_error==-EIO);
+    assert(nas_lwext4_ramdisk_mount_mode(&rollback,"m184-replacement",
+           "m184-replacement-ext","/mnt",image,bytes,false)==-EBUSY);
+    assert(!nas_block_get("m184-replacement"));
+    rollback.device.interface.ph_refctr=0;
+    struct nas_block_device *other=nas_block_get("m184-source");
+    assert(other==&rollback.ramdisk.block);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==-EBUSY);
+    assert(rollback.cleanup_stage==NAS_LWEXT4_CLEANUP_RAMDISK &&
+           !rollback.device.registered && rollback.ramdisk.block.registered &&
+           rollback.cleanup_error==-EBUSY);
+    nas_block_put(other);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==0);
+    assert(nas_lwext4_cleanup_failed_mount(&rollback)==0);
+    assert(!rollback.owns_ramdisk && !rollback.ramdisk.block.registered &&
+           !rollback.device.registered && !rollback.cleanup_error &&
+           rollback.cleanup_origin_error==-EIO);
+    /* A fully drained context must succeed when reused with a valid ext4
+     * image. The standalone m184-only smoke test uses a zero image instead. */
+    if(valid_ext4_image) {
+        assert(nas_lwext4_ramdisk_mount_mode(&rollback,"m184-reuse-source",
+               "m184-reuse-bridge","/mnt",image,bytes,false)==0);
+        assert(rollback.cleanup_origin_error==0 && !rollback.cleanup_error);
+        assert(nas_lwext4_unmount(&rollback)==0);
+        assert(!rollback.device.registered && !rollback.owns_ramdisk &&
+               !rollback.ramdisk.block.registered);
+    }
+    /* An actual corrupt ext4 superblock exercises failure automatic unwind. */
+    static struct nas_lwext4_mount corrupt;
+    uint8_t magic[2]={image[1080],image[1081]};
+    image[1080]=0;image[1081]=0;
+    assert(nas_lwext4_ramdisk_mount_mode(&corrupt,"m184-corrupt-source",
+          "m184-corrupt-bridge","/mnt",image,bytes,false)<0);
+    assert(!corrupt.device.registered && !corrupt.owns_ramdisk &&
+           !corrupt.ramdisk.block.registered && !corrupt.cleanup_error &&
+           corrupt.cleanup_stage==NAS_LWEXT4_CLEANUP_NONE &&
+           corrupt.cleanup_origin_error<0);
+    image[1080]=magic[0];image[1081]=magic[1];
+    puts("[M184 LWEXT4 ROLLBACK PASS] staged busy bridge/RAM pin, original error and automatic invalid-mount unwind");
+}
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);
     const bool write=argc==3 && !strcmp(argv[2],"write");
     const bool verify=argc==3 && !strcmp(argv[2],"verify");
-    assert(argc==2 || write || verify);
+    const bool rollback_only=argc==3 && !strcmp(argv[2],"m184-only");
+    assert(argc==2 || write || verify || rollback_only);
     FILE *disk=fopen(argv[1],write?"rb+":"rb");
     assert(disk);
     assert(!fseek(disk,0,SEEK_END));
@@ -313,6 +431,14 @@ int main(int argc,char **argv) {
     uint8_t *image=malloc((size_t)n);
     assert(image);
     assert(fread(image,1,(size_t)n,disk)==(size_t)n);
+    m184_mount_rollback_regressions(image,(uint64_t)n,!rollback_only);
+    /* Deterministic fast path for machines without mke2fs/cmake: a plain
+     * zero-filled image is enough to exercise both ownership failure modes. */
+    if(rollback_only) {
+        assert(!fclose(disk));
+        free(image);
+        return 0;
+    }
     char stale_orphan_path[256]={0},stale_directory_orphan_path[256]={0};
     static struct nas_lwext4_mount mounted;
     assert(nas_lwext4_ramdisk_mount_mode(&mounted,"vfs-test-ram","vfs-test-ext",
@@ -324,6 +450,7 @@ int main(int argc,char **argv) {
     assert(nas_fs_lookup_node("/mnt/.naseed-orphans",true,
                               &hidden,actual)==-ENOENT);
     assert(nas_fs_lookup_node("/mnt",true,&root_dir,actual)==0);
+    (void)check_ext4_statfs(&mounted,&root_dir);
     struct nas_vfs_dirent root_entries[16];
     uint64_t root_cursor=0;
     for(unsigned iteration=0;iteration<256;iteration++) {
@@ -337,6 +464,12 @@ int main(int argc,char **argv) {
     }
     struct nas_fs_node node;
     assert(nas_fs_lookup_node("/mnt/sandbox/hardlink",true,&node,actual)==0);
+    struct nas_vfs_statfs root_stats=check_ext4_statfs(&mounted,&root_dir);
+    struct nas_vfs_statfs file_stats=check_ext4_statfs(&mounted,&node);
+    assert(root_stats.blocks==file_stats.blocks &&
+           root_stats.free_blocks==file_stats.free_blocks &&
+           root_stats.free_files==file_stats.free_files);
+    if(write)check_ext4_statfs_live_allocation(&mounted,&root_dir);
     assert(!strcmp(node.filesystem->name,"lwext4"));
     assert(!strcmp(actual,"/mnt/sandbox/hardlink"));
     assert(!node.is_dir && !node.is_symlink && nas_vfs_can_write(&node)==write);
@@ -367,23 +500,29 @@ int main(int argc,char **argv) {
     assert(nas_vfs_read_dir(&directory,
                              (uint64_t)count,entries,8)>=0);
     assert(nas_vfs_read_dir(&node,0,entries,8)==-ENOTDIR);
-    struct nas_fs_node candidate_parent;
-    char candidate[256];
-    assert(nas_fs_lookup_parent("/mnt/sandbox/negative-candidate",
-                    &candidate_parent,candidate)==0);
+    struct nas_fs_node candidate_parent={0};
+    char candidate[256],leaf[256];
+    struct nas_vfs_path owned_candidate={0};
+    assert(nas_fs_lookup_parent_at(NULL,NULL,
+                    "/mnt/sandbox/negative-candidate",
+                    &owned_candidate,leaf)==0);
+    assert(nas_vfs_path_node(&owned_candidate,&candidate_parent)==0);
     assert(candidate_parent.mount==node.mount &&
-           !strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate",
-                                      candidate)==0);
-    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/negative-candidate///",
-                                      candidate)==0);
-    assert(!strcmp(candidate,"/mnt/sandbox/negative-candidate"));
-    assert(nas_fs_canonical_candidate("/mnt/sandbox/hardlink/",
-                                      candidate)==-ENOTDIR);
-    assert(nas_fs_canonical_candidate(
-               "/mnt/sandbox/hardlink/../negative-candidate",
-               candidate)==-ENOTDIR);
+           !strcmp(leaf,"negative-candidate"));
+    assert(nas_vfs_path_string(&owned_candidate,candidate)==0);
+    assert(!strcmp(candidate,"/mnt/sandbox"));
+    assert(nas_vfs_path_put(&owned_candidate)==0);
+    assert(nas_fs_lookup_parent_mkdir_at(NULL,NULL,
+                    "/mnt/sandbox/negative-candidate///",
+                    &owned_candidate,leaf)==0);
+    assert(!strcmp(leaf,"negative-candidate"));
+    assert(nas_vfs_path_put(&owned_candidate)==0);
+    assert(nas_fs_lookup_path_at(NULL,NULL,
+                    "/mnt/sandbox/hardlink/",false,
+                    &owned_candidate)==-ENOTDIR);
+    assert(nas_fs_lookup_path_at(NULL,NULL,
+                    "/mnt/sandbox/hardlink/../negative-candidate",false,
+                    &owned_candidate)==-ENOTDIR);
     assert(nas_vfs_mkdir("/",0755)==-EEXIST);
     assert(nas_vfs_mkdir("/mnt",0755)==-EEXIST);
     assert(nas_vfs_unlink("/mnt",0x200ULL)==-EBUSY);
@@ -1043,6 +1182,24 @@ int main(int argc,char **argv) {
         assert(nas_vfs_sync(&durable)==0);
         assert(trace.flushes>=before+3);
         assert(nas_lwext4_unmount(&traced_mount)==0);
+        /* The third physical flush happens AFTER lwext4 has fully closed.
+         * Such an EIO must still release the bridge, never resurrect VFS,
+         * and never require a second upstream ext4_umount. */
+        static struct nas_lwext4_mount final_flush_mount;
+        assert(nas_lwext4_device_mount(&final_flush_mount,"traced-disk-driver",
+                                       "m184-final-flush","/mnt",false)==0);
+        trace.final_close_mount=&final_flush_mount;
+        trace.saw_upstream_close=false;
+        assert(nas_lwext4_unmount(&final_flush_mount)==-EIO);
+        assert(trace.saw_upstream_close && !final_flush_mount.mounted &&
+               !final_flush_mount.device.registered &&
+               final_flush_mount.cleanup_stage==NAS_LWEXT4_CLEANUP_NONE &&
+               final_flush_mount.cleanup_origin_error==-EIO &&
+               !final_flush_mount.cleanup_error);
+        assert(nas_lwext4_cleanup_failed_mount(&final_flush_mount)==0);
+        trace.final_close_mount=NULL;
+        assert(nas_fs_lookup_node("/mnt/sandbox/durable-file",true,
+                                  &durable,actual)==-ENOENT);
         assert(nas_block_unregister(&trace.dev)==0);
         /* Fresh read-only mount after actual physical flush must recover
          * the bytes, proving that a failed flush did not fake persistence. */

@@ -10,6 +10,9 @@
  * the generic description layer has no dependency on /tmp or pipes.
  */
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+/* A single monotonic identity, never reset on a warm test reinit. Its only
+ * owner is the global File table; it is not a parallel FD allocation map. */
+static uint64_t next_lease_token;
 /* Fixed pool implements the allocator only; identity is not a Task slot. */
 static struct nas_files files_pool[NAS_TASK_LIMIT * 2U];
 struct nas_files *nas_files_new(void) {
@@ -26,6 +29,8 @@ struct nas_files *nas_files_copy(const struct nas_files *source) {
     if(!source || !source->refs) nas_fail("files copy without owner");
     struct nas_files *f=nas_files_new();
     if(!f)return 0;
+    /* A fork inherits published Files, not another Task's unpublished open.
+     * nas_files_new() zeroed pending_fd_mask independently of the table. */
     f->table=source->table; /* fork holds descriptions after successful VM copy */
     return f;
 }
@@ -37,6 +42,8 @@ struct nas_files *nas_files_get(struct nas_files *f) {
 }
 void nas_files_put(struct nas_files *f) {
     if(!f || !f->refs) nas_fail("files invalid put");
+    if(f->refs==1 && f->pending_fd_mask)
+        nas_fail("files last put with a live pending FD");
     if(!--f->refs)memset(f,0,sizeof(*f));
 }
 
@@ -64,29 +71,79 @@ void nas_fd_system_init(void) {
 }
 
 /* Task-local FD indices are disjoint from global open descriptions.
- * Probing is non-mutating, so failure cannot leak a backend or a partial FD. */
+ * A pending syscall holds both the original shared table and an unpublished
+ * FD number. Its number is unavailable to sibling CLONE_FILES allocations,
+ * while ordinary readers continue to see FD_CLOSED until publication. */
+bool nas_fd_available(const struct nas_task *task,unsigned fd) {
+    return task && task->files && task->fds==&task->files->table &&
+           fd<NAS_FD_LIMIT && task->fds->entries[fd].kind==FD_CLOSED &&
+           !(task->files->pending_fd_mask&(UINT64_C(1)<<fd));
+}
 unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum) {
     if (!task || !task->fds) return NAS_FD_LIMIT;
     for (unsigned fd=minimum;fd<NAS_FD_LIMIT;fd++)
-        if (task->fds->entries[fd].kind==FD_CLOSED) return fd;
+        if (nas_fd_available(task,fd)) return fd;
     return NAS_FD_LIMIT;
 }
 
-int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
-                   unsigned fds[2], unsigned slots[2], const char *operation) {
+/* Single CPU + no arbitrary kernel preemption makes test-and-set atomic.
+ * No syscall C frame parks between selecting and marking the shared table. */
+int nas_fd_pending_begin(struct nas_task *task,unsigned *fd,
+                         struct nas_files **files_hold) {
+    if(!fd || !files_hold)return -EINVAL;
+    *fd=NAS_FD_LIMIT;
+    *files_hold=0;
+    if(!task || !task->files || task->fds!=&task->files->table)
+        return -EINVAL;
+    unsigned selected=nas_fd_first_unused(task,0);
+    if(selected==NAS_FD_LIMIT)return -EMFILE;
+    if(task->files->refs==UINT32_MAX)return -EOVERFLOW;
+    task->files->pending_fd_mask|=UINT64_C(1)<<selected;
+    *files_hold=nas_files_get(task->files);
+    *fd=selected;
+    return 0;
+}
+bool nas_fd_pending_valid(const struct nas_files *files_hold,unsigned fd) {
+    return files_hold && files_hold->refs && fd<NAS_FD_LIMIT &&
+           (files_hold->pending_fd_mask&(UINT64_C(1)<<fd)) &&
+           files_hold->table.entries[fd].kind==FD_CLOSED;
+}
+static bool pending_end(struct nas_files *files_hold,unsigned fd) {
+    if(!nas_fd_pending_valid(files_hold,fd))return false;
+    files_hold->pending_fd_mask&=~(UINT64_C(1)<<fd);
+    nas_files_put(files_hold);
+    return true;
+}
+bool nas_fd_pending_commit(struct nas_files *files_hold,unsigned fd) {
+    return pending_end(files_hold,fd);
+}
+bool nas_fd_pending_cancel(struct nas_files *files_hold,unsigned fd) {
+    return pending_end(files_hold,fd);
+}
+
+int nas_fd_reserve_filtered(const struct nas_task *task,unsigned minimum,
+                            unsigned count,unsigned fds[2],unsigned slots[2],
+                            const char *operation,
+                            bool (*slot_reusable)(unsigned slot)) {
     if (!task || !task->fds || !fds || !slots || !count || count>2)
         return -EINVAL;
     unsigned nfds=0,nslots=0;
     for(unsigned fd=minimum;fd<NAS_FD_LIMIT && nfds<count;fd++)
-        if(task->fds->entries[fd].kind==FD_CLOSED) fds[nfds++]=fd;
+        if(nas_fd_available(task,fd)) fds[nfds++]=fd;
     if(nfds<count) return -EMFILE;
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT && nslots<count;slot++)
-        if(!nas_open_files[slot].refcount)slots[nslots++]=slot;
+        if(!nas_open_files[slot].refcount &&
+           (!slot_reusable || slot_reusable(slot)))slots[nslots++]=slot;
     if(nslots<count) {
         if(operation)nas_fd_report_exhaustion(operation);
         return -ENFILE;
     }
     return 0;
+}
+int nas_fd_reserve(const struct nas_task *task,unsigned minimum,
+                   unsigned count,unsigned fds[2],unsigned slots[2],
+                   const char *operation) {
+    return nas_fd_reserve_filtered(task,minimum,count,fds,slots,operation,0);
 }
 
 /* The caller hands off one already-accounted backend description reference.
@@ -95,8 +152,9 @@ bool nas_fd_attach_owned(struct nas_task *task, unsigned fd, unsigned slot,
                          uint8_t kind, bool cloexec) {
     if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
        slot>=NAS_OPEN_FILE_LIMIT || kind==FD_CLOSED ||
-       task->fds->entries[fd].kind!=FD_CLOSED ||
-       !nas_open_files[slot].refcount) return false;
+       !nas_fd_available(task,fd) ||
+       !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token) return false;
     task->fds->entries[fd]=(struct nas_fd_entry){
         .kind=kind,.slot=(uint8_t)slot,.cloexec=cloexec ? 1U : 0U
     };
@@ -109,13 +167,16 @@ bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
                         uint8_t kind, uint64_t status_flags, bool cloexec) {
     if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
        slot>=NAS_OPEN_FILE_LIMIT || kind==FD_CLOSED ||
-       task->fds->entries[fd].kind!=FD_CLOSED ||
+       !nas_fd_available(task,fd) ||
        nas_open_files[slot].refcount) return false;
     nas_open_files[slot]=(struct nas_open_file){
         .refcount=1,.status_flags=status_flags,
         .ops=nas_fs_ops_for_kind(kind)
     };
-    return nas_fd_attach_owned(task,fd,slot,kind,cloexec);
+    if(nas_fd_attach_owned(task,fd,slot,kind,cloexec))return true;
+    /* A failed placement must never strand an unpublished live File. */
+    nas_open_files[slot]=(struct nas_open_file){0};
+    return false;
 }
 
 /* Called when the owning task's FD entry is closed. Detach exactly one
@@ -123,15 +184,13 @@ bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
  * unreachable; it must then tear down the backend before slot reuse.
  */
 unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
-    if (!task || fd>=NAS_FD_LIMIT ||
+    if (!task || !task->fds || fd>=NAS_FD_LIMIT ||
         !task->fds->entries[fd].kind) return NAS_OPEN_FILE_LIMIT;
     const unsigned slot=task->fds->entries[fd].slot;
-    if (slot>=NAS_OPEN_FILE_LIMIT) return NAS_OPEN_FILE_LIMIT;
-    bool last=false;
-    if (nas_open_files[slot].refcount) {
-        nas_open_files[slot].refcount--;
-        last=nas_open_files[slot].refcount==0;
-    }
+    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+        nas_fail("close of dangling open description");
+    nas_open_files[slot].refcount--;
+    bool last=nas_open_files[slot].refcount==0;
     task->fds->entries[fd]=(struct nas_fd_entry){0};
     return last ? slot : NAS_OPEN_FILE_LIMIT;
 }
@@ -139,12 +198,14 @@ unsigned nas_fd_close(struct nas_task *task, unsigned fd) {
 /* Same open description, independent descriptor-local CLOEXEC bit. */
 uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
                       bool cloexec) {
-    if (!task || src>=NAS_FD_LIMIT || dst>=NAS_FD_LIMIT ||
+    if (!task || !task->fds || src>=NAS_FD_LIMIT || dst>=NAS_FD_LIMIT ||
         !task->fds->entries[src].kind) return (uint64_t)-EBADF;
-    if (src==dst) return dst;
-    if (task->fds->entries[dst].kind) return (uint64_t)-EBUSY;
     unsigned slot=task->fds->entries[src].slot;
-    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if (slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+        nas_open_files[slot].lease_token)return (uint64_t)-EBADF;
+    if (src==dst) return dst;
+    if (!nas_fd_available(task,(unsigned)dst)) return (uint64_t)-EBUSY;
+    if(nas_open_files[slot].refcount==UINT16_MAX)return (uint64_t)-ENFILE;
     task->fds->entries[dst]=task->fds->entries[src];
     task->fds->entries[dst].cloexec=cloexec ? 1 : 0;
     nas_open_files[slot].refcount++;
@@ -152,11 +213,12 @@ uint64_t nas_fd_clone(struct nas_task *task, uint64_t src, uint64_t dst,
 }
 uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
                           uint64_t minimum, bool cloexec) {
-    if (!task || src>=NAS_FD_LIMIT || !task->fds->entries[src].kind)
+    if (!task || !task->fds || src>=NAS_FD_LIMIT ||
+        !task->fds->entries[src].kind)
         return (uint64_t)-EBADF;
     if (minimum>=NAS_FD_LIMIT) return (uint64_t)-EINVAL;
     for (unsigned fd=(unsigned)minimum;fd<NAS_FD_LIMIT;fd++)
-        if (!task->fds->entries[fd].kind)
+        if (nas_fd_available(task,fd))
             return nas_fd_clone(task,src,fd,cloexec);
     return (uint64_t)-EMFILE;
 }
@@ -164,19 +226,80 @@ uint64_t nas_fd_duplicate(struct nas_task *task, uint64_t src,
 /* Fork copies each process-local FD entry, but references shared open
  * descriptions. Validate first to avoid a partially incremented table. */
 bool nas_task_hold_files(const struct nas_task *task) {
-    if (!task) return false;
-    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
-        if (task->fds->entries[fd].kind &&
-            (task->fds->entries[fd].slot>=NAS_OPEN_FILE_LIMIT ||
-              !nas_open_files[task->fds->entries[fd].slot].refcount)) return false;
-    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++)
-        if (task->fds->entries[fd].kind)
-            nas_open_files[task->fds->entries[fd].slot].refcount++;
+    if (!task || !task->fds) return false;
+    /* Multiple copied descriptors may point to ONE File. Check the whole
+     * fork increment before mutating any reference, not just each entry
+     * against UINT16_MAX independently (which could wrap on alias two). */
+    uint16_t additions[NAS_OPEN_FILE_LIMIT]={0};
+    for (unsigned fd=0;fd<NAS_FD_LIMIT;fd++) {
+        if(!task->fds->entries[fd].kind)continue;
+        unsigned slot=task->fds->entries[fd].slot;
+        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+           nas_open_files[slot].lease_token)return false;
+        additions[slot]++;
+    }
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+        if(additions[slot] && nas_open_files[slot].refcount>
+           UINT16_MAX-additions[slot])return false;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+        nas_open_files[slot].refcount+=additions[slot];
     return true;
 }
 bool nas_fd_hold_description(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token ||
        nas_open_files[slot].refcount==UINT16_MAX)return false;
     nas_open_files[slot].refcount++;
+    return true;
+}
+
+int nas_fd_slot_lease_begin(struct nas_fd_slot_lease *out,
+                            const char *operation) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_fd_slot_lease){.slot=NAS_OPEN_FILE_LIMIT};
+    if(next_lease_token==UINT64_MAX)return -EOVERFLOW;
+    for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
+        if(nas_open_files[slot].refcount)continue;
+        uint64_t token=++next_lease_token;
+        nas_open_files[slot]=(struct nas_open_file){
+            .refcount=1,.lease_token=token
+        };
+        *out=(struct nas_fd_slot_lease){.slot=slot,.token=token};
+        return 0;
+    }
+    if(operation)nas_fd_report_exhaustion(operation);
+    return -ENFILE;
+}
+bool nas_fd_slot_lease_valid(struct nas_fd_slot_lease lease) {
+    return lease.slot<NAS_OPEN_FILE_LIMIT && lease.token &&
+           nas_open_files[lease.slot].refcount==1 &&
+           nas_open_files[lease.slot].lease_token==lease.token;
+}
+int nas_fd_slot_lease_commit(struct nas_fd_slot_lease lease,
+                             struct nas_task *task,unsigned fd,uint8_t kind,
+                             uint64_t status_flags,bool cloexec,
+                             const struct nas_file_ops *provider_ops) {
+    if(!nas_fd_slot_lease_valid(lease))return -EBADF;
+    if(!task || !task->fds || fd>=NAS_FD_LIMIT || kind==FD_CLOSED)
+        return -EINVAL;
+    /* Target Task may have installed a different FD while our native
+     * accept worker ran. Preserve its entry and leave the lease live. */
+    if(!nas_fd_available(task,fd))return -EBUSY;
+    const unsigned slot=lease.slot;
+    nas_open_files[slot]=(struct nas_open_file){
+        .refcount=1,.status_flags=status_flags,
+        .ops=provider_ops?provider_ops:nas_fs_ops_for_kind(kind)
+    };
+    /* Both the lease and this placement live on the same masked-IRQ kernel
+     * execution boundary; there is no partially published File visible. */
+    if(!nas_fd_attach_owned(task,fd,slot,kind,cloexec))
+        nas_fail("FD lease publication violated validated slot ownership");
+    return 0;
+}
+bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease) {
+    if(!nas_fd_slot_lease_valid(lease))return false;
+    /* Backend cleanup (e.g. async netconn_release) belongs to the caller
+     * before aborting the lease; this slot has no FileOps finalizer yet. */
+    nas_open_files[lease.slot]=(struct nas_open_file){0};
     return true;
 }

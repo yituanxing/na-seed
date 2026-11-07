@@ -3,6 +3,12 @@
 # device implementations cannot drift between x86_64, riscv64 and aarch64.
 set -eu
 mkdir -p build/block-foundation
+# Official BSD lwIP source is a pinned external dependency, not copied
+# NaOS GPL code. A fresh checkout need not populate the gitlink until the
+# lwIP adapter is compiled in the next integration batch.
+test "$(git ls-files --stage third_party/lwip | awk '{print $1 " " $2}')" = \
+  "160000 77dcd25a72509eb83f72b033d219b1d40cd8eb95"
+grep -Fq 'url = https://github.com/lwip-tcpip/lwip.git' .gitmodules
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-block-foundation.c kernel/block/device.c kernel/block/ramdisk.c \
   kernel/lib/string.c -o build/block-foundation/test
@@ -63,16 +69,24 @@ fi
 # Hardware-provider-independent bus matching, backend binding and lifetime.
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-driver-bus.c kernel/drivers/core/bus.c \
+  kernel/task/scheduler_service.c \
   kernel/drivers/port/block.c kernel/block/device.c kernel/lib/string.c \
   -o build/block-foundation/test-driver-bus
 build/block-foundation/test-driver-bus
+# Ethernet framing has one driver port/registry and no duplicate TCP/IP.
+# Mock Ethernet RX/TX is a host boundary test, NOT a claim of physical NIC.
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+  scripts/test-network-device-port.c kernel/drivers/port/net.c \
+  kernel/lib/string.c -o build/block-foundation/test-network-device-port
+build/block-foundation/test-network-device-port
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
   scripts/test-driver-dma.c kernel/drivers/port/dma.c \
   -o build/block-foundation/test-driver-dma
 build/block-foundation/test-driver-dma
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    for source in kernel/drivers/core/bus.c kernel/drivers/port/dma.c; do
+    for source in kernel/drivers/core/bus.c kernel/drivers/port/dma.c \
+                  kernel/drivers/port/net.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
     done
@@ -106,21 +120,51 @@ fi
 # U-Boot *original* GPL-2.0+ VirtIO-Blk source, byte-identical to pinned upstream:
 test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.c)" = "7b1d891cdcbb5d5795ee64f0094ad4c64bb12c52"
 test "$(git hash-object third_party/uboot/drivers/virtio/virtio_blk.h)" = "b37ba264df4b6ab6d7ed4c2cbfe580a58710799e"
+# ORIGINAL U-Boot VirtIO-Net from the SAME pinned revision as VirtIO-Blk.
+# Compile its native source/ABI before linking a live NIC in a later batch.
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_net.c)" = "71e4d2513964c7484114642453dffad69b4b5df9"
+test "$(git hash-object third_party/uboot/drivers/virtio/virtio_net.h)" = "3adcb19aead299d3fa28c747a292ee39ef68f6f8"
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+  -Wno-sign-compare -fno-builtin -I ports/uboot/compat -I kernel \
+  -I third_party/unikraft/include -fsyntax-only \
+  third_party/uboot/drivers/virtio/virtio_net.c
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+  -I ports/uboot/compat -I kernel \
+  scripts/test-uboot-virtio-net-abi.c \
+  -o build/block-foundation/test-uboot-virtio-net-abi
+build/block-foundation/test-uboot-virtio-net-abi
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
   -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
   -I ports/unikraft/include \
-  scripts/test-uboot-original-virtio-blk-port.c ports/uboot/blk_port.c \
+  scripts/test-uboot-original-virtio-blk-port.c ports/uboot/virtio_compat.c ports/uboot/blk_port.c \
   ports/unikraft/split_queue.c kernel/drivers/virtio/transport.c \
   kernel/drivers/port/dma.c kernel/drivers/port/block.c \
   kernel/block/device.c kernel/lib/string.c \
   -o build/block-foundation/test-uboot-original-port
 build/block-foundation/test-uboot-original-port
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+  -I ports/uboot/compat -I kernel -I third_party/unikraft/include \
+  -I ports/unikraft/include \
+  scripts/test-uboot-original-virtio-net-port.c ports/uboot/virtio_compat.c \
+  ports/uboot/net_port.c ports/unikraft/split_queue.c \
+  kernel/drivers/virtio/transport.c kernel/drivers/port/dma.c \
+  kernel/drivers/port/net.c kernel/drivers/core/bus.c \
+  kernel/drivers/core/irq.c kernel/task/k_sync.c kernel/task/wait_queue.c \
+  ports/uboot/virtio_net_bus.c kernel/lib/string.c \
+  -o build/block-foundation/test-uboot-original-virtio-net-port
+build/block-foundation/test-uboot-original-virtio-net-port
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
     clang --target="$target" -std=c11 -Wall -Wextra -Werror \
       -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
       -I third_party/unikraft/include -I ports/unikraft/include \
-      -fsyntax-only ports/uboot/blk_port.c ports/uboot/virtio_bus.c
+      -fsyntax-only ports/uboot/virtio_compat.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c ports/uboot/net_port.c ports/uboot/virtio_net_bus.c
+    clang --target="$target" -std=c11 -Wall -Wextra -Werror \
+      -Wno-unused-parameter -Wno-sign-compare \
+      -Wno-unused-const-variable \
+      -ffreestanding -fno-builtin -I ports/uboot/compat -I kernel \
+      -I third_party/unikraft/include -fsyntax-only \
+      third_party/uboot/drivers/virtio/virtio_net.c
   done
 fi
 

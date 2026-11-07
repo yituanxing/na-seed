@@ -1,0 +1,10 @@
+# M213 UNACCEPTED signed Alpine 3.23 package requests. Signature validation,
+# distinct native ELF hashes and two real semantic QEMU executions are pending.
+iproute2
+nmap-nping
+openssh-client-default
+openssh-client-common
+bind-tools
+util-linux-misc
+binutils
+llvm21

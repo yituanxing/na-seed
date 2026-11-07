@@ -1,0 +1,2 @@
+# M196 second independent QEMU of the actual public-HTTPS-mutated disk.
+m196-batch	cpio	sh -c "/sbin/apk info -e tree && /sbin/apk info -e jq && /usr/bin/tree --version >/dev/null && /usr/bin/jq --version >/dev/null && cat /root/m196-wan.txt"	M196_PUBLIC_ALPINE_APK_2026	-	/bin/busybox

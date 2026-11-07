@@ -1,0 +1,17 @@
+# Fifteen globally new original signed Alpine Linux 3.23 ELFs across seven packages.
+# Not the earlier M122/M125 Netpbm paths or any former archive/syscall targets.
+usr/bin/ppmtobmp
+usr/bin/bmptopnm
+usr/bin/ppmtogif
+usr/bin/giftopnm
+usr/bin/addr2line
+usr/bin/ranlib
+usr/bin/bsdcpio
+usr/bin/bsdcat
+usr/bin/zipnote
+usr/bin/zipsplit
+usr/bin/getfattr
+usr/bin/setfattr
+usr/bin/getfacl
+usr/bin/setfacl
+usr/sbin/filefrag

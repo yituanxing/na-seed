@@ -30,6 +30,7 @@ struct local_socket {
 static struct local_socket sockets[NAS_OPEN_FILE_LIMIT];
 struct socket_rights {
     unsigned count;
+    bool reserved;
     uint8_t kinds[NAS_UNIX_MAX_RIGHTS],slots[NAS_UNIX_MAX_RIGHTS];
 };
 static struct socket_rights pending_rights[NAS_OPEN_FILE_LIMIT];
@@ -42,27 +43,69 @@ static void dispose_rights(unsigned slot) {
     for(unsigned i=0;i<held.count;i++)
         nas_fs_drop_kernel_description(held.slots[i]);
 }
-bool nas_unix_rights_available(unsigned sender,unsigned count) {
+int nas_unix_rights_prepare(unsigned sender,const uint8_t *kinds,
+                            const uint8_t *slots,unsigned count,
+                            struct nas_unix_rights_transfer *transfer) {
+    if(!transfer || !count || count>NAS_UNIX_MAX_RIGHTS || !kinds || !slots)
+        return -EINVAL;
+    *transfer=(struct nas_unix_rights_transfer){0};
     int peer=nas_pipe_peer_slot(sender);
-    return peer>=0 && count<=NAS_UNIX_MAX_RIGHTS &&
-           pending_rights[peer].count==0;
-}
-int nas_unix_rights_send(unsigned sender,const uint8_t *kinds,
-                         const uint8_t *slots,unsigned count) {
-    if(!count)return 0;
-    if(!nas_unix_rights_available(sender,count))return -EAGAIN;
-    int peer=nas_pipe_peer_slot(sender);
-    struct socket_rights *r=&pending_rights[peer];
-    for(unsigned i=0;i<count;i++) {
-        if(slots[i]>=NAS_OPEN_FILE_LIMIT ||
-           !nas_open_files[slots[i]].refcount)return -EBADF;
+    if(peer<0 || (unsigned)peer>=NAS_OPEN_FILE_LIMIT)return -ENOTCONN;
+    if(pending_rights[peer].count || pending_rights[peer].reserved)
+        return -EAGAIN;
+    /* Both endpoints stay alive even when the payload writer parks and
+     * another task closes/reuses its original descriptor. */
+    if(sender>=NAS_OPEN_FILE_LIMIT || !nas_open_files[sender].refcount ||
+       nas_open_files[sender].lease_token)return -EBADF;
+    if(!nas_fd_hold_description(sender))return -ENFILE;
+    if(!nas_fd_hold_description((unsigned)peer)) {
+        nas_fs_drop_kernel_description(sender);
+        return -ENFILE;
     }
+    transfer->sender=sender;transfer->receiver=(unsigned)peer;
+    transfer->active=true;
     for(unsigned i=0;i<count;i++) {
-        r->kinds[i]=kinds[i];r->slots[i]=slots[i];
-        nas_open_files[slots[i]].refcount++;
+        unsigned slot=slots[i];
+        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+           nas_open_files[slot].lease_token) {
+            nas_unix_rights_cancel(transfer);
+            return -EBADF;
+        }
+        if(!nas_fd_hold_description(slot)) {
+            nas_unix_rights_cancel(transfer);
+            return -ENFILE;
+        }
+        transfer->kinds[i]=kinds[i];transfer->slots[i]=(uint8_t)slot;
+        transfer->count++;
     }
-    r->count=count;
+    pending_rights[peer].reserved=true;
     return 0;
+}
+void nas_unix_rights_cancel(struct nas_unix_rights_transfer *transfer) {
+    if(!transfer || !transfer->active)return;
+    unsigned peer=transfer->receiver,sender=transfer->sender;
+    pending_rights[peer].reserved=false;
+    for(unsigned i=0;i<transfer->count;i++)
+        nas_fs_drop_kernel_description(transfer->slots[i]);
+    *transfer=(struct nas_unix_rights_transfer){0};
+    nas_fs_drop_kernel_description(peer);
+    nas_fs_drop_kernel_description(sender);
+}
+void nas_unix_rights_commit(struct nas_unix_rights_transfer *transfer) {
+    if(!transfer || !transfer->active)return;
+    struct socket_rights *r=&pending_rights[transfer->receiver];
+    if(!r->reserved || r->count)nas_fail("SCM_RIGHTS reservation lost");
+    /* Already-pinned refs move to the receiver's kernel-owned message;
+     * no refcount increase and no late failure after data was written. */
+    for(unsigned i=0;i<transfer->count;i++) {
+        r->kinds[i]=transfer->kinds[i];r->slots[i]=transfer->slots[i];
+    }
+    r->count=transfer->count;
+    r->reserved=false;
+    unsigned peer=transfer->receiver,sender=transfer->sender;
+    *transfer=(struct nas_unix_rights_transfer){0};
+    nas_fs_drop_kernel_description(peer);
+    nas_fs_drop_kernel_description(sender);
 }
 unsigned nas_unix_rights_count(unsigned receiver) {
     return receiver<NAS_OPEN_FILE_LIMIT ? pending_rights[receiver].count : 0;

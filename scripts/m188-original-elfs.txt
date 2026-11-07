@@ -1,0 +1,6 @@
+# M188: exactly 2 additional Alpine v3.23 main native ELFs on amd64/arm64/riscv64.
+# Original /usr/bin/vim and /usr/bin/nano are HISTORICAL M79/M80, not new.
+# https://pkgs.alpinelinux.org/package/v3.23/main/riscv64/mg
+# https://pkgs.alpinelinux.org/package/v3.23/main/riscv64/rdfind
+usr/bin/mg
+usr/bin/rdfind

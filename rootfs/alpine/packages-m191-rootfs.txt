@@ -1,0 +1,5 @@
+# Original Alpine 3.23.7 minirootfs is the base of the root disk.
+# Host apk adds signed Alpine 3.23 packages; no guest compiler or custom init.
+# `alpine-base` supplies the standard base configuration and applets.
+alpine-base
+openrc

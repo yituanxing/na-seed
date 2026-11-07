@@ -1,0 +1,2 @@
+# test	root	argv	expected	ignored	application
+m157-batch	cpio	sh -c '/bin/sh /tests/m157-batch-run.sh'	M157_BATCH_PASS	-	/bin/busybox

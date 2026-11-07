@@ -1,0 +1,7 @@
+# M146: 24 new native ELFs, broad media/dev/ELF-inspection cohort.
+# These are original Alpine 3.23 packages, installed on the HOST only.
+netpbm
+imagemagick
+php84
+pax-utils
+scanelf

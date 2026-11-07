@@ -1,0 +1,2 @@
+# Only functional test script goes in guest; APKs installed on Linux host.
+tests/m116-batch-run.sh	tests/m116-batch-run.sh

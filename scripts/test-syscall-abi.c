@@ -1,11 +1,65 @@
 #include <assert.h>
 #include "../kernel/arch/linux_syscall_abi.h"
+#include "../kernel/task/credentials.h"
 int main(void) {
+    /* Real root-only primary identity, with task-owned supplementary GIDs.
+     * Ordinary BusyBox login calls initgroups(root,0) before switching to
+     * root uid/gid; Alpine root also belongs to wheel (gid 10), so its
+     * getgroups must reflect the full actual vector. */
+    assert(nas_linux_decode_syscall(__NR_setuid) == NAS_SC_setuid);
+    assert(nas_linux_decode_syscall(__NR_setgid) == NAS_SC_setgid);
+    assert(nas_linux_decode_syscall(__NR_setreuid) == NAS_SC_setreuid);
+    assert(nas_linux_decode_syscall(__NR_setregid) == NAS_SC_setregid);
+    assert(nas_linux_decode_syscall(__NR_setresuid) == NAS_SC_setresuid);
+    assert(nas_linux_decode_syscall(__NR_setresgid) == NAS_SC_setresgid);
+    assert(nas_linux_decode_syscall(__NR_getresuid) == NAS_SC_getresuid);
+    assert(nas_linux_decode_syscall(__NR_getresgid) == NAS_SC_getresgid);
+    assert(nas_linux_decode_syscall(__NR_setfsuid) == NAS_SC_setfsuid);
+    assert(nas_linux_decode_syscall(__NR_setfsgid) == NAS_SC_setfsgid);
+    assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
+    assert(nas_linux_decode_syscall(__NR_sethostname) == NAS_SC_sethostname);
+    assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
+    assert(nas_credentials_set_id(0)==0);
+    assert((int64_t)nas_credentials_set_id(1)==-EPERM);
+    assert(nas_credentials_set_root_ids(0,0,0)==0);
+    assert(nas_credentials_set_root_ids(UINT32_MAX,0,UINT32_MAX)==0);
+    assert(nas_credentials_set_root_ids(UINT64_MAX,UINT64_MAX,UINT64_MAX)==0);
+    assert((int64_t)nas_credentials_set_root_ids(0,65534,0)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(65534,0,0)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(0,0,65534)==-EPERM);
+    assert((int64_t)nas_credentials_set_root_ids(UINT32_MAX,65534,UINT32_MAX)==-EPERM);
+    assert(nas_credentials_set_id(UINT64_C(0x100000000))==0);
+    assert(nas_credentials_set_fs_id(0)==0);
+    assert(nas_credentials_set_fs_id(UINT64_MAX)==0);
+    assert(nas_credentials_set_fs_id(1000)==0);
+    struct nas_credentials root={0};
+    uint32_t root_group[2]={10,0};
+    uint32_t observed[2]={UINT32_MAX,UINT32_MAX};
+    assert(nas_credentials_getgroups(&root,0,0)==0);
+    assert(nas_credentials_setgroups(&root,2,root_group)==0);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
+    assert((int64_t)nas_credentials_getgroups(&root,1,observed)==-EINVAL);
+    assert(nas_credentials_getgroups(&root,2,observed)==2);
+    assert(observed[0]==0 && observed[1]==10); /* Linux sorted groups */
+    assert((int64_t)nas_credentials_getgroups(&root,UINT64_MAX,observed)==-EINVAL);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
+    assert((int64_t)nas_credentials_setgroups(&root,1,0)==-EFAULT);
+    assert((int64_t)nas_credentials_setgroups(&root,NAS_CREDENTIAL_GROUP_LIMIT+1,
+                                              root_group)==-EINVAL);
+    struct nas_credentials fork_copy=root;
+    assert(nas_credentials_getgroups(&fork_copy,0,0)==2);
+    assert(nas_credentials_setgroups(&fork_copy,0,0)==0);
+    assert(nas_credentials_getgroups(&fork_copy,0,0)==0);
+    assert(nas_credentials_getgroups(&root,0,0)==2);
     assert(nas_linux_decode_syscall(__NR_access) == NAS_SC_access);
     assert(nas_linux_decode_syscall(__NR_chown) == NAS_SC_chown);
     assert(nas_linux_decode_syscall(__NR_lchown) == NAS_SC_lchown);
     assert(nas_linux_decode_syscall(__NR_fchown) == NAS_SC_fchown);
     assert(nas_linux_decode_syscall(__NR_fchownat) == NAS_SC_fchownat);
+    /* Alpine APK's signed util-linux-misc installer uses Linux's newer
+     * flag-bearing chmod entry, whose x86 and generic64 NR is 452. */
+    assert(__NR_fchmodat2 == 452);
+    assert(nas_linux_decode_syscall(__NR_fchmodat2) == NAS_SC_fchmodat2);
     assert(nas_linux_decode_syscall(__NR_faccessat) == NAS_SC_faccessat);
     assert(nas_linux_decode_syscall(__NR_faccessat2) == NAS_SC_faccessat2);
     assert(nas_linux_decode_syscall(__NR_read) == NAS_SC_read);
@@ -25,14 +79,21 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_truncate) == NAS_SC_truncate);
     assert(nas_linux_decode_syscall(__NR_prctl) == NAS_SC_prctl);
     assert(nas_linux_decode_syscall(__NR_mmap) == NAS_SC_mmap);
+    assert(nas_linux_decode_syscall(__NR_msync) == NAS_SC_msync);
+    assert(nas_linux_decode_syscall(__NR_madvise) == NAS_SC_madvise);
     assert(nas_linux_decode_syscall(__NR_newfstatat) == NAS_SC_newfstatat);
     assert(nas_linux_decode_syscall(__NR_getrandom) == NAS_SC_getrandom);
+    assert(nas_linux_decode_syscall(__NR_getrusage) == NAS_SC_getrusage);
     assert(nas_linux_decode_syscall(__NR_eventfd) == NAS_SC_eventfd);
     assert(nas_linux_decode_syscall(__NR_eventfd2) == NAS_SC_eventfd2);
+    assert(nas_linux_decode_syscall(__NR_timerfd_create) == NAS_SC_timerfd_create);
+    assert(nas_linux_decode_syscall(__NR_timerfd_settime) == NAS_SC_timerfd_settime);
+    assert(nas_linux_decode_syscall(__NR_timerfd_gettime) == NAS_SC_timerfd_gettime);
     assert(nas_linux_decode_syscall(__NR_epoll_create1) == NAS_SC_epoll_create1);
     assert(nas_linux_decode_syscall(__NR_epoll_ctl) == NAS_SC_epoll_ctl);
     assert(nas_linux_decode_syscall(__NR_epoll_wait) == NAS_SC_epoll_wait);
     assert(nas_linux_decode_syscall(__NR_epoll_pwait) == NAS_SC_epoll_pwait);
+    assert(nas_linux_decode_syscall(__NR_pidfd_open) == NAS_SC_pidfd_open);
     assert(nas_linux_decode_syscall(__NR_timer_create) == NAS_SC_timer_create);
     assert(nas_linux_decode_syscall(__NR_timer_settime) == NAS_SC_timer_settime);
     assert(nas_linux_decode_syscall(__NR_timer_gettime) == NAS_SC_timer_gettime);
@@ -78,6 +139,14 @@ int main(void) {
     clone_args[1] |= 0x00400000U;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
     clone_args[1] |= 0x01000000U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
+    /* Original Go x86 runtime creates threads with CLONE_SETTLS but
+     * without either parent- or child-TID writes. Reject adjacent masks. */
+    clone_args[1] = 0x000d0f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] = 0x00050f00U;
+    assert(nas_linux_decode_call(clone_args) == NAS_SC_clone_thread);
+    clone_args[1] |= 0x00200000U;
     assert(nas_linux_decode_call(clone_args) == NAS_SC_NONE);
     return 0;
 }

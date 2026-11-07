@@ -1,0 +1,95 @@
+name: NaSeed M125 15 signed original Netpbm image transformations, one QEMU per ISA
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  signed-original-software:
+    name: M125 15 signed native Netpbm image tools / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify signed catalog, host-only image fixtures and guest contracts
+        timeout-minutes: 3
+        run: |
+          set -eu
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh \
+                scripts/stage-m125-prebuilt.sh \
+                scripts/host-configure-m125-batch.sh \
+                scripts/probe-m125-batch.sh \
+                tests/m125-batch-run.sh
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
+          python3 scripts/check-three-isa-core.py
+      - name: Install signed APK staging tools and native target QEMU on Linux host
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'xorriso:xorriso' 'mformat:mtools' \
+                      'sgdisk:gdisk' 'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case "${{ matrix.port }}" in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Run 15 original signed Netpbm ELFs inside ONE real NaSeed guest
+        timeout-minutes: 45
+        run: sh scripts/probe-m125-batch.sh ${{ matrix.port }}
+      - name: Preserve original signed APK provenance and actual guest serial on success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m125-signed-netpbm-image-batch-pass-${{ matrix.port }}
+          path: |
+            build/external/m125-batch/${{ matrix.port }}/apk-install.log
+            build/external/m125-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m125-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m125-batch.clean.log
+            build/port-riscv64/full/matrix-source/m125-batch.clean.log
+            build/port-aarch64/full/matrix-source/m125-batch.clean.log
+          if-no-files-found: error
+      - name: Preserve actual failed serial and original native rootfs for triage
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m125-signed-netpbm-image-batch-fail-${{ matrix.port }}
+          path: |
+            build/external/m125-batch/${{ matrix.port }}/apk-install.log
+            build/external/m125-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m125-batch/${{ matrix.port }}/rootfs.cpio
+            build/external/m125-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/m125-batch.clean.log
+            build/port-riscv64/full/matrix-source/m125-batch.clean.log
+            build/port-aarch64/full/matrix-source/m125-batch.clean.log
+          if-no-files-found: ignore

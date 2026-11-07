@@ -1,0 +1,16 @@
+# M153: official signed Alpine 3.23 development and binary diagnostics.
+# No coreutils symlinks, previously admitted binutils, or script-only tools
+# are counted as new original ELF images.
+binutils
+gcc
+ccache
+clang21-extra-tools
+radare2
+pahole
+moreutils
+nasm
+yara
+bloaty
+cflow
+difftastic
+mold

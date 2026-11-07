@@ -21,5 +21,12 @@ int main(void) {
     assert(!nas_linux_anon_fixed_supported(0x33,0));
     assert(!nas_linux_anon_map_supported(0x1022,UINT64_MAX,0));
     assert(!nas_linux_anon_fixed_supported(0x1032,0));
+    assert(nas_linux_anon_shared_map_supported(0x21,0));
+    assert(nas_linux_anon_shared_map_supported(0x4021,0));
+    assert(nas_linux_anon_shared_map_supported(0x20021,0));
+    assert(!nas_linux_anon_shared_map_supported(0x22,0));
+    assert(!nas_linux_anon_shared_map_supported(0x23,0));
+    assert(!nas_linux_anon_shared_map_supported(0x21,4096));
+    assert(!nas_linux_anon_shared_map_supported(0x31,0));
     return 0;
 }

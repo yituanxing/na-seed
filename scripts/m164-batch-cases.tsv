@@ -1,0 +1,2 @@
+# id mode args expected evidence entry
+m164-batch	cpio	m164	M164_INTERACTIVE_PASS	-	/tests/m164-input-display

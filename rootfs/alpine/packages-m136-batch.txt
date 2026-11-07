@@ -1,0 +1,11 @@
+# Alpine v3.23 signed original parser, terminfo and Unix utility ELFs.
+flex
+byacc
+re2c
+ncurses
+ncurses-terminfo-base
+util-linux-misc
+uuidgen
+findmnt
+flock
+lscpu

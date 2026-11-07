@@ -50,12 +50,16 @@ bool nas_arch_signal_install_handler(uint64_t *opaque,unsigned signo,
     nas_arch_save_user_frame(t,opaque);
     nas_arch_save_fpu(t);
     struct nas_arch_context saved=t->arch;
-    if(fr->x[2]<sizeof(struct rv_sigframe)+32 ||
-       fr->x[2]>=USER_LIMIT)return false;
-    uint64_t sp=(fr->x[2]-sizeof(struct rv_sigframe))&~UINT64_C(15);
+    uint64_t interrupted_sp=fr->x[2];
+    uint64_t top=nas_signal_handler_stack_top(t,interrupted_sp,action[1]);
+    if(top<sizeof(struct rv_sigframe)+32 || top>=USER_LIMIT)return false;
+    uint64_t sp=(top-sizeof(struct rv_sigframe))&~UINT64_C(15);
     struct rv_sigframe sf={0};
     sf.info[0]=(uint32_t)signo;
     sf.uc.sigmask=t->blocked_signals;
+    sf.uc.stack.sp=t->signal_stack_sp;
+    sf.uc.stack.size=t->signal_stack_size;
+    sf.uc.stack.flags=nas_signal_altstack_flags(t,interrupted_sp);
     sf.uc.mc.pc=saved.user_pc;
     for(unsigned i=1;i<32;i++)sf.uc.mc.regs[i-1]=saved.user_regs[i];
     for(unsigned i=0;i<32;i++)sf.uc.mc.fp.fp[i]=saved.fp_regs[i];
@@ -108,4 +112,8 @@ bool nas_arch_signal_install_trampoline(void) {
         return false;
     }
     return true;
+}
+
+uint64_t nas_arch_signal_min_altstack(void) {
+    return 2048; /* Linux riscv64 MINSIGSTKSZ */
 }

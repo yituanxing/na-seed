@@ -1,0 +1,2 @@
+# Host-generated binary fixtures are written by the M124 host configure hook.
+tests/m124-batch-run.sh	tests/m124-batch-run.sh

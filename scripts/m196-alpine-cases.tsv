@@ -1,0 +1,2 @@
+# Real Alpine /sbin/init from physical ext4; login driven over serial.
+m196-batch	cpio	 	-	-	/sbin/init

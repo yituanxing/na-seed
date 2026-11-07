@@ -3,6 +3,10 @@
 # Only CPU/MMU/context/trap/serial/platform provider objects are different.
 # No NASEED_PORT_M0, no fake syscall/FS/exec stubs.
 set -eu
+if [ "${NAS_ENABLE_LWIP:-1}" != 1 ]; then
+    echo '[NET] the legacy AF_INET provider is retired; upstream lwIP is required' >&2
+    exit 1
+fi
 make ARCH=riscv64 build/deps/limine.h
 out=build/port-riscv64/full
 mkdir -p "$out"
@@ -17,17 +21,64 @@ if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
       { echo '[VIRTIO] lwext4 gate required' >&2; exit 1; }
     flags="$flags -DNAS_ENABLE_VIRTIO_BLK=1"
 fi
+if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
+    flags="$flags -DNAS_ENABLE_VIRTIO_NET=1 -I third_party/unikraft/include -I ports/unikraft/include -I ports/uboot/compat"
+fi
+[ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_INPUT=1"
+[ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_GPU=1"
+[ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1"
+if [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ]; then
+    [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
+      { echo '[M179] async block and lwext4 gates required' >&2; exit 1; }
+    flags="$flags -DNAS_ENABLE_M179_FS_IRQ=1"
+fi
+if [ "${NAS_ENABLE_M180_FS_USER_IRQ:-0}" = 1 ]; then
+    [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] ||
+      { echo '[M180] M179 filesystem worker gate required' >&2; exit 1; }
+    flags="$flags -DNAS_ENABLE_M180_FS_USER_IRQ=1"
+fi
+if [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; then
+    [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] && [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] ||
+      { echo '[M191] physical lwext4 root requires VirtIO block' >&2; exit 1; }
+    flags="$flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
+fi
+flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.
 common=$(grep -v '^#' scripts/full-kernel-core.sources)
-arch="kernel/arch/riscv64/cpu.c kernel/arch/riscv64/mmu.c kernel/arch/riscv64/context.c kernel/arch/riscv64/signal_frame.c kernel/arch/riscv64/timer.c kernel/arch/riscv64/serial.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/riscv64.c"
-if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
-    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/core/bus.c kernel/drivers/port/dma.c kernel/drivers/port/block.c ports/unikraft/split_queue.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    common="$common kernel/drivers/input/core.c kernel/drivers/input/evdev.c kernel/fs/input_chrdev.c"
 fi
+arch="kernel/arch/riscv64/cpu.c kernel/arch/riscv64/mmu.c kernel/arch/riscv64/context.c kernel/arch/riscv64/signal_frame.c kernel/arch/riscv64/timer.c kernel/arch/riscv64/serial.c kernel/arch/user_pt.c kernel/mm/user_space.c kernel/mm/mmu_bridge.c kernel/platform/riscv64.c"
+if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/virtio/transport.c kernel/drivers/virtio/mmio.c kernel/drivers/port/dma.c ports/unikraft/split_queue.c kernel/platform/virtio_mmio_qemu.c kernel/platform/riscv64_virtio.c kernel/arch/riscv64/io.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] || [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
+    arch="$arch ports/uboot/virtio_compat.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_INPUT:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/input/virtio_input.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/display/virtio_gpu.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ]; then
+    arch="$arch kernel/block/request.c ports/uboot/async_blk.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
+    arch="$arch kernel/drivers/port/block.c ports/uboot/blk_port.c ports/uboot/virtio_bus.c"
+fi
+if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
+    arch="$arch ports/uboot/net_port.c ports/uboot/virtio_net_bus.c"
+fi
+lwip_src="ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
 obj=
-for f in $common $arch; do
+for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
-    clang $flags -c "$f" -o "$target"
+    case "$f" in ports/lwip/*|third_party/lwip/*)
+        clang $flags -I ports/lwip/freestanding -c "$f" -o "$target" ;;
+      *) clang $flags -c "$f" -o "$target" ;;
+    esac
     obj="$obj $target"
 done
 if [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ]; then

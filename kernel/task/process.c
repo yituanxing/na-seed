@@ -8,12 +8,15 @@
 #include "../mm/usercopy.h"
 #include "../mm/vm.h"
 #include "process.h"
+#include "user_stack.h"
 #include "wait_pid.h"
+#include "rusage.h"
 #include "../time/clock.h"
 #include "sched.h"
 #include "wait.h"
 #include "futex_wait.h"
 #include "ptrace.h"
+#include "capability.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
 extern void nas_hex(uint64_t);
@@ -24,6 +27,10 @@ static void proc_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); na
  * process-control semantics which are not yet implemented. */
 uint64_t nas_process_prctl(uint64_t option,uint64_t arg) {
     struct nas_task *task=nas_current_task;
+    if(option==7ULL) /* PR_GET_KEEPCAPS */
+        return nas_cap_get_keepcaps(&task->credentials);
+    if(option==8ULL) /* PR_SET_KEEPCAPS */
+        return nas_cap_set_keepcaps(&task->credentials,arg);
     if(option==15ULL) { /* PR_SET_NAME */
         char name[16]={0};
         for(unsigned i=0;i<15;i++) {
@@ -147,8 +154,9 @@ void nas_process_vfork_release(void) {
     nas_print("\n");
 }
 /* Linux rlimit64: report resource limits the kernel actually enforces.
- * A limit update is NOT a no-op success: reject until the underlying
- * resource scheduler/FD/VM policy can enforce mutable soft/hard values. */
+ * Reasserting the exact existing limit is a genuine, side-effect-free
+ * successful setrlimit (e.g. GnuPG disabling already-disabled core dumps).
+ * Reject changes until the resource scheduler/FD/VM policy can enforce them. */
 uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
                              uint64_t new_addr,uint64_t old_addr) {
     /* All current NaSeed userspace tasks share the one real root UID.
@@ -160,16 +168,25 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
     if (pid && (pid>UINT32_MAX || !nas_task_by_pid(pid)))
         return (uint64_t)-ESRCH;
     if (resource > 15) return (uint64_t)-EINVAL;
-    if (new_addr) return (uint64_t)-EOPNOTSUPP;
     uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
     switch (resource) {
-    case 3: soft=hard=32ULL*4096ULL; break; /* RLIMIT_STACK */
+    case 3: soft=hard=NAS_USER_STACK_RESERVE_PAGES*4096ULL; break; /* RLIMIT_STACK */
     case 4: soft=hard=0; break;             /* RLIMIT_CORE: no dumps */
     case 6: soft=hard=NAS_TASK_LIMIT; break; /* RLIMIT_NPROC */
     case 7: soft=hard=NAS_FD_LIMIT; break; /* RLIMIT_NOFILE */
     case 8: soft=hard=0; break;             /* RLIMIT_MEMLOCK */
     case 13: case 14: soft=hard=0; break;   /* NICE/RTPRIO */
     default: break; /* No separate resource-limit policy. */
+    }
+    if (new_addr) {
+        uint64_t requested[2];
+        if (!nas_user_read_bytes(new_addr,(uint8_t *)requested,sizeof(requested)))
+            return (uint64_t)-EFAULT;
+        /* A true no-op is safe: it does not pretend to change a limit whose
+         * accounting/enforcement has not been implemented.  This matters to
+         * programs which explicitly set RLIMIT_CORE={0,0} at startup. */
+        if (requested[0]!=soft || requested[1]!=hard)
+            return (uint64_t)-EOPNOTSUPP;
     }
     if (old_addr) {
         const uint64_t pair[2]={soft,hard};
@@ -388,11 +405,40 @@ bool nas_process_waitable(const struct nas_task *child,uint64_t options,
         return is_parent;
     return false;
 }
+/* Linux RUSAGE_SELF/CHILDREN/THREAD use the scheduler's measured CPU time.
+ * We have no reliable user-vs-kernel split yet; rusage.h advertises total
+ * observed occupancy as utime and leaves unknown counters zero. */
+uint64_t nas_process_getrusage(uint64_t who,uint64_t address) {
+    const int64_t selector=(int64_t)who;
+    if(selector!=0 && selector!=-1 && selector!=1)
+        return (uint64_t)-EINVAL;
+    if(!address)return (uint64_t)-EFAULT;
+    /* Flush the currently running task before sampling its ledger. */
+    nas_task_cpu_account_snapshot(0,0,0,0);
+    struct nas_task *caller=nas_current_task;
+    struct nas_task *leader=caller->group_leader;
+    uint64_t cpu_ns=0;
+    if(selector==1) {
+        cpu_ns=caller->cpu_runtime_ns; /* RUSAGE_THREAD */
+    } else if(selector==-1) {
+        cpu_ns=leader->waited_children_cpu_ns; /* RUSAGE_CHILDREN */
+    } else {
+        cpu_ns=leader->exited_thread_cpu_ns; /* RUSAGE_SELF */
+        for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+            const struct nas_task *t=nas_task_at(i);
+            if(t->state!=NAS_TASK_FREE && t->tgid==caller->tgid)
+                cpu_ns=nas_rusage_cpu_add(cpu_ns,t->cpu_runtime_ns);
+        }
+    }
+    const struct nas_linux_rusage usage=nas_rusage_from_cpu_ns(cpu_ns);
+    if(!nas_user_write_bytes(address,(const uint8_t *)&usage,sizeof(usage)))
+        return (uint64_t)-EFAULT;
+    return 0;
+}
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
     if (options & ~NAS_WAIT_SUPPORTED)
         return (uint64_t)-EINVAL;
-    if (rusage) return (uint64_t)-EOPNOTSUPP;
     bool have_child = false;
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         struct nas_task *child=nas_task_at(slot);
@@ -426,6 +472,14 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
             if (!nas_user_write_bytes(status_addr,bytes,4))
                 return (uint64_t)-EFAULT; /* retain event on bad user buf */
         }
+        if (rusage) {
+            struct nas_linux_rusage usage=
+                nas_rusage_from_cpu_ns(nas_rusage_cpu_add(
+                    child->cpu_runtime_ns,child->exited_thread_cpu_ns));
+            if (!nas_user_write_bytes(rusage,(const uint8_t *)&usage,
+                                      sizeof(usage)))
+                return (uint64_t)-EFAULT; /* retain zombie/stop event */
+        }
         if (zombie) {
             nas_print("[PROC] wait4 reaped pid="); nas_dec(pid);
             nas_print(" status="); nas_dec(code); nas_print("\n");
@@ -438,7 +492,19 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                 nas_task_release(child);
             } else if(child->ppid!=nas_task_process_pid(nas_current_task)) {
                 child->ptrace_tracer_pid=0;
-            } else nas_task_release(child);
+            } else {
+                /* Linux counts only actually waited children. A successful
+                 * wait4 transfers the child's measured group occupancy and
+                 * previously waited descendants to the parent process. */
+                struct nas_task *leader=nas_current_task->group_leader;
+                uint64_t consumed=nas_rusage_cpu_add(
+                    child->cpu_runtime_ns,child->exited_thread_cpu_ns);
+                consumed=nas_rusage_cpu_add(consumed,
+                                            child->waited_children_cpu_ns);
+                leader->waited_children_cpu_ns=nas_rusage_cpu_add(
+                    leader->waited_children_cpu_ns,consumed);
+                nas_task_release(child);
+            }
         } else if (stopped) {
             child->stop_report_pending=false;
         } else {
@@ -451,20 +517,131 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
         : (uint64_t)-ECHILD;
 }
 
+/* Linux waitid is a separate ABI from wait4: success returns 0 with child
+ * identity/status in siginfo_t, not the child's PID as a syscall result.
+ * All three supported LP64 Linux targets use this 128-byte layout. */
+#define NAS_ID_ALL 0U
+#define NAS_ID_PID 1U
+#define NAS_ID_PGID 2U
+#define NAS_WEXITED 4ULL
+#define NAS_WSTOPPED 2ULL
+#define NAS_WNOWAIT 0x01000000ULL
+#define NAS_WAITID_OPTIONS (NAS_WAIT_NOHANG|NAS_WEXITED|NAS_WSTOPPED|\
+                            NAS_WAIT_CONTINUED|NAS_WNOWAIT|NAS_WAIT_ALL)
+struct nas_linux_child_siginfo {
+    int32_t signo,error,code,padding0;
+    int32_t pid,uid,status,padding1;
+    int64_t utime,stime;
+    uint8_t padding2[80];
+};
+_Static_assert(sizeof(struct nas_linux_child_siginfo)==128,
+               "Linux LP64 waitid siginfo_t layout");
+
+static bool waitid_child_selected(const struct nas_task *child,
+                                  const struct nas_task *waiter,
+                                  uint64_t idtype,uint64_t id) {
+    if(child->state==NAS_TASK_FREE ||
+       !nas_process_wait_owner(child,waiter))return false;
+    uint32_t value=(uint32_t)id;
+    if(idtype==NAS_ID_PID)return value && child->pid==value;
+    if(idtype==NAS_ID_PGID)
+        return child->pgid==(value ? value : waiter->pgid);
+    return idtype==NAS_ID_ALL;
+}
+static bool waitid_child_event(const struct nas_task *child,
+                               const struct nas_task *waiter,uint64_t options) {
+    const bool may_stop=(options&NAS_WSTOPPED)!=0;
+    const uint64_t wait4_options=(may_stop ? NAS_WAIT_UNTRACED : 0) |
+        (options&NAS_WAIT_CONTINUED) | (options&NAS_WAIT_ALL);
+    if(!nas_process_waitable(child,wait4_options,waiter))return false;
+    if(child->state==NAS_TASK_ZOMBIE)
+        return (options&NAS_WEXITED)!=0;
+    if(child->state==NAS_TASK_STOPPED)
+        return may_stop;
+    return (options&NAS_WAIT_CONTINUED)!=0;
+}
+bool nas_process_waitid_ready(const struct nas_task *waiter,uint64_t idtype,
+                              uint64_t id,uint64_t options) {
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *child=nas_task_at(slot);
+        if(waitid_child_selected(child,waiter,idtype,id) &&
+           waitid_child_event(child,waiter,options))return true;
+    }
+    return false;
+}
+uint64_t nas_process_waitid(uint64_t idtype,uint64_t id,uint64_t infop,
+                            uint64_t options,uint64_t rusage) {
+    if(idtype>NAS_ID_PGID ||
+       (options&~NAS_WAITID_OPTIONS) ||
+       !(options&(NAS_WEXITED|NAS_WSTOPPED|NAS_WAIT_CONTINUED)))
+        return (uint64_t)-EINVAL;
+    if(!infop)return (uint64_t)-EFAULT;
+    bool have_child=false;
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *child=nas_task_at(slot);
+        if(!waitid_child_selected(child,nas_current_task,idtype,id))continue;
+        have_child=true;
+        if(!waitid_child_event(child,nas_current_task,options))continue;
+        const bool zombie=child->state==NAS_TASK_ZOMBIE;
+        const bool stopped=!zombie && child->state==NAS_TASK_STOPPED;
+        struct nas_linux_child_siginfo info={0};
+        info.signo=NAS_SIGCHLD;
+        info.pid=(int32_t)child->pid;
+        info.uid=0; /* The current kernel credential model is root-only. */
+        if(zombie) {
+            info.code=child->termination_signal ? 2 : 1; /* CLD_KILLED/EXITED */
+            info.status=(int32_t)(child->termination_signal ?
+                child->termination_signal : (child->exit_code&255U));
+        } else if(stopped) {
+            info.code=child->ptrace_tracer_pid ? 4 : 5; /* TRAPPED/STOPPED */
+            info.status=(int32_t)(child->stop_signal ?
+                child->stop_signal : NAS_SIGSTOP);
+        } else {
+            info.code=6; /* CLD_CONTINUED */
+            info.status=NAS_SIGCONT;
+        }
+        /* Two-phase commit: failed copyout cannot consume the event. */
+        if(!nas_user_write_bytes(infop,(const uint8_t *)&info,sizeof(info)))
+            return (uint64_t)-EFAULT;
+        if(rusage) {
+            struct nas_linux_rusage usage=nas_rusage_from_cpu_ns(
+                nas_rusage_cpu_add(child->cpu_runtime_ns,
+                                  child->exited_thread_cpu_ns));
+            if(!nas_user_write_bytes(rusage,(const uint8_t *)&usage,
+                                      sizeof(usage)))return (uint64_t)-EFAULT;
+        }
+        if(!(options&NAS_WNOWAIT)) {
+            uint64_t wait4_options=(stopped ? NAS_WAIT_UNTRACED : 0) |
+                (options&NAS_WAIT_CONTINUED) | (options&NAS_WAIT_ALL);
+            uint64_t reaped=nas_process_wait4(child->pid,0,wait4_options,0);
+            if((int64_t)reaped<0)return reaped;
+        }
+        return 0;
+    }
+    if(!have_child)return (uint64_t)-ECHILD;
+    if(!(options&NAS_WAIT_NOHANG))return (uint64_t)-EOPNOTSUPP;
+    const struct nas_linux_child_siginfo empty={0};
+    return nas_user_write_bytes(infop,(const uint8_t *)&empty,sizeof(empty))
+        ? 0:(uint64_t)-EFAULT;
+}
+
 
 /* A bounded single-CPU Linux thread group: the ISA decoder accepts the
- * precise musl/glibc pthread clone flags (plus optional ignored DETACHED).
+ * precise musl/glibc pthread and observed Go shared-thread clone flags.
  * The VM and FD table are truly
  * shared, while user stack, TLS, TID and trap/FPU registers are task-local.
  * No clone of another ISA backend or special application code exists. */
 uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
                                  uint64_t parent_tid,uint64_t child_tid,
-                                 uint64_t tls) {
+                                 uint64_t tls,uint64_t flags) {
     struct nas_task *parent=nas_current_task;
+    const bool set_tls=(flags & 0x00080000ULL)!=0; /* CLONE_SETTLS */
+    const bool parent_settid=(flags & 0x00100000ULL)!=0;
+    const bool child_cleartid=(flags & 0x00200000ULL)!=0;
     /* Only stack/TLS affect whether a runnable child can be constructed.
      * Linux ignores put_user faults for PARENT_SETTID/CHILD_SETTID; their
      * pointers must not be treated as transaction-aborting prerequisites. */
-    if (!stack || stack>=USER_LIMIT || tls>=USER_LIMIT || stack<16 ||
+    if (!stack || stack>=USER_LIMIT || (set_tls && tls>=USER_LIMIT) || stack<16 ||
         !nas_user_address_writable(stack-8))return (uint64_t)-EFAULT;
     nas_arch_save_user_frame(parent,frame);
     nas_arch_save_fpu(parent);
@@ -472,6 +649,11 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     if (!child)return (uint64_t)-EAGAIN;
     child->tgid=parent->tgid;
     child->is_thread=true;
+    /* Linux clone with shared VM (without vfork) starts with no alternate
+     * signal stack, despite inheriting the shared signal dispositions. */
+    child->signal_stack_sp=0;
+    child->signal_stack_size=0;
+    child->signal_stack_enabled=false;
     child->ppid=parent->ppid;
     child->group_leader=parent->group_leader;
     nas_files_put(child->files); /* cloned table never held description refs */
@@ -483,20 +665,26 @@ uint64_t nas_process_clone_thread(uint64_t *frame,uint64_t stack,
     child->fs=nas_fs_context_get(parent->fs);
     nas_sighand_put(child->sighand);
     child->sighand=nas_sighand_get(parent->sighand);
+    /* Thread-local pending_signals stays empty; process-directed pending
+     * survives a dead group leader and is shared by every live TID. */
+    nas_signal_group_put(child->signal_group);
+    child->signal_group=nas_signal_group_get(parent->signal_group);
     nas_arch_context_set_user_sp(&child->arch,stack);
-    nas_arch_context_set_tls(&child->arch,tls);
-    /* Both pthread clone masks include PARENT_SETTID and CHILD_CLEARTID,
-     * but NOT CHILD_SETTID. In the new thread the child
-     * TID cell must remain untouched until its zero-on-exit operation. */
+    /* fork_slot copied the parent's architecture context, including TLS.
+     * Go on AArch64 omits CLONE_SETTLS and passes a non-TLS arg4; preserve
+     * the inherited register. On x86 Go provides real TLS via SETTLS. */
+    if(set_tls)nas_arch_context_set_tls(&child->arch,tls);
+    /* Neither pthread nor observed Go clone masks request CHILD_SETTID.
+     * CLONE_CHILD_CLEARTID is independent of the pointer's nonzero value. */
     child->thread_set_tid=0;
-    child->thread_clear_tid=child_tid;
+    child->thread_clear_tid=child_cleartid ? child_tid : 0;
     uint32_t tid=(uint32_t)child->pid;
     uint8_t value[4]={(uint8_t)tid,(uint8_t)(tid>>8),
                       (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
     /* CLONE_PARENT_SETTID is best effort in the parent MM; the child's
      * independent CLONE_CHILD_SETTID is written on first dispatch. Do not
      * return an error after publishing a runnable child (ghost process). */
-    if(parent_tid)
+    if(parent_settid && parent_tid)
         (void)nas_user_write_bytes(parent_tid,value,sizeof(value));
     nas_arch_set_saved_return(parent,child->pid);
     nas_arch_set_saved_return(child,0);

@@ -1,0 +1,4 @@
+package	elf_path	family	probe
+wget	usr/bin/wget	http-client	real-host-wget-download
+aria2	usr/bin/aria2c	http-client	real-host-aria2-download
+lighttpd	usr/sbin/lighttpd	http-server	real-loopback-lighttpd

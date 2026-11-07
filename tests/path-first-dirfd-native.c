@@ -38,6 +38,10 @@ int main(void) {
     CHECK(write(child,"path-owned",10)==10);
     struct stat st;
     CHECK(fstatat(root,"moved/child",&st,0)==0 && S_ISREG(st.st_mode));
+    /* GLib probes statx first and falls back to this Linux-accepted no-op
+     * flag. Verify native Linux and all three NaSeed ABIs agree. */
+    CHECK(fstatat(root,"moved/child",&st,AT_NO_AUTOMOUNT)==0 &&
+          S_ISREG(st.st_mode));
     errno=0;
     CHECK(failed_errno(fstatat(root,"old/child",&st,0),ENOENT));
     int via_path=openat(pathfd,"opath",O_CREAT|O_EXCL|O_WRONLY,0600);
@@ -52,6 +56,12 @@ int main(void) {
     CHECK(linkat(root,"sym",root,"hard",AT_SYMLINK_FOLLOW)==0);
     CHECK(fstatat(root,"hard",&st,AT_SYMLINK_NOFOLLOW)==0);
     CHECK(S_ISREG(st.st_mode));
+    CHECK(fstatat(root,"sym",&st,
+                  AT_NO_AUTOMOUNT|AT_SYMLINK_NOFOLLOW)==0);
+    CHECK(S_ISLNK(st.st_mode));
+    errno=0;
+    CHECK(failed_errno(fstatat(root,"hard",&st,
+                               AT_NO_AUTOMOUNT|0x40000000),EINVAL));
     errno=0;
     CHECK(failed_errno(openat(root,"moved/child/..",O_RDONLY),ENOTDIR));
     CHECK(unlinkat(root,"sym",0)==0);

@@ -1,0 +1,2 @@
+# A DIFFERENT native QEMU must replay original installed tools without WAN.
+m197-batch	cpio	sh -c "/sbin/apk info -e bash && /sbin/apk info -e lua5.4 && /sbin/apk info -e sqlite && /sbin/apk info -e git && /bin/bash /root/m197-software-workload.sh --reopen && cat /root/m197-wan.txt"	M197_PUBLIC_ALPINE_SOFTWARE_2026	-	/bin/busybox

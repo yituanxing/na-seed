@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "fs/lookup.h"
+#include "task/elf.h"
 
 /* One selected *real* ELF and optional interpreter, as backed by Limine
  * modules or by indexed, immutable CPIO bytes. This is a boot handoff
@@ -15,6 +17,10 @@ struct nas_boot_image {
     uint64_t interpreter_size;
     bool has_interpreter;
     bool bash, busybox, alpine;
+    /* When an explicit block-backed root is selected, both executable
+     * sources are pinned VFS inodes instead of Limine/CPIO byte slices. */
+    struct nas_fs_node source, loader;
+    bool source_pinned, loader_pinned;
 };
 
 struct limine_file;
@@ -30,4 +36,10 @@ const struct limine_file *nas_boot_limine_module_path(const char *path);
  */
 const char *nas_boot_prepare(const char *selected,
                              struct nas_boot_image *out);
+const char *nas_boot_prepare_vfs_root(const char *selected,
+                                      struct nas_boot_image *out);
+void nas_boot_image_elf(const struct nas_boot_image *source,
+                        struct elf_image *main_image,
+                        struct elf_image *interpreter_image);
+void nas_boot_image_release(struct nas_boot_image *source);
 #endif

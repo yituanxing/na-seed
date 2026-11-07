@@ -1,0 +1,18 @@
+# M137: 20 authentic new Alpine ELF executables across 14 software families.
+# Font and barcode data are helper fixtures, not counted executables.
+lmdb-tools
+fontconfig
+font-dejavu
+protoc
+flatc
+swig
+ragel
+xorriso
+graphicsmagick
+mdbook
+rclone
+restic
+recode
+fdupes
+zint
+zbar

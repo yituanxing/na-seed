@@ -2,22 +2,38 @@
 #define NASEED_DRIVERS_PTY_H
 #include <stdint.h>
 #include <stdbool.h>
+struct nas_task;
 /* Open-description lifetime and terminal state are architecture-independent.
  * Device slots are shared by fork/dup; the read/write data plane accepts
  * only kernel buffers, prepared at the common syscall boundary. */
 #define NAS_PTY_LIMIT 8U
+/* Publish /dev/ptmx and the /dev/pts/N class nodes. */
+int nas_pty_chrdev_init(void);
 int nas_pty_new(unsigned slot);
 int nas_pty_attach(unsigned number,unsigned slot);
 int nas_pty_attach_controlling(unsigned slot);
-int nas_pty_path_number(const char *path); /* -1 means not a /dev/pts/N */
 bool nas_pty_present(unsigned number);
 bool nas_pty_controlling(void);
+/* Linux session-leader open of an unlocked slave without O_NOCTTY claims
+ * that PTY as the controlling terminal.  The open itself still succeeds if
+ * another session already owns it. */
+void nas_pty_open_session(unsigned slot,uint64_t flags);
 unsigned nas_pty_number(unsigned slot);
 void nas_pty_release(unsigned slot);
 uint64_t nas_pty_read(unsigned slot,uint8_t *kernel_dst,uint64_t count);
+/* The OFD's O_NONBLOCK is resolved by FileOps; direct kernel tests keep
+ * the blocking interface while readv uses one aggregate logical budget. */
+uint64_t nas_pty_read_mode(unsigned slot,uint8_t *kernel_dst,uint64_t count,
+                           bool nonblocking);
 /* Side-effect-free read budget: available bytes, EOF (0), or -errno.
  * The caller may prepare exactly this many output bytes before consuming. */
 uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested);
+uint64_t nas_pty_read_plan_mode(unsigned slot,uint64_t requested,
+                                bool nonblocking);
+void nas_pty_read_wait_start(unsigned slot,struct nas_task *task,
+                              uint64_t requested);
+bool nas_pty_read_wait_ready(unsigned slot,struct nas_task *task,
+                              uint64_t requested);
 uint64_t nas_pty_write(unsigned slot,const uint8_t *kernel_src,uint64_t count);
 uint64_t nas_pty_ioctl(uint64_t fd,uint64_t command,uint64_t arg);
 uint16_t nas_pty_poll(unsigned slot,uint16_t events);

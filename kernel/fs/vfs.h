@@ -2,6 +2,7 @@
 #define NASEED_VFS_H
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 /* Registered VFS providers; kernel-owned buffers only, never Linux user ABI.
  * nas_fs_node is a borrowed inode snapshot, not an owning open file. */
 struct nas_fs_node;
@@ -12,8 +13,9 @@ struct nas_posix_locks;
  * owns one dentry reference; get/put duplicate/release it explicitly.
  * The mount field is a typed identity, not a string prefix. */
 struct nas_vfs_dentry;
-/* Internal namei expansion bound, NOT yet the syscall/user-path ABI limit.
- * Existing provider and syscall adapters retain independent 256B caps. */
+/* Linux PATH_MAX: shared syscall path copy and namei expansion limit.
+ * Individual components retain NAME_MAX=255; legacy diagnostic path
+ * projections may still use shorter fixed buffers without owning namei. */
 #define NAS_VFS_WALK_PATH_LIMIT 4096U
 struct nas_vfs_path {
     const struct nas_vfs_mount *mount;
@@ -27,6 +29,15 @@ int nas_vfs_path_get(const struct nas_vfs_path *source,
 int nas_vfs_path_put(struct nas_vfs_path *path);
 int nas_vfs_path_string(const struct nas_vfs_path *path,
                         char absolute[256]);
+/* A display-only projection with explicit caller capacity. It traverses
+ * the owned Dentry ancestry (never another namei), accepts PATH_MAX-1
+ * bytes and leaves the destination untouched when it cannot fit. The
+ * 256-byte entrypoint above remains a checked compatibility wrapper. */
+int nas_vfs_path_string_buf(const struct nas_vfs_path *path,
+                            char *absolute,size_t capacity);
+/* Emit the native inotify close event once for a final shared OpenFile,
+ * without letting the syscall layer traverse a stale pathname. */
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable);
 /* Path-first namei owns a Dentry reference at each returned destination.
  * Borrowed start/root remain caller-owned throughout lookup.  Rootless
  * direct-ELF boot still reports ENOENT for '/' without inventing an inode. */
@@ -45,6 +56,13 @@ struct nas_vfs_dirent {
     uint8_t name_len;
     char name[256];
 };
+/* Filesystem-owned capacity and identity, deliberately independent of
+ * native Linux statfs/statvfs wire layouts and ISA packing. Unknown inode
+ * capacity is zero; never report the host's filesystem statistics. */
+struct nas_vfs_statfs {
+    uint64_t magic, block_size, blocks, free_blocks, available_blocks;
+    uint64_t files, free_files, fragment_size, name_max;
+};
 struct nas_vfs_type {
     const char *name;
     /* Human-readable source label for stable exec acceptance diagnostics;
@@ -60,6 +78,10 @@ struct nas_vfs_type {
      * i_op->get_link, NaOS vfs_inode operation). A renamed symlink keeps
      * the same content across open handles and mount aliases. */
     int (*readlink)(const struct nas_fs_node *,char target[256]);
+    /* Symmetric lifetime hooks for a provider's FIRST generic VFS inode
+     * lease and LAST release. devfs uses these to pin published class-node
+     * storage through cached positive dentries, independent of OpenFiles. */
+    int (*first_inode_pin)(const struct nas_fs_node *);
     /* Called precisely when the LAST generic mount+inode lease is dropped.
      * A backend may now reclaim an unlinked orphan inode; never called
      * on a borrowed namei snapshot or one of several dup/fork owners. */
@@ -67,6 +89,21 @@ struct nas_vfs_type {
     /* Live metadata from the pinned inode, never reopening its old path.
      * Refresh fields only: inode, ino, filesystem, mount remain immutable. */
     int (*getattr)(const struct nas_fs_node *,struct nas_fs_node *out);
+    /* Backend capacity is a superblock property, even when queried by an
+     * open, unlinked inode. The VFS verifies mount incarnation first. */
+    int (*statfs)(const struct nas_fs_node *,struct nas_vfs_statfs *out);
+    /* Kernel-buffer inode xattrs; provider owns both allocation and inode
+     * lifetime. The VFS validates mount incarnation and write policy. */
+    int (*setxattr)(const struct nas_fs_node *,const char *,
+                    const uint8_t *,uint64_t,unsigned);
+    int64_t (*getxattr)(const struct nas_fs_node *,const char *,
+                        uint8_t *,uint64_t);
+    int64_t (*listxattr)(const struct nas_fs_node *,uint8_t *,uint64_t);
+    int (*removexattr)(const struct nas_fs_node *,const char *);
+    /* One real allocated logical extent per call. Physical disk position
+     * is deliberately unknown for RAM providers; no user ABI in drivers. */
+    int (*fiemap_next)(const struct nas_fs_node *,uint64_t,uint64_t,
+                       uint64_t *,uint64_t *,bool *);
     /* Optional cheap inode-incarnation validation on EVERY VFS operation.
      * An unpinned borrowed node must not read a recycled tmpfs slab slot
      * even if no active inode lease exists to detect that reuse. */
@@ -97,6 +134,13 @@ struct nas_vfs_type {
      * Backend-specific path reconstruction, if required by upstream APIs,
      * happens behind the port. VFS enforces mount identity and safety. */
     int (*create)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
+    /* Optional inode creation without a namespace name. The new inode is
+     * unlinked (nlink=0) and BORROWED until the VFS pins it. Allocation
+     * failure must publish nothing; pin failure invokes abort_anonymous.
+     * After a successful pin, only last_inode_unpin may reclaim it. */
+    int (*create_anonymous)(const struct nas_vfs_mount *,uint64_t mode,
+                            struct nas_fs_node *out);
+    void (*abort_anonymous)(const struct nas_fs_node *);
     /* A filesystem may publish a special inode only after its final type
      * and mode are initialized. Return its borrowed inode identity in out,
      * so VFS can attach the already-reserved positive Dentry without a
@@ -105,7 +149,25 @@ struct nas_vfs_type {
                  uint64_t mode,struct nas_fs_node *out);
     int64_t (*write_at)(const struct nas_fs_node *,uint64_t offset,
                         const uint8_t *kernel_source,uint64_t length);
+    /* Optional shared-file address-space capability. Acquires one owned
+     * reference to the provider's REAL backing 4-KiB physical frame,
+     * including sparse zero pages, rather than copying a private snapshot.
+     * The caller transfers this reference to a user PTE or drops it on
+     * failure. Unsupported providers must leave this NULL. */
+    int (*acquire_shared_page)(const struct nas_fs_node *,uint64_t offset,
+                               uint64_t *pa_owned);
+    /* No side effects: existing inode cache page? Negative errno only for
+     * stale/unsupported backing, never a request to allocate storage. */
+    int (*shared_page_resident)(const struct nas_fs_node *,uint64_t offset);
+    /* A direct writable user PTE bypasses write_at. The MM dirty/write
+     * fault calls this provider hook once per observed write transition
+     * to keep live metadata timestamps truthful without a fake page cache. */
+    int (*touch_shared)(const struct nas_fs_node *);
     int (*resize)(const struct nas_fs_node *,uint64_t size);
+    /* Real storage reservation (Linux fallocate), separate from sparse
+     * ftruncate size changes. Supported mode bits are provider-declared. */
+    int (*preallocate)(const struct nas_fs_node *,uint64_t offset,
+                       uint64_t length,unsigned mode);
     int (*sync)(const struct nas_fs_node *);
     int (*mkdir)(const struct nas_fs_node *parent,const char *name,uint64_t mode);
     int (*unlink)(const struct nas_fs_node *parent,const char *name,uint64_t flags);
@@ -127,6 +189,11 @@ struct nas_vfs_type {
      * Default false: the provider must explicitly guarantee this. */
     bool rename_replace_open_safe;
     bool read_only;
+    /* Stronger than a read-only mount: regular file bytes are immutable
+     * for the entire lifetime of the kernel (e.g. in-memory boot CPIO).
+     * A RO MAP_SHARED snapshot is sound only for such providers; procfs
+     * and a read-only view of a writable volume must not opt in. */
+    bool immutable_file_data;
 };
 struct nas_vfs_mount {
     /* Registration source path is BORROWED only during attach. VFS stores
@@ -144,6 +211,10 @@ struct nas_vfs_mount {
     bool allow_missing_mountpoint;
     bool permanent; /* bootstrap filesystem mounts cannot be detached */
     bool read_only;  /* per-mount restriction */
+    /* A block callback on this mount may suspend a kernel worker until IRQ
+     * completion. User Task control-plane entry must then reject concurrent
+     * access while that worker is inside the filesystem provider. */
+    bool worker_io;
     void *private_data; /* filesystem device context, owned by adapter */
     /* Optional display-only source, copied by VFS during registration. */
     const char *source_label;
@@ -163,6 +234,19 @@ int nas_vfs_mount_snapshot(unsigned ordinal,
 /* Only a leaf component, never a lexical normalization or mount walk. */
 int nas_vfs_join_child(const char *parent,const char *name,char out[256]);
 int nas_vfs_unregister_mount(const struct nas_vfs_mount *mount);
+/* Runtime independent tmpfs superblocks. The VFS owns the mount tree;
+ * the provider owns and reclaims the unaliased root inode. */
+int nas_vfs_mount_tmpfs(const char *target,const char *source,
+                        uint32_t mode,bool read_only,uint64_t max_pages,
+                        uint64_t max_inodes,bool strict_atime);
+int nas_vfs_umount_tmpfs(const char *target);
+/* Early boot may select a real block-backed root BEFORE default pseudo
+ * mounts acquire parent Dentries. This is a one-shot boot policy, never a
+ * runtime root replacement or a second pathname resolution mechanism. */
+int nas_vfs_prepare_external_boot_root(void);
+/* Only after the final PID1 File/cwd release, detach boot-only pseudo
+ * mounts so a physical root can cleanly journal-umount and FLUSH. */
+int nas_vfs_shutdown_external_root_pseudos(void);
 int nas_vfs_node_pin(const struct nas_fs_node *node);
 int nas_vfs_node_unpin(const struct nas_fs_node *node);
 /* Advisory locks are common inode/File services (Linux file_lock_context),
@@ -176,6 +260,14 @@ void nas_vfs_release_posix_locks(const struct nas_fs_node *node,uint64_t pid);
 int nas_vfs_flock(const struct nas_fs_node *node,const void *file_owner,
                   unsigned operation);
 void nas_vfs_release_flock(const void *file_owner);
+/* Read-only live /proc/locks view over the SAME inode/OFD lock owners.
+ * The opaque OFD owner is resolved to a process by procfs, not by VFS. */
+struct nas_vfs_lock_snapshot {
+    uint64_t ino,pid,start,end;
+    const void *file_owner;
+    bool exclusive,flock;
+};
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out);
 /* Opaque, already allocated inode identity: protects orphan reclamation
  * of cwd and independently pinned VFS Files, not merely legacy FD slots. */
 bool nas_vfs_inode_is_pinned(const void *backend_inode);
@@ -186,7 +278,26 @@ uint64_t nas_vfs_node_device(const struct nas_fs_node *node);
  * Unlike borrowed pathname snapshots this survives rename and dup/fork. */
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node);
 int nas_vfs_getattr(const struct nas_fs_node *node,struct nas_fs_node *out);
+int nas_vfs_statfs(const struct nas_fs_node *node,struct nas_vfs_statfs *out);
+int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
+                     const uint8_t *value,uint64_t size,unsigned flags);
+int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
+                         uint8_t *value,uint64_t capacity);
+int64_t nas_vfs_listxattr(const struct nas_fs_node *node,
+                          uint8_t *names,uint64_t capacity);
+int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name);
+int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
+                        uint64_t end,uint64_t *logical,uint64_t *length,
+                        bool *last);
 int nas_vfs_register_mount(const struct nas_vfs_mount *mount);
+/* Anonymous inodes use the same mount-incarnation lease and FileOps as
+ * named inodes, but no Dentry, path lookup, or transient namespace entry.
+ * The returned inode is pinned until the owning File releases it. */
+int nas_vfs_create_anonymous(const struct nas_vfs_type *type,uint64_t mode,
+                             struct nas_fs_node *owned);
+/* Builtin tmpfs provider chooses an existing live writable tmpfs mount;
+ * this does not construct a private hidden shmem superblock. */
+int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned);
 int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 /* One canonical path component. VFS uses the pinned parent Mount/Dentry
  * for crossings and the one CPIO covered-underlay fallback; providers see
@@ -256,8 +367,17 @@ int nas_vfs_symlink_child(const char *target,
 int nas_vfs_create(const char *absolute,uint64_t mode);
 int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
                          const uint8_t *source,uint64_t count);
+int nas_vfs_acquire_shared_page(const struct nas_fs_node *node,
+                                uint64_t offset,uint64_t *pa_owned);
+int nas_vfs_shared_page_resident(const struct nas_fs_node *node,uint64_t offset);
+int nas_vfs_touch_shared(const struct nas_fs_node *node);
 int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length);
+int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
+                        uint64_t length,unsigned mode);
 int nas_vfs_sync(const struct nas_fs_node *node);
+/* Public user sync additionally re-arms first-write dirty tracking; internal
+ * transaction flush must use nas_vfs_sync to preserve rollback PTE state. */
+int nas_vfs_sync_user(const struct nas_fs_node *node);
 /* Flush ALL writable mounts through their provider durability contract.
  * Drivers remain below BlockDevice; no syscall-specific filesystem list. */
 int nas_vfs_sync_all(void);

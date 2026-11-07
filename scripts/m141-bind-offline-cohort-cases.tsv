@@ -1,0 +1,3 @@
+# case_id	rootfs	guest_argv	expected_marker	evidence	entrypoint
+# Five different signed Alpine BIND9 ELFs in exactly one native x86 QEMU boot.
+m141-batch	cpio	sh -c '/bin/sh /tests/m141-system-run.sh offline-arpa && /bin/sh /tests/m141-system-run.sh offline-rr && /bin/sh /tests/m141-system-run.sh offline-zone && /bin/sh /tests/m141-system-run.sh offline-rndc-key && /bin/sh /tests/m141-system-run.sh offline-ddns-key && echo M141_SYSTEM_BIND_OFFLINE_COHORT_PASS'	M141_SYSTEM_BIND_OFFLINE_COHORT_PASS	-	/bin/busybox

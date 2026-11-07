@@ -14,6 +14,7 @@
 #include "../../lib/string.h"
 #include "context.h"
 extern void nas_rv_timer_handle(struct nas_rv_trap_frame *frame);
+extern void nas_rv_plic_external_irq(void);
 extern void nas_rv_save_fp(uint64_t *);
 extern void nas_rv_restore_fp(const uint64_t *);
 static struct nas_rv_trap_frame *live;
@@ -43,6 +44,16 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
     if(scause == (UINT64_C(1)<<63 | 5U) && !(frame->sstatus & 0x100U)) {
         live=frame;
         nas_rv_timer_handle(frame);
+        nas_signal_user_return((uint64_t *)(void *)frame);
+        live=0;
+        return;
+    }
+    /* SEIP arrives with the exact interrupted user SEPC, just like STIP.
+     * Do not increment SEPC or treat it as a synchronous ECALL.  The PLIC
+     * owns claim/complete and the generic IRQ core owns device callbacks. */
+    if(scause == (UINT64_C(1)<<63 | 9U) && !(frame->sstatus & 0x100U)) {
+        live=frame;
+        nas_rv_plic_external_irq();
         nas_signal_user_return((uint64_t *)(void *)frame);
         live=0;
         return;

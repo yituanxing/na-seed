@@ -1,0 +1,13 @@
+# Official Alpine 3.23 signed original network/diagnostic packages.
+# dnsmasq and socat are reused services/dependencies, not recounted.
+ldns-tools
+drill
+net-tools
+iputils-arping
+iputils-tracepath
+conntrack-tools
+syslog-ng
+rsyslog
+msmtp
+socat
+dnsmasq

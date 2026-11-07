@@ -2,6 +2,10 @@
 # Same pinned Debian BusyBox 1.37.0, same commands/CPIO bytes as RV64.
 # Alpine dynamic/musl is intentionally a separate test profile.
 set -eu
+# Opt-in physical serial RX injection for interactive display acceptance.
+# The default stays /dev/null for every existing headless workload.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 if [ -n "${NAS_ACCEPTANCE_KERNEL:-}" ]; then
     test -s "$NAS_ACCEPTANCE_KERNEL" || {
         echo "[X86 PARITY FAIL] missing requested kernel $NAS_ACCEPTANCE_KERNEL" >&2; exit 1;
@@ -69,12 +73,22 @@ run_case() {
         m83-replay) budget=${NAS_M83_REPLAY_QEMU_TIMEOUT:-180} ;;
         m84-build) budget=${NAS_M84_BUILD_QEMU_TIMEOUT:-7200} ;;
         m84-replay) budget=${NAS_M84_REPLAY_QEMU_TIMEOUT:-360} ;;
+        m109-batch) budget=${NAS_M109_QEMU_TIMEOUT:-180} ;;
+        m110-batch) budget=${NAS_M110_QEMU_TIMEOUT:-180} ;;
+        m111-batch) budget=${NAS_M111_QEMU_TIMEOUT:-180} ;;
+        m200-fbdev) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
+        m201-fbi) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
+        m202-fbi) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-260} ;;
+        m187-vt100) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-850} ;;
+        # One native QEMU boot executes an entire host-prebuilt software
+        # suite; future M1xx batches must not inherit the 15s smoke cap.
+        m1??-batch) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-180} ;;
         m105-*) budget=90 ;;
         m55-cjson) budget=${NAS_M55_QEMU_TIMEOUT:-2400} ;; m56-busybox) budget=${NAS_M56_QEMU_TIMEOUT:-3600} ;; m57-sqlite) budget=${NAS_M57_QEMU_TIMEOUT:-3600} ;; m103-tid|m104-exception) budget=${NAS_NATIVE_ABI_QEMU_TIMEOUT:-90} ;; m37-incremental) budget=100 ;; process-capacity) budget=45 ;; init-reaper) budget=110 ;; *) budget=15 ;; esac
-    if [ "$name" = m84-build ] || [ "$name" = m84-replay ] || [ "$name" = m83-build ] || [ "$name" = m83-replay ] || [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then
+    if [ "${name#m1??-batch}" != "$name" ] || [ "$name" = m200-fbdev ] || [ "$name" = m201-fbi ] || [ "$name" = m202-fbi ] || [ "$name" = m187-vt100 ] || [ "$name" = m84-build ] || [ "$name" = m84-replay ] || [ "$name" = m83-build ] || [ "$name" = m83-replay ] || [ "$name" = m38-gcc ] || [ "$name" = m39-packages ] || [ "$name" = m40-archives ] || [ "$name" = m41-unix ] || [ "$name" = m42-pthread ] || [ "$name" = m43-zstd ] || [ "$name" = m44-group ] || [ "$name" = m45-robust ] || [ "$name" = m46-exec ] || [ "$name" = m47-tgkill ] || [ "$name" = m48-parallel ] || [ "$name" = m49-capacity ] || [ "$name" = m51-git ] || [ "$name" = m52-python ] || [ "$name" = m53-vim ] || [ "$name" = m54-dev ] || [ "$name" = m55-cjson ] || [ "$name" = m56-busybox ] || [ "$name" = m57-sqlite ] || [ "$name" = m58-runtime ] || [ "$name" = m59-worktree ] || [ "$name" = real-vfs ] || [ "${name#m105-}" != "$name" ]; then
         # The full GCC gate is allowed a large success budget, but a real
         # kernel [FAIL] must not keep its headless QEMU alive for 300s.
-        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null &
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < "$serial_input" &
         guest_pid=$!
         (
             while :; do
@@ -95,7 +109,7 @@ run_case() {
         kill "$monitor_pid" 2>/dev/null || :
         wait "$monitor_pid" 2>/dev/null || :
     else
-        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < /dev/null || rc=$?
+        timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < "$serial_input" || rc=$?
     fi
     tr -d '\r' < "$log" > "$clean"
     if [ "$rc" -ne 1 ] ||

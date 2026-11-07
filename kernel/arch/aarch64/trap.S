@@ -139,7 +139,7 @@ nas_arm_lower_irq:
 .global nas_arm_upper_irq
 nas_arm_upper_irq:
     NAS_ARM_SAVE_EL0_FRAME
-    bl nas_arm_timer_idle_irq_c
+    bl nas_arm_idle_irq_c
     b nas_arm_restore_frame
 
 nas_arm_trap_return:

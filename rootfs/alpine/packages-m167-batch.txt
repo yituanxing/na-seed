@@ -1,0 +1,7 @@
+fbgrab
+imagemagick
+evtest
+libevdev-tools
+dialog
+links
+w3m

@@ -2,6 +2,7 @@
 #include "bootfs.h"
 #include "lib/string.h"
 #include "arch/abi.h"
+#include "fs/lookup.h"
 #include <limine.h>
 
 extern const struct limine_file *nas_user_module(void);
@@ -115,4 +116,61 @@ const char *nas_boot_prepare(const char *selected,
     if (out->bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (out->busybox) nas_print("[M3] real BusyBox module discovered\n");
     return 0;
+}
+
+/* M191 uses the SAME mounted VFS and ELF reader as later execve; the boot
+ * policy merely selects its original PID1 image before entering ring 3.
+ * No userspace address is read on the bootstrap kernel stack. */
+static bool root_image_read(const void *context,uint64_t off,
+                            uint8_t *destination,uint64_t length) {
+    const struct nas_fs_node *node=context;
+    return nas_vfs_read_at(node,off,destination,length)==(int64_t)length;
+}
+void nas_boot_image_release(struct nas_boot_image *source) {
+    if(!source)return;
+    if(source->loader_pinned && nas_vfs_node_unpin(&source->loader))
+        nas_print("[M191] interpreter inode lease release failed\n");
+    if(source->source_pinned && nas_vfs_node_unpin(&source->source))
+        nas_print("[M191] boot inode lease release failed\n");
+    source->source_pinned=source->loader_pinned=false;
+}
+const char *nas_boot_prepare_vfs_root(const char *selected,
+                                      struct nas_boot_image *out) {
+    if(!out || !selected || selected[0]!='/')
+        return "M191 requires an absolute original Alpine PID1 path";
+    *out=(struct nas_boot_image){0};
+    char canonical[256];
+    if(nas_fs_lookup_node(selected,true,&out->source,canonical) ||
+       out->source.is_dir || !(out->source.mode&0111U))
+        return "M191 root PID1 executable not found or not executable";
+    if(nas_vfs_node_pin(&out->source))
+        return "M191 root PID1 inode lease failed";
+    out->source_pinned=true;
+    out->image=out->source.data;
+    out->size=out->source.size;
+    if(!nas_fs_lookup_node(NAS_ELF_INTERP,true,&out->loader,canonical) &&
+       !out->loader.is_dir && !nas_vfs_node_pin(&out->loader)) {
+        out->loader_pinned=true;
+        out->has_interpreter=true;
+        out->interpreter=out->loader.data;
+        out->interpreter_size=out->loader.size;
+    }
+    nas_print("[M191 ROOT] original Alpine PID1 from mounted ext4: ");
+    nas_print(selected);nas_print("\n");
+    return NULL;
+}
+void nas_boot_image_elf(const struct nas_boot_image *source,
+                        struct elf_image *main_image,
+                        struct elf_image *interpreter_image) {
+    *main_image=(struct elf_image){.data=source->image,.size=source->size};
+    *interpreter_image=(struct elf_image){.data=source->interpreter,
+                                        .size=source->interpreter_size};
+    if(source->source_pinned && !source->image) {
+        main_image->read_at=root_image_read;
+        main_image->context=&source->source;
+    }
+    if(source->loader_pinned && !source->interpreter) {
+        interpreter_image->read_at=root_image_read;
+        interpreter_image->context=&source->loader;
+    }
 }

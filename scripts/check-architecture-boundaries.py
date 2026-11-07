@@ -65,6 +65,7 @@ DRIVER_FILES = (
     'kernel/drivers/virtio/transport.c',
     'kernel/drivers/port/block.c',
     'kernel/drivers/port/dma.c',
+    'kernel/drivers/port/net.c',
 )
 VFS_FILES = ('kernel/fs/vfs.c', 'kernel/fs/lookup.c',
              'kernel/fs/vfs_providers.c')

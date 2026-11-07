@@ -1,0 +1,32 @@
+# Thirty independent, previously unadmitted signed Netpbm ELFs.
+# Fifteen encoder/decoder pairs are exercised in native guest image roundtrips.
+usr/bin/ppmtopcx
+usr/bin/pcxtoppm
+usr/bin/ppmtoilbm
+usr/bin/ilbmtoppm
+usr/bin/ppmtoleaf
+usr/bin/leaftoppm
+usr/bin/ppmtoneo
+usr/bin/neotoppm
+usr/bin/ppmtopj
+usr/bin/pjtoppm
+usr/bin/ppmtopi1
+usr/bin/pi1toppm
+usr/bin/pgmtofs
+usr/bin/fstopgm
+usr/bin/pgmtolispm
+usr/bin/lispmtopgm
+usr/bin/pbmtoicon
+usr/bin/icontopbm
+usr/bin/pbmtomacp
+usr/bin/macptopbm
+usr/bin/pnmtoxwd
+usr/bin/xwdtopnm
+usr/bin/pamtowinicon
+usr/bin/winicontopam
+usr/bin/pamtohdiff
+usr/bin/hdifftopam
+usr/bin/pnmtosir
+usr/bin/sirtopnm
+usr/bin/ppmtoyuv
+usr/bin/yuvtoppm

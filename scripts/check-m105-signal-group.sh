@@ -6,7 +6,7 @@ set -eu
 mkdir -p build/m105-signal-group
 ${CC:-cc} -O2 -std=c11 -Wall -Wextra -Werror \
     -ffunction-sections -fdata-sections -I kernel \
-    scripts/test-m105-signal-group-host.c kernel/task/signal.c \
+    scripts/test-m105-signal-group-host.c kernel/task/signal.c kernel/time/clock.c \
     -Wl,--gc-sections -o build/m105-signal-group/host
 timeout 30s build/m105-signal-group/host
-echo '[M105 HOST PASS] production signal.c TGID routing and teardown model'
+echo '[M105 HOST PASS] production signal.c/clock.c TGID routing, timer direction, and teardown model'

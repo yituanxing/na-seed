@@ -13,7 +13,8 @@ assert srcs and len(srcs)==len(set(srcs)), "duplicate/empty shared kernel TU man
 # The versioned manifest, not a second hand-maintained count, defines the
 # complete shared core. Architecture-specific link audits below cross-check it.
 for required in ("kernel/mm/heap.c", "kernel/fs/vfs.c",
-                 "kernel/fs/lookup.c", "kernel/fs/vfs_providers.c"):
+                 "kernel/fs/lookup.c", "kernel/fs/vfs_providers.c",
+                 "kernel/drivers/core/bus.c"):
     assert required in srcs, f"critical common VFS/allocator TU missing: {required}"
 make=(root/"Makefile").read_text()
 defs={}
@@ -29,16 +30,100 @@ if not linked:
 actual_link=re.search(r"^\s*ld\.lld \$\(LDFLAGS\)\s+([^\n]+)",make,re.M)
 if not actual_link:
     raise SystemExit("x86 kernel has no actual ld.lld link recipe")
+# The linker may spell every prerequisite explicitly or use GNU make's
+# unmodified $^ object set. The latter is stronger against accidentally
+# forgetting a newly added optional driver in a duplicate hand-written
+# link command; filter out the linker script (not an ELF object) exactly.
+recipe=actual_link.group(1).strip()
+if recipe=="$(filter %.o,$^) -o $@":
+    actual_link_names=set(linked.group(1).split())
+else:
+    actual_link_names=set(recipe.split())
 for source in srcs:
     if not (root/source).is_file():
         raise SystemExit(f"missing shared source: {source}")
     obj=defs.get(source)
     if obj is None:
         raise SystemExit(f"x86 kernel missing exact common compilation rule: {source}")
-    if f"$(OUT)/{obj}" not in linked.group(1).split():
+    link_name=f"$(OUT)/{obj}"
+    if link_name not in linked.group(1).split():
         raise SystemExit(f"x86 kernel linker omits common object {obj} ({source})")
-    if f"$(OUT)/{obj}" not in actual_link.group(1).split():
+    if link_name not in actual_link_names:
         raise SystemExit(f"x86 actual ld.lld command omits common object {obj} ({source})")
+assert "NAS_ENABLE_LWIP ?= 1" in make
+assert "LEGACY_IPV4_X86_OBJS" not in make
+assert "$(LWIP_X86_OBJS)" in linked.group(1).split()
+assert "$(LWIP_X86_OBJS)" in actual_link_names
+assert "ports/lwip/socket_port.c" in make and "ports/lwip/netconn_bridge.c" in make
+# The scheduler always reaps bus removals, including a loopback-only kernel.
+# A VirtIO-conditional copy of the bus object makes that build fail to link.
+assert "kernel/drivers/core/bus.c" not in make.split("VIRTIO_X86_SRCS :=",1)[1].split("LWIP_X86_SRCS :=",1)[0]
+for port in ("aarch64", "riscv64"):
+    assert "kernel/drivers/core/bus.c" not in (root/f"scripts/build-{port}-full.sh").read_text(), \
+        f"{port} duplicates common bus object behind VirtIO option"
+for retired in ("kernel/net/ipv4_loopback.c", "kernel/net/ipv4_loopback.h",
+                "kernel/net/ipv4_endpoint.h", "kernel/net/test_ipv4_loopback.c"):
+    assert not (root/retired).exists(), f"retired TCP/IP backend returned: {retired}"
+    assert retired not in srcs
+# The hardware registry is singular. All three native ports must retain
+# the two-NIC wire gate, while the stack supports the full registry bound.
+netdev=(root/"kernel/drivers/port/net.c").read_text()
+network=(root/"ports/lwip/network_boot.c").read_text()
+network_h=(root/"ports/lwip/network_boot.h").read_text()
+driver=(root/"ports/uboot/net_port.c").read_text()
+route=(root/"kernel/fs/netlink_route.c").read_text()
+for token in ("nas_netdev_begin_remove(", "nas_netdev_set_change_wake(",
+              "device->removing=true;", "if(device->refs)return -EBUSY;"):
+    assert token in netdev, f"lost two-phase NIC registry lifetime: {token}"
+for token in ("struct nas_guest_nic nic[NAS_NETDEV_LIMIT]",
+              "nas_netdev_get_ordinal(", "tcpip_try_callback(detach_on_core,",
+              "tcpip_try_callback(attach_on_core,", "choose_default_on_core();",
+              "nas_netdev_is_removing("):
+    assert token in network, f"lost multi-NIC upstream core ownership: {token}"
+assert "struct nas_lwip_eth ethernet;" in network
+assert "struct nas_lwip_eth ethernet;" not in network.split("static struct {")[1]
+assert "NAS_LWIP_GUEST_IF_LIMIT (NAS_NETDEV_LIMIT + 1U)" in network_h
+assert "nas_netdev_begin_remove(&n->netdev)" in driver
+assert "NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)" in route
+bus=(root/"kernel/drivers/core/bus.c").read_text()
+bus_h=(root/"kernel/drivers/core/bus.h").read_text()
+scheduler=(root/"kernel/task/scheduler_service.c").read_text()
+for token in ("nas_bus_device_request_remove(",
+              "nas_bus_service_removals(",
+              "nas_bus_device_remove_status(",
+              "dev->removal_pending", "pending_removals"):
+    if token not in bus or (token.endswith("(") and token not in bus_h):
+        raise SystemExit(f"sole bus lost automatic two-phase removal: {token}")
+assert "devices[i]->removal_pending" in bus
+assert "nas_bus_service_removals(1);" in scheduler
+assert "nas_kthread_spawn(" not in bus, "bus remove must not consume a worker"
+block_port=(root/"kernel/drivers/port/block.c").read_text()
+block_core=(root/"kernel/block/device.c").read_text()
+assert "nas_block_begin_remove(&port->block)" in block_port
+assert "!dev->removing" in block_core and "dev->removing = true;" in block_core
+for runner in ("scripts/run.sh", "scripts/probe-riscv64-busybox-matrix.sh",
+               "scripts/probe-aarch64-busybox-matrix.sh"):
+    assert "NAS_VIRTIO_NET_SECOND_USER" in (root/runner).read_text(), \
+        f"two-real-NIC QEMU option missing: {runner}"
+for probe in ("scripts/probe-lwip-virtio-wire-smoke.sh",
+              "scripts/probe-lwip-virtio-wire-multiarch.sh"):
+    body=(root/probe).read_text()
+    assert all(x in body for x in ("NAS_VIRTIO_NET_SECOND_USER=1",
+                                "devices=2", "10.0.2.", "10.0.3.",
+                                "eth0 eth1")), f"multi-NIC wire gate missing: {probe}"
+for port in ("aarch64","riscv64"):
+    script=(root/f"scripts/build-{port}-full.sh").read_text()
+    assert "-DNAS_ENABLE_LWIP=1" in script
+    assert 'lwip_src="ports/lwip/libc_port.c' in script
+    assert "grep -v '^kernel/net/ipv4_loopback.c$'" not in script
+    assert "NAS_ENABLE_LWIP:-1" in script, f"native {port} still has a default legacy stack"
+for path in ("kernel/fs/socket_syscall.c", "kernel/syscall/dispatch.c",
+             "kernel/fs/syscall.c", "kernel/task/blocked_completion.c",
+             "kernel/task/wait.c", "kernel/init/main.c", "kernel/fs/netlink_route.c"):
+    source=(root/path).read_text()
+    assert "#ifdef NAS_ENABLE_LWIP" not in source
+    assert "#ifndef NAS_ENABLE_LWIP" not in source
+    assert "nas_ipv4_socket_" not in source, f"parallel IPv4 backend in {path}"
 for port in ("aarch64","riscv64"):
     script=(root/f"scripts/build-{port}-full.sh").read_text()
     if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:
@@ -53,7 +138,7 @@ for source in ("kernel/block/device.c", "kernel/block/ramdisk.c"):
             raise SystemExit(f"BlockDevice acquired syscall/user address policy: {source}")
 # Ensure syscall-ABI owners remain separate from the historical FS dispatcher.
 fs_dispatch = (root/"kernel/fs/syscall.c").read_text()
-for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_resolve_path"),
+for path, symbol in (("kernel/fs/namespace_syscall.c", "nas_fs_user_path_begin"),
                      ("kernel/fs/socket_syscall.c", "sys_unix_sendmsg")):
     if symbol not in (root/path).read_text():
         raise SystemExit(f"lost dedicated FS owner {path}: {symbol}")
@@ -83,14 +168,22 @@ lookup=(root/"kernel/fs/lookup.c").read_text()
 namespace=(root/"kernel/fs/namespace_syscall.c").read_text()
 vfs_src=(root/"kernel/fs/vfs.c").read_text()
 if not all(symbol in lookup for symbol in (
-        "int nas_fs_lookup_parent(", "int nas_fs_canonical_candidate(",
+        "int nas_fs_lookup_parent_at(",
+        "int nas_fs_lookup_parent_mkdir_at(",
         "int nas_vfs_join_child(")):
-    raise SystemExit("shared namespace parent/candidate/leaf owner missing")
-if ("nas_fs_canonical_candidate(raw,out)" not in namespace or
+    raise SystemExit("shared Path-first parent/leaf owner missing")
+if ("nas_fs_user_lookup_begin(" not in namespace or
         "static bool has_dot_component(" in namespace or
         "static int vfs_parent(" in vfs_src or
-        "int nas_path_resolve(" in (root/"kernel/path.c").read_text()):
+        (root/"kernel/path.c").exists() or
+        (root/"kernel/path.h").exists()):
     raise SystemExit("old lexical namespace walker returned")
+for obsolete in ("nas_fs_resolve_path(", "nas_fs_canonical_candidate(",
+                 "nas_fs_lookup_parent(", "nas_fs_resolve_existing(",
+                 "nas_path_join_raw("):
+    for source in (root/"kernel").rglob("*"):
+        if source.suffix in (".c", ".h") and obsolete in source.read_text():
+            raise SystemExit(f"retired string namespace API returned: {obsolete} in {source}")
 # All public absolute-path compatibility mutations are now thin wrappers
 # around owned Path-first parent/child operations. Neither a second open
 # transaction nor old string/mount helpers may silently reappear.
@@ -112,8 +205,7 @@ for wrapper, delegate in (("nas_vfs_create(", "nas_vfs_create_child("),
         raise SystemExit(f"VFS namespace Path-first bridge missing: {wrapper}")
 metadata_src=(root/"kernel/fs/metadata_syscall.c").read_text()
 open_src=(root/"kernel/fs/syscall.c").read_text()
-if ("nas_fs_bootstrap_candidate(&request,candidate)" not in metadata_src or
-        "nas_fs_bootstrap_endpoint(path)" not in metadata_src or
+if ("nas_fs_bootstrap_candidate(&request,path)" not in metadata_src or
         "nas_fs_bootstrap_candidate(request,candidate)" not in open_src):
     raise SystemExit("stat/open bootstrap path bypasses the shared endpoint whitelist")
 for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
@@ -312,10 +404,10 @@ epoll=(root/"kernel/fs/epoll.c").read_text()
 fsops=(root/"kernel/fs/file_ops.h").read_text()
 file_io=(root/"kernel/fs/file_io.c").read_text()
 if ("nas_fs_io_ready(task->wait.pending_io,task)" not in task_wait or
-    "nas_fs_poll_description(slot,events)" not in file_io or
+    "nas_fs_poll_description_task(slot,events,task)" not in file_io or
     "nas_fs_io_ready(" not in file_io):
     raise SystemExit("blocked I/O lost pinned File-owned readiness")
-if "nas_fs_poll_description(" not in epoll:
+if "nas_fs_poll_description_task(" not in epoll:
     raise SystemExit("epoll lost description-owned readiness")
 if "switch(w->kind)" in epoll or "nas_pipe_poll_readable(" in epoll:
     raise SystemExit("epoll reintroduced backend-kind readiness switch")
@@ -328,7 +420,7 @@ wait_header=(root/"kernel/task/wait.h").read_text()
 fs_syscall=(root/"kernel/fs/syscall.c").read_text()
 if "nas_wait_io_arm(" not in wait_header or "nas_wait_io_arm(" not in poll or "nas_wait_io_arm(" not in epoll:
     raise SystemExit("generic Task-owned multi-fd wait interest lost")
-if "nas_fs_poll_description(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
+if "nas_fs_poll_description_task(" not in poll or "poll_arm" in fsops or ".poll_arm=" in fs_syscall:
     raise SystemExit("FS reintroduced backend-specific poll wait registration")
 # M91: all three kernel assembly context-switch providers are explicitly
 # linked in production ELF, and a real QEMU boot exercises stack resume.
@@ -337,7 +429,7 @@ for arch in ("x86_64","riscv64","aarch64"):
     if not asm.is_file() or "nas_arch_kernel_swap:" not in asm.read_text():
         raise SystemExit(f"missing native kernel context switch on {arch}")
 for needle in ("$(OUT)/arch_kernel_switch.o", "$(OUT)/task_kernel_context.o"):
-    if needle not in linked.group(1).split() or needle not in actual_link.group(1).split():
+    if needle not in linked.group(1).split() or needle not in actual_link_names:
         raise SystemExit(f"x86 kernel fails to LINK continuation {needle}")
 for arch in ("riscv64","aarch64"):
     script=(root/f"scripts/build-{arch}-full.sh").read_text()
@@ -472,8 +564,9 @@ if not all(s in rv_timer for s in ('nas_rv_idle_trap', 'csrsi sstatus,2', 'csrci
     raise SystemExit("RV64 idle must handle S-mode IRQ without sscratch stack swap")
 arm_timer=(root/"kernel/arch/aarch64/timer.c").read_text()
 arm_trap=(root/"kernel/arch/aarch64/trap.S").read_text()
-if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_timer_idle_irq_c')) or    'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or    'b nas_arm_restore_frame' not in arm_trap or \
-   'if((id & 0x3ffU)==1023U)return 0;' not in arm_timer:
+if not all(s in arm_timer for s in ('msr daifclr,#2', 'msr daifset,#2', 'nas_arm_idle_irq_c', 'if(id==1023U)return 0;', 'nas_irq_dispatch(id);')) or \
+   'b nas_arm_upper_irq' not in arm_trap or 'nas_arm_upper_irq:' not in arm_trap or \
+   'bl nas_arm_idle_irq_c' not in arm_trap or 'b nas_arm_restore_frame' not in arm_trap:
     raise SystemExit("ARM64 idle needs EL1h IRQ entry with in-place kernel ERET")
 # Both ARM64 exception classes need separate return boundaries: EL0 timer
 # resumes the Task's canonical frame, EL1h idle resumes its kernel frame.

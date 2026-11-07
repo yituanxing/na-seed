@@ -1,0 +1,3 @@
+# source (repo)	destination (guest rootfs)
+tests/m152-original-elfs.txt	tests/m152-original-elfs.txt
+tests/m152-network-run.sh	tests/m152-network-run.sh

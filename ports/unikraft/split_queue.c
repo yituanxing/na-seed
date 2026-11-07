@@ -18,9 +18,21 @@ int nas_vring_queue_init(struct nas_vring_queue *q,
         queue_id > UINT16_MAX || !transport->dma->coherent ||
         vring_size(num_desc, NAS_VRING_ALIGN) > NAS_DMA_PAGE_BYTES)
         return -EINVAL;
+    /* A failed initialization can still own its DMA page if the provider's
+     * release failed. Never overwrite that owner on a second init attempt. */
+    if (q->active || q->dma_page.cpu) return -EBUSY;
     memset(q, 0, sizeof(*q));
+    /* Install before allocating: the allocator's shape validation may fail
+     * and its release may then fail, but the resulting page remains ours. */
+    q->transport = transport;
     int rc = nas_dma_alloc_page(transport->dma, &q->dma_page);
-    if (rc) return rc;
+    if (rc) {
+        if (q->dma_page.cpu)
+            q->poisoned = true;
+        else
+            memset(q, 0, sizeof(*q));
+        return rc;
+    }
     /* Upstream vring_init aligns CPU pointers. The bus-visible used ring
      * must have the same offsets even behind an IOMMU mapping. */
     if (((uintptr_t)q->dma_page.cpu & (NAS_VRING_ALIGN-1U)) ||
@@ -53,8 +65,10 @@ int nas_vring_queue_init(struct nas_vring_queue *q,
     q->active = true;
     return 0;
 fail:
-    (void)nas_dma_free_page(transport->dma, &q->dma_page);
-    memset(q, 0, sizeof(*q));
+    if (!nas_dma_free_page(transport->dma, &q->dma_page))
+        memset(q, 0, sizeof(*q));
+    else
+        q->poisoned = true; /* No I/O; retain owner for a later close. */
     return rc;
 }
 
@@ -141,12 +155,19 @@ int nas_vring_queue_poll(struct nas_vring_queue *q, uint16_t *head,
 }
 
 int nas_vring_queue_close(struct nas_vring_queue *q) {
-    if (!q || !q->active) return -EINVAL;
-    /* Reset first even with zero inflight: the device still owns ring
-     * addresses until reset, and late completion is otherwise possible. */
-    if (!q->transport || !q->transport->ops || !q->transport->ops->reset)
-        return -EOPNOTSUPP;
-    q->transport->ops->reset(q->transport->context);
+    if (!q || !q->transport || !q->dma_page.cpu) return -EINVAL;
+    if (q->active) {
+        /* Reset first even with zero inflight: the device still owns ring
+         * addresses until reset, and late completion is otherwise possible.
+         * Disable I/O before attempting a fallible DMA release. */
+        if (!q->transport->ops || !q->transport->ops->reset)
+            return -EOPNOTSUPP;
+        q->transport->ops->reset(q->transport->context);
+        q->active = false;
+        q->poisoned = true;
+    }
+    /* The inactive case also covers failed init: setup_queue failure has
+     * already reset the transport; earlier failures never published DMA. */
     int rc=nas_dma_free_page(q->transport->dma, &q->dma_page);
     if (!rc) memset(q, 0, sizeof(*q));
     return rc;

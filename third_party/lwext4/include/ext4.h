@@ -268,6 +268,17 @@ int ext4_cache_write_back(const char *path, bool on);
  * @return  Standard error code. */
 int ext4_cache_flush(const char *path);
 
+/**@brief   Persist the mounted filesystem's allocation metadata and data.
+ *
+ * Unlike ext4_cache_flush(), this also commits the in-memory superblock
+ * free-block and free-inode counters changed by allocation. It preserves
+ * the mounted/error state; only ext4_umount() marks the filesystem clean.
+ * Callers must subsequently flush the underlying physical block device.
+ *
+ * @param   path Mount point.
+ * @return  Standard error code. */
+int ext4_sync(const char *path);
+
 /********************************FILE OPERATIONS*****************************/
 
 /**@brief   Remove file by path.

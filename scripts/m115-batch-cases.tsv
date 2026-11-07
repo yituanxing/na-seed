@@ -1,0 +1,2 @@
+# All 15 original Linux applications execute in one NaSeed native QEMU boot.
+m115-batch	cpio	sh -c '/bin/sh /tests/m115-batch-run.sh'	M115_BATCH_PASS	-	/bin/busybox

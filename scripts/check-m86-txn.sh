@@ -5,6 +5,6 @@ set -eu
 mkdir -p build/m86-txn
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
     -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel \
-    scripts/test-m86-txn.c kernel/mm/vm.c kernel/mm/anon_regions.c \
+    scripts/test-m86-txn.c kernel/mm/vm.c kernel/mm/anon_regions.c kernel/mm/heap.c \
     -o build/m86-txn/check
 build/m86-txn/check

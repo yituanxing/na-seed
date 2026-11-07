@@ -3,6 +3,8 @@
 #include "../../panic.h"
 #include "../../task.h"
 #include "../../task/sched.h"
+#include "../../errno.h"
+#include "../../drivers/core/irq.h"
 #include "../arch.h"
 #include "context.h"
 
@@ -15,6 +17,72 @@
 #define RV_TIMER_HZ 100ULL
 #define SBI_TIME UINT64_C(0x54494d45)
 #define SBI_BASE 0x10ULL
+#define RV_SCAUSE_INTERRUPT (UINT64_C(1) << 63)
+#define RV_SCAUSE_SUPERVISOR_TIMER (RV_SCAUSE_INTERRUPT | 5U)
+#define RV_SCAUSE_SUPERVISOR_EXTERNAL (RV_SCAUSE_INTERRUPT | 9U)
+#define RV_SIE_EXTERNAL (UINT64_C(1) << 9)
+#define RV_PLIC_FIRST_VIRTIO_SOURCE 1U
+#define RV_PLIC_LAST_VIRTIO_SOURCE 8U
+/* QEMU virt PLIC: all three views are independently mapped supervisor IO
+ * pages.  The low-level page mapper must not be asked to map the intervening
+ * 2 MiB sparse gap (PLIC is not kernel RAM/HHDM).  This one-hart target uses
+ * hart 0's S-mode context (enable +0x2080, claim/complete +0x201004). */
+static volatile uint32_t *plic_priority;
+static volatile uint32_t *plic_enable;
+static volatile uint32_t *plic_context;
+void nas_rv_plic_attach(volatile uint32_t *priority,
+                        volatile uint32_t *enable,
+                        volatile uint32_t *context) {
+    if (!priority || !enable || !context || plic_context)
+        nas_fail("RV64 PLIC double/invalid mapping");
+    plic_priority=priority;
+    plic_enable=enable;
+    plic_context=context;
+    /* Threshold zero admits only explicitly priority-enabled sources.
+     * Preserve STIE while enabling SEIE; no global SIE in kernel C. */
+    plic_enable[0]=0;
+    plic_context[0]=0;
+    __asm__ volatile("fence iorw,iorw" : : : "memory");
+    __asm__ volatile("csrs sie,%0" : : "r"(RV_SIE_EXTERNAL) : "memory");
+}
+int nas_arch_irq_route_enable(unsigned hwirq) {
+    if (hwirq < RV_PLIC_FIRST_VIRTIO_SOURCE ||
+        hwirq > RV_PLIC_LAST_VIRTIO_SOURCE) return -EINVAL;
+    if (!plic_context) return -ENODEV;
+    plic_priority[hwirq]=1U;
+    __asm__ volatile("fence iorw,iorw" : : : "memory");
+    plic_enable[0] |= 1U << hwirq;
+    __asm__ volatile("fence iorw,iorw" : : : "memory");
+    return 0;
+}
+void nas_arch_irq_route_disable(unsigned hwirq) {
+    if (!plic_context || hwirq < RV_PLIC_FIRST_VIRTIO_SOURCE ||
+        hwirq > RV_PLIC_LAST_VIRTIO_SOURCE) return;
+    plic_enable[0] &= ~(1U << hwirq);
+    __asm__ volatile("fence iorw,iorw" : : : "memory");
+    plic_priority[hwirq]=0U;
+    __asm__ volatile("fence iorw,iorw" : : : "memory");
+}
+void nas_rv_plic_external_irq(void) {
+    if (!plic_context) nas_fail("RV64 external IRQ before PLIC mapping");
+    /* A claim of zero means the IRQ has been withdrawn; never complete 0.
+     * Class-side VirtIO acknowledgement occurs inside the shared dispatch,
+     * BEFORE PLIC completion, or a level interrupt will retrigger forever. */
+    for (unsigned budget=0;budget<32U;++budget) {
+        uint32_t source=plic_context[1];
+        if (!source) return;
+        __asm__ volatile("fence iorw,iorw" : : : "memory");
+        if (source < RV_PLIC_FIRST_VIRTIO_SOURCE ||
+            source > RV_PLIC_LAST_VIRTIO_SOURCE)
+            nas_fail("RV64 unexpected PLIC external source");
+        (void)nas_irq_dispatch(source);
+        __asm__ volatile("fence iorw,iorw" : : : "memory");
+        plic_context[1]=source;
+        __asm__ volatile("fence iorw,iorw" : : : "memory");
+    }
+    /* A hard finite bound prevents a stuck level source from monopolizing
+     * interrupt context; a later IRQ can claim the remaining work. */
+}
 struct sbi_result { int64_t error, value; };
 static struct sbi_result sbi_call(uint64_t eid, uint64_t fid, uint64_t arg0) {
     register uint64_t a0 __asm__("a0")=arg0;
@@ -72,11 +140,18 @@ void nas_rv_idle_irq_c(void) {
     uint64_t cause, status;
     __asm__ volatile("csrr %0,scause" : "=r"(cause));
     __asm__ volatile("csrr %0,sstatus" : "=r"(status));
-    if(cause != (UINT64_C(1)<<63 | 5U) || !(status & (1ULL<<8)))
-        nas_fail("RV64 idle received non-supervisor timer trap");
-    arm_next_tick();
+    if (!(status & (1ULL<<8)))
+        nas_fail("RV64 idle interrupt lost supervisor SPP");
+    if (cause==RV_SCAUSE_SUPERVISOR_TIMER) {
+        nas_irq_note_hardware();
+        arm_next_tick();
+    }
+    else if (cause==RV_SCAUSE_SUPERVISOR_EXTERNAL)
+        nas_rv_plic_external_irq();
+    else nas_fail("RV64 idle unexpected supervisor interrupt");
 }
 void nas_rv_timer_handle(struct nas_rv_trap_frame *frame) {
+    nas_irq_note_hardware();
     arm_next_tick(); /* OpenSBI clears the pending STIP when rearmed. */
     struct nas_task *from=nas_current_task;
     if(!from || !nas_task_kernel_stack_ok(from)) nas_fail("RV64 timer invalid task");

@@ -1,0 +1,7 @@
+# All original signed Alpine 3.23 native ELF packages, no guest compilation.
+curl
+wget
+netpbm
+chafa
+imagemagick
+fbgrab

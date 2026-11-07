@@ -1,0 +1,5 @@
+# Three NEW original native Alpine ELF targets; previous curl/openssl are
+# only dependencies/cross-checks and are not counted as additional programs.
+usr/bin/wget
+usr/bin/aria2c
+usr/sbin/lighttpd

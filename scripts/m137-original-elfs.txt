@@ -1,0 +1,21 @@
+# Exactly 20 historically unused and distinct signed native ELF files.
+usr/bin/mdb_copy
+usr/bin/mdb_dump
+usr/bin/mdb_load
+usr/bin/mdb_stat
+usr/bin/fc-cache
+usr/bin/fc-list
+usr/bin/fc-match
+usr/bin/fc-scan
+usr/bin/protoc-31.1.0
+usr/bin/flatc
+usr/bin/swig
+usr/bin/ragel
+usr/bin/xorriso
+usr/bin/gm
+usr/bin/mdbook
+usr/bin/rclone
+usr/bin/restic
+usr/bin/recode
+usr/bin/fdupes
+usr/bin/zint

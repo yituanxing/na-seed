@@ -1,0 +1,4 @@
+# Original signed Alpine 3.23 executables from three independent families.
+subversion
+nss-tools
+netpbm

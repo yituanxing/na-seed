@@ -1,8 +1,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "dispatch.h"
+#include "../ipc/sysv.h"
 #include "../syscall/ops.h"
+#include "poll_wait_policy.h"
 #include "../arch/linux_syscall_abi.h"
+#if defined(__riscv) && __riscv_xlen == 64
+#include "../arch/riscv64/hwprobe.h"
+#endif
 #include "../errno.h"
 #include "../random.h"
 #include "../task.h"
@@ -15,23 +20,117 @@
 #include "../task/exec.h"
 #include "../fs/mode.h"
 #include "../task/process.h"
+#include "../task/credentials.h"
+#include "../task/capability.h"
 #include "../task/ptrace.h"
 #include "../task/wait_pid.h"
 #include "../task/session.h"
 #include "../task/sched.h"
+#include "../task/wait.h"
 #include "../task/cpu_affinity.h"
 #include "../time/clock.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
 #include "../fs/io.h"
 #include "../fs/syscall.h"
+#include "../fs/user_broker.h"
+#include "../fs/socket_syscall.h"
+#include "../fs/memfd.h"
+#include "../../ports/lwip/socket_port.h"
 #include "../fs/epoll.h"
 #include "../platform/platform.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
 #include "../panic.h"
+#include "../uts.h"
 #define TASK (*nas_current_task)
 #define thread_clear_tid TASK.thread_clear_tid
+
+/* Linux gid_t is 32 bits on all our LP64 target ABIs.  Snapshot a complete
+ * bounded user group list BEFORE changing Task credentials; EFAULT, EPERM
+ * and EINVAL must leave the previous vector untouched. */
+static uint64_t nas_sys_setgroups(uint64_t count,uint64_t addr) {
+    if(count>NAS_CREDENTIAL_GROUP_LIMIT)return (uint64_t)-EINVAL;
+    uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
+    if(count && !nas_user_read_bytes(addr,(uint8_t *)groups,
+                                     count*sizeof(groups[0])))
+        return (uint64_t)-EFAULT;
+    return nas_credentials_setgroups(&TASK.credentials,count,groups);
+}
+static uint64_t nas_sys_getgroups(uint64_t count,uint64_t addr) {
+    const struct nas_credentials *cred=&TASK.credentials;
+    uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
+    uint64_t actual=nas_credentials_getgroups(cred,count,groups);
+    if((int64_t)actual<0)return actual;
+    if(actual && count &&
+       !nas_user_write_bytes(addr,(const uint8_t *)groups,
+                             actual*sizeof(groups[0])))
+        return (uint64_t)-EFAULT;
+    return actual;
+}
+/* Linux LP64 passes 32-bit uid_t/gid_t pointers.  The root-only credential
+ * model has the same real/effective/saved value (zero), so expose all three
+ * honestly and reject invalid user pointers instead of omitting the ABI. */
+static uint64_t nas_sys_getresid(uint64_t real,uint64_t effective,
+                                 uint64_t saved) {
+    const uint32_t root=0;
+    if(!nas_user_write_bytes(real,(const uint8_t *)&root,sizeof(root)) ||
+       !nas_user_write_bytes(effective,(const uint8_t *)&root,sizeof(root)) ||
+       !nas_user_write_bytes(saved,(const uint8_t *)&root,sizeof(root)))
+        return (uint64_t)-EFAULT;
+    return 0;
+}
+
+/* Raw Linux capget/capset ABI. Linux first probes ONLY the 32-bit version;
+ * unknown versions publish v3 back to the caller, including capget(NULL)
+ * version probing. Do not read the pid or data until the version is valid.
+ * Capability masks reflect and change Task credentials, and currently
+ * represent only the enforced CAP_NET_RAW privilege. */
+static uint64_t nas_sys_capabilities(bool set,uint64_t hdrp,uint64_t datap) {
+    uint32_t version;
+    if(!nas_user_read_bytes(hdrp,(uint8_t *)&version,sizeof(version)))
+        return (uint64_t)-EFAULT;
+    const unsigned words=nas_cap_version_words(version);
+    if(!words) {
+        uint64_t result=nas_cap_negotiate_version(&version,set,!datap);
+        if(!nas_user_write_bytes(hdrp,(const uint8_t *)&version,sizeof(version)))
+            return (uint64_t)-EFAULT;
+        return result;
+    }
+    if(!set && !datap)return 0;
+
+    int32_t pid;
+    if(!nas_user_read_bytes(hdrp+sizeof(version),(uint8_t *)&pid,sizeof(pid)))
+        return (uint64_t)-EFAULT;
+    uint64_t valid_target=nas_cap_validate_target(set,pid,(uint32_t)TASK.pid);
+    if((int64_t)valid_target<0)return valid_target;
+    if(set) {
+        struct nas_cap_user_data requested[2]={{0},{0}};
+        if(!nas_user_read_bytes(datap,(uint8_t *)requested,
+                                words*sizeof(requested[0])))
+            return (uint64_t)-EFAULT;
+        return nas_cap_set(&TASK.credentials,words,requested);
+    }
+    struct nas_task *target=pid ? nas_task_by_pid((uint32_t)pid) : &TASK;
+    if(!target || target->state==NAS_TASK_ZOMBIE)return (uint64_t)-ESRCH;
+    struct nas_cap_user_data observed[2];
+    nas_cap_get(&target->credentials,observed);
+    return nas_user_write_bytes(datap,(const uint8_t *)observed,
+                                words*sizeof(observed[0])) ? 0 : (uint64_t)-EFAULT;
+}
+
+/* Linux sched_attr v0 (48 bytes) plus utilization clamps (56 bytes).
+ * Read-only export of the scheduler's actual SCHED_OTHER-only policy. */
+struct nas_linux_sched_attr {
+    uint32_t size,policy;
+    uint64_t flags;
+    int32_t nice;
+    uint32_t priority;
+    uint64_t runtime,deadline,period;
+    uint32_t util_min,util_max;
+};
+_Static_assert(sizeof(struct nas_linux_sched_attr)==56,
+               "Linux sched_attr LP64 ABI size");
 
 /* One Linux timespec64 ABI on three LP64 ISAs.
  * CLOCK_MONOTONIC remains independent of the boot RTC. CLOCK_REALTIME
@@ -103,21 +202,45 @@ static uint64_t finish_io(struct nas_task *task) {
      * original syscall. Its fd number may now designate another object. */
     return nas_fs_io_resume(task->wait.pending_io);
 }
+static uint64_t finish_netlink_receive(struct nas_task *task) {
+    return nas_fs_netlink_receive_resume(task->wait.netlink_receive);
+}
+static uint64_t finish_socket_accept(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_socket_accept_description(task->wait.description_slot,
+                                             a[1],a[2],a[3]);
+}
+/* A control-plane Netconn request belongs to the held OpenFile, not to an
+ * integer FD that another CLONE_FILES sibling could close and recycle. */
+static uint64_t finish_socket_control(struct nas_task *task) {
+    return nas_fs_socket_control_description(task->wait.description_slot);
+}
+/* TCP_INFO completion belongs to the held OpenFile. The original user
+ * address/optlen are resolved only by the resumed Task, never scheduler. */
+static uint64_t finish_socket_tcp_info(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_socket_tcp_info_description(task->wait.description_slot,
+                                               a[3],a[4]);
+}
+static uint64_t finish_socket_name(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_socket_name_description(task->wait.description_slot,
+                                           a[1],a[2],
+                                           task->wait.blocked_op==NAS_SC_getpeername);
+}
 static uint64_t finish_epoll(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
-    return nas_epoll_wait(a[0],a[1],a[2],a[3]);
+    return nas_epoll_wait_description(task->wait.description_slot,
+                                      a[1],a[2],a[3]);
 }
 static uint64_t finish_poll(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_poll(a[0],a[1],a[2]);
+    return nas_fs_poll_resume(task);
 }
 static uint64_t finish_ppoll(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_ppoll(a[0],a[1],a[2],a[3]);
+    return nas_fs_poll_resume(task);
 }
 static uint64_t finish_select(struct nas_task *task) {
-    const uint64_t *a=task->wait.blocked_args;
-    return nas_fs_pselect6(a[0],a[1],a[2],a[3],false);
+    return nas_fs_pselect_resume(task);
 }
 static nas_wait_finish_fn finish_poll_provider(enum nas_syscall_op nr) {
     if(nr==NAS_SC_poll) return finish_poll;
@@ -129,9 +252,19 @@ static uint64_t finish_wait4(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     return nas_process_wait4(a[0],a[1],a[2],a[3]);
 }
+static uint64_t finish_waitid(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_process_waitid(a[0],a[1],a[2],a[3],a[4]);
+}
 static uint64_t finish_sigsuspend(struct nas_task *task) {
     (void)task;
     return (uint64_t)-EINTR;
+}
+static uint64_t finish_sigtimedwait(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    /* A matching signal takes priority if it arrived at the deadline.
+     * Timeout without a matching pending signal is EAGAIN, not EINTR. */
+    return nas_signal_timedwait_consume(a[0],a[1]);
 }
 
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
@@ -222,45 +355,115 @@ static uint64_t nas_sysinfo(uint64_t addr) {
 }
 
 static uint32_t missing_count[512];
+static uint64_t sys_sethostname_naseed(uint64_t addr,uint64_t length) {
+    if(length>NAS_UTS_NODENAME_MAX)return (uint64_t)-EINVAL;
+    char hostname[NAS_UTS_NODENAME_MAX+1]={0};
+    if(length && !nas_user_read_bytes(addr,(uint8_t *)hostname,length))
+        return (uint64_t)-EFAULT;
+    /* Only the root primary credential is currently representable. */
+    return nas_uts_set_hostname(hostname,(size_t)length)
+        ? 0 : (uint64_t)-EINVAL;
+}
 static uint64_t sys_uname_naseed(uint64_t buffer) {
     struct uts {
         char sysname[65], node[65], release[65], version[65];
         char machine[65], domain[65];
     };
-    static const struct uts data = {
-        "Linux", "naseed", "0.1", "NaSeed experimental",
+    struct uts data = {
+        "Linux", "", "0.1", "NaSeed experimental",
         NAS_UTS_MACHINE, "localdomain"
     };
+    nas_uts_copy_hostname(data.node);
     return nas_user_write_bytes(buffer, (const uint8_t *)&data, sizeof(data))
         ? 0 : (uint64_t)-EFAULT;
 }
 
 
 static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
-                             uint64_t fd, uint64_t buf, uint64_t count) {
+                             uint64_t fd, uint64_t buf, uint64_t count,
+                             bool suppress_sigpipe) {
     struct nas_io_attempt attempt;
     nas_fs_io_start(nr,fd,buf,count,&attempt);
     uint64_t ret=attempt.result;
     if ((int64_t)ret == -EPIPE &&
         (nr == NAS_SC_write || nr == NAS_SC_writev) &&
-        nas_sched_sigpipe_default(attempt.pipe_like)) {
+        !suppress_sigpipe && nas_sched_sigpipe_default(attempt.pipe_like)) {
         nas_sched_child_exit(0, NAS_SIGPIPE);
         return nas_task_schedule(frame);
     }
     if ((int64_t)ret == -EPIPE &&
-        (nr == NAS_SC_write || nr == NAS_SC_writev))
+        (nr == NAS_SC_write || nr == NAS_SC_writev) && !suppress_sigpipe)
         nas_signal_broken_pipe(attempt.pipe_like);
     if(attempt.pending) {
         /* Ownership transfers exactly once to this Task. All later
          * readiness and retries use this OpenFile, never the fd table. */
         TASK.wait.pending_io=attempt.pending;
         TASK.wait.pending_io_release=nas_fs_io_dispose;
+        TASK.wait.suppress_sigpipe=suppress_sigpipe;
         TASK.wait.tty_requested_bytes=attempt.tty_requested_bytes;
-        if(nas_fs_io_tty_read(attempt.pending))
-            nas_tty_blocking_read_start(&TASK);
+        nas_fs_io_read_wait_start(attempt.pending,&TASK);
         return nas_task_block(frame,nr,fd,buf,count,0,finish_io);
     }
     return ret;
+}
+/* Tinyproxy and other POSIX daemons call send(MSG_NOSIGNAL), not write().
+ * The internal TCP FileOps EOPNOTSUPP means "blocking TX still in flight";
+ * it must reach the same held-description Task wait used by write(), while
+ * MSG_NOSIGNAL suppresses SIGPIPE without changing the shared File flags.
+ * Do not use this path for UDP, addressed sendto or any other MSG flags. */
+static bool native_tcp_send_nosignal_wait(enum nas_syscall_op nr,
+                                         const uint64_t *args) {
+    if(nr!=NAS_SC_sendto || args[4]!=0x4000ULL || args[5] || args[6] ||
+       args[1]>=NAS_FD_LIMIT ||
+       TASK.fds->entries[args[1]].kind!=FD_SOCKET)return false;
+    unsigned slot=TASK.fds->entries[args[1]].slot;
+    return nas_lwip_socket_is_slot(slot) &&
+           nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP;
+}
+static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
+                                   const uint64_t *args,uint64_t result) {
+    if((int64_t)result!=-EAGAIN)return result;
+    const uint64_t fd=args[1];
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SOCKET)
+        return result;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT ||
+       (nas_open_files[slot].status_flags&0x800ULL)) {
+        /* No asynchronous lease may remain owned by a nonblocking Task
+         * that returns to userspace without parking its completion. */
+        if(TASK.wait.accept_lease_cancel)nas_task_wait_dispose(&TASK);
+        return result; /* SOCK_NONBLOCK must observe EAGAIN */
+    }
+    if(!nas_fd_hold_description(slot)) {
+        if(TASK.wait.accept_lease_cancel)nas_task_wait_dispose(&TASK);
+        return (uint64_t)-EBADF;
+    }
+    TASK.wait.description_slot=slot;
+    TASK.wait.description_release=nas_fs_drop_kernel_description;
+    nas_wait_io_clear(&TASK);
+    nas_wait_io_arm(&TASK,slot,0x0001U,false);
+    return nas_task_block(frame,nr,args[1],args[2],args[3],
+                          nr==NAS_SC_accept4?args[4]:0,finish_socket_accept);
+}
+static uint64_t task_socket_control(uint64_t *frame,enum nas_syscall_op nr,
+                                    const uint64_t *args,uint64_t result) {
+    if((int64_t)result!=-EAGAIN)return result;
+    unsigned fd=(unsigned)args[1];
+    if(args[1]>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SOCKET)
+        return (uint64_t)-EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(!nas_lwip_socket_is_slot(slot))return result;
+    if(!nas_fd_hold_description(slot))return (uint64_t)-EBADF;
+    /* Reuse the established pinned-socket wait record; its release hook
+     * tears down the pin on success, caught signal and Task termination. */
+    TASK.wait.description_slot=slot;
+    TASK.wait.description_release=nas_fs_drop_kernel_description;
+    if(nr==NAS_SC_getsockopt)
+        return nas_task_block5(frame,nr,args[1],args[2],args[3],
+                               args[4],args[5],finish_socket_tcp_info);
+    return nas_task_block(frame,nr,args[1],args[2],args[3],0,
+                          nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ?
+                          finish_socket_name:finish_socket_control);
 }
 
 /* Both ISA-normalized call arguments and the live hardware user trap belong
@@ -341,17 +544,20 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
-#if defined(__riscv) && __riscv_xlen == 64
-    /* Native BusyBox ash may invoke clone with Linux flags other than
-     * SIGCHLD. Do not pretend this is fork: show the actual ABI contract
-     * before implementing vfork/clone semantics in the existing task core. */
-    if (raw_nr == 220U && nr == NAS_SC_NONE) {
-        nas_print("[RV64 CLONE] unsupported flags=");
+#ifdef NASEED_SYSCALL_TRACE
+    /* M110 diagnostic: log the actual rejected Linux clone ABI on all three
+     * ISAs, without broadening accepted flags or changing the -ENOSYS path.
+     * Eight attempts suffice to compare original Go and pthread callers. */
+    static unsigned rejected_clone_count;
+    if (raw_nr == nas_linux_raw_clone_nr() && nr == NAS_SC_NONE &&
+        rejected_clone_count++ < 8U) {
+        nas_print("[CLONE REJECT] pid="); nas_dec(nas_current_task->pid);
+        nas_print(" flags=");
         nas_hex(args[1]);
-        nas_print(" child_stack="); nas_hex(args[2]);
+        nas_print(" stack="); nas_hex(args[2]);
         nas_print(" parent_tid="); nas_hex(args[3]);
-        nas_print(" tls="); nas_hex(args[4]);
-        nas_print(" child_tid="); nas_hex(args[5]);
+        nas_print(" arg4="); nas_hex(args[4]);
+        nas_print(" arg5="); nas_hex(args[5]);
         nas_print("\n");
     }
 #endif
@@ -380,10 +586,68 @@ uint64_t syscall_dispatch(const uint64_t *args) {
 #endif
     if (nr == NAS_SC_ptrace) return nas_ptrace_request(args[1],args[2],args[3],args[4]);
     if (nr == NAS_SC_arch_prctl) return nas_linux_arch_prctl(args[1], args[2]);
+#if defined(__riscv) && __riscv_xlen == 64
+    if (nr == NAS_SC_riscv_hwprobe)
+        return nas_riscv_hwprobe(args[1],args[2],args[3],args[4],args[5]);
+#endif
     if (nr == NAS_SC_getrandom) return nas_random_getrandom(args[1],args[2],args[3]);
     if (nr == NAS_SC_set_tid_address) { thread_clear_tid = args[1]; return TASK.pid; }
     if (nr == NAS_SC_getpid) return TASK.tgid;
     if (nr == NAS_SC_gettid) return TASK.pid;
+    if (nr == NAS_SC_capget) return nas_sys_capabilities(false,args[1],args[2]);
+    if (nr == NAS_SC_capset) return nas_sys_capabilities(true,args[1],args[2]);
+    if(nr==NAS_SC_shmget)return nas_sysvipc_call(NAS_SYSVIPC_SHM,0,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_shmctl)return nas_sysvipc_call(NAS_SYSVIPC_SHM,1,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_shmat || nr==NAS_SC_shmdt)return (uint64_t)-ENOSYS;
+    if(nr==NAS_SC_semget)return nas_sysvipc_call(NAS_SYSVIPC_SEM,0,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_semctl)return nas_sysvipc_call(NAS_SYSVIPC_SEM,1,args[1],args[2],args[3],args[4]);
+    if(nr==NAS_SC_semop)return (uint64_t)-ENOSYS;
+    if(nr==NAS_SC_msgget)return nas_sysvipc_call(NAS_SYSVIPC_MSG,0,args[1],args[2],0,0);
+    if(nr==NAS_SC_msgctl)return nas_sysvipc_call(NAS_SYSVIPC_MSG,1,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_msgsnd || nr==NAS_SC_msgrcv)return (uint64_t)-ENOSYS;
+    if(nr==NAS_SC_ioprio_set || nr==NAS_SC_ioprio_get) {
+        /* Linux IOPRIO_WHO_PROCESS: task-specific priority, inherited across
+         * fork and retained across exec. Other scope selectors require group
+         * fanout/aggregation and are deliberately not advertised yet. */
+        if(!args[1] || args[1]>3ULL)return (uint64_t)-EINVAL;
+        if(args[1]!=1ULL)return (uint64_t)-EOPNOTSUPP;
+        struct nas_task *target=args[2] ? nas_task_by_pid(args[2]) : &TASK;
+        if(!target || target->state==NAS_TASK_ZOMBIE)
+            return (uint64_t)-ESRCH;
+        if(nr==NAS_SC_ioprio_get)return target->ioprio;
+        const uint64_t value=args[3];
+        const uint64_t cls=value>>13;
+        const uint64_t level=value&0x1fffULL;
+        if(value>0xffffULL || cls>3ULL ||
+           (cls==0 && level!=0) || (cls!=0 && level>7))
+            return (uint64_t)-EINVAL;
+        target->ioprio=(uint16_t)value;
+        return 0;
+    }
+    if(nr==NAS_SC_sched_getscheduler || nr==NAS_SC_sched_getparam ||
+       nr==NAS_SC_sched_getattr) {
+        /* NaSeed presently schedules every task in its one non-realtime
+         * Linux-compatible policy: SCHED_OTHER, static priority zero.
+         * Queries validate the target task and user output independently. */
+        uint64_t pid=args[1] ? args[1] : TASK.pid;
+        if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
+        if(nr==NAS_SC_sched_getscheduler)return 0; /* SCHED_OTHER */
+        if(nr==NAS_SC_sched_getattr) {
+            uint64_t size=args[3];
+            if(args[4] || size<48 || size>sizeof(struct nas_linux_sched_attr))
+                return (uint64_t)-EINVAL;
+            const struct nas_linux_sched_attr policy={
+                .size=(uint32_t)sizeof(struct nas_linux_sched_attr),
+                .policy=0,.flags=0,.nice=0,.priority=0,
+                .runtime=0,.deadline=0,.period=0,.util_min=0,.util_max=0
+            };
+            return nas_user_write_bytes(args[2],(const uint8_t *)&policy,
+                                        size) ? 0 : (uint64_t)-EFAULT;
+        }
+        const uint32_t param=0; /* struct sched_param.sched_priority */
+        return nas_user_write_bytes(args[2],(const uint8_t *)&param,
+                                    sizeof(param)) ? 0 : (uint64_t)-EFAULT;
+    }
     if(nr==NAS_SC_sched_getaffinity || nr==NAS_SC_sched_setaffinity) {
         uint64_t pid=args[1] ? args[1] : TASK.pid;
         if(!nas_task_by_pid(pid))return (uint64_t)-ESRCH;
@@ -414,11 +678,28 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if(nr==NAS_SC_timer_gettime)return nas_time_timer_gettime(args[1],args[2]);
     if(nr==NAS_SC_timer_getoverrun)return nas_time_timer_getoverrun(args[1]);
     if(nr==NAS_SC_timer_delete)return nas_time_timer_delete(args[1]);
+    if(nr==NAS_SC_getitimer)return nas_time_getitimer(args[1],args[2]);
+    if(nr==NAS_SC_setitimer)return nas_time_setitimer(args[1],args[2],args[3]);
     if(nr==NAS_SC_gettimeofday)
         return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
     if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+    if (nr == NAS_SC_getresuid || nr == NAS_SC_getresgid)
+        return nas_sys_getresid(args[1],args[2],args[3]);
+    if (nr == NAS_SC_getgroups) return nas_sys_getgroups(args[1],args[2]);
+    if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
+        return nas_credentials_set_id(args[1]);
+    if (nr == NAS_SC_setreuid || nr == NAS_SC_setregid)
+        return nas_credentials_set_root_ids(args[1],args[2],UINT32_MAX);
+    if (nr == NAS_SC_setresuid || nr == NAS_SC_setresgid)
+        return nas_credentials_set_root_ids(args[1],args[2],args[3]);
+    if (nr == NAS_SC_setfsuid || nr == NAS_SC_setfsgid)
+        return nas_credentials_set_fs_id(args[1]);
+    if (nr == NAS_SC_setgroups)
+        return nas_sys_setgroups(args[1],args[2]);
+    if (nr == NAS_SC_mincore)
+        return nas_vm_mincore(args[1],args[2],args[3]);
     if (nr == NAS_SC_mprotect) {
         uint64_t rc=nas_vm_mprotect(args[1], args[2], args[3]);
 #ifdef NASEED_SYSCALL_TRACE
@@ -450,6 +731,10 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_msync)
+        return nas_vm_msync(args[1],args[2],args[3]);
+    if (nr == NAS_SC_madvise)
+        return nas_vm_madvise(args[1],args[2],args[3]);
     if (nr == NAS_SC_brk) {
         uint64_t result=nas_vm_brk(args[1]);
 #ifdef NASEED_SYSCALL_TRACE
@@ -483,6 +768,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                     nas_arch_monotonic_ns(),(uint64_t)(unsigned)ms*1000000ULL);
                 TASK.wait.deadline_active=true;
             }
+            unsigned instance;
+            int held=nas_epoll_hold_instance(args[1],&instance);
+            if(held) {
+                nas_signal_ppoll_restore(&TASK,false);
+                TASK.wait.deadline_active=false;
+                return (uint64_t)(int64_t)held;
+            }
+            TASK.wait.description_slot=instance;
+            TASK.wait.description_release=nas_fs_drop_kernel_description;
             nas_epoll_arm_current_task(args[1]);
             return nas_task_block((uint64_t *)(uintptr_t)args,nr,
                                   args[1],args[2],args[3],args[4],finish_epoll);
@@ -555,10 +849,17 @@ uint64_t syscall_dispatch(const uint64_t *args) {
                 nas_signal_ppoll_restore(&TASK,false);
                 return rc;
             }
-            bool has_io=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
+            int armed=(nr==NAS_SC_pselect6 || nr==NAS_SC_select) ?
                 nas_fs_pselect_arm(args[1],args[2],args[3],args[4]) :
                 nas_fs_poll_arm(args[1],args[2]);
-            if(!has_io && !TASK.wait.deadline_active) {
+            if(armed<0) {
+                nas_signal_ppoll_restore(&TASK,false);
+                TASK.wait.deadline_active=false;
+                return (uint64_t)(int64_t)armed;
+            }
+            if(!armed && !TASK.wait.deadline_active &&
+               !nas_poll_signal_only_infinite(nr,args)) {
+                nas_task_wait_dispose(&TASK);
                 nas_signal_ppoll_restore(&TASK,false);
                 return (uint64_t)-EOPNOTSUPP;
             }
@@ -585,15 +886,145 @@ uint64_t syscall_dispatch(const uint64_t *args) {
             if(handled)return result;
         }
     }
-    if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
-    if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3]);
+    /* M180: only a genuine worker_io VFS owner enters this branch. Linux
+     * usercopy/FD reservation stays on the original Task continuation;
+     * upstream lwext4 executes on one dedicated parkable kernel worker. */
+    struct nas_fs_user_broker_answer fs_broker=nas_fs_user_broker_enter(
+        (uint64_t *)(uintptr_t)args,nr,args);
+    if(fs_broker.handled)return fs_broker.value;
+    if (nr == NAS_SC_read) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_readv) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_write) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    if (nr == NAS_SC_writev) return task_pipe_io((uint64_t *)(uintptr_t)args, nr, args[1], args[2], args[3],false);
+    /* MSG_PEEK must preserve the same shared socket RX buffer. Route the
+     * pure no-sockaddr form through the existing held-File blocking read
+     * mechanism, with the nonconsuming callback on the same FileOps. */
+    if(nr==NAS_SC_recvfrom && args[4]==0x2ULL &&
+       !args[5] && !args[6] && args[1]<NAS_FD_LIMIT &&
+       TASK.fds->entries[args[1]].kind==FD_SOCKET &&
+       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot) &&
+       nas_lwip_socket_type(TASK.fds->entries[args[1]].slot)==
+           NAS_LWIP_BRIDGE_TCP)
+        return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
+                            args[1],args[2],args[3],false);
+    /* Connected send()/recv() with zero flags, plus TCP MSG_NOSIGNAL send,
+     * use the held-OpenFile wait path. Unsupported per-call flags and all
+     * addressed sendto requests stay on the strict socket ABI path. */
+    const bool send_nosignal_wait=native_tcp_send_nosignal_wait(nr,args);
+    if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) &&
+       (!args[4] || send_nosignal_wait) &&
+       args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
+       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
+       ) {
+        if(nr==NAS_SC_sendto && !args[5] && !args[6])
+            return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
+                                args[1],args[2],args[3],send_nosignal_wait);
+        if(nr==NAS_SC_recvfrom && !args[5])
+            return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_read,
+                                args[1],args[2],args[3],false);
+    }
+    /* Connected TCP sendmsg() is a stream writev with a Linux msghdr
+     * wrapper. The File layer imports and retains every iovec once, and
+     * the Task continuation parks/retries on real TX backpressure even if
+     * another thread closes or reuses this integer fd meanwhile. */
+    if(nr==NAS_SC_sendmsg && args[1]<NAS_FD_LIMIT &&
+       TASK.fds->entries[args[1]].kind==FD_SOCKET) {
+        uint64_t iov=0,count=0;
+        int prepared=nas_fs_socket_tcp_sendmsg_iov(
+            args[1],args[2],args[3],&iov,&count);
+        if(prepared<0)return (uint64_t)(int64_t)prepared;
+        if(prepared==1)return task_pipe_io((uint64_t *)(uintptr_t)args,
+            NAS_SC_writev,args[1],iov,count,(args[3]&0x4000ULL)!=0);
+    }
+    if(nr==NAS_SC_recvmsg || nr==NAS_SC_recvfrom) {
+        struct nas_netlink_receive_attempt attempt;
+        nas_fs_netlink_receive_start(nr,args,&attempt);
+        if(attempt.applicable) {
+            if(!attempt.pending)return attempt.result;
+            TASK.wait.netlink_receive=attempt.pending;
+            TASK.wait.netlink_receive_release=nas_fs_netlink_receive_release;
+            TASK.wait.description_slot=attempt.slot;
+            TASK.wait.description_release=nas_fs_drop_kernel_description;
+            nas_wait_io_clear(&TASK);
+            nas_wait_io_arm(&TASK,attempt.slot,0x0001U,false);
+            return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                                  0,0,0,0,finish_netlink_receive);
+        }
+    }
     struct nas_fs_result fs_result = nas_fs_syscall(nr, args);
-    if (fs_result.handled) return fs_result.value;
+    if (fs_result.handled) {
+#ifdef NASEED_SYSCALL_TRACE
+        /* Native ncat/iperf3 diagnostics: syscall result BEFORE Task parking
+         * or FileOps completion. This is an opt-in trace, never a socket
+         * implementation branch, and does not inspect guest pointers. */
+        if(nr==NAS_SC_socket || nr==NAS_SC_bind || nr==NAS_SC_listen ||
+           nr==NAS_SC_connect || nr==NAS_SC_accept || nr==NAS_SC_accept4 ||
+           nr==NAS_SC_setsockopt || nr==NAS_SC_getsockopt ||
+           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ||
+           nr==NAS_SC_sendto || nr==NAS_SC_recvfrom ||
+           nr==NAS_SC_sendmsg || nr==NAS_SC_recvmsg ||
+           nr==NAS_SC_shutdown) {
+            nas_print("[NET SYS] pid=");nas_dec(TASK.pid);
+            nas_print(" op=");nas_dec(nr);
+            nas_print(" a1=");nas_hex(args[1]);
+            nas_print(" a2=");nas_hex(args[2]);
+            nas_print(" a3=");nas_hex(args[3]);
+            nas_print(" a4=");nas_hex(args[4]);
+            nas_print(" a5=");nas_hex(args[5]);
+            nas_print(" a6=");nas_hex(args[6]);
+            nas_print(" status=");
+            if((int64_t)fs_result.value<0) {
+                nas_print("-");nas_dec((uint64_t)(-(int64_t)fs_result.value));
+            } else nas_dec(fs_result.value);
+            nas_print("\n");
+        }
+#endif
+        if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
+           nr==NAS_SC_setsockopt || nr==NAS_SC_getsockopt ||
+           nr==NAS_SC_shutdown ||
+           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername)
+            return task_socket_control((uint64_t *)(uintptr_t)args,nr,args,
+                                       fs_result.value);
+        if(nr==NAS_SC_accept || nr==NAS_SC_accept4)
+            return task_socket_accept((uint64_t *)(uintptr_t)args,nr,args,
+                                      fs_result.value);
+        return fs_result.value;
+    }
     if (nr == NAS_SC_rt_sigaction) return nas_signal_action(args[1], args[2], args[3], args[4]);
+    if (nr == NAS_SC_sigaltstack) return nas_signal_sigaltstack(args[1], args[2]);
     if (nr == NAS_SC_rt_sigpending) return nas_signal_pending(args[1], args[2]);
+    if (nr == NAS_SC_rt_sigtimedwait) {
+        /* Linux LP64 sigsetsize=8 on all three native ISAs. Read the set
+         * exactly once before parking; no foreign address-space inspection
+         * is necessary in the scheduler readiness pass. */
+        if(args[4]!=8ULL)return (uint64_t)-EINVAL;
+        uint64_t mask=0;
+        if(!nas_user_read_u64(args[1],&mask))return (uint64_t)-EFAULT;
+        uint64_t delta=0;
+        if(args[3]) {
+            uint64_t rc=nas_time_read_request(args[3],&delta);
+            if((int64_t)rc<0)return rc;
+        }
+        mask &= ~((1ULL<<8)|(1ULL<<18));
+        if(nas_signal_timedwait_ready(&TASK,mask))
+            return nas_signal_timedwait_consume(mask,args[2]);
+        if(args[3] && !delta)return (uint64_t)-EAGAIN;
+        if(args[3]) {
+            TASK.wait.deadline_ns=nas_time_add_deadline(
+                nas_arch_monotonic_ns(),delta);
+            TASK.wait.deadline_active=true;
+        }
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,
+                              mask,args[2],0,0,finish_sigtimedwait);
+    }
     if (nr == NAS_SC_rt_sigreturn) return nas_signal_sigreturn((uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_pause) {
+        /* Unlike sigsuspend, pause retains the calling thread's mask.
+         * Completion only occurs after a caught, unmasked signal. */
+        if(nas_signal_user_pending(&TASK))return (uint64_t)-EINTR;
+        return nas_task_block((uint64_t *)(uintptr_t)args,nr,0,0,0,0,
+                              finish_sigsuspend);
+    }
     if (nr == NAS_SC_rt_sigsuspend) {
         /* Temporary, atomic replacement of the caller's mask while asleep.
          * The existing Task wait/replay + signal trampoline own wakeup;
@@ -624,6 +1055,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return previous;
     }
     if (nr == NAS_SC_uname) return sys_uname_naseed(args[1]);
+    if (nr == NAS_SC_sethostname) return sys_sethostname_naseed(args[1],args[2]);
     if (nr == NAS_SC_sysinfo) return nas_sysinfo(args[1]);
 
     if (nr == NAS_SC_futex)
@@ -637,7 +1069,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_clone_thread((uint64_t *)(uintptr_t)args,
                                         args[2],args[3],
                                         nas_linux_clone_child_tid(args),
-                                        nas_linux_clone_tls(args));
+                                        nas_linux_clone_tls(args),args[1]);
     if (nr == NAS_SC_vfork)
         return nas_process_vfork((uint64_t *)(uintptr_t)args,
                                   nas_linux_vfork_child_stack(args));
@@ -647,15 +1079,27 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_process_fork_child_tid((uint64_t *)(uintptr_t)args,
                                           nas_linux_clone_child_tid(args));
 
+    if (nr == NAS_SC_getrusage)
+        return nas_process_getrusage(args[1],args[2]);
+    if (nr == NAS_SC_memfd_create)
+        return nas_fs_memfd_create(args[1],args[2]);
     if (nr == NAS_SC_wait4) {
         uint64_t ret = nas_process_wait4(args[1], args[2], args[3], args[4]);
         /* WUNTRACED/WCONTINUED are real blocking wait selectors too.
          * Do not treat them as unsupported when a selected child has
          * not reached a reportable event yet. Keep WNOHANG nonblocking. */
-        if ((int64_t)ret == -EOPNOTSUPP && args[4] == 0 &&
+        if ((int64_t)ret == -EOPNOTSUPP &&
             !(args[3] & NAS_WAIT_NOHANG))
             return nas_task_block((uint64_t *)(uintptr_t)args, nr,
                               args[1], args[2], args[3], args[4],finish_wait4);
+        return ret;
+    }
+    if (nr == NAS_SC_waitid) {
+        uint64_t ret=nas_process_waitid(args[1],args[2],args[3],args[4],args[5]);
+        if((int64_t)ret==-EOPNOTSUPP && !(args[4]&NAS_WAIT_NOHANG))
+            return nas_task_block5((uint64_t *)(uintptr_t)args,nr,
+                                   args[1],args[2],args[3],args[4],args[5],
+                                   finish_waitid);
         return ret;
     }
     if (nr == NAS_SC_execve) {

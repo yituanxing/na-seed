@@ -8,6 +8,7 @@
 #include "task/wait_queue.h"
 #include "mm/mm.h"
 #include "task/resources.h"
+#include "task/credentials.h"
 
 /* Common process registry across x86-64, RV64, and AArch64.
  * Each task has its own kernel entry stack; switching still occurs at a
@@ -66,9 +67,11 @@ enum nas_task_state {
  * The scheduler must never re-dispatch a syscall from a foreign C frame. */
 struct nas_task;
 struct nas_pending_io;
+struct nas_poll_snapshot;
+struct nas_fs_broker_request;
 typedef uint64_t (*nas_wait_finish_fn)(struct nas_task *);
 struct nas_task_wait {
-    uint64_t blocked_op, blocked_args[4];
+    uint64_t blocked_op, blocked_args[5];
     bool pending_valid;
     nas_wait_finish_fn finish; /* static callback owned by issuing syscall */
     /* Exactly one parked I/O request may own a copied user iovec and a
@@ -76,6 +79,16 @@ struct nas_task_wait {
      * Callback keeps Task's generic lifetime independent of fs/file_io.c. */
     struct nas_pending_io *pending_io;
     void (*pending_io_release)(struct nas_pending_io *);
+    /* A blocked Netlink recvmsg/recvfrom retains its imported Linux ABI
+     * snapshot. This is distinct from File readv's data-plane request, but
+     * owns the same original OpenFile pin through description_release. */
+    void *netlink_receive;
+    void (*netlink_receive_release)(void *);
+    /* One kernel-owned filesystem request may outlive a parked Task.
+     * The worker owns execution and its own reference; Task wait disposal
+     * merely detaches, including on signal, exit_group, or teardown. */
+    struct nas_fs_broker_request *fs_request;
+    bool suppress_sigpipe; /* per-call TCP sendmsg(MSG_NOSIGNAL), not FD state */
     uint64_t deadline_ns;
     bool deadline_active;
     unsigned tty_observed_bytes;
@@ -86,6 +99,21 @@ struct nas_task_wait {
      * Task-local FDs. All providers use this one readiness representation. */
     struct nas_slot_mask poll_interest_read, poll_interest_write;
     bool poll_tty_read;
+    /* poll/ppoll/select retain one copied interest set and ALL referenced
+     * OpenFiles across a native park. This pointer is Task-owned, never
+     * inherited by fork, and does not depend on mutable user FD integers. */
+    struct nas_poll_snapshot *poll_snapshot;
+    void (*poll_snapshot_release)(struct nas_poll_snapshot *);
+    /* accept/control/epoll each wait on ONE original File. The generic
+     * release hook covers completed, interrupted and exited Tasks. */
+    unsigned description_slot;
+    void (*description_release)(unsigned slot);
+    /* A blocking native Netconn accept owns a distinct unpublished OpenFile
+     * lease. On EINTR/Task exit cancel its worker command BEFORE releasing
+     * the lease; late accepted connections must never target a reused slot. */
+    struct nas_fd_slot_lease accept_lease;
+    void (*accept_lease_cancel)(unsigned listener_slot,
+                                 struct nas_fd_slot_lease lease);
     uint64_t futex_addr;
     uint32_t futex_mask;
     bool futex_woken;
@@ -93,6 +121,9 @@ struct nas_task_wait {
 
 struct nas_task {
     uint64_t pid, ppid;
+    /* Real supplementary root groups, inherited by fork/clone and preserved
+     * by exec like Linux process credentials; primary uid/gid remain root. */
+    struct nas_credentials credentials;
     uint64_t tgid; /* getpid: thread group; pid remains unique gettid */
     bool is_thread; /* CLONE_THREAD tasks are never wait4 children */
     bool group_exit_pending; /* leader exited via SYS_exit; retain VM and FDs for peers */
@@ -101,6 +132,9 @@ struct nas_task {
     struct nas_task *group_leader;
     /* Linux process group + session identity, independent of CPU/VM. */
     uint64_t pgid, sid;
+    /* Linux ioprio value: class in bits 15:13, class data in bits 12:0.
+     * Fork/clone inherits this task-local I/O priority, exec preserves it. */
+    uint16_t ioprio;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
     bool execed; /* parent may not setpgid(child) after successful exec */
     /* Immutable executable argv snapshot; incomplete overlong vectors
@@ -110,6 +144,13 @@ struct nas_task {
     /* Single-CPU elapsed Task occupancy, including syscall kernel time;
      * does not pretend to separate user/system CPU instructions. */
     uint64_t cpu_runtime_ns;
+    /* Real scheduler CPU occupancy of already released sibling threads;
+     * retained by the group leader for Linux RUSAGE_SELF. */
+    uint64_t exited_thread_cpu_ns;
+    /* Real CPU occupancy of waited child processes, including their own
+     * previously waited descendants; Linux RUSAGE_CHILDREN excludes zombies
+     * until the parent actually reaps them. */
+    uint64_t waited_children_cpu_ns;
     enum nas_task_state state;
     uint32_t exit_code;
     uint32_t termination_signal; /* Linux wait4 WIFSIGNALED status */
@@ -185,6 +226,7 @@ struct nas_task {
     /* Signal dispositions, signal mask, and FS context have distinct lifetimes. */
     uint64_t blocked_signals;
     uint64_t pending_signals; /* Linux per-task pending standard signals */
+    struct nas_signal_group *signal_group; /* per-TGID pending, independent of leader */
     struct nas_sighand *sighand; /* CLONE_SIGHAND shares this owner */
     /* While executing a caught handler, the original full CPU/FPU state
      * remains kernel-owned until a checked rt_sigreturn from its restorer.
@@ -192,6 +234,11 @@ struct nas_task {
      * remain pending until that frame returns. */
     bool signal_frame_active;
     uint64_t signal_frame_sp, signal_saved_mask;
+    /* Linux sigaltstack belongs to the calling THREAD, not shared sighand.
+     * Fork inherits it, CLONE_VM threads begin disabled, exec clears it.
+     * Unlike a copied signal disposition, this range is an MM address. */
+    uint64_t signal_stack_sp, signal_stack_size;
+    bool signal_stack_enabled;
     /* ppoll installs a temporary signal mask atomically for the wait.
      * Its original mask is restored on ALL completion paths, but a
      * pending caught signal must still be delivered after EINTR. */

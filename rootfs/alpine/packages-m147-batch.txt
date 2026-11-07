@@ -1,0 +1,19 @@
+# Original signed Alpine v3.23 network portfolio. Every executable admitted
+# in scripts/m147-original-elfs.txt is a separate APK-supplied ELF image.
+# nmap-ncat is an existing signed client dependency, not a new M147 identity.
+bird2
+chrony
+darkstat
+dnsmasq
+fping
+memcached
+mosquitto
+mosquitto-clients
+mtr
+nghttp2
+stunnel
+tcpflow
+unbound
+websocat
+whois
+nmap-ncat

@@ -1,0 +1,2 @@
+# One unmodified signed Alpine init; interactive fbi/QMP controller owns proof.
+m202-fbi	cpio	 	-	-	/sbin/init

@@ -1,0 +1,33 @@
+# Eight NEW original Subversion executable identities: local real repository.
+usr/bin/svn
+usr/bin/svnadmin
+usr/bin/svndumpfilter
+usr/bin/svnfsfs
+usr/bin/svnlook
+usr/bin/svnmucc
+usr/bin/svnrdump
+usr/bin/svnversion
+# Five NEW original NSS security executable identities: real certificate DB.
+usr/bin/certutil
+usr/bin/crlutil
+usr/bin/modutil
+usr/bin/pk12util
+usr/bin/shlibsign
+# Seventeen NEW original Netpbm image-analysis/processing executable identities.
+usr/bin/pamsplit
+usr/bin/pamoil
+usr/bin/pamshuffle
+usr/bin/pamsharpness
+usr/bin/pamstereogram
+usr/bin/pamtodjvurle
+usr/bin/pamfix
+usr/bin/pamcrater
+usr/bin/pamendian
+usr/bin/pamrecolor
+usr/bin/pambackground
+usr/bin/pamhomography
+usr/bin/pamsharpmap
+usr/bin/pbmpage
+usr/bin/pbmtext
+usr/bin/pnmmercator
+usr/bin/pamtilt

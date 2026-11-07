@@ -1,0 +1,16 @@
+# One executable path per new independently signed native ELF (not aliases).
+usr/bin/acyclic
+usr/bin/bcomps
+usr/bin/ccomps
+usr/bin/dijkstra
+usr/bin/gc
+usr/bin/gml2gv
+usr/bin/gv2gml
+usr/bin/tred
+usr/bin/lzmadec
+usr/bin/lzmainfo
+usr/bin/xzdec
+usr/bin/sdiff
+bin/ed
+usr/bin/mtools
+usr/bin/mkmanifest

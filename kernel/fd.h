@@ -10,6 +10,8 @@
  * A return value of NAS_OPEN_FILE_LIMIT means no final description was released.
  */
 struct nas_task;
+struct nas_file_ops;
+struct nas_chrdev_node;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
 #define NAS_FD_LIMIT 64
@@ -18,7 +20,10 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
        FD_PIPE_R = 7, FD_PIPE_W = 8,
        FD_TTY = 11, FD_EPOLL = 12, FD_EVENTFD = 13,
-       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16 };
+       FD_SOCKET = 14, FD_PTY_MASTER = 15, FD_PTY_SLAVE = 16,
+       FD_RANDOM = 17, FD_SIGNALFD = 18, FD_PIDFD = 19,
+       FD_FRAMEBUFFER = 20, FD_EVDEV = 21, FD_INOTIFY = 22,
+       FD_VT = 23, FD_TIMERFD = 24 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {
@@ -32,6 +37,10 @@ struct nas_fd_table {
 };
 struct nas_files {
     unsigned refs;
+    /* Unpublished FD numbers reserved by blocking open-like syscalls.
+     * CLONE_FILES siblings see one shared mask; fork copies no reservations.
+     * A reservation holds an independent nas_files ref until commit/cancel. */
+    uint64_t pending_fd_mask;
     struct nas_fd_table table;
 };
 struct nas_files *nas_files_new(void);
@@ -46,8 +55,27 @@ void nas_fd_report_exhaustion(const char *operation);
  * attach_owned transfers a previously accounted open-description ref
  * (AF_UNIX accept/SCM_RIGHTS), without incrementing it again. */
 unsigned nas_fd_first_unused(const struct nas_task *task, unsigned minimum);
+/* A pending FD is not open (reads/close return EBADF) but is unavailable to
+ * every allocation/dup path until its owner commits or cancels. The returned
+ * files_hold is a reference to the exact original CLONE_FILES table, even
+ * when the issuing Task dies while a kernel worker is still operating.
+ * Begin takes the lowest available FD; success requires exactly one commit
+ * or cancel. Commit/cancel each release that one independent files ref. */
+bool nas_fd_available(const struct nas_task *task, unsigned fd);
+int nas_fd_pending_begin(struct nas_task *task, unsigned *fd,
+                         struct nas_files **files_hold);
+bool nas_fd_pending_valid(const struct nas_files *files_hold, unsigned fd);
+bool nas_fd_pending_commit(struct nas_files *files_hold, unsigned fd);
+bool nas_fd_pending_cancel(struct nas_files *files_hold, unsigned fd);
 int nas_fd_reserve(const struct nas_task *task, unsigned minimum, unsigned count,
                    unsigned fds[2], unsigned slots[2], const char *operation);
+/* Reserve a File slot only when its provider-specific lifecycle permits
+ * reuse. Native network closes may still own their old worker ID after
+ * the userspace FD is gone; this is a non-consuming admission predicate. */
+int nas_fd_reserve_filtered(const struct nas_task *task,unsigned minimum,
+                            unsigned count,unsigned fds[2],unsigned slots[2],
+                            const char *operation,
+                            bool (*slot_reusable)(unsigned slot));
 bool nas_fd_install_new(struct nas_task *task, unsigned fd, unsigned slot,
                         uint8_t kind, uint64_t status_flags, bool cloexec);
 bool nas_fd_attach_owned(struct nas_task *task, unsigned fd, unsigned slot,
@@ -63,21 +91,48 @@ bool nas_task_hold_files(const struct nas_task *task);
  * across close/dup2 until their own final release. */
 bool nas_fd_hold_description(unsigned slot);
 
+/* Asynchronous providers (notably Netconn accept) must own an OpenFile slot
+ * while a native worker is pending. A read-only nas_fd_reserve probe is NOT
+ * a lease: another Task may allocate that slot before completion. The lease
+ * holds exactly one kernel-owned description reference without publishing a
+ * process FD; commit transfers it atomically, cancel releases it. Neither
+ * operation introduces a separate socket/FD namespace. */
+struct nas_fd_slot_lease { unsigned slot; uint64_t token; };
+int nas_fd_slot_lease_begin(struct nas_fd_slot_lease *out,
+                            const char *operation);
+bool nas_fd_slot_lease_valid(struct nas_fd_slot_lease lease);
+int nas_fd_slot_lease_commit(struct nas_fd_slot_lease lease,
+                             struct nas_task *task,unsigned fd,uint8_t kind,
+                             uint64_t status_flags,bool cloexec,
+                             const struct nas_file_ops *provider_ops);
+bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease);
+
 /* Open-file descriptions are shared across fork/dup. FD_CLOEXEC and the
  * per-task mapping of FD number -> description remain task-local. This is a
  * fixed-capacity object table for now, not a heap allocator or full VFS. */
-struct nas_file_ops;
 struct limine_file;
 struct bootfs_entry;
 struct nas_open_file {
     uint16_t refcount;
+    /* Nonzero only while this OpenFile is a kernel-owned pending lease.
+     * The token cannot be confused with the protocol stack's own handle. */
+    uint64_t lease_token;
     uint64_t status_flags;
     uint64_t position;
     const struct nas_file_ops *ops;
+    /* A class-published device node is pinned once for this shared File.
+     * dup/fork/SCM_RIGHTS transfer File references, never extra node pins. */
+    struct nas_chrdev_node *chrdev_node;
     /* Provider inode + mount pin owned by shared file description; pipes
      * and sockets leave these empty. fork/dup do not copy the inode view. */
     struct nas_fs_node vnode;
     bool vnode_pinned;
+    /* Immutable bootstrap-device identity. Unlike origin_path, this is
+     * authoritative for fstat after relative openat/dup/fork/rename. */
+    struct {
+        uint64_t dev, ino, rdev, mode, size;
+        bool valid;
+    } boot_identity;
     /* Owned positive Dentry and mount Path for directory openat/fchdir.
      * The existing vnode pin remains the independent File/inode owner;
      * dup/fork share this Dentry via their shared open description. */

@@ -1,0 +1,2 @@
+# Exactly one real NaSeed QEMU guest boot runs fifteen original Linux ELFs.
+m111-batch	cpio	sh -c '/bin/sh /tests/m111-batch-run.sh'	M111_BATCH_PASS	-	/bin/busybox

@@ -1,0 +1,31 @@
+package	elf_path	family	probe
+# M205 DISCOVERY ONLY: 20 not-yet-accepted command paths, not accepted ELFs.
+# These are candidates, not verified files: official signed Alpine v3.23 APK,
+# all three ISA ELF headers, realpath confinement, distinct SHA256 and native
+# semantic QEMU checks must precede any acceptance count. Initial signed
+# census rejected 8/25 wrong paths/scripts; the corrected manifest also
+# removes five entries already recorded in older accepted ELF manifests.
+# lnstat/rtstat intentionally share one ELF SHA: two entrypoint probes,
+# never two distinct ELFs in the acceptance count.
+# Keep package order identical to the guest inventory; lightweight
+# independent installs precede large packages that can hit network budget.
+zip	usr/bin/zipcloak	archive	encrypted-zip-roundtrip
+unzip	usr/bin/funzip	archive	zip-stdin-extraction
+unzip	usr/bin/unzipsfx	archive	self-extracting-archive
+sshpass	usr/bin/sshpass	network	controlled-ssh-authentication
+goawk	usr/bin/goawk	text	awk-field-transformation
+indent	usr/bin/indent	text	c-format-roundtrip
+zoxide	usr/bin/zoxide	terminal	path-database-roundtrip
+rlwrap	usr/bin/rlwrap	terminal	pty-wrapped-command
+mbuffer	usr/bin/mbuffer	io	stream-hash-roundtrip
+iftop	usr/sbin/iftop	network	bounded-loopback-traffic
+bmon	usr/bin/bmon	network	bandwidth-monitor-snapshot
+iproute2-ss	sbin/ss	network	live-socket-list
+iproute2	sbin/lnstat	network	link-counter-query
+iproute2	sbin/rtstat	network	route-stat-query
+btop	usr/bin/btop	process	terminal-resource-monitor
+atop	usr/bin/atop-2.12.1	process	process-accounting-snapshot
+bind-tools	usr/bin/named-compilezone	dns	zone-roundtrip
+bind-tools	usr/sbin/tsig-keygen	dns	signed-key-generation
+llvm21	usr/bin/llvm21-symbolizer	toolchain	debug-symbol-resolution
+llvm21	usr/bin/llvm21-windres	toolchain	coff-resource-conversion

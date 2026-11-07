@@ -1,0 +1,5 @@
+package	elf_path	family	probe
+# The three original signed OpenSSH clients, independently authenticated by a real host sshd.
+openssh-client-default	usr/bin/ssh	ssh	authenticated-host-command
+openssh-client-common	usr/bin/scp	ssh	authenticated-scp-file-roundtrip
+openssh-client-common	usr/bin/sftp	ssh	authenticated-sftp-file-roundtrip

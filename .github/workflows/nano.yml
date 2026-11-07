@@ -1,15 +1,5 @@
 name: NaSeed GNU nano native TTY
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-external-nano.sh'
-      - 'scripts/stage-external-nano-rootfs.sh'
-      - 'scripts/probe-external-nano.sh'
-      - 'scripts/nano-pty-oracle.py'
-      - 'scripts/nano-serial-check.py'
-      - 'tests/nano-native-init.c'
-      - 'tests/nano-note.txt'
-      - '.github/workflows/nano.yml'
   workflow_dispatch:
 
 concurrency:

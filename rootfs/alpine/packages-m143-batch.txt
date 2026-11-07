@@ -1,0 +1,7 @@
+# M143: new original ELF applications plus prior-signed curl/OpenSSL regressions.
+# Alpine v3.23 official signature-verified main and community APKs.
+wget
+aria2
+lighttpd
+curl
+openssl

@@ -1,0 +1,2 @@
+# test	root	argv	expected	ignored	application
+m160-batch	cpio	sh -c '/bin/sh /tests/m160-batch-run.sh'	M160_WIRE_IMAGE_PASS	-	/bin/busybox

@@ -1,0 +1,7 @@
+# M150: signed Alpine v3.23 archive/compression and disk forensics.
+# All seven packages exist in the v3.23 main/community APKINDEX for x86_64.
+lrzip
+par2cmdline
+pixz
+plzip
+sleuthkit

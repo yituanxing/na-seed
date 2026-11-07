@@ -1,49 +1,7 @@
 name: NaSeed three-ISA native TinyCC
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-m33-native-tcc.sh'
-      - 'scripts/stage-m33-native-tcc-rootfs.sh'
-      - 'scripts/m33-native-tcc-cases.tsv'
-      - 'scripts/probe-m33-native-tcc.sh'
-      - 'tests/tcc-first.c'
-      - 'scripts/m34-native-make-cases.tsv'
-      - 'scripts/build-m34-native-gnumake.sh'
-      - 'scripts/stage-m34-native-make-rootfs.sh'
-      - 'scripts/probe-m34-native-make.sh'
-      - 'tests/m34-portable-hello.c'
-      - 'tests/m34-native.mk'
-      - 'scripts/m35-aes-cases.tsv'
-      - 'scripts/fetch-m35-upstream-aes.sh'
-      - 'scripts/stage-m35-aes-rootfs.sh'
-      - 'scripts/probe-m35-aes.sh'
-      - 'tests/m35-rt.c'
-      - 'tests/m35-aes-check.c'
-      - 'tests/m35-native.mk'
-      - 'tests/m35-include/**'
-      - 'scripts/fetch-m36-zlib.sh'
-      - 'scripts/stage-m36-zlib-rootfs.sh'
-      - 'scripts/probe-m36-zlib.sh'
-      - 'scripts/m36-zlib-cases.tsv'
-      - 'tests/m36-zlib-check.c'
-      - 'tests/m36-zlib-native.mk'
-      - 'tests/m37-incremental.mk'
-      - 'tests/m37-native-init.c'
-      - 'scripts/m37-incremental-cases.tsv'
-      - 'scripts/probe-m37-incremental.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'kernel/bootfs.c'
-      - 'kernel/bootfs.h'
-      - 'kernel/fs/syscall.c'
-      - 'kernel/tmpfs.c'
-      - 'kernel/tmpfs.h'
-      - 'kernel/arch/linux_syscall_abi.h'
-      - 'kernel/syscall/ops.h'
-
-      - 'tests/native-exec-init.c'
-      - 'scripts/ci-ubuntu-mirror.sh'
-      - '.github/workflows/m33-native-tcc.yml'
+  # Genuine guest TinyCC/Make software builds remain fully testable on demand;
+  # app-batch PRs run host-prebuilt binaries only, never build inside NaSeed.
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

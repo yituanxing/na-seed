@@ -23,11 +23,13 @@
 #define NAS_N_GETPID 39
 #define NAS_N_TGKILL 234
 #define NAS_N_SLEEP 230
+#define NAS_N_SIGPROCMASK 14
 #elif defined(__riscv) || defined(__aarch64__)
 #define NAS_N_EXIT 93
 #define NAS_N_GETPID 172
 #define NAS_N_TGKILL 131
 #define NAS_N_SLEEP 115
+#define NAS_N_SIGPROCMASK 135
 #else
 #error "M105 supports only x86-64, RV64, AArch64"
 #endif
@@ -35,6 +37,7 @@
 #define NAS_WORKER_COUNT 2
 
 static volatile unsigned worker_started,worker_release,handler_count;
+static volatile unsigned worker_unblock_usr1,worker_did_unblock;
 static volatile unsigned worker_tid[NAS_WORKER_COUNT],worker_clear[NAS_WORKER_COUNT];
 static _Alignas(16) unsigned char worker_stacks[NAS_WORKER_COUNT][65536];
 
@@ -84,6 +87,34 @@ static void raw_pause(void) {
     __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1),"r"(x2),"r"(x8) : "memory");
 #endif
 }
+static long raw_unblock_usr1(void) {
+    const uint64_t bit=UINT64_C(1)<<(SIGUSR1-1);
+#if defined(__x86_64__)
+    register long r10 __asm__("r10")=8;
+    register long result __asm__("rax")=NAS_N_SIGPROCMASK;
+    __asm__ volatile("syscall" : "+a"(result) : "D"(1),"S"(&bit),
+                     "d"(0),"r"(r10) : "rcx","r11","memory");
+    return result;
+#elif defined(__riscv)
+    register long a0 __asm__("a0")=1;
+    register long a1 __asm__("a1")=(long)&bit;
+    register long a2 __asm__("a2")=0;
+    register long a3 __asm__("a3")=8;
+    register long a7 __asm__("a7")=NAS_N_SIGPROCMASK;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1),"r"(a2),"r"(a3),
+                     "r"(a7) : "memory");
+    return a0;
+#else
+    register long x0 __asm__("x0")=1;
+    register long x1 __asm__("x1")=(long)&bit;
+    register long x2 __asm__("x2")=0;
+    register long x3 __asm__("x3")=8;
+    register long x8 __asm__("x8")=NAS_N_SIGPROCMASK;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1),"r"(x2),"r"(x3),
+                     "r"(x8) : "memory");
+    return x0;
+#endif
+}
 /* CLONE_SETTLS installs a null thread pointer in this deliberately libc-free
  * worker.  With a distro's default -fstack-protector-strong, GCC would read
  * the canary from that absent TLS before even incrementing worker_started.
@@ -91,7 +122,13 @@ static void raw_pause(void) {
  * normal stack-protector policy. */
 static __attribute__((noreturn,used,no_stack_protector)) void worker_main(void) {
     __atomic_add_fetch(&worker_started,1,__ATOMIC_SEQ_CST);
-    while(!worker_release)raw_pause();
+    while(!worker_release) {
+        if(worker_unblock_usr1) {
+            worker_did_unblock=raw_unblock_usr1()==0 ? 1U : 2U;
+            worker_unblock_usr1=0;
+        }
+        raw_pause();
+    }
     raw_thread_exit();
 }
 /* The child must jump into a freshly allocated stack, not `ret` through
@@ -134,6 +171,7 @@ __attribute__((naked)) static long launch_worker(
 static void make_workers(unsigned count) {
     ck(count>0 && count<=NAS_WORKER_COUNT,"worker count");
     worker_started=worker_release=0;
+    worker_unblock_usr1=worker_did_unblock=0;
     for(unsigned i=0;i<count;i++) {
         worker_tid[i]=0;
         worker_clear[i]=0x13572468U;
@@ -176,6 +214,52 @@ static void wait_signal(pid_t pid,int signum) {
 static void handle_quit(int signo) {
     if(signo!=SIGQUIT)raw_thread_exit();
     __atomic_add_fetch(&handler_count,1,__ATOMIC_SEQ_CST);
+}
+static void handle_usr1(int signo) {
+    if(signo==SIGUSR1)
+        __atomic_add_fetch(&handler_count,1,__ATOMIC_SEQ_CST);
+}
+/* The signal is generated while ALL TIDs mask it. Its process owner must
+ * retain it until a sibling -- not the leader -- later unblocks it. */
+static void stage_late_unmask_shared_pending(void) {
+    int ready[2],go[2];
+    ck(pipe(ready)==0 && pipe(go)==0,"shared pending handshakes");
+    pid_t leader=fork();ck(leader>=0,"fork shared-pending leader");
+    if(!leader) {
+        close(ready[0]);close(go[1]);
+        struct sigaction sa;
+        memset(&sa,0,sizeof(sa));
+        sigemptyset(&sa.sa_mask);
+        sa.sa_handler=handle_usr1;
+        ck(sigaction(SIGUSR1,&sa,NULL)==0,"install inherited SIGUSR1 handler");
+        sigset_t blocked;
+        sigemptyset(&blocked);sigaddset(&blocked,SIGUSR1);
+        ck(sigprocmask(SIG_BLOCK,&blocked,NULL)==0,"mask leader before clone");
+        handler_count=0;
+        make_workers(1);
+        send_ready(ready[1],'B');
+        wait_ready(go[0],'G');
+        sigset_t pending;
+        ck(sigpending(&pending)==0 && sigismember(&pending,SIGUSR1)==1,
+           "process signal persists while every TID masks it");
+        worker_unblock_usr1=1;
+        for(unsigned tries=0;handler_count==0 && tries<300;tries++)nap(10);
+        ck(worker_did_unblock==1 && handler_count==1,
+           "different TID consumed process signal after unmask");
+        nap(100);
+        ck(handler_count==1,"single process signal delivered exactly once");
+        finish_workers(1);
+        _exit(0);
+    }
+    close(ready[1]);close(go[0]);
+    wait_ready(ready[0],'B');
+    ck(kill(leader,SIGUSR1)==0,"kill masked process TGID");
+    send_ready(go[1],'G');
+    close(ready[0]);close(go[1]);
+    int status=0;
+    ck(waitpid(leader,&status,0)==leader && WIFEXITED(status) &&
+       WEXITSTATUS(status)==0,"masked signal delivered by late-unmasked worker");
+    mark("M105_GROUP_SHARED_PENDING_PASS");
 }
 static void child_default(int ready_fd,int ttyfd,unsigned count,char token) {
     (void)ttyfd;
@@ -299,6 +383,7 @@ int main(int argc,char **argv) {
      * zombie-leader cases. Only a real NaSeed PID 1 can enforce the
      * intentionally protected init-worker terminal policy. */
     if(argc==2 && strcmp(argv[1],"--linux-oracle")==0) {
+        stage_late_unmask_shared_pending();
         stage_zombie_leader(SIGTERM,0);
         stage_zombie_leader(SIGINT,1);
         mark("M105_LINUX_ORACLE_PASS");
@@ -308,6 +393,7 @@ int main(int argc,char **argv) {
     int ttyfd=tty_setup();
     stage_default_sigint(ttyfd);
     stage_mixed_sigquit(ttyfd);
+    stage_late_unmask_shared_pending();
     stage_zombie_leader(SIGTERM,0);
     stage_zombie_leader(SIGINT,1);
     mark("M105_ZOMBIE_LEADER_KILL_PASS");

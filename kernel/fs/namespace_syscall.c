@@ -6,13 +6,13 @@
 #include "../panic.h"
 #include "../task.h"
 #include "../fd.h"
-#include "../bootfs.h"
 #include "../tmpfs.h"
-#include "../path.h"
 #include "../arch/linux_fcntl_abi.h"
 #include "../lib/string.h"
 #include "../mm/usercopy.h"
 #include "../arch/mmu.h"
+#include "../mm/heap.h"
+#include "../mm/frame.h"
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
@@ -29,23 +29,24 @@ void nas_fs_path_end(struct nas_fs_path_request *request) {
         nas_fail("path request start reference corrupted");
     if(request->root.dentry && nas_vfs_path_put(&request->root))
         nas_fail("path request root reference corrupted");
+    if(request->pathname && request->pathname!=request->inline_path &&
+       !nas_heap_free(request->pathname))
+        nas_fail("path request heap pathname ownership corrupted");
+    request->pathname=0;
 }
 
-int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
-                             struct nas_fs_path_request *request) {
-    if(!kernel_path || !request)return -EINVAL;
-    *request=(struct nas_fs_path_request){0};
-    size_t length=strnlen(kernel_path,sizeof(request->pathname));
-    if(length==sizeof(request->pathname))return -ENAMETOOLONG;
-    if(!length)return -ENOENT;
-    memcpy(request->pathname,kernel_path,length+1);
+/* One owner for the cwd/dirfd/root Path lifetime, shared by user and kernel
+ * pathname entry points. The caller has already copied a complete pathname
+ * into either inline or owned heap memory. */
+static int begin_anchored_path(uint64_t dirfd,
+                               struct nas_fs_path_request *request) {
     int rc=nas_vfs_path_root(&request->root);
     /* Original direct-ELF boots can have mounted children but no root
      * archive. Path namei has a rootless fallback; keep a NULL clamp only
      * for this precise case, never for a failed mounted lookup. */
     if(rc==-ENOENT)rc=0;
-    else if(rc)return rc;
-    if(kernel_path[0]=='/')return 0;
+    else if(rc) {nas_fs_path_end(request);return rc;}
+    if(request->pathname[0]=='/')return 0;
     int64_t fd=nas_linux_signed_dirfd(dirfd);
     const struct nas_vfs_path *base=NULL;
     if(fd==-100) {
@@ -67,13 +68,41 @@ int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
     return rc;
 }
 
+int nas_fs_kernel_path_begin(uint64_t dirfd,const char *kernel_path,
+                             struct nas_fs_path_request *request) {
+    if(!kernel_path || !request)return -EINVAL;
+    *request=(struct nas_fs_path_request){0};
+    size_t length=strnlen(kernel_path,NAS_VFS_WALK_PATH_LIMIT);
+    if(length==NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
+    if(!length)return -ENOENT;
+    request->pathname=request->inline_path;
+    if(length>=sizeof(request->inline_path)) {
+        request->pathname=nas_heap_alloc(length+1);
+        if(!request->pathname)return -ENOMEM;
+    }
+    memcpy(request->pathname,kernel_path,length+1);
+    return begin_anchored_path(dirfd,request);
+}
+
 int nas_fs_user_path_begin(uint64_t dirfd,uint64_t user_pointer,
                            struct nas_fs_path_request *request) {
     if(!request)return -EINVAL;
-    char source[256];
-    int rc=nas_user_read_cstr(user_pointer,source,sizeof(source));
-    if(rc)return rc;
-    return nas_fs_kernel_path_begin(dirfd,source,request);
+    *request=(struct nas_fs_path_request){0};
+    request->pathname=request->inline_path;
+    int rc=nas_user_read_cstr(user_pointer,request->inline_path,
+                              sizeof(request->inline_path));
+    if(rc==-ENAMETOOLONG) {
+        /* Namei already accepts PATH_MAX strings. Keep only the rare long
+         * syscall pathname in the heap instead of inflating every stack
+         * frame using nas_fs_path_request. */
+        request->pathname=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+        if(!request->pathname)return -ENOMEM;
+        rc=nas_user_read_cstr(user_pointer,request->pathname,
+                              NAS_VFS_WALK_PATH_LIMIT);
+    }
+    if(!rc && !request->pathname[0])rc=-ENOENT;
+    if(rc) {nas_fs_path_end(request);return rc;}
+    return begin_anchored_path(dirfd,request);
 }
 
 int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t user_pointer,
@@ -95,78 +124,6 @@ int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t user_pointer,
         nas_fs_path_end(request);
     }
     return rc;
-}
-
-/* Component walking, dot/dotdot, symlinks and negative final names
- * belong to one namei owner in lookup.c, not syscall-specific copies. */
-static int resolve_component_path(const char *base,const char *src,
-                                  char out[256]) {
-    char raw[256];
-    int rc=nas_path_join_raw(base,src,raw);
-    if(rc)return rc;
-    rc=nas_fs_canonical_candidate(raw,out);
-    if(rc!=-ENOENT)return rc;
-    /* Temporary bootstrap compatibility: synthetic /dev names have no
-     * devfs inodes, and CPIO-less direct ELF has no root VFS inode.
-     * Never skip actual dot components via this escape hatch. */
-    bool dot=false;
-    for(unsigned i=1;raw[i];i++) {
-        if(raw[i]!='.' || raw[i-1]!='/')continue;
-        if(!raw[i+1] || raw[i+1]=='/' ||
-           (raw[i+1]=='.' && (!raw[i+2] || raw[i+2]=='/')))
-            dot=true;
-    }
-    if(!dot && (!strncmp(raw,"/dev/",5) || !bootfs_mounted())) {
-        memcpy(out,raw,strlen(raw)+1);
-        return 0;
-    }
-    return rc;
-}
-/* This adapter owns user-memory copying and directory-FD resolution.
- * Component semantics are checked using the same VFS namei as openat. */
-uint64_t nas_fs_resolve_path(uint64_t dirfd, uint64_t pathname,
-                             char out[256]) {
-    char src[256];
-    int copy_rc=nas_user_read_cstr(pathname,src,sizeof(src));
-    if(copy_rc)return (uint64_t)(int64_t)copy_rc;
-    if (!src[0]) return (uint64_t)-ENOENT;
-    const char *base=NULL;
-    char inode_base[256];
-    if(src[0]!='/') {
-        /* *at syscall dirfd is a native int, not a native pointer/long.
-         * Do not compare raw 64-bit syscall registers against (u64)-100:
-         * GNU libc/BusyBox may hand us 0x00000000ffffff9c. */
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_path.dentry) {
-                int err=nas_vfs_path_string(&TASK.fs->cwd_path,inode_base);
-                if(err)return (uint64_t)(int64_t)err;
-                base=inode_base;
-            } else if(TASK.fs->cwd_pinned) {
-                /* An inode-only FS cwd is an invalid owner, NOT a reason
-                 * to reverse-resolve a stale pathname from a provider. */
-                return (uint64_t)-ESTALE;
-            } else base=current_workdir;
-        } else {
-            if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-               TASK.fds->entries[fd].kind==FD_CLOSED)
-                return (uint64_t)-EBADF;
-            const struct nas_open_file *opened=
-                &nas_open_files[TASK.fds->entries[fd].slot];
-            /* Linux openat(dirfd) uses the file's owned directory path.
-             * No procfs/tmpfs/archive FD type is privileged here. */
-            if(!opened->vnode_pinned || !opened->vnode.is_dir)
-                return (uint64_t)-ENOTDIR;
-            /* Every ordinary directory File owns a Path from the same
-             * VFS open transaction. A missing path is a broken owner,
-             * NEVER a reason to reopen origin_path through the backend. */
-            if(!opened->vpath.dentry)return (uint64_t)-ESTALE;
-            int err=nas_vfs_path_string(&opened->vpath,inode_base);
-            if(err)return (uint64_t)(int64_t)err;
-            base=inode_base;
-        }
-    }
-    return (uint64_t)(int64_t)resolve_component_path(base,src,out);
 }
 
 /* Linux syscall decoders retain user-pointer validation and task-relative
@@ -214,8 +171,10 @@ static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
 static uint64_t sys_renameat_tmp(uint64_t olddirfd, uint64_t oldptr,
                                  uint64_t newdirfd, uint64_t newptr,
                                  uint64_t flags) {
-    /* Reject unsupported flags before reading user paths, as before. */
-    if (flags & ~1ULL) return (uint64_t)-EINVAL;
+    /* The VFS and tmpfs both implement NOREPLACE and EXCHANGE. Keep the
+     * syscall entrypoint in sync: rejecting bit 1 here made genuine Linux
+     * renameat2(RENAME_EXCHANGE) unreachable despite backend host tests. */
+    if ((flags & ~3ULL) || flags == 3ULL) return (uint64_t)-EINVAL;
     struct nas_fs_path_request oldpath,newpath;
     int rc=nas_fs_user_path_begin(olddirfd,oldptr,&oldpath);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -305,8 +264,28 @@ static uint64_t sys_getcwd_root(uint64_t buffer, uint64_t size) {
     if(TASK.fs->cwd_path.dentry) {
         char live[256];
         int err=nas_vfs_path_string(&TASK.fs->cwd_path,live);
-        if(err)return (uint64_t)(int64_t)err;
-        memcpy(current_workdir,live,strlen(live)+1);
+        char *path=live;
+        if(err==-ENAMETOOLONG) {
+            /* Deep cwd identity is the owned Dentry, not cwd[256]. Only
+             * exceptional long getcwd requests need a PATH_MAX heap copy. */
+            path=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+            if(!path)return (uint64_t)-ENOMEM;
+            err=nas_vfs_path_string_buf(&TASK.fs->cwd_path,path,
+                                        NAS_VFS_WALK_PATH_LIMIT);
+        }
+        if(err) {
+            if(path!=live)(void)nas_heap_free(path);
+            return (uint64_t)(int64_t)err;
+        }
+        uint64_t length=strlen(path)+1U;
+        if(length<=sizeof(TASK.fs->cwd))
+            memcpy(current_workdir,path,(size_t)length);
+        else current_workdir[0]=0; /* optional short diagnostic only */
+        uint64_t result=size<length ? (uint64_t)-ERANGE :
+            (nas_user_write_bytes(buffer,(const uint8_t *)path,length) ?
+                length : (uint64_t)-EFAULT);
+        if(path!=live)(void)nas_heap_free(path);
+        return result;
     } else if(TASK.fs->cwd_pinned) {
         /* A pinned cwd MUST own a Dentry Path; no provider-supplied
          * inode->name escape hatch remains in the Linux ABI. */
@@ -335,10 +314,11 @@ static uint64_t set_cwd_owned(const struct nas_fs_node *node,
      * display cache. A detached directory has no printable absolute name:
      * Linux fchdir(fd) succeeds but getcwd() reports ENOENT. NULL means
      * precisely this absence, never a cue to reopen an old cwd string. */
-    if(canonical && strnlen(canonical,sizeof(TASK.fs->cwd))==sizeof(TASK.fs->cwd)) {
-        if(nas_vfs_path_put(next))nas_fail("overlong cwd Path ref");
-        return (uint64_t)-ENAMETOOLONG;
-    }
+    /* Long absolute paths have no 256-byte display cache, but remain
+     * perfectly valid owned cwd Paths. Never fail chdir/fchdir because a
+     * diagnostic cannot represent the already-resolved directory. */
+    if(canonical && strnlen(canonical,sizeof(TASK.fs->cwd))==sizeof(TASK.fs->cwd))
+        canonical=NULL;
     int rc=nas_vfs_node_pin(node);
     if(rc) {
         (void)nas_vfs_path_put(next);
@@ -369,7 +349,7 @@ static uint64_t sys_chdir(uint64_t pathname) {
     if(!rc)rc=nas_vfs_path_node(&next,&node);
     if(!rc) {
         int text_rc=nas_vfs_path_string(&next,live);
-        if(text_rc && text_rc!=-ENOENT)rc=text_rc;
+        if(text_rc && text_rc!=-ENOENT && text_rc!=-ENAMETOOLONG)rc=text_rc;
         else {
             uint64_t result=set_cwd_owned(&node,&next,
                                           text_rc ? NULL : live);
@@ -399,11 +379,155 @@ static uint64_t sys_fchdir(uint64_t fd) {
     if(rc)return (uint64_t)(int64_t)rc;
     char live[256];
     rc=nas_vfs_path_string(&next,live);
-    if(rc && rc!=-ENOENT) {
+    if(rc && rc!=-ENOENT && rc!=-ENAMETOOLONG) {
         (void)nas_vfs_path_put(&next);
         return (uint64_t)(int64_t)rc;
     }
     return set_cwd_owned(&opened->vnode,&next,rc ? NULL : live);
+}
+
+/* Linux mount(2) is a namespace operation, not an architecture-specific
+ * backdoor into the boot filesystem. Accept only real supported providers
+ * and options; the VFS already owns the mount graph and covered dentries. */
+static int mount_target(uint64_t pointer,char target[256]) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path found={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_lookup_begin((uint64_t)-100,pointer,true,
+                                     &request,&found,&node);
+    if(rc)return rc;
+    if(!node.is_dir)rc=-ENOTDIR;
+    if(!rc)rc=nas_vfs_path_string_buf(&found,target,256);
+    if(found.dentry && nas_vfs_path_put(&found))nas_fail("mount target ref");
+    nas_fs_path_end(&request);
+    return rc;
+}
+/* Values are enforced by the tmpfs superblock's actual data-page and inode
+ * accounting, not discarded because OpenRC happens to request large limits.
+ * tmpfs sizes use percentages of managed RAM or binary K/M/G byte units. */
+static int parse_scaled_number(const char *text,uint64_t *value) {
+    if(!text || *text<'0' || *text>'9')return -EINVAL;
+    uint64_t number=0;
+    while(*text>='0' && *text<='9') {
+        unsigned digit=(unsigned)(*text++-'0');
+        if(number>(UINT64_MAX-digit)/10ULL)return -ERANGE;
+        number=number*10ULL+digit;
+    }
+    unsigned shift=0;
+    if(*text=='k' || *text=='K')shift=10;
+    else if(*text=='m' || *text=='M')shift=20;
+    else if(*text=='g' || *text=='G')shift=30;
+    if(shift)text++;
+    if(*text || number>(UINT64_MAX>>shift))return -ERANGE;
+    *value=number<<shift;
+    return number ? 0 : -EINVAL;
+}
+static int parse_tmpfs_options(const char *data,uint32_t *mode,
+                                uint64_t *max_pages,uint64_t *max_inodes) {
+    *mode=0755U;
+    uint64_t frames=nas_managed_frames();
+    if(!frames)return -ENOMEM;
+    *max_pages=frames/2ULL ? frames/2ULL : 1;
+    *max_inodes=frames/2ULL ? frames/2ULL : 1;
+    if(!data[0])return 0;
+    const char *cursor=data;
+    while(*cursor) {
+        char option[64];unsigned n=0;
+        while(*cursor && *cursor!=',') {
+            if(n+1>=sizeof(option))return -EINVAL;
+            option[n++]=*cursor++;
+        }
+        option[n]=0;
+        if(*cursor==',')cursor++;
+        if(!strncmp(option,"mode=",5)) {
+            if(!option[5])return -EINVAL;
+            uint32_t value=0;
+            for(const char *digit=option+5;*digit;digit++) {
+                if(*digit<'0' || *digit>'7' || value>0777U)
+                    return -EINVAL;
+                value=(value<<3)+(uint32_t)(*digit-'0');
+            }
+            if(value>07777U)return -EINVAL;
+            *mode=value;
+        } else if(!strncmp(option,"size=",5)) {
+            size_t length=strlen(option+5);
+            if(length && option[5+length-1]=='%') {
+                option[5+length-1]=0;
+                uint64_t percent;
+                int rc=parse_scaled_number(option+5,&percent);
+                if(rc)return rc;
+                if(percent>100)return -EINVAL;
+                /* Avoid overflow even with a large physical frame count. */
+                *max_pages=(frames/100ULL)*percent+
+                           ((frames%100ULL)*percent)/100ULL;
+                if(!*max_pages)*max_pages=1;
+            } else {
+                uint64_t bytes;
+                int rc=parse_scaled_number(option+5,&bytes);
+                if(rc)return rc;
+                *max_pages=bytes/4096ULL+((bytes%4096ULL)!=0);
+            }
+        } else if(!strncmp(option,"nr_inodes=",10)) {
+            int rc=parse_scaled_number(option+10,max_inodes);
+            if(rc)return rc;
+        } else if(strcmp(option,"nosuid") && strcmp(option,"nodev") &&
+                  strcmp(option,"rw") && strcmp(option,"ro"))
+            return -EOPNOTSUPP;
+    }
+    return 0;
+}
+static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
+                          uint64_t type_ptr,uint64_t flags,
+                          uint64_t data_ptr) {
+    /* MS_RDONLY=1, MS_NOSUID=2, MS_NODEV=4, MS_NOEXEC=8 and
+     * MS_STRICTATIME=1<<24. MS_SILENT=1<<15 affects only kernel
+     * diagnostic verbosity, not mount state; there is nothing to emit.
+     * Procfs has no executable regular files,
+     * device nodes or set-ID transitions; runtime tmpfs implements
+     * strict atime and separately limits its data pages and inodes.
+     * Bind/remount/propagation and tmpfs noexec remain unsupported. */
+    flags &= ~(1ULL<<15);
+    char source[64]={0},fstype[32],target[256],data[256]={0};
+    int rc=0;
+    if(source_ptr)rc=nas_user_read_cstr(source_ptr,source,sizeof(source));
+    if(!rc && !type_ptr)rc=-EINVAL;
+    if(!rc)rc=nas_user_read_cstr(type_ptr,fstype,sizeof(fstype));
+    if(!rc && data_ptr)rc=nas_user_read_cstr(data_ptr,data,sizeof(data));
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(strcmp(fstype,"tmpfs") && strcmp(fstype,"proc"))
+        return (uint64_t)-ENODEV;
+    rc=mount_target(target_ptr,target);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(!strcmp(fstype,"proc")) {
+        if(strcmp(source,"proc") || (flags&~14ULL) || data[0] ||
+           strcmp(target,"/proc"))return (uint64_t)-EINVAL;
+        /* /proc is already a permanent, genuine procfs attachment.
+         * Idempotence is limited to the exact same existing superblock. */
+        for(unsigned i=0;;i++) {
+            struct nas_vfs_mount_snapshot entry;
+            rc=nas_vfs_mount_snapshot(i,&entry);
+            if(rc)return (uint64_t)-ENODEV;
+            if(!strcmp(entry.target,"/proc"))
+                return !strcmp(entry.fstype,"procfs") &&
+                       !strcmp(entry.source,"procfs") ?
+                       0 : (uint64_t)-EBUSY;
+        }
+    }
+    if(flags&~(7ULL|(1ULL<<24)))return (uint64_t)-EOPNOTSUPP;
+    if(!source[0])return (uint64_t)-EINVAL;
+    uint32_t mode;
+    uint64_t max_pages,max_inodes;
+    rc=parse_tmpfs_options(data,&mode,&max_pages,&max_inodes);
+    if(!rc)rc=nas_vfs_mount_tmpfs(target,source,mode,(flags&1ULL)!=0,
+                                  max_pages,max_inodes,(flags&(1ULL<<24))!=0);
+    return (uint64_t)(int64_t)rc;
+}
+static uint64_t sys_umount2(uint64_t target_ptr,uint64_t flags) {
+    if(flags)return (uint64_t)-EOPNOTSUPP;
+    char target[256];
+    int rc=mount_target(target_ptr,target);
+    if(!rc)rc=nas_vfs_umount_tmpfs(target);
+    return (uint64_t)(int64_t)rc;
 }
 
 
@@ -414,6 +538,8 @@ struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
     case NAS_SC_getcwd: NAMESPACE_RESULT(sys_getcwd_root(args[1], args[2]));
     case NAS_SC_chdir: NAMESPACE_RESULT(sys_chdir(args[1]));
     case NAS_SC_fchdir: NAMESPACE_RESULT(sys_fchdir(args[1]));
+    case NAS_SC_mount: NAMESPACE_RESULT(sys_mount(args[1],args[2],args[3],args[4],args[5]));
+    case NAS_SC_umount2: NAMESPACE_RESULT(sys_umount2(args[1],args[2]));
     case NAS_SC_link: NAMESPACE_RESULT(sys_linkat_tmp((uint64_t)-100,args[1],(uint64_t)-100,args[2],0));
     case NAS_SC_linkat: NAMESPACE_RESULT(sys_linkat_tmp(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_rename: NAMESPACE_RESULT(sys_renameat_tmp((uint64_t)-100, args[1], (uint64_t)-100, args[2], 0));

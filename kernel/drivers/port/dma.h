@@ -27,6 +27,11 @@ struct nas_dma_provider {
                 uint32_t bytes, enum nas_dma_direction);
 };
 int nas_dma_alloc_page(const struct nas_dma_provider *, struct nas_dma_page *);
+/* If a provider allocates an invalid descriptor and its rollback release
+ * fails, allocation returns that release error and leaves page.cpu non-NULL
+ * when one was supplied. The caller must retry nas_dma_free_page() before
+ * reusing this descriptor; failed allocation does not always mean no owner.
+ * Providers must never claim success with a missing CPU mapping. */
 int nas_dma_free_page(const struct nas_dma_provider *, struct nas_dma_page *);
 int nas_dma_sync(const struct nas_dma_provider *, struct nas_dma_page *,
                  uint32_t, uint32_t, enum nas_dma_direction);

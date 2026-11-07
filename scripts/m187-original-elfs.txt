@@ -1,0 +1,30 @@
+# M187: 26 new util-linux-misc Alpine v3.23 main ELF paths, not in M58-M186.
+# The host stage proves each is signed APK-installed, executable and native
+# x86-64/AArch64/RV64 ELF with a distinct actual SHA256. No BusyBox aliases.
+# Official provenance: https://pkgs.alpinelinux.org/contents?arch=riscv64&branch=v3.23&name=util-linux-misc&repo=main
+bin/wdctl
+sbin/blkdiscard
+sbin/blkpr
+sbin/blkzone
+sbin/chcpu
+sbin/ctrlaltdel
+sbin/fsfreeze
+sbin/pivot_root
+sbin/swaplabel
+sbin/zramctl
+usr/sbin/readprofile
+usr/sbin/rfkill
+usr/sbin/rtcwake
+usr/bin/chmem
+usr/bin/choom
+usr/bin/coresched
+usr/bin/enosys
+usr/bin/irqtop
+usr/bin/lsirq
+usr/bin/lsns
+usr/bin/mesg
+usr/bin/nsenter
+usr/bin/setterm
+usr/bin/uclampset
+usr/bin/unshare
+usr/bin/wall

@@ -1,0 +1,2 @@
+# Fifteen signed original Linux ELFs in one native QEMU boot per ISA.
+m113-batch	cpio	sh -c '/bin/sh /tests/m113-batch-run.sh'	M113_BATCH_PASS	-	/bin/busybox

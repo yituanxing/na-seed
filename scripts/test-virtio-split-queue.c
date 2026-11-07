@@ -8,6 +8,31 @@
 #include <string.h>
 static _Alignas(4096) uint8_t pages[2][NAS_DMA_PAGE_BYTES];
 static bool used[2];
+struct faulty_dma {
+    unsigned releases_failed;
+    unsigned release_attempts;
+    unsigned release_successes;
+    bool unaligned_bus;
+    bool invalid_page_size;
+};
+static int faulty_alloc(void *context, struct nas_dma_page *page) {
+    struct faulty_dma *fault=context;
+    int rc=nas_dma_qemu_coherent.alloc_page(NULL,page);
+    if (!rc && fault->unaligned_bus) page->bus_address++;
+    if (!rc && fault->invalid_page_size) page->bytes--;
+    return rc;
+}
+static int faulty_free(void *context, struct nas_dma_page *page) {
+    struct faulty_dma *fault=context;
+    fault->release_attempts++;
+    if (fault->releases_failed) {
+        fault->releases_failed--;
+        return -EIO;
+    }
+    int rc=nas_dma_qemu_coherent.release_page(NULL,page);
+    if (!rc) fault->release_successes++;
+    return rc;
+}
 uint64_t nas_hhdm_offset(void) { return 0; }
 uint64_t nas_frame_alloc(void) {
     for (unsigned i=0;i<2;i++) if (!used[i]) {
@@ -49,6 +74,68 @@ static const struct nas_virtio_transport_ops ops={
   .read_features=rd_features,.write_features=wr_features,
   .setup_queue=setup,.notify_queue=notify,.read_config32=read_config
 };
+static void test_retriable_dma_ownership(void) {
+    struct mock dev={.supported=NAS_VIRTIO_F_VERSION_1};
+    struct faulty_dma fault={.releases_failed=2};
+    const struct nas_dma_provider dma={.context=&fault,.coherent=true,
+        .alloc_page=faulty_alloc,.release_page=faulty_free};
+    const struct nas_virtio_transport tr={.context=&dev,.ops=&ops,.dma=&dma};
+    struct nas_vring_queue q={0};
+
+    /* queue 1 is deliberately rejected by the mock transport *after* a
+     * ring page is owned. The failed rollback must retain that owner. */
+    assert(nas_vring_queue_init(&q,&tr,1,8)==-EINVAL);
+    assert(!q.active && q.dma_page.cpu && q.transport==&tr);
+    assert(q.poisoned && dev.resets==1 && fault.release_attempts==1);
+    assert(used[0] && !used[1]);
+    assert(nas_vring_queue_init(&q,&tr,0,8)==-EBUSY);
+    assert(nas_vring_queue_close(&q)==-EIO);
+    assert(!q.active && q.dma_page.cpu && fault.release_attempts==2);
+    assert(used[0] && dev.resets==1);
+    assert(nas_vring_queue_close(&q)==0);
+    assert(!q.dma_page.cpu && !used[0] && !used[1]);
+    assert(fault.release_attempts==3 && fault.release_successes==1);
+
+    /* After the orphan is drained, a later probe can reuse the queue. */
+    assert(nas_vring_queue_init(&q,&tr,0,8)==0 && q.active);
+    fault.releases_failed=1;
+    assert(nas_vring_queue_close(&q)==-EIO);
+    assert(!q.active && q.dma_page.cpu && q.poisoned);
+    assert(dev.resets==2 && used[0]);
+    uint16_t head=0;
+    const struct nas_vring_segment seg={.length=16};
+    assert(nas_vring_queue_submit(&q,&seg,1,&head)==-EINVAL);
+    assert(nas_vring_queue_init(&q,&tr,0,8)==-EBUSY);
+    assert(nas_vring_queue_close(&q)==0);
+    assert(dev.resets==2 && !used[0] && !used[1]);
+    assert(fault.release_successes==2);
+
+    /* Before setup_queue, an invalid DMA alignment has no device owner;
+     * even then a failed release must not erase the page's CPU pointer. */
+    fault.unaligned_bus=true;
+    fault.releases_failed=1;
+    assert(nas_vring_queue_init(&q,&tr,0,8)==-EINVAL);
+    assert(!q.active && q.dma_page.cpu && used[0]);
+    assert(dev.resets==2);
+    assert(nas_vring_queue_close(&q)==0);
+    assert(!used[0] && !used[1] && fault.release_successes==3);
+
+    /* A DMA provider can return an invalid mapped size AND fail to free
+     * it when nas_dma_alloc_page attempts its own rollback. This never
+     * reaches queue setup, yet its page is still owned by the queue. */
+    fault.unaligned_bus=false;
+    fault.invalid_page_size=true;
+    fault.releases_failed=2;
+    assert(nas_vring_queue_init(&q,&tr,0,8)==-EIO);
+    assert(!q.active && q.dma_page.cpu && q.transport==&tr);
+    assert(q.poisoned && q.dma_page.bytes==NAS_DMA_PAGE_BYTES-1U);
+    assert(nas_vring_queue_init(&q,&tr,0,8)==-EBUSY);
+    assert(nas_vring_queue_close(&q)==-EIO);
+    assert(q.dma_page.cpu && used[0]);
+    assert(nas_vring_queue_close(&q)==0);
+    assert(!q.dma_page.cpu && !used[0] && !used[1]);
+    assert(dev.resets==2 && fault.release_successes==4);
+}
 int main(void) {
     struct mock dev={.supported=NAS_VIRTIO_F_VERSION_1};
     const struct nas_virtio_transport transport={.context=&dev,.ops=&ops,
@@ -103,6 +190,7 @@ int main(void) {
     assert(dev.status&NAS_VIRTIO_STATUS_FAILED);
     assert(nas_vring_queue_close(&q)==0);
     assert(!used[0]&&!used[1]&&dev.resets>=1);
-    puts("[UPSTREAM VRING ADAPTER PASS] pinned layout, DMA, scatter/gather, 1024 wraps, out-of-order completion, corruption, close");
+    test_retriable_dma_ownership();
+    puts("[UPSTREAM VRING ADAPTER PASS] pinned layout, DMA, scatter/gather, 1024 wraps, out-of-order completion, corruption, retryable close/init failure");
     return 0;
 }

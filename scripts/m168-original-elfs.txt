@@ -1,0 +1,3 @@
+# Two additional newly signed Alpine 3.23 ELF applications.
+usr/bin/lynx
+usr/bin/mc

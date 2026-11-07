@@ -1,0 +1,48 @@
+name: NaSeed M141 signed Alpine ELF inventory (host only, no QEMU)
+on:
+  # A new workflow is not dispatchable from a non-default branch. Pushing the
+  # workflow itself explicitly runs one candidate census, not a full OS test.
+  # Re-run with the canonical, SHA-verified target-ISA signing keys.
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m141-candidate-inventory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-signed-apk-census:
+    name: M141 host-only official APK ELF census / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate unaccepted pool and shell syntax
+        run: |
+          set -eu
+          python3 scripts/check-m141-candidates.py
+          sh -n scripts/inventory-m141-signed-apks.sh
+      - name: Fetch signed Alpine 3.23 packages and classify real ELF/SHA
+        timeout-minutes: 45
+        run: sh scripts/inventory-m141-signed-apks.sh ${{ matrix.port }}
+      - name: Preserve exact candidate ELF and APK provenance inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m141-signed-host-candidates-${{ matrix.port }}
+          path: |
+            build/external/m141-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m141-candidate-inventory/${{ matrix.port }}/candidates.tsv
+          if-no-files-found: ignore

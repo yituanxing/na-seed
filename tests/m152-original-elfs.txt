@@ -1,0 +1,38 @@
+# 35 NEW original ELF identities verified against earlier M-series manifests.
+# DNS/LDNS: 14; net-tools: 8; iputils: 2; conntrack: 3;
+# syslog-ng: 4; rsyslog: 1; msmtp: 2; socat procan: 1.
+usr/bin/drill
+usr/bin/ldns-chaos
+usr/bin/ldns-compare-zones
+usr/bin/ldns-dane
+usr/bin/ldns-gen-zone
+usr/bin/ldns-key2ds
+usr/bin/ldns-keygen
+usr/bin/ldns-mx
+usr/bin/ldns-nsec3-hash
+usr/bin/ldns-read-zone
+usr/bin/ldns-resolver
+usr/bin/ldns-signzone
+usr/bin/ldns-test-edns
+usr/bin/ldns-verify-zone
+bin/netstat
+bin/route
+sbin/arp
+sbin/ifconfig
+sbin/ipmaddr
+sbin/iptunnel
+sbin/nameif
+sbin/rarp
+usr/sbin/arping
+usr/sbin/tracepath
+usr/sbin/conntrack
+usr/sbin/conntrackd
+usr/sbin/nfct
+usr/sbin/syslog-ng
+usr/sbin/syslog-ng-ctl
+usr/bin/loggen
+usr/bin/pdbtool
+usr/sbin/rsyslogd
+usr/bin/msmtp
+usr/bin/msmtpd
+usr/bin/procan

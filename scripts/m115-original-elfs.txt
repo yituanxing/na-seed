@@ -1,0 +1,16 @@
+# 15 distinct original signed Alpine ELF programs (not BusyBox applets).
+usr/bin/openssl
+usr/bin/ssh-keygen
+usr/bin/gawk
+usr/bin/diff
+usr/bin/diff3
+usr/bin/patch
+usr/bin/rsync
+usr/bin/file
+usr/bin/find
+usr/bin/xargs
+bin/grep
+bin/sed
+usr/bin/bc
+usr/bin/dc
+usr/bin/cmp

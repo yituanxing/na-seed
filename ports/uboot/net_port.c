@@ -1,0 +1,425 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ * Exact pinned U-Boot VirtIO-Net driver; no forked queue or Ethernet logic.
+ * Only the VirtIO DMA bounce boundary and NaSeed device model live here. */
+#include "net_port.h"
+#include "../../kernel/mm/heap.h"
+#include "../../kernel/errno.h"
+#include "../../kernel/lib/string.h"
+#include "../../kernel/drivers/serial.h"
+#include "../../kernel/task/kthread.h"
+#include "../../kernel/arch/arch.h"
+#include <stddef.h>
+#include <stdint.h>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#include "../../third_party/uboot/drivers/virtio/virtio_net.c"
+#pragma GCC diagnostic pop
+
+#define NAS_NET_TX_POLL_BUDGET 2000000U
+#define NAS_NET_TX_TIMEOUT_NS UINT64_C(3000000000)
+#define NAS_NET_TX_FRAME_OFFSET 64U
+#define NET_FEATURE(bit) (UINT64_C(1)<<(bit))
+
+static struct nas_uboot_net *net_owner(struct virtqueue *vq){
+ return vq ? (struct nas_uboot_net *)vq->owner : NULL;
+}
+/* A real NIC is quarantined after a transport error. Report the exact
+ * failing boundary once, before reset destroys the original ring evidence.
+ * A stack consumer error must be distinguishable from corrupt DMA/vrings. */
+static void net_fault(const char *stage,struct nas_uboot_net *n,
+                      int rc,uint32_t detail){
+ nas_print("[VIRTIO-NET FAULT] stage=");nas_print(stage);
+ nas_print(" errno=");nas_dec((uint64_t)(rc<0?-rc:rc));
+ nas_print(" detail=");nas_dec(detail);
+ nas_print(" poisoned=");nas_dec(n->poisoned);
+ nas_print(" rx_used=");nas_dec(n->rx_ring.active?
+                          n->rx_ring.ring.used->idx:0);
+ nas_print(" rx_last=");nas_dec(n->rx_ring.last_used);
+ nas_print(" rx_inflight=");nas_dec(n->rx_ring.inflight);
+ nas_print(" rx_free=");nas_dec(n->rx_ring.free_count);
+ nas_print("\n");
+}
+static void net_poison(struct nas_uboot_net *n){
+ if(!n || n->poisoned)return;
+ n->poisoned=true;n->rx_vq.poisoned=true;n->tx_vq.poisoned=true;
+ nas_virtio_fail(&n->transport);
+ if(n->transport.ops && n->transport.ops->reset)
+     n->transport.ops->reset(n->transport.context);
+}
+/* The U-Boot driver keeps CPU-only rx_buff[][]; never give those stack/heap
+ * addresses to VirtIO. Map each original buffer onto a DMA-owned page. */
+static int rx_slot(struct nas_uboot_net *n,const void *addr){
+ struct virtio_net_priv *priv=dev_get_priv(&n->udev);
+ if(!priv)return -1;
+ for(unsigned i=0;i<NAS_UBOOT_NET_RX_SLOTS;i++)
+     if(addr==(const void *)priv->rx_buff[i])return (int)i;
+ return -1;
+}
+static int net_queue_add(struct virtqueue *vq,struct virtio_sg **sgs,
+                         unsigned out,unsigned in){
+ struct nas_uboot_net *n=net_owner(vq);
+ if(!n || n->poisoned || !sgs)return -EIO;
+ if(vq==&n->rx_vq){
+     if(out || in!=1 || !sgs[0] ||
+        sgs[0]->length!=NAS_UBOOT_NET_RX_BYTES)return -EINVAL;
+     int slot=rx_slot(n,sgs[0]->addr);
+     if(slot<0 || n->rx_queued[slot])return -EINVAL;
+     struct nas_vring_segment seg={n->rx_dma[slot].bus_address,
+                                   NAS_UBOOT_NET_RX_BYTES,true};
+     uint16_t head=0;
+     int rc=nas_dma_sync(n->transport.dma,&n->rx_dma[slot],0,
+                         NAS_UBOOT_NET_RX_BYTES,NAS_DMA_FROM_DEVICE);
+     if(!rc)rc=nas_vring_queue_submit(&n->rx_ring,&seg,1,&head);
+     if(rc){net_fault("rx-submit",n,rc,slot);net_poison(n);return rc;}
+     if(head>=NAS_UBOOT_NET_RX_RING_SIZE || n->rx_slot_by_head[head]){
+         net_fault("rx-head",n,-EIO,head);
+         net_poison(n);return -EIO;
+     }
+     n->rx_slot_by_head[head]=(uint16_t)(slot+1);
+     n->rx_queued[slot]=true;
+     n->rx_submitted++;
+     return 0;
+ }
+ if(vq!=&n->tx_vq || in || out!=2 ||
+    __atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE) ||
+    !sgs[0] || !sgs[1] || !sgs[0]->addr || !sgs[1]->addr ||
+    sgs[0]->length!=sizeof(struct virtio_net_hdr_v1) ||
+    sgs[1]->length<14U || sgs[1]->length>1518U)return -EINVAL;
+ memcpy(n->tx_dma.cpu,sgs[0]->addr,sgs[0]->length);
+ memcpy((uint8_t *)n->tx_dma.cpu+NAS_NET_TX_FRAME_OFFSET,
+        sgs[1]->addr,sgs[1]->length);
+ int rc=nas_dma_sync(n->transport.dma,&n->tx_dma,0,
+         NAS_NET_TX_FRAME_OFFSET+sgs[1]->length,NAS_DMA_TO_DEVICE);
+ if(rc){net_fault("tx-dma",n,rc,sgs[1]->length);net_poison(n);return rc;}
+ struct nas_vring_segment segments[2]={
+     {n->tx_dma.bus_address,(uint32_t)sgs[0]->length,false},
+     {n->tx_dma.bus_address+NAS_NET_TX_FRAME_OFFSET,
+      (uint32_t)sgs[1]->length,false}
+ };
+ /* The submit function NOTIFIES the device before it returns. On x86
+  * shared INTx the hardware may complete and interrupt inside submit;
+  * publishing tx_pending afterwards drops that one completion wake and
+  * leaves the lwIP worker asleep until its 3s timeout. Initialize the
+  * semaphore first, then publish pending with release ordering, and only
+  * then expose the descriptor to hardware. Spurious RX wakes are harmless:
+  * the waiting path polls the exact TX descriptor after each notification. */
+ nas_ksem_init(&n->tx_completion,0);
+ __atomic_store_n(&n->tx_pending,true,__ATOMIC_RELEASE);
+ rc=nas_vring_queue_submit(&n->tx_ring,segments,2,&n->tx_head);
+ if(rc){
+     __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
+     net_fault("tx-submit",n,rc,sgs[1]->length);
+     net_poison(n);return rc;
+ }
+ return 0;
+}
+static void net_queue_kick(struct virtqueue *vq){
+ /* Shared split-ring submit has already notified; no duplicate kick. */
+ (void)vq;
+}
+static void *net_queue_get_buf(struct virtqueue *vq,unsigned *used_len){
+ struct nas_uboot_net *n=net_owner(vq);
+ if(!n || n->poisoned)return NULL;
+ uint16_t head=0;uint32_t bytes=0;
+ if(vq==&n->tx_vq){
+     if(!__atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE))return NULL;
+     int rc=-EAGAIN;
+     if(n->rx_irq.bound){
+         /* A routed runtime NIC may not spin on a scheduler/kernel C frame.
+          * The upstream send() loop needs a sentinel on failure, so poison
+          * and reset rather than falling back to the old polling path. */
+         if(!nas_kthread_in_worker()){
+             __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
+             net_fault("tx-nonworker",n,-EIO,0);
+             net_poison(n);
+             return vq;
+         }
+         /* Original U-Boot send() is synchronous. Keep its C frame on the
+          * actual lwIP worker stack, park until a routed device IRQ, then
+          * inspect the used ring once per notification. No busy TX polling. */
+         uint64_t start=nas_arch_monotonic_ns();
+         const uint64_t deadline=start>UINT64_MAX-NAS_NET_TX_TIMEOUT_NS ?
+                                  UINT64_MAX:start+NAS_NET_TX_TIMEOUT_NS;
+         for(;;){
+             ++n->tx_worker_waits;
+             if(nas_ksem_wait_until(&n->tx_completion,deadline)!=NAS_KWAIT_READY){
+                 rc=-ETIMEDOUT;break;
+             }
+             rc=nas_vring_queue_poll(&n->tx_ring,&head,&bytes);
+             if(rc!=-EAGAIN)break;
+         }
+     }else{
+         /* Non-routed early clients have no IRQ to park on. Keep their
+          * bounded polling compatibility path isolated from runtime lwIP. */
+         for(unsigned k=0;k<NAS_NET_TX_POLL_BUDGET;k++){
+             ++n->tx_legacy_polls;
+             rc=nas_vring_queue_poll(&n->tx_ring,&head,&bytes);
+             if(rc!=-EAGAIN)break;
+         }
+     }
+     __atomic_store_n(&n->tx_pending,false,__ATOMIC_RELEASE);
+     if(rc || head!=n->tx_head || bytes){
+         net_fault("tx-completion",n,rc?rc:-EIO,head);
+         net_poison(n);return vq;
+     }
+     if(used_len)*used_len=bytes;
+     return vq;
+ }
+ if(vq!=&n->rx_vq)return NULL;
+ int rc=nas_vring_queue_poll(&n->rx_ring,&head,&bytes);
+ if(rc==-EAGAIN)return NULL;
+ if(rc || head>=NAS_UBOOT_NET_RX_RING_SIZE ||
+    !n->rx_slot_by_head[head]){
+     net_fault("rx-completion",n,rc?rc:-EIO,head);
+     net_poison(n);return NULL;
+ }
+ unsigned slot=n->rx_slot_by_head[head]-1U;
+ n->rx_slot_by_head[head]=0;
+ n->rx_queued[slot]=false;
+ if(bytes<sizeof(struct virtio_net_hdr_v1)+14U ||
+    bytes>NAS_UBOOT_NET_RX_BYTES ||
+    nas_dma_sync(n->transport.dma,&n->rx_dma[slot],0,bytes,
+                 NAS_DMA_FROM_DEVICE)){
+     net_fault("rx-payload",n,-EIO,bytes);
+     net_poison(n);return NULL;
+ }
+ struct virtio_net_priv *priv=dev_get_priv(&n->udev);
+ memcpy(priv->rx_buff[slot],n->rx_dma[slot].cpu,bytes);
+ if(used_len)*used_len=bytes;
+ return priv->rx_buff[slot];
+}
+static const struct nas_uboot_vq_ops net_vq_bridge={
+ .add=net_queue_add,.kick=net_queue_kick,.get_buf=net_queue_get_buf
+};
+static const struct eth_ops *upstream_ops(void){
+ return (const struct eth_ops *)uboot_virtio_net.ops;
+}
+static int net_transmit(void *ctx,const uint8_t *frame,uint32_t bytes){
+ struct nas_uboot_net *n=ctx;
+ if(__atomic_exchange_n(&n->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
+ int rc=n->poisoned?-EIO:upstream_ops()->send(&n->udev,(void *)frame,(int)bytes);
+ if(n->poisoned)rc=-EIO;
+ __atomic_store_n(&n->busy,false,__ATOMIC_RELEASE);
+ /* An RX IRQ may wake its worker while this TX owner is parked. If RX ran
+  * first, its -EBUSY must not consume the sole hardware wake forever. One
+  * compensating notification after releasing busy is enough; the single-
+  * core kernel dispatch does not preempt these two state transitions. */
+ if(__atomic_exchange_n(&n->rx_retry_after_tx,false,__ATOMIC_ACQ_REL) &&
+    n->netdev.registered && !n->netdev.removing)
+     nas_netdev_notify_rx(&n->netdev);
+ return rc;
+}
+static int net_poll(void *ctx,uint32_t budget,
+                    nas_netdev_rx receive,void *consumer){
+ struct nas_uboot_net *n=ctx;
+ if(__atomic_exchange_n(&n->busy,true,__ATOMIC_ACQUIRE)){
+     /* RX did not touch the queue: re-schedule it once TX completes. */
+     __atomic_store_n(&n->rx_retry_after_tx,true,__ATOMIC_RELEASE);
+     return -EBUSY;
+ }
+ int count=0,rc=0;
+ while((uint32_t)count<budget && !n->poisoned){
+     uchar *packet=NULL;
+     int len=upstream_ops()->recv(&n->udev,0,&packet);
+     if(len==-EAGAIN)break;
+     if(len<14 || len>1518 || !packet){
+         net_fault("rx-frame",n,-EIO,(uint32_t)len);
+         net_poison(n);rc=-EIO;break;
+     }
+     rc=receive(consumer,packet,(uint32_t)len);
+     (void)upstream_ops()->free_pkt(&n->udev,packet,len);
+     if(n->poisoned){rc=-EIO;break;}
+     if(rc){
+         if(rc!=-EBUSY && rc!=-EAGAIN && rc!=-ENOBUFS && rc!=-ENOMEM)
+             net_fault("rx-consumer",n,rc,(uint32_t)len);
+         break;
+     }
+     count++;
+     n->rx_completed++;
+ }
+ if(n->poisoned)rc=-EIO;
+ __atomic_store_n(&n->busy,false,__ATOMIC_RELEASE);
+ return rc?rc:count;
+}
+static bool net_link_up(void *ctx){
+ return !((struct nas_uboot_net *)ctx)->poisoned;
+}
+static const struct nas_netdev_ops net_ops={
+ .transmit=net_transmit,.poll=net_poll,.link_up=net_link_up
+};
+/* The generic IRQ core has already read and acknowledged this NIC's ISR.
+ * Hardirq owns only a bounded wake signal; the existing U-Boot recv/free_pkt
+ * and all DMA retirement remain in the network worker's bounded poll(). */
+static void net_rx_irq_notify(void *context,uint32_t source_status){
+ struct nas_uboot_net *n=context;
+ if(!n)return;
+ n->irq_acks++;
+ if(!(source_status&(NAS_VIRTIO_IRQ_USED_BUFFER|
+                      NAS_VIRTIO_IRQ_CONFIG_CHANGE)) || n->poisoned ||
+    !n->netdev.registered || n->netdev.removing)return;
+ if((source_status&NAS_VIRTIO_IRQ_USED_BUFFER) &&
+    __atomic_load_n(&n->tx_pending,__ATOMIC_ACQUIRE)){
+     if(nas_ksem_post(&n->tx_completion))++n->tx_irq_wakes;
+ }
+ /* Count only an installed worker wake, never a pre-registration or
+  * pre-attach ISR, so acceptance proves hardirq reached the real worker. */
+ if(__atomic_load_n(&n->netdev.rx_wake,__ATOMIC_ACQUIRE))n->irq_rx_wakes++;
+ nas_netdev_notify_rx(&n->netdev);
+}
+/* This phase is safe after netdev's final consumer releases its pin, or
+ * after an attach that never published a class device. A failed reset/IRQ
+ * unbind or DMA release leaves each still-owned resource in place for a
+ * subsequent retry; partially retired queues/pages are never freed twice.
+ * The generic bus retries only -EBUSY/-EAGAIN, treating other errors as
+ * terminal while keeping the unfinished hardware owner intact. */
+static int net_release_hardware(struct nas_uboot_net *n) {
+ int rc=nas_irq_unbind(&n->rx_irq);
+ if(rc)return rc;
+ if(n->upstream_started && !n->upstream_stopped) {
+     upstream_ops()->stop(&n->udev);
+     n->upstream_stopped=true;
+ }
+ bool had_queues=n->rx_ring.active || n->tx_ring.active ||
+                 n->rx_ring.dma_page.cpu || n->tx_ring.dma_page.cpu;
+ /* A failed probe can reach hardware feature negotiation without opening
+  * either queue. Reset that partial transport before releasing DMA. */
+ if(!had_queues && n->transport.ops && n->transport.ops->reset)
+     n->transport.ops->reset(n->transport.context);
+ if(n->rx_ring.active || n->rx_ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&n->rx_ring);
+     if(rc)return rc;
+ }
+ if(n->tx_ring.active || n->tx_ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&n->tx_ring);
+     if(rc)return rc;
+ }
+ for(unsigned i=0;i<n->rx_dma_count;i++) {
+     if(!n->rx_dma[i].cpu)continue;
+     rc=nas_dma_free_page(n->transport.dma,&n->rx_dma[i]);
+     if(rc)return rc;
+ }
+ n->rx_dma_count=0;
+ if(n->tx_dma.cpu) {
+     rc=nas_dma_free_page(n->transport.dma,&n->tx_dma);
+     if(rc)return rc;
+ }
+ if(n->udev.priv) {
+     if(!nas_heap_free(n->udev.priv))return -EIO;
+     n->udev.priv=NULL;
+ }
+ n->teardown_active=false;
+ n->class_retired=false;
+ n->upstream_started=false;
+ n->upstream_stopped=false;
+ return 0;
+}
+int nas_uboot_net_attach(struct nas_uboot_net *n,
+ const struct nas_virtio_transport *tr,const char *name,
+ struct nas_irq_route irq){
+ if(!n || !tr || !name || !name[0] || !tr->dma || !tr->dma->coherent)
+     return -EINVAL;
+ if(n->netdev.registered || n->rx_ring.active || n->tx_ring.active ||
+    n->rx_ring.dma_page.cpu || n->tx_ring.dma_page.cpu ||
+    n->teardown_active || n->udev.priv || n->tx_dma.cpu ||
+    n->rx_dma_count || n->rx_irq.bound)return -EBUSY;
+ n->transport=*tr;n->busy=false;n->poisoned=false;
+ n->rx_retry_after_tx=false;
+ n->rx_dma_count=0;n->rx_submitted=0;n->tx_pending=false;
+ n->irq_acks=0;n->irq_rx_wakes=0;n->rx_completed=0;
+ n->tx_irq_wakes=0;n->tx_worker_waits=0;n->tx_legacy_polls=0;
+ nas_ksem_init(&n->tx_completion,0);
+ memset(n->rx_slot_by_head,0,sizeof(n->rx_slot_by_head));
+ memset(n->rx_queued,0,sizeof(n->rx_queued));
+ n->parent_priv=(struct virtio_dev_priv){.vendor=0,
+    .transport=&n->transport,.queues=n->queue_refs,.queue_count=2};
+ n->parent=(struct udevice){.name=name,.uclass_priv=&n->parent_priv};
+ n->udev=(struct udevice){.name=name,.parent=&n->parent,
+                          .context=n,.plat=&n->eth};
+ n->udev.priv=nas_heap_calloc(1,uboot_virtio_net.priv_auto);
+ if(!n->udev.priv)return -ENOMEM;
+ int rc=uboot_virtio_net.bind(&n->udev);
+ if(rc)goto fail;
+ rc=nas_virtio_negotiate(&n->transport,NET_FEATURE(VIRTIO_NET_F_MAC),
+                         n->parent_priv.offered,&n->parent_priv.features);
+ if(rc)goto fail;
+ rc=nas_dma_alloc_page(n->transport.dma,&n->tx_dma);
+ if(rc)goto fail;
+ for(unsigned i=0;i<NAS_UBOOT_NET_RX_SLOTS;i++){
+     rc=nas_dma_alloc_page(n->transport.dma,&n->rx_dma[i]);
+     if(rc)goto fail;
+     n->rx_dma_count++;
+ }
+ rc=nas_vring_queue_init(&n->rx_ring,&n->transport,0,
+                         NAS_UBOOT_NET_RX_RING_SIZE);
+ if(rc)goto fail;
+ rc=nas_vring_queue_init(&n->tx_ring,&n->transport,1,8);
+ if(rc)goto fail;
+ n->rx_vq=(struct virtqueue){.bridge=&net_vq_bridge,.owner=n,
+                            .ring=&n->rx_ring,.transport=&n->transport};
+ n->tx_vq=(struct virtqueue){.bridge=&net_vq_bridge,.owner=n,
+                            .ring=&n->tx_ring,.transport=&n->transport};
+ n->queue_refs[0]=&n->rx_vq;n->queue_refs[1]=&n->tx_vq;
+ /* Real routes are bound before DRIVER_OK and before U-Boot posts its
+  * initial RX descriptors. Clear an old ISR first: GIC edge-triggered
+  * delivery must not lose a stale asserted event at the unmask boundary. */
+ if(irq.domain!=NAS_IRQ_DOMAIN_NONE || irq.hwirq){
+     if(!n->transport.ops || !n->transport.ops->read_ack_irq){
+         rc=-EOPNOTSUPP;goto fail;
+     }
+     (void)nas_virtio_irq_ack(&n->transport);
+     rc=nas_irq_bind(&n->rx_irq,irq,nas_virtio_irq_ack_source,
+                     &n->transport,net_rx_irq_notify,n);
+     if(rc)goto fail;
+ }
+ rc=nas_virtio_activate(&n->transport);
+ if(rc)goto fail;
+ rc=uboot_virtio_net.probe(&n->udev);
+ if(rc)goto fail;
+ rc=upstream_ops()->read_rom_hwaddr(&n->udev);
+ if(rc)goto fail;
+ rc=upstream_ops()->start(&n->udev);
+ if(rc)goto fail;
+ n->upstream_started=true;
+ if(n->poisoned || n->rx_submitted!=NAS_UBOOT_NET_RX_SLOTS){
+     rc=-EIO;goto fail;
+ }
+ n->netdev=(struct nas_netdev){.name=name,.backend=n,
+     .mtu=1500,.ops=&net_ops,.rx_irq_driven=n->rx_irq.bound};
+ memcpy(n->netdev.mac,n->eth.enetaddr,sizeof(n->eth.enetaddr));
+ rc=nas_netdev_register(&n->netdev);
+ if(!rc){
+     /* Consumer registration can race an earlier interrupt. A final
+      * synthetic wake lets the newly attached worker drain completions. */
+     nas_netdev_notify_rx(&n->netdev);
+     return 0;
+ }
+fail:
+ /* A failed probe still owns its resources. The same staged cleanup is
+  * available through detach() if the provider rejects a page release;
+  * reattach is barred until cleanup actually finishes. */
+ n->teardown_active=true;
+ n->class_retired=!n->netdev.registered;
+ (void)net_release_hardware(n);
+ return rc;
+}
+int nas_uboot_net_detach(struct nas_uboot_net *n){
+ if(!n)return -EINVAL;
+ if(__atomic_load_n(&n->busy,__ATOMIC_ACQUIRE))return -EBUSY;
+ /* First notify the sole stack consumer and prohibit new netdev pins.
+  * A retry after the lwIP tcpip_thread releases its Path-like device pin
+  * is required before the original U-Boot DMA/virtqueues can be reclaimed. */
+ if(!n->teardown_active) {
+     if(!n->netdev.registered)return -ENODEV;
+     n->teardown_active=true;
+ }
+ if(!n->class_retired) {
+     int rc=nas_netdev_begin_remove(&n->netdev);
+     if(rc)return rc;
+     rc=nas_netdev_unregister(&n->netdev);
+     if(rc)return rc;
+     n->class_retired=true;
+ }
+ return net_release_hardware(n);
+}

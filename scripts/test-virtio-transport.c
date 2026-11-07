@@ -73,12 +73,28 @@ int main(void){
     assert(nas_virtio_config32(&mmio_transport,0)==0);
     mmio[0x100/4]=1024;
     assert(nas_virtio_config32(&mmio_transport,0)==1024);
+    /* Linux virtio-input selects its config with byte writes before reading
+     * variable-length device capability data. Check non-word accesses. */
+    uint8_t selectors[2]={0x11,0x22},config_bytes[5]={0};
+    assert(nas_virtio_config_write(&mmio_transport,0,selectors,2)==0);
+    assert(nas_virtio_config_read(&mmio_transport,0,config_bytes,2)==0);
+    assert(config_bytes[0]==0x11 && config_bytes[1]==0x22);
+    assert(nas_virtio_config_read(&mmio_transport,0xff,config_bytes,1)==0);
+    assert(nas_virtio_config_read(&mmio_transport,0xff,config_bytes,2)==-EINVAL);
+    assert(nas_virtio_config_write(&mmio_transport,0x100,selectors,1)==-EINVAL);
+    assert(nas_virtio_config_read(&mmio_transport,UINT32_MAX,
+                                  config_bytes,1)==-EINVAL);
+    assert(nas_virtio_config_read(&mmio_transport,0,NULL,1)==-EINVAL);
+    assert(nas_virtio_config_write(&mmio_transport,0,NULL,1)==-EINVAL);
+    assert(nas_virtio_config_read(&mmio_transport,0,NULL,0)==0);
+    assert(nas_virtio_config_read(&t,0,config_bytes,1)==-EOPNOTSUPP);
+    assert(nas_virtio_config_write(&t,0,selectors,1)==-EOPNOTSUPP);
     assert(nas_virtio_setup_queue(&mmio_transport,0,8,
                                  0x100000,0x101000,0x102000)==-EOPNOTSUPP);
     mmio[0x034/4]=8;
     assert(nas_virtio_setup_queue(&mmio_transport,0,8,
                                   0x100000,0x101000,0x102000)==0);
     assert(mmio[0x044/4]==1&&mmio[0x080/4]==0x100000);
-    puts("[VIRTIO TRANSPORT PASS] same block-facing ops on mock and modern MMIO, fail closed");
+    puts("[VIRTIO TRANSPORT PASS] shared MMIO/input byte config and existing block paths, fail closed");
     return 0;
 }

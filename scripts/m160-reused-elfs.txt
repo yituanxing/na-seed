@@ -1,0 +1,9 @@
+# Reuse previously admitted signed Alpine ELF identities: zero NEW.
+# This is NOT an mNNN-original-elfs inventory; old historical uniqueness
+# scanners must never mistake these reused paths for newly admitted binaries.
+usr/bin/curl
+usr/bin/wget
+usr/bin/pngtopam
+usr/bin/pamfile
+usr/bin/pamtable
+usr/bin/chafa

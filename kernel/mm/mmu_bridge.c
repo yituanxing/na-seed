@@ -88,8 +88,8 @@ bool nas_mmu_map_page(uint64_t va,bool writable) {
 bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
     if (!nas_vm_prot_supported(prot)) return false;
     struct nas_user_space s=current();
-    /* RV64 and ARM64 can both enforce R/RW/RX. Linux PROT_WRITE and
-     * PROT_EXEC implicitly include read under our documented contract. */
+    /* Both RV64 and ARM64 can represent the full Linux R/RW/RX/RWX set.
+     * PROT_WRITE and PROT_EXEC imply the readable native leaf bit. */
     return nas_space_map_access(&s, va, NAS_UP_READ |
         ((prot & NAS_VM_WRITE) ? NAS_UP_WRITE : 0) |
         ((prot & NAS_VM_EXEC) ? NAS_UP_EXEC : 0));

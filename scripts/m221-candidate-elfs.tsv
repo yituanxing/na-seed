@@ -1,0 +1,4 @@
+package	elf_path	family	probe
+# Two independent original Alpine ELF commands, one causal RFC 2136 exchange.
+bind-tools	usr/bin/nsupdate	dns	rfc2136-authoritative-update
+bind-tools	usr/bin/host	dns	rfc2136-update-readback

@@ -13,6 +13,9 @@
 #include "../kernel/fs/io.h"
 /* Use the actual serial/TTY FileOps adapter, not a test-side imitation. */
 #include "../kernel/fs/syscall.c"
+void nas_vfs_notify_file_close(const struct nas_fs_node *node,bool writable) {
+    (void)node;(void)writable;
+}
 #define USER_ADDR 0x20010000ULL
 static struct nas_task current;
 struct nas_task *nas_current_task=&current;
@@ -65,7 +68,11 @@ int main(void){
     nas_open_files[0].refcount=1;
     nas_open_files[0].ops=&tty_file_ops;
     nas_tty_init();
-    assert(nas_tty_ioctl(0x540e,0)==0); /* real TIOCSCTTY */
+    /* Linux getty starts a fresh session after BusyBox init spawned it;
+     * the inactive bootstrap console must not be held by the PID1 SID. */
+    current.pid=current.sid=current.pgid=2;
+    assert((int64_t)nas_tty_ioctl(0x540e,0)==-EPERM);
+    assert(nas_tty_ioctl(0x540e,1)==0); /* real root getty force TIOCSCTTY */
     assert(nas_tty_enabled());
     rx="echo one\r";
     assert(nas_fs_fd_read(0,USER_ADDR,sizeof(userbuf))==9);
@@ -85,6 +92,12 @@ int main(void){
     assert(nas_fs_fd_read(0,USER_ADDR,sizeof(userbuf))==5);
     assert(!memcmp(userbuf,"test\n",5));
     assert(bytes_written==18 && checks>=6);
+    /* A live session cannot be stolen; after its leader exits a new
+     * session leader can claim it, as on a serial getty respawn. */
+    current.pid=current.sid=current.pgid=3;
+    assert((int64_t)nas_tty_ioctl(0x540e,0)==-EPERM);
+    nas_tty_session_leader_exit(2);
+    assert(nas_tty_ioctl(0x540e,0)==0);
     puts("[M102 TTY COW PASS] real kernel TTY continues reading logically writable buffers after fork; true RO is EFAULT without data loss");
     return 0;
 }

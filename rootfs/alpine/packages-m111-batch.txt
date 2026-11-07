@@ -1,0 +1,16 @@
+# M111: signed Alpine 3.23 host-side APK stage only; guest runs original ELFs.
+fzf
+bat
+eza
+hexyl
+hyperfine
+dust
+sd
+choose
+miller
+dasel
+cmark
+lowdown
+htmlq
+pup
+just

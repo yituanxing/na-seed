@@ -1,0 +1,16 @@
+# Alpine 3.23 signed package owners (machine and ELF bytes verified on host).
+usr/bin/fzf
+usr/bin/bat
+usr/bin/eza
+usr/bin/hexyl
+usr/bin/hyperfine
+usr/bin/dust
+usr/bin/sd
+usr/bin/choose
+usr/bin/mlr
+usr/bin/dasel
+usr/bin/cmark
+usr/bin/lowdown
+usr/bin/htmlq
+usr/bin/pup
+usr/bin/just

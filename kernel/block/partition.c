@@ -194,8 +194,33 @@ int nas_partition_attach(struct nas_partition_view *view,const char *name,
         .sector_bytes=disk->sector_bytes,
         .max_sectors_per_io=disk->max_sectors_per_io,
         .read_only=read_only||disk->read_only,
+        .parent=disk,.start_lba=extent->first_lba,
         .ops=&partition_ops,.context=view
     };
+    /* The existing public attach ABI allows arbitrary names; infer a number
+     * only for the canonical <disk>pN form, and only when the actual extent
+     * was already validated by the caller. Never manufacture a partition
+     * number for arbitrary class names. */
+    size_t prefix=strlen(disk_name);
+    if(!strncmp(name,disk_name,prefix) && name[prefix]=='p') {
+        const char *digits=name+prefix+1;
+        unsigned number=0;
+        if(*digits>='1' && *digits<='9') {
+            while(*digits>='0' && *digits<='9' && number<=128U) {
+                number=number*10U+(unsigned)(*digits-'0');
+                ++digits;
+            }
+            if(!*digits && number>=1U && number<=128U) {
+                struct nas_partition_extent actual={0};
+                /* A name is not evidence of an on-disk index. Publish the
+                 * number only if the probed table maps that exact extent. */
+                if(!nas_partition_probe(disk,number,&actual) &&
+                   actual.first_lba==extent->first_lba &&
+                   actual.sectors==extent->sectors)
+                    next.partition_number=number;
+            }
+        }
+    }
     view->parent=disk;
     view->extent=*extent;
     view->block=next;

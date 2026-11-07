@@ -1,0 +1,2 @@
+# Host hook generates audio fixtures before CPIO is archived.
+tests/m127-batch-run.sh	tests/m127-batch-run.sh

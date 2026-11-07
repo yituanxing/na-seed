@@ -1,0 +1,5 @@
+package	elf_path	family	probe
+# Historical ELF identities, now promoted ONLY to new two-boot remote FTP
+# semantics; not two newly discovered ELF paths.
+lftp	usr/bin/lftp	ftp	original-host-bidirectional-transfer
+rclone	usr/bin/rclone	ftp	original-host-bidirectional-transfer

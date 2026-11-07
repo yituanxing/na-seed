@@ -40,7 +40,7 @@ sh scripts/check-m89-poll.sh
 sh scripts/check-m90-io-wait.sh
 # M65: native procfs owner host regression (not a simulated guest PASS).
 cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel \
-    scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c \
+    scripts/test-procfs.c kernel/fs/procfs.c kernel/uts.c kernel/lib/string.c \
     -o /tmp/naseed-procfs-test
 /tmp/naseed-procfs-test
 # M66: account actual clock differences using the common Task mechanism.
@@ -79,10 +79,11 @@ if grep -Eq 'pipe_release_description|tmp_release_slot|tmp_bind_slot' kernel/fd.
     exit 1
 fi
 
-# Kernel pathname logic must never reach into raw user memory or FD
-# tables. Only syscall/FS ABI adapters perform the user argument copying.
-if grep -Eq 'user_byte\(|user_write_bytes\(|nas_task_fd_|descriptors\[' kernel/path.c; then
-    echo '[PREFLIGHT] path.c reached into syscall user/FD layer' >&2
+# One shared Path-first namei owns syscall and provider path resolution.
+# Do not reintroduce the deleted pre-VFS lexical pathname module.
+if test -e kernel/path.c || test -e kernel/path.h ||
+   grep -REq 'nas_fs_resolve_path\(|nas_path_join_raw\(' kernel; then
+    echo '[PREFLIGHT] retired lexical pathname adapter returned' >&2
     exit 1
 fi
 
@@ -219,7 +220,7 @@ python3 scripts/check-syscall-nr.py
 python3 scripts/check-syscall-errno.py
 
 cc -std=c11 -Wall -Wextra -Werror \
-    scripts/test-anon-regions.c kernel/mm/anon_regions.c \
+    scripts/test-anon-regions.c kernel/mm/anon_regions.c kernel/mm/heap.c \
     -o /tmp/naseed-anon-regions
 /tmp/naseed-anon-regions
 sh scripts/check-full-kernel-sources.sh
@@ -229,6 +230,9 @@ cc -std=c11 -O2 -Wall -Wextra -Werror \
 cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c \
     -o /tmp/naseed-wait-pid
 /tmp/naseed-wait-pid
+cc -std=c11 -Wall -Wextra -Werror scripts/test-m110-statfs-rusage-abi.c \
+    -o /tmp/naseed-statfs-rusage-abi
+/tmp/naseed-statfs-rusage-abi
 cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c \
     -o /tmp/naseed-mmap-abi
 /tmp/naseed-mmap-abi

@@ -10,61 +10,7 @@ on:
       - 'README.md'
       - '.github/workflows/prune-historical-branches.yml'
       - 'scripts/prune-merged-branches.sh'
-  pull_request:
-    # A Lua-only source/test update uses the focused three-ISA Lua workflow.
-    # Shared boot-harness or kernel changes still run the full BusyBox gates.
-    paths-ignore:
-      - 'docs/**'
-      - 'scripts/build-external-lua.sh'
-      - 'scripts/stage-external-lua-rootfs.sh'
-      - 'scripts/probe-external-lua.sh'
-      - 'scripts/lua-native-cases.tsv'
-      - 'tests/lua-*.lua'
-      - '.github/workflows/lua.yml'
-      - 'scripts/build-external-tcc.sh'
-      - 'scripts/stage-external-tcc-rootfs.sh'
-      - 'scripts/probe-external-tcc.sh'
-      - 'scripts/tcc-native-cases.tsv'
-      - 'tests/tcc-first.c'
-      - '.github/workflows/tcc.yml'
-      - 'scripts/build-external-nano.sh'
-      - 'scripts/stage-external-nano-rootfs.sh'
-      - 'scripts/probe-external-nano.sh'
-      - 'scripts/nano-pty-oracle.py'
-      - 'scripts/nano-serial-check.py'
-      - 'tests/nano-native-init.c'
-      - 'tests/nano-note.txt'
-      - '.github/workflows/nano.yml'
-      - 'scripts/build-external-2048.sh'
-      - 'scripts/stage-external-2048-rootfs.sh'
-      - 'scripts/probe-external-2048.sh'
-      - 'scripts/2048-pty-oracle.py'
-      - 'scripts/2048-serial-check.py'
-      - 'tests/2048-native-init.c'
-      - '.github/workflows/game-2048.yml'
-      - 'scripts/build-external-gnumake.sh'
-      - 'scripts/stage-external-gnumake-rootfs.sh'
-      - 'scripts/probe-external-gnumake.sh'
-      - 'scripts/gnumake-serial-check.py'
-      - 'tests/gnumake-native-init.c'
-      - 'tests/gnumake-real.mk'
-      - '.github/workflows/gnumake.yml'
-      # One dedicated 3-ISA focused Make/TinyCC matrix owns these paths.
-      # Full main-branch regression still runs after the accepted squash.
-      - 'scripts/build-m33-native-tcc.sh'
-      - 'scripts/stage-m33-native-tcc-rootfs.sh'
-      - 'scripts/m33-native-tcc-cases.tsv'
-      - 'scripts/probe-m33-native-tcc.sh'
-      - 'scripts/build-m34-native-gnumake.sh'
-      - 'scripts/stage-m34-native-make-rootfs.sh'
-      - 'scripts/m34-native-make-cases.tsv'
-      - 'scripts/probe-m34-native-make.sh'
-      - 'tests/m34-portable-hello.c'
-      - 'tests/m34-native.mk'
-      - '.github/workflows/m33-native-tcc.yml'
-
-# Collapse superseded PR commits into a single expensive QEMU suite. Keep
-# pushed main regressions independent; only pull-request runs are canceled.
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -118,7 +64,7 @@ jobs:
       - name: Linux syscall semantic decoder regression
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c -o /tmp/naseed-syscall-test && /tmp/naseed-syscall-test
       - name: Anonymous VM range reuse, split, fork ownership and bounded capacity
-        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-anon-regions.c kernel/mm/anon_regions.c -o /tmp/naseed-anon && /tmp/naseed-anon
+        run: cc -std=c11 -Wall -Wextra -Werror scripts/test-anon-regions.c kernel/mm/anon_regions.c kernel/mm/heap.c -o /tmp/naseed-anon && /tmp/naseed-anon
       - name: Linux wait4 signed pid_t ABI regression including zero-extended -1
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-wait-pid-abi.c -o /tmp/naseed-wait-pid && /tmp/naseed-wait-pid
       - name: Linux anonymous mmap ABI ignored fd including x86 zero-extended -1
@@ -130,6 +76,8 @@ jobs:
         run: sh scripts/check-m102-tty-cow.sh
       - name: '[HOST + TARGET-COMPILE] M101 COW fault and ptrace isolation'
         run: sh scripts/check-m101-cow.sh
+      - name: '[HOST] NAS-A005 cross-MM shared file invalidate, dirty epoch and frame refcounts'
+        run: sh scripts/check-a005-cross-mm.sh
       - name: '[HOST + TARGET-COMPILE] M100 failed user signal-frame isolation'
         run: sh scripts/check-m100-signal-failure.sh
       # One actual host fixture covers both M98 policy and M99 ring-scan

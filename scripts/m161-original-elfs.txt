@@ -1,0 +1,2 @@
+# Only fbgrab is a newly admitted original ELF; magick belongs to M146.
+usr/bin/fbgrab

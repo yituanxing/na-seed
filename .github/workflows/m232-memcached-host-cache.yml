@@ -1,0 +1,131 @@
+name: NaSeed M232 original Alpine Memcached OpenRC host cache volatile two-native-boot
+
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m232-memcached-host-cache.yml'
+      - 'tests/m232-alpine-memcached-workload.sh'
+      - 'scripts/m232-*.py'
+      - 'scripts/test-m232-*.py'
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Single native ISA or all original Alpine QEMU architectures'
+        type: choice
+        required: true
+        default: amd64
+        options: [amd64, riscv64, arm64, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-alpine-memcached:
+    name: Original Alpine Memcached cache miss SET GET two real QEMUs / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Reject stale cache, replayed NIC captures and modified target ABI
+        run: |
+          set -eu
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m227-uart-login.py
+          python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m232-memcached.py
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          sh -n tests/m232-alpine-memcached-workload.sh
+          python3 -m py_compile scripts/m232-alpine-uart.py \
+            scripts/m232-host-cache-check.py scripts/m232-memcached-disk-check.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 scripts/test-m197-alpine-host.py
+      - name: Install official Alpine staging and native cross-QEMU dependencies
+        timeout-minutes: 20
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Two original Alpine PID1 QEMUs and real host volatile memcached
+        timeout-minutes: 85
+        env:
+          NAS_M232_MEMCACHED_HOST: '1'
+          NAS_M232_PUBLIC_QEMU_TIMEOUT: '2750'
+          NAS_M232_FIRST_SECONDS: '2600'
+          NAS_M232_REOPEN_QEMU_TIMEOUT: '1100'
+          NAS_M232_REOPEN_SECONDS: '950'
+          NAS_M232_HOST_PORT: '15448'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh '${{ matrix.port }}'
+      - name: Preserve original Alpine UART, true host cache, NIC PCAP and ext4 oracle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m232-memcached-original-volatile-host-cache-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-host-cache.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-host-cache.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-host-cache.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-host-cache.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-memcached-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 3

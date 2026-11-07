@@ -48,6 +48,7 @@ void nas_arch_save_user_frame(struct nas_task *, const uint64_t *frame);
 /* Return the LIVE trap's userspace SP, never an ABI-normalized syscall
  * argument array passed to common dispatch. */
 uint64_t nas_arch_signal_user_sp(void);
+uint64_t nas_arch_signal_min_altstack(void);
 /* ISA-native Linux rt_sigframe provider. Every ISA implements the same
  * ownership boundary but NOT a shared opaque/restorer layout. */
 bool nas_arch_signal_install_handler(uint64_t *user_return_frame,

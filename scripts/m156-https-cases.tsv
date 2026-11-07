@@ -1,0 +1,2 @@
+# Guest runs original signed Alpine curl and GNU wget over real VirtIO TCP/TLS.
+m156-batch	cpio	sh -c '/bin/busybox sleep 4 && /bin/sh /tests/m156-https-run.sh'	M156_HTTPS_WIRE_PASS	-	/bin/busybox

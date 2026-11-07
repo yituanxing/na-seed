@@ -1,0 +1,3 @@
+# M118: fifteen independent elfutils ELF/DWARF inspection and editing tools.
+# Signed official Alpine v3.23 main APK, installed on the Linux host only.
+elfutils

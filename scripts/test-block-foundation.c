@@ -66,6 +66,15 @@ int main(void) {
     assert(nas_block_flush(&rd.block)==0);
     assert(nas_ramdisk_detach(&rd)==0);
     assert(nas_block_register(&mock)==0);
+    /* Reject a pin when the reference count is saturated: wrapping to
+     * zero could make an in-use device appear safe to unregister. */
+    mock.refs=UINT32_MAX;
+    assert(nas_block_get("mock")==NULL && mock.refs==UINT32_MAX);
+    assert(nas_block_unregister(&mock)==-EBUSY);
+    mock.refs=0;
+    assert(nas_block_get("mock")==&mock && mock.refs==1);
+    nas_block_put(&mock);
+    assert(mock.refs==0);
     memset(copied,0,4096);
     assert(nas_block_read(&mock,7,8,copied)==0);
     assert(reads==3 && max_observed==3);
@@ -85,6 +94,6 @@ int main(void) {
     assert(nas_block_register(&invalid)==0);
     assert(nas_block_flush(&invalid)==-EOPNOTSUPP);
     assert(nas_block_unregister(&invalid)==0);
-    puts("[BLOCK FOUNDATION PASS] registration, pins, RAM ext4-image sector I/O, range, RO, chunking, error and flush");
+    puts("[BLOCK FOUNDATION PASS] registration, saturated pins, RAM ext4-image sector I/O, range, RO, chunking, error and flush");
     return 0;
 }

@@ -4,15 +4,51 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "../kernel/task.h"
 #include "../kernel/fs/procfs.h"
+#include "../kernel/uts.h"
 #include "../kernel/fs/vfs.h"
 #include "../kernel/errno.h"
 #include "../kernel/mm/vm.h"
 #include "../kernel/arch/user_pt.h"
+#include "../kernel/task/resources.h"
+#include "../kernel/ipc/sysv.h"
+#ifdef NAS_ENABLE_LWIP
+#include "../ports/lwip/network_boot.h"
+#include "../kernel/drivers/port/net.h"
+static uint32_t fixture_dns[NAS_LWIP_DNS_SERVER_LIMIT];
+static unsigned fixture_dns_count;
+/* Standalone procfs test models only the registry snapshot interface; the
+ * actual frame counter and device lifetime machinery is separately tested
+ * by test-network-device-port.c linked against the real net.c provider. */
+static struct nas_netdev fixture_net={.name="eth0",.registered=true};
+static bool fixture_net_visible;
+struct nas_netdev *nas_netdev_get_ordinal(unsigned ordinal) {
+    return fixture_net_visible && !ordinal?&fixture_net:NULL;
+}
+int nas_netdev_put(struct nas_netdev *device) {
+    return device==&fixture_net?0:-EINVAL;
+}
+int nas_netdev_stats_snapshot(const struct nas_netdev *device,
+                              struct nas_netdev_stats *out) {
+    if(device!=&fixture_net || !out)return -EINVAL;
+    *out=device->stats;return 0;
+}
+unsigned nas_lwip_guest_dns_snapshot(uint32_t out[NAS_LWIP_DNS_SERVER_LIMIT]) {
+    if(!out)return 0;
+    for(unsigned i=0;i<NAS_LWIP_DNS_SERVER_LIMIT;i++)out[i]=fixture_dns[i];
+    return fixture_dns_count;
+}
+#endif
 static struct nas_task tasks[3];
 static struct nas_files files_fixture;
 static struct nas_mm address_spaces[2];
+static struct nas_fs_context fixture_fs[2];
+/* This standalone procfs host test is deliberately linked without the
+ * kernel heap implementation in historical M65-M70 workflows. */
+void *nas_heap_alloc(size_t length) { return malloc(length); }
+bool nas_heap_free(void *ptr) { free(ptr);return true; }
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 struct nas_task *nas_current_task=&tasks[0];
 /* The production /proc/mounts must consume the VFS's LIVE mount snapshot,
@@ -20,10 +56,39 @@ struct nas_task *nas_current_task=&tasks[0];
  * even an already-open proc inode sees mounts appear/disappear. */
 static struct nas_vfs_mount_snapshot fixture_mounts[80];
 static unsigned fixture_mount_count;
+static struct nas_vfs_lock_snapshot fixture_locks[4];
+static unsigned fixture_lock_count;
+/* Proc's dynamic SysV IPC view has a separate M138 owner; the standalone
+ * process fixture intentionally starts with no live IPC objects. */
+bool nas_sysvipc_snapshot(enum nas_sysvipc_kind kind,unsigned ordinal,
+                          struct nas_sysvipc_snapshot *out) {
+    (void)kind;(void)ordinal;(void)out;
+    return false;
+}
+int nas_vfs_lock_snapshot(unsigned ordinal,struct nas_vfs_lock_snapshot *out) {
+    if(!out)return -EINVAL;
+    if(ordinal>=fixture_lock_count)return -ENOENT;
+    *out=fixture_locks[ordinal];return 0;
+}
 int nas_vfs_mount_snapshot(unsigned ordinal,struct nas_vfs_mount_snapshot *out) {
     if(!out)return -EINVAL;
     if(ordinal>=fixture_mount_count)return -ENOENT;
     *out=fixture_mounts[ordinal];
+    return 0;
+}
+/* The procfs fixture does not link the live VFS Dentry owner. CWD snapshots
+ * without a pinned path must still expose the current task's real FS text. */
+static bool fixture_long_cwd;
+int nas_vfs_path_string(const struct nas_vfs_path *path,char absolute[256]) {
+    (void)path;(void)absolute;
+    return fixture_long_cwd ? -ENAMETOOLONG : -ESTALE;
+}
+int nas_vfs_path_string_buf(const struct nas_vfs_path *path,char *absolute,
+                            size_t capacity) {
+    (void)path;
+    if(!fixture_long_cwd)return -ESTALE;
+    if(capacity<3901)return -ENAMETOOLONG;
+    absolute[0]='/';memset(absolute+1,'q',3899);absolute[3900]=0;
     return 0;
 }
 static void fixture_add_mount(const char *source,const char *target,
@@ -72,6 +137,9 @@ void nas_task_cpu_account_snapshot(uint64_t *busy,uint64_t *idle,
     if(loads){loads[0]=65536;loads[1]=32768;loads[2]=16384;}
     if(switches)*switches=12;
 }
+/* Real IRQ counter has a dedicated kernel owner; this standalone fixture
+ * must model it explicitly instead of deriving it from CPU time. */
+uint64_t nas_irq_total_snapshot(void) {return 37;}
 static void check_file(const char *path,const char *wanted) {
     struct nas_proc_node node={0};
     assert(nas_proc_lookup(path,&node) && !nas_proc_is_dir(node));
@@ -82,6 +150,185 @@ static void check_file(const char *path,const char *wanted) {
     assert(nas_proc_read(node,0,split,5)==5);
     assert(!memcmp(split,data,5));
     assert(nas_proc_read(node,(uint64_t)n,data,1)==0);
+}
+#ifdef NAS_ENABLE_LWIP
+static void check_live_dns(void) {
+    struct nas_proc_node net={0},resolver={0},inverse={0};
+    assert(nas_proc_lookup("/proc/net",&net) && nas_proc_is_dir(net));
+    assert(nas_proc_directory_from_ino(nas_proc_ino(net),&inverse) &&
+           inverse.kind==NAS_PROC_NET_DIR);
+    char path[256]={0},name[32]={0};
+    assert(nas_proc_dir_path(net,path) && !strcmp(path,"/proc/net"));
+    assert(nas_proc_child(net,0,name,&resolver) &&
+           !strcmp(name,"naseed-resolv.conf"));
+    assert(nas_proc_find_child(nas_proc_ino(net),name,&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    assert(nas_proc_node_from_ino(nas_proc_ino(resolver),&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&inverse) &&
+           inverse.kind==NAS_PROC_NET_RESOLV);
+    struct nas_proc_node netdev={0};
+    assert(nas_proc_child(net,1,name,&netdev) && !strcmp(name,"dev"));
+    assert(nas_proc_lookup("/proc/net/dev",&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    assert(nas_proc_find_child(nas_proc_ino(net),"dev",&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    assert(nas_proc_node_from_ino(nas_proc_ino(netdev),&inverse) &&
+           inverse.kind==NAS_PROC_NET_DEV);
+    struct nas_proc_node netstat={0};
+    assert(nas_proc_child(net,2,name,&netstat) && !strcmp(name,"stat"));
+    assert(nas_proc_is_dir(netstat) &&
+           nas_proc_node_from_ino(nas_proc_ino(netstat),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_directory_from_ino(nas_proc_ino(netstat),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_find_child(nas_proc_ino(net),"stat",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_DIR);
+    assert(nas_proc_dir_path(netstat,path) && !strcmp(path,"/proc/net/stat"));
+    assert(!nas_proc_child(net,3,name,&inverse));
+    assert(!nas_proc_find_child(nas_proc_ino(net),"other",&inverse));
+    assert(!nas_proc_lookup("/proc/net/naseed-resolv.conf/other",&inverse));
+    assert(!nas_proc_is_dir(resolver) && (nas_proc_mode(resolver)&0222U)==0);
+    uint8_t actual[96]={0};
+    fixture_dns_count=0;
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==0);
+    fixture_dns[0]=UINT32_C(0x0a000203);fixture_dns_count=1;
+    static const char one[]="nameserver 10.0.2.3\n";
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==(int64_t)strlen(one));
+    assert(!memcmp(actual,one,strlen(one)));
+    assert(nas_proc_read(resolver,11,actual,4)==4);
+    assert(!memcmp(actual,one+11,4));
+    fixture_dns[0]=UINT32_C(0x0a000303);
+    fixture_dns[1]=UINT32_C(0xc0000235);fixture_dns_count=2;
+    static const char two[]="nameserver 10.0.3.3\nnameserver 192.0.2.53\n";
+    for(unsigned offset=0;offset<strlen(two);offset+=3) {
+        unsigned take=3;
+        if(take>strlen(two)-offset)take=(unsigned)(strlen(two)-offset);
+        assert(nas_proc_read(resolver,offset,actual,take)==take);
+        assert(!memcmp(actual,two+offset,take));
+    }
+    assert(nas_proc_read(resolver,strlen(two),actual,1)==0);
+    /* A previously opened inode is live, not a copied /etc DNS artifact. */
+    fixture_dns[0]=UINT32_C(0xcb007109);fixture_dns[1]=0;
+    fixture_dns_count=1;
+    static const char changed[]="nameserver 203.0.113.9\n";
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==(int64_t)strlen(changed));
+    assert(!memcmp(actual,changed,strlen(changed)));
+    fixture_dns[0]=0;fixture_dns_count=0;
+    assert(nas_proc_read(resolver,0,actual,sizeof(actual))==0);
+    char stats_text[1024]={0};
+    int64_t stats_bytes=nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                                     sizeof(stats_text)-1);
+    assert(stats_bytes>0 && strstr(stats_text,"Inter-|") &&
+           !strstr(stats_text,"eth0:"));
+    fixture_net.stats=(struct nas_netdev_stats){
+        .rx_bytes=4196,.rx_packets=8,.rx_dropped=2,
+        .tx_bytes=1234,.tx_packets=4,.tx_errors=1};
+    fixture_net_visible=true;
+    memset(stats_text,0,sizeof(stats_text));
+    stats_bytes=nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                              sizeof(stats_text)-1);
+    assert(stats_bytes>0 && strstr(stats_text,"eth0: 4196 8 0 2 0 0 0 0 1234 4 1 0 0 0 0 0"));
+    char one_byte=0;
+    for(int64_t off=0;off<stats_bytes;off++) {
+        assert(nas_proc_read(netdev,(uint64_t)off,(uint8_t *)&one_byte,1)==1);
+        assert(one_byte==stats_text[off]);
+    }
+    assert(nas_proc_read(netdev,(uint64_t)stats_bytes,
+                         (uint8_t *)&one_byte,1)==0);
+    fixture_net.stats.rx_packets=9;
+    memset(stats_text,0,sizeof(stats_text));
+    assert(nas_proc_read(netdev,0,(uint8_t *)stats_text,
+                         sizeof(stats_text)-1)>0);
+    assert(strstr(stats_text,"eth0: 4196 9 0 2"));
+    fixture_net_visible=false;
+}
+#else
+static void check_live_dns(void) {
+    /* The same proc provider is linked by historical no-network kernels;
+     * it must remain linkable and expose no fabricated resolver. */
+    struct nas_proc_node resolver={0};
+    assert(nas_proc_lookup("/proc/net/naseed-resolv.conf",&resolver));
+    uint8_t data[48]={0};
+    assert(nas_proc_read(resolver,0,data,sizeof(data))==0);
+    struct nas_proc_node dev={0};
+    assert(nas_proc_lookup("/proc/net/dev",&dev));
+    char empty[512]={0};
+    assert(nas_proc_read(dev,0,(uint8_t *)empty,sizeof(empty)-1)>0);
+    assert(strstr(empty,"Inter-|") && !strstr(empty,"eth0:"));
+}
+#endif
+static void check_network_stat_files(void) {
+    struct nas_proc_node netstat={0},route={0},link={0},inverse={0};
+    char name[32]={0};
+    assert(nas_proc_lookup("/proc/net/stat",&netstat) &&
+           nas_proc_is_dir(netstat));
+    assert(nas_proc_child(netstat,0,name,&route) &&
+           !strcmp(name,"rt_cache"));
+    assert(nas_proc_child(netstat,1,name,&link) &&
+           !strcmp(name,"naseed_link"));
+    assert(!nas_proc_child(netstat,2,name,&inverse));
+    assert(nas_proc_find_child(nas_proc_ino(netstat),"rt_cache",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_RT_CACHE);
+    assert(nas_proc_find_child(nas_proc_ino(netstat),"naseed_link",&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_NASEED_LINK);
+    assert(nas_proc_node_from_ino(nas_proc_ino(link),&inverse) &&
+           inverse.kind==NAS_PROC_NET_STAT_NASEED_LINK);
+    assert(nas_proc_lookup("/proc/net/stat/rt_cache",&inverse) &&
+           inverse.kind==route.kind);
+    assert(nas_proc_lookup("/proc/net/stat/naseed_link",&inverse) &&
+           inverse.kind==link.kind);
+    assert(!nas_proc_is_dir(link) && !nas_proc_is_dir(route));
+    assert((nas_proc_mode(link)&0222U)==0);
+    check_file("/proc/net/stat/rt_cache","entries in_hit in_slow_tot");
+    check_file("/proc/net/stat/naseed_link","rx_bytes rx_packets");
+
+    char data[1024]={0};
+    int64_t length=nas_proc_read(route,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && (unsigned)length<sizeof(data));
+    char *newline=strchr(data,'\n');
+    assert(newline);*newline++=0;
+    char *end=strchr(newline,'\n');assert(end);*end=0;
+    unsigned fields=0;
+    for(char *token=strtok(data," \t");token;
+        token=strtok(NULL," \t"))fields++;
+    assert(fields==17);
+    unsigned counters=0;
+    for(char *token=strtok(newline," \t");token;
+        token=strtok(NULL," \t")) {
+        assert(strlen(token)==8 && !strcmp(token,"00000000"));
+        counters++;
+    }
+    assert(counters==fields);
+    for(int64_t offset=0;offset<length;offset++) {
+        char byte=0;
+        assert(nas_proc_read(route,(uint64_t)offset,(uint8_t *)&byte,1)==1);
+    }
+#ifdef NAS_ENABLE_LWIP
+    fixture_net.stats=(struct nas_netdev_stats){
+        .rx_bytes=0x100000000ULL+0x123U,.rx_packets=8,
+        .rx_dropped=3,.tx_bytes=0x1234,.tx_packets=5,.tx_errors=1};
+    fixture_net_visible=true;
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"100000123 00000008 00000003 00001234 00000005 00000001"));
+    /* The existing open inode must observe counter increments, not a
+     * fabricated static snapshot. Byte offsets preserve partial reads. */
+    fixture_net.stats.rx_packets++;
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"100000123 00000009 00000003"));
+    for(int64_t offset=0;offset<length;offset++) {
+        char byte=0;
+        assert(nas_proc_read(link,(uint64_t)offset,(uint8_t *)&byte,1)==1);
+        assert(byte==data[offset]);
+    }
+    fixture_net_visible=false;
+#else
+    memset(data,0,sizeof(data));
+    length=nas_proc_read(link,0,(uint8_t *)data,sizeof(data)-1);
+    assert(length>0 && strstr(data,"00000000 00000000 00000000"));
+#endif
 }
 /* Compare exact offset reads, not just a prefix in a 1536-byte stack buffer.
  * Test every byte boundary and a few inhomogeneous small chunks, including
@@ -177,6 +424,10 @@ int main(void) {
     tasks[0].state=NAS_TASK_RUNNING;tasks[0].pid=1;tasks[0].tgid=1;
     tasks[0].mm=&address_spaces[0];
     tasks[1].mm=&address_spaces[1];
+    tasks[0].fs=&fixture_fs[0];
+    tasks[1].fs=&fixture_fs[1];
+    strcpy(tasks[0].fs->cwd,"/tmp/original");
+    strcpy(tasks[1].fs->cwd,"/home/worker");
     tasks[2].mm=&address_spaces[1]; /* worker shares process MM */
     files_fixture.refs=1;
     tasks[0].files=&files_fixture;
@@ -257,11 +508,85 @@ int main(void) {
     assert(nas_proc_read(mapnode,25,half,sizeof(half))==mapslen-25);
     assert(!memcmp(half,allmaps+25,(size_t)(mapslen-25)));
     check_file("/proc/meminfo","MemTotal:       4096 kB");
+    check_live_dns();
+    check_network_stat_files();
     check_file("/proc/uptime","12.50");
     check_file("/proc/stat","cpu  0 0 150 1100");
+    check_file("/proc/stat","\nintr 37\nctxt 12\n");
     check_file("/proc/stat","btime 1760000000");
     check_file("/proc/loadavg","1.00 0.50 0.25");
     check_file("/proc/vmstat","nr_free_pages 512");
+    check_file("/proc/sys/kernel/hostname","naseed\n");
+    /* The production syscall and procfs must consume the same kernel-wide
+     * UTS state, including the Linux maximum hostname length. */
+    char hostname[NAS_UTS_NODENAME_MAX+1]={0};
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,"naseed"));
+    assert(nas_uts_set_hostname("alpine",6));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,"alpine"));
+    check_file("/proc/sys/kernel/hostname","alpine\n");
+    char maxname[NAS_UTS_NODENAME_MAX+1];
+    memset(maxname,'x',NAS_UTS_NODENAME_MAX);
+    maxname[NAS_UTS_NODENAME_MAX]=0;
+    assert(nas_uts_set_hostname(maxname,NAS_UTS_NODENAME_MAX));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,maxname));
+    assert(!nas_uts_set_hostname(maxname,NAS_UTS_NODENAME_MAX+1));
+    assert(!nas_uts_set_hostname(0,1));
+    nas_uts_copy_hostname(hostname);
+    assert(!strcmp(hostname,maxname));
+    check_file("/proc/sys/kernel/hostname",maxname);
+    assert(nas_uts_set_hostname(0,0));
+    nas_uts_copy_hostname(hostname);
+    assert(!hostname[0]);
+    assert(nas_uts_set_hostname("naseed",6));
+    check_file("/proc/slabinfo","slabinfo - version: 2.1");
+    struct nas_proc_node sys_dir={0},kernel_dir={0},cwd_link={0};
+    char sys_name[32];
+    assert(nas_proc_lookup("/proc/sys",&sys_dir) && nas_proc_is_dir(sys_dir));
+    assert(nas_proc_child(sys_dir,0,sys_name,&kernel_dir) &&
+           !strcmp(sys_name,"kernel") && nas_proc_is_dir(kernel_dir));
+    assert(nas_proc_child(kernel_dir,0,sys_name,&entry) &&
+           !strcmp(sys_name,"hostname") &&
+           entry.kind==NAS_PROC_SYS_HOSTNAME);
+    assert(nas_proc_node_from_ino(nas_proc_ino(entry),&decoded_status) &&
+           decoded_status.kind==NAS_PROC_SYS_HOSTNAME);
+    assert(nas_proc_lookup("/proc/23/cwd",&cwd_link) &&
+           nas_proc_mode(cwd_link)==0120777U);
+    assert(nas_proc_node_from_ino(nas_proc_ino(cwd_link),&decoded_status) &&
+           decoded_status.pid==23 &&
+           decoded_status.kind==NAS_PROC_PID_CWD_LINK);
+    char real_cwd[256]={0};
+    assert(nas_proc_readlink(cwd_link,real_cwd,sizeof(real_cwd))==12);
+    assert(!memcmp(real_cwd,"/home/worker",12));
+    /* A valid cwd longer than the optional 256-byte FS cache is still
+     * printable through /proc/<pid>/cwd. readlink truncates to cap. */
+    fixture_long_cwd=true;
+    tasks[1].fs->cwd_path.dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
+    char long_cwd[3902]={0};
+    assert(nas_proc_readlink(cwd_link,long_cwd,3900)==3900);
+    assert(long_cwd[0]=='/' && long_cwd[3899]=='q' && !long_cwd[3900]);
+    memset(real_cwd,0,sizeof(real_cwd));
+    assert(nas_proc_readlink(cwd_link,real_cwd,24)==24);
+    assert(real_cwd[0]=='/' && real_cwd[23]=='q' && !real_cwd[24]);
+    tasks[1].fs->cwd_path.dentry=NULL;
+    fixture_long_cwd=false;
+    assert(!nas_proc_lookup("/proc/24/cwd",&entry));
+    assert(nas_proc_lookup("/proc/locks",&entry));
+    assert(nas_proc_read(entry,0,(uint8_t *)real_cwd,sizeof(real_cwd))==0);
+    fixture_locks[0]=(struct nas_vfs_lock_snapshot){
+        .pid=23,.ino=202,.start=4,.end=9,.exclusive=true
+    };
+    fixture_lock_count=1;
+    check_file("/proc/locks","1: POSIX  ADVISORY  WRITE 23 00:00:202 4 8");
+    fixture_locks[1]=(struct nas_vfs_lock_snapshot){
+        .pid=1,.ino=303,.start=0,.end=UINT64_MAX,.exclusive=false
+    };
+    fixture_lock_count=2;
+    check_file("/proc/locks","2: POSIX  ADVISORY  READ 1 00:00:303 0 EOF");
+    fixture_lock_count=0;
+    assert(nas_proc_read(entry,0,(uint8_t *)real_cwd,sizeof(real_cwd))==0);
     check_live_mounts();
     check_file("/proc/23/statm"," 0 0 0 0 0 0");
     tasks[1].commandline_bytes=12;

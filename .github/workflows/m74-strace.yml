@@ -1,19 +1,5 @@
 name: NaSeed M74 signed strace -p already-running process native three-ISA gate
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/stage-m74-prebuilt.sh'
-      - 'scripts/probe-m74-strace.sh'
-      - 'scripts/m74-*'
-      - 'tests/m74-*'
-      - 'rootfs/alpine/packages-m74-strace.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m74-strace.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

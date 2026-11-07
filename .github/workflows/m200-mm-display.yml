@@ -1,0 +1,128 @@
+name: NaSeed M200 device-backed framebuffer mmap three ISA
+
+# One new native-QEMU case per ISA. Do not re-run historical Alpine cohorts.
+on:
+  workflow_dispatch:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m200-mm-display.yml'
+      - 'scripts/m200-*'
+      - 'scripts/probe-m200-fbdev.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'docs/m200-*'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/display/**'
+      - 'kernel/fs/file_io.c'
+      - 'kernel/fs/io.h'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m200-mm-display-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-contract:
+    name: M200 MM/display ownership and existing GPU host contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Check the single-case runner and MM/display boundaries
+        run: |
+          set -eu
+          sh -n scripts/probe-m200-fbdev.sh
+          python3 -m py_compile scripts/m200-qmp-verify.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          test -s scripts/m200-fbdev-mmap.c
+          test -s scripts/m200-fbdev-cases.tsv
+          sh scripts/check-m86-txn.sh
+          sh scripts/check-m88-exceptions.sh
+          sh scripts/check-m101-cow.sh
+          sh scripts/check-m167-fb-pwrite.sh
+          sh scripts/check-m177-gpu.sh
+
+  native-fbdev-mmap:
+    name: M200 one original mmap framebuffer QEMU case / ${{ matrix.port }}
+    needs: host-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install native system-QEMU, cross toolchains and EFI
+        timeout-minutes: 20
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'gcc:gcc' 'clang:clang' \
+                      'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: One native framebuffer MAP_SHARED guest and physical QMP pixels
+        timeout-minutes: 76
+        run: sh scripts/probe-m200-fbdev.sh "${{ matrix.port }}"
+      - name: Preserve guest ELF, kernel serial trace and real GPU screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m200-fbdev-${{ matrix.port }}
+          path: |
+            build/external/m200-fbdev/${{ matrix.port }}/naseed-fb-mmap.elf
+            build/external/m200-fbdev/${{ matrix.port }}/m200-qmp-check.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-qmp-screen.ppm
+            build/external/m200-fbdev/${{ matrix.port }}/m200-guest.serial.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-guest.clean.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-*.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-*.ppm
+            build/busybox-source-parity-x86/m200-fbdev.*.log
+            build/port-riscv64/full/matrix-source/m200-fbdev.*.log
+            build/port-aarch64/full/matrix-source/m200-fbdev.*.log
+          if-no-files-found: warn

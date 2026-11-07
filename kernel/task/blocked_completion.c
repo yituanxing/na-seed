@@ -27,6 +27,16 @@
 static uint64_t task_resume_syscall(struct nas_task *task) {
     const enum nas_syscall_op nr=(enum nas_syscall_op)task->wait.blocked_op;
     const uint64_t *a=task->wait.blocked_args;
+    /* Disk metadata/data requests are deliberately noninterruptible while
+     * the owning worker can still mutate the filesystem. Once the worker
+     * has completed, publish its result before a pending signal is handled
+     * on user return. EINTR here could otherwise conceal a committed
+     * O_CREAT/truncate/write or abandon a running worker-owned request. */
+    if(task->wait.fs_request) {
+        if(!task->wait.finish)
+            nas_fail("native FS broker lost completion provider");
+        return task->wait.finish(task);
+    }
     if(nas_signal_user_pending(task)) {
         if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep) {
             uint64_t rem=nr==NAS_SC_nanosleep ? a[1] :
@@ -72,7 +82,7 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
     const struct nas_pending_io *pending=task->wait.pending_io;
     const uint64_t rc=task_resume_syscall(task);
     const bool writing=nr==NAS_SC_write || nr==NAS_SC_writev;
-    if((int64_t)rc==-EPIPE && writing) {
+    if((int64_t)rc==-EPIPE && writing && !task->wait.suppress_sigpipe) {
         if(nas_sched_sigpipe_default(nas_fs_io_pipe_like(pending))) {
             nas_sched_child_exit(0,NAS_SIGPIPE);
             return NAS_BLOCKED_TERMINATED;
@@ -88,11 +98,20 @@ enum nas_blocked_completion nas_blocked_complete(struct nas_task *task,
      * return that transient error to the caller as if O_NONBLOCK had been
      * requested; PTY/socket/eventfd share the same provider contract. */
     const bool io_again=nas_fs_io_should_block(pending,rc,false);
+    const bool netlink_again=task->wait.netlink_receive &&
+        (nr==NAS_SC_recvmsg || nr==NAS_SC_recvfrom) &&
+        (int64_t)rc==-EAGAIN;
     const bool poll_again=(int64_t)rc==-EAGAIN &&
         (nr==NAS_SC_poll || nr==NAS_SC_ppoll ||
          nr==NAS_SC_pselect6 || nr==NAS_SC_select ||
-         nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait);
-    if(io_again || poll_again) {
+         nr==NAS_SC_epoll_wait || nr==NAS_SC_epoll_pwait ||
+         nr==NAS_SC_accept || nr==NAS_SC_accept4
+         || nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
+         nr==NAS_SC_setsockopt || nr==NAS_SC_getsockopt ||
+         nr==NAS_SC_shutdown ||
+         nr==NAS_SC_getsockname || nr==NAS_SC_getpeername
+        );
+    if(io_again || netlink_again || poll_again) {
         task->state=NAS_TASK_BLOCKED;
         return NAS_BLOCKED_RETRY;
     }

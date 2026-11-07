@@ -1,0 +1,4 @@
+package	elf_path	family	probe
+nmap	usr/bin/nmap	tcp-scan	real-host-nmap-connect
+iperf3	usr/bin/iperf3	tcp-throughput	real-host-iperf3-throughput
+nmap-ncat	usr/bin/ncat	tcp-duplex	real-host-ncat-random

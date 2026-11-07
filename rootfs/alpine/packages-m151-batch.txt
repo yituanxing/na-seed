@@ -1,0 +1,15 @@
+# M151: original signed Alpine 3.23 multimedia programs, host-installed.
+# Includes Netpbm solely as an independently signed image geometry verifier.
+libsndfile
+aubio
+faad2
+fdkaac
+audiofile
+rubberband
+soundtouch
+aom
+libvpx-utils
+libjxl-tools
+libheif-tools
+jasper
+netpbm
