@@ -43,6 +43,9 @@ jobs:
       - name: Verify no fake Valkey, no host receipt replay and unchanged three-ISA ABI
         run: |
           set -eu
+          # M229 run #42379360720 reached real second-PID1 getty; the
+          # same-line kernel [MISS] syscall diagnostic must not hide login.
+          python3 scripts/test-m194-uart-prompt.py
           python3 scripts/test-m227-uart-login.py
           python3 scripts/test-m227-openrc-contract.py
           python3 scripts/test-m228-hostfwd-contract.py
