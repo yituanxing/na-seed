@@ -1,7 +1,8 @@
 name: NaSeed M228 original Alpine OpenRC host-to-guest HTTP ingress two-native-boot
 
-# Only this exact workflow path triggers a normal push pilot, avoiding a
-# repeated three-ISA M228 run before the amd64 real-host-ingress proof.
+# The real amd64 dual-PID1 host-ingress pilot passed on 2026-11-07
+# (run 42374117846). Promote this isolated workflow to the three-ISA
+# acceptance matrix; its path gate avoids re-running it on unrelated commits.
 on:
   push:
     branches: [naseed-app-batch2]
@@ -10,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       port:
-        description: 'amd64 native pilot before manual all-three-ISA acceptance'
+        description: 'Native ISA selection (push now verifies all three)'
         type: choice
         required: true
         default: amd64
@@ -31,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
     steps:
       - uses: actions/checkout@v4
         with:
