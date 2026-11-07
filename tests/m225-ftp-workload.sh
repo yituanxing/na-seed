@@ -62,9 +62,12 @@ else
         > "$work/download.log" 2>&1 || {
             $busy tail -n 10 "$work/download.log" >&2 || :; exit 1;
         }
+    # Alpine rclone 1.72 defaults to a temporary .partial upload plus rename.
+    # Its documented --inplace option forces exact final-path FTP STOR;
+    # the original signed client still sends all bytes over real TCP.
     $busy timeout 90 /usr/bin/rclone copyto \
         "$work/download.bin" "${remote}rclone.upload" \
-        --ftp-disable-mlsd --transfers 1 --checkers 1 --retries 1 \
+        --inplace --ftp-disable-mlsd --transfers 1 --checkers 1 --retries 1 \
         --low-level-retries 1 --contimeout 12s \
         > "$work/upload.log" 2>&1 || {
             $busy tail -n 10 "$work/upload.log" >&2 || :; exit 1;

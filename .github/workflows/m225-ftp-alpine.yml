@@ -2,6 +2,8 @@ name: NaSeed M225 original Alpine lftp rclone FTP two native boots
 
 # Deliberately targeted: adding/editing M225 helpers does not trigger the
 # expensive M224 native QEMU jobs. Manual dispatch remains available.
+# Rerun M225 with Alpine rclone direct final-path STOR via --inplace;
+# all original signed, wire, physical ext4 and independent reboot gates remain.
 on:
   push:
     branches: [naseed-app-batch2]
