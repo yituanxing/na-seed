@@ -53,6 +53,10 @@ def check() -> None:
     require('m229-valkey-host-ingress.yml' in WORKFLOW and
             "NAS_M229_VALKEY_HOST: '1'" in WORKFLOW,
             'M229 real QEMU must be isolated opt-in on first amd64 pilot')
+    for path in ('tests/m229-alpine-valkey-workload.sh',
+                 'scripts/m229-*.py', 'scripts/test-m229-*.py'):
+        require("- '" + path + "'" in WORKFLOW,
+                'M229-only source repairs must automatically retrigger amd64 pilot')
     require('retention-days: 1' in WORKFLOW and
             'm229-auth files' in WORKFLOW,
             'single-use AUTH token appears in physical PCAP; retention bounded')

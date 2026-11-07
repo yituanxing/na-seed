@@ -7,6 +7,9 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m229-valkey-host-ingress.yml'
+      - 'tests/m229-alpine-valkey-workload.sh'
+      - 'scripts/m229-*.py'
+      - 'scripts/test-m229-*.py'
   workflow_dispatch:
     inputs:
       port:
