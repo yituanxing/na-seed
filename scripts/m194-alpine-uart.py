@@ -80,12 +80,26 @@ def getty_login_host(text: str, allowed: tuple[str, ...] = ('naseed',)) -> str |
 
     OpenRC can set the distro's saved hostname to ``localhost`` on a later
     original PID1 boot. Callers opt in explicitly; historical M194/M197
-    single-boot probes retain their strict ``naseed`` baseline.
+    single-boot probes retain their strict ``naseed`` baseline. A real getty
+    prompt has no trailing newline; a late kernel DHCP callback can append
+    its own complete lwIP status printk to that same physical UART line.
     """
-    for hostname in allowed:
-        if re.search(r'(?:^|\n)' + re.escape(hostname)
-                     + r' login: ?(?:\n|$)', text):
-            return hostname
+    for line in text.split('\n'):
+        for hostname in allowed:
+            prefix = hostname + ' login:'
+            if not line.startswith(prefix):
+                continue
+            suffix = line[len(prefix):]
+            if suffix in ('', ' '):
+                return hostname
+            # M197 amd64 run 42374117820: the original /sbin/getty emitted
+            # "naseed login: ", immediately followed on the SAME UART line by
+            # "[LWIP NETIF STATUS] up=1 link=1 dhcp=1 ip=10.0.2.15".
+            # Recognize only this actual kernel printk shape, not a username,
+            # echoed shell command or an arbitrary string after "login:".
+            if (suffix.startswith(' ') and _ASYNC_PRINTK.match(suffix[1:]) and
+                    _GETTY_LWIP_STATUS.fullmatch(suffix[1:])):
+                return hostname
     return None
 
 
@@ -106,6 +120,10 @@ _ASYNC_PRINTK = re.compile(
     r"SCHED|EXEC|DYN|UART|TTY)(?:[- ][A-Z0-9 _-]{0,70})?\]"
     r"|\[M177 VIRTIO GPU 2D (?:STATS|PASS)\]"
     r"|\[MISS\] syscall nr=[0-9]+\r?$)"
+)
+_GETTY_LWIP_STATUS = re.compile(
+    r'\[LWIP NETIF STATUS\] up=[01] link=[01] dhcp=[01] '
+    r'ip=(?:[0-9]{1,3}\.){3}[0-9]{1,3}'
 )
 
 

@@ -49,12 +49,36 @@ m227=${NAS_M227_INTEGRATED_OPENRC:-0}
 case "$m227" in 0|1) ;; *) echo '[M227 FAIL] invalid integrated OpenRC selector' >&2; exit 2 ;; esac
 m228=${NAS_M228_HOST_INBOUND:-0}
 case "$m228" in 0|1) ;; *) echo '[M228 FAIL] invalid host ingress selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ]; } && \
+m229=${NAS_M229_VALKEY_HOST:-0}
+case "$m229" in 0|1) ;; *) echo '[M229 FAIL] invalid host RESP selector' >&2; exit 2 ;; esac
+m229_host_pid=
+m229_secret_file=
+m229_stop_host() {
+    if [ -n "$m229_host_pid" ]; then
+        kill "$m229_host_pid" 2>/dev/null || :
+        wait "$m229_host_pid" 2>/dev/null || :
+        m229_host_pid=
+    fi
+}
+m229_cleanup() {
+    m229_stop_host
+    if [ -n "$m229_secret_file" ]; then
+        rm -f -- "$m229_secret_file"
+        m229_secret_file=
+    fi
+}
+if [ "$m229" = 1 ]; then
+    trap 'm229_cleanup' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -85,7 +109,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -213,6 +237,42 @@ if [ "$m228" = 1 ]; then
     sudo test ! -e "$overlay/etc/runlevels/default/lighttpd" || {
         echo '[M228 FAIL] OpenRC service pre-enabled' >&2; exit 1;
     }
+fi
+if [ "$m229" = 1 ]; then
+    # Reuse the complete original signed M227 OpenRC/networking workload.
+    # The only extra staging input is a fresh one-run Valkey AUTH identity;
+    # the actual Valkey binaries, database and OpenRC links MUST be guest-made.
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo install -m 0644 tests/m229-alpine-valkey-workload.sh \
+        "$overlay/root/m229-alpine-valkey-workload.sh"
+    sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test -s "$overlay/root/m229-alpine-valkey-workload.sh"
+    sudo test ! -e "$overlay/etc/runlevels/default/valkey" || {
+        echo '[M229 FAIL] original OpenRC Valkey service preenabled' >&2; exit 1;
+    }
+    sudo test ! -e "$overlay/var/lib/valkey" || {
+        echo '[M229 FAIL] Valkey database preseeded' >&2; exit 1;
+    }
+    sudo test ! -e "$overlay/root/m229-auth-token" || {
+        echo '[M229 FAIL] Valkey AUTH credential preseeded' >&2; exit 1;
+    }
+    command -v openssl >/dev/null || {
+        echo '[M229 HOST FAIL] openssl random generator missing' >&2; exit 1;
+    }
+    m229_password=$(openssl rand -hex 32)
+    test "${#m229_password}" -eq 64 || {
+        echo '[M229 HOST FAIL] invalid random AUTH identity length' >&2; exit 1;
+    }
+    case "$m229_password" in
+        *[!0-9a-f]*|'') echo '[M229 HOST FAIL] invalid random AUTH identity' >&2; exit 1 ;;
+    esac
+    m229_secret_file=$(mktemp "$PWD/$work/m229-auth.XXXXXXXX")
+    printf '%s\n' "$m229_password" > "$m229_secret_file"
+    chmod 0600 "$m229_secret_file"
+    sudo install -m 0600 -o 0 -g 0 "$m229_secret_file" \
+        "$overlay/root/m229-auth-token"
+    sudo test -s "$overlay/root/m229-auth-token"
 fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
@@ -511,6 +571,12 @@ if [ "$m228" = 1 ]; then
     # The runner appends hostfwd to the EXISTING NIC, not a second adapter.
     export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M228_HOST_PORT:-15433}
 fi
+if [ "$m229" = 1 ]; then
+    # M229 is still a single real VirtIO-Net NIC and an isolated localhost
+    # hostfwd, but it targets the original signed Valkey RESP port.
+    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M229_HOST_PORT:-15445}
+    export NAS_VIRTIO_NET_GUESTFWD_PORT=15445
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -560,6 +626,9 @@ if [ "$m227" = 1 ]; then
 fi
 if [ "$m228" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_PUBLIC_QEMU_TIMEOUT:-2650}
+fi
+if [ "$m229" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_PUBLIC_QEMU_TIMEOUT:-2650}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -753,6 +822,64 @@ if [ "$m228" = 1 ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
 fi
+if [ "$m229" = 1 ]; then
+    # The HOST initiates the signed Valkey RESP transaction only after the
+    # actual Alpine PID1 guest prints its readiness line on the real UART.
+    # The per-run password is never put in receipts or the command line.
+    m229_start_host() {
+        phase=$1
+        host_serial=$2
+        receipt="$PWD/$work/m229-$phase-host-resp.json"
+        host_log="$PWD/$work/m229-$phase-host-resp.log"
+        test ! -e "$receipt" && test ! -e "$host_log" || {
+            echo "[M229 HOST FAIL] stale $phase RESP proof" >&2; exit 1;
+        }
+        if [ "$phase" = reopen ]; then
+            NAS_M229_RESP_PASSWORD="$m229_password" \
+                python3 -u scripts/m229-host-resp-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --first-receipt "$PWD/$work/m229-first-host-resp.json" \
+                --ready-timeout "${NAS_M229_HOST_READY_SECONDS:-2650}" \
+                --resp-timeout "${NAS_M229_HOST_RESP_SECONDS:-35}" \
+                > "$host_log" 2>&1 &
+        else
+            NAS_M229_RESP_PASSWORD="$m229_password" \
+                python3 -u scripts/m229-host-resp-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --ready-timeout "${NAS_M229_HOST_READY_SECONDS:-2650}" \
+                --resp-timeout "${NAS_M229_HOST_RESP_SECONDS:-35}" \
+                > "$host_log" 2>&1 &
+        fi
+        m229_host_pid=$!
+    }
+    m229_finish_host() {
+        phase=$1
+        test -n "$m229_host_pid" || {
+            echo '[M229 HOST FAIL] host RESP watcher was never started' >&2; exit 1;
+        }
+        join_seconds=0
+        while [ ! -s "$PWD/$work/m229-$phase-host-resp.json" ] && \
+              kill -0 "$m229_host_pid" 2>/dev/null && \
+              [ "$join_seconds" -lt 8 ]; do
+            sleep 1
+            join_seconds=$((join_seconds+1))
+        done
+        if [ ! -s "$PWD/$work/m229-$phase-host-resp.json" ]; then
+            echo "[M229 HOST FAIL] $phase native QEMU had no external RESP receipt" >&2
+            m229_stop_host
+            tail -100 "$PWD/$work/m229-$phase-host-resp.log" >&2 || :
+            exit 1
+        fi
+        if wait "$m229_host_pid"; then
+            m229_host_pid=
+        else
+            m229_host_pid=
+            echo "[M229 HOST FAIL] $phase real guest Valkey RESP transaction" >&2
+            tail -100 "$PWD/$work/m229-$phase-host-resp.log" >&2 || :
+            exit 1
+        fi
+    }
+fi
 
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
@@ -763,6 +890,10 @@ if [ "$m227" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
 fi
 if [ "$m228" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+fi
+if [ "$m229" = 1 ]; then
+    # Exact same original Alpine /sbin/init as M228, never a synthetic entry.
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 
@@ -819,7 +950,27 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m228" = 1 ]; then
+    if [ "$m229" = 1 ]; then
+        test ! -e "$serial" || {
+            echo '[M229 FAIL] stale original first UART before host RESP watcher' >&2; exit 1;
+        }
+        echo "[M229 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        m229_start_host first "$serial"
+        if python3 scripts/m229-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m229-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m229-first.serial.log"
+            m229_finish_host first
+            echo "[M229 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m229_first_rc=$?
+            if [ -f "$serial" ]; then
+                cp "$serial" "$PWD/$work/m229-first.serial.log"
+            fi
+            echo "[M229 FIRST UART FAIL] rc=$m229_first_rc; preserving independent host log" >&2
+            tail -100 "$PWD/$work/m229-first-host-resp.log" >&2 || :
+            exit "$m229_first_rc"
+        fi
+    elif [ "$m228" = 1 ]; then
         # Physical native QEMU MUST remain alive while host issues the
         # independent nonce-bearing TCP GET into guest eth0/lighttpd.
         # The observer starts BEFORE M194 unlinks its own UART path; never
@@ -1000,6 +1151,16 @@ if [ "$m228" = 1 ]; then
         exit 1
     }
 fi
+if [ "$m229" = 1 ]; then
+    grep -Fq 'M229_FIRST_HOST_RESP_WINDOW_COMPLETE' "$serial" || {
+        echo '[M229 FAIL] original guest did not complete the live Valkey window' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m229-first-host-resp.json" || {
+        echo '[M229 FAIL] no independent real-host first RESP receipt' >&2
+        exit 1
+    }
+fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
@@ -1128,6 +1289,66 @@ if [ "$m199" = 1 ]; then
     echo "[M199 ALPINE OPENRC TWO BOOT PASS] $port original signed Alpine "\
          'init/OpenRC twice, guest rc-update persisted, OpenRC daemon lifecycle, ' \
          'auto-restored physical GPU, QMP Vim and signed applications on ext4'
+    exit 0
+fi
+
+if [ "$m229" = 1 ]; then
+    # Independent SECOND original signed Alpine PID1 on the same physical
+    # ext4: OpenRC, not this harness, must restore both real services.
+    test -s "$PWD/$work/m229-first.serial.log" && \
+        test -s "$PWD/$work/m229-first-host-resp.json" || {
+        echo '[M229 FAIL] first native UART/RESP witness missing before reboot' >&2
+        exit 1
+    }
+    echo "[M229 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m229-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m229-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M229 FAIL] stale second independent NIC PCAP' >&2; exit 1;
+    }
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_REOPEN_QEMU_TIMEOUT:-1100}
+    m229_start_host reopen "$serial"
+    if python3 scripts/m229-alpine-uart.py reopen "$runner" "$serial" \
+            "$PWD/$work/m229-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/m229-reopen.serial.log"
+        m229_finish_host reopen
+    else
+        m229_reopen_rc=$?
+        if [ -f "$serial" ]; then
+            cp "$serial" "$PWD/$work/m229-reopen.serial.log"
+        fi
+        echo "[M229 REOPEN UART FAIL] rc=$m229_reopen_rc; preserving host log" >&2
+        tail -100 "$PWD/$work/m229-reopen-host-resp.log" >&2 || :
+        exit "$m229_reopen_rc"
+    fi
+    echo "[M229 REOPEN ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    grep -Fq 'M229_REOPEN_HOST_RESP_WINDOW_COMPLETE' "$serial" || {
+        echo '[M229 FAIL] second native guest Valkey host window incomplete' >&2
+        exit 1
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M229 FAIL] signed original Bash/Lua/SQLite/Git persistence absent' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m229-reopen-host-resp.json" || {
+        echo '[M229 FAIL] no second independent authenticated host RESP GET' >&2
+        exit 1
+    }
+    # One atomic final oracle owns BOTH real TCP/PCAP evidence and ext4:
+    # neither a host response alone nor an OpenRC UART marker is sufficient.
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m229-valkey-disk-check.py "$port" "$root" "$disk" \
+        "$PWD/$work/m229-first-host-resp.json" \
+        "$PWD/$work/m229-reopen-host-resp.json" \
+        "$pcap" "$PWD/$work/m229-reopen-wire.pcap" \
+        "$PWD/$work/m229-valkey-final-oracle.json"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M229 ORIGINAL ALPINE VALKEY HOST RESP TWO BOOT PASS] $port real "\
+         'host AUTH/SET/GET/SAVE and second host AUTH/GET over one NIC, ' \
+         'two original signed PID1/OpenRC boots, two independent PCAPs and ' \
+         'host receipts, exact Valkey RDB on physical ext4 and strict fsck'
     exit 0
 fi
 

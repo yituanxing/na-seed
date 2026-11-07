@@ -27,6 +27,11 @@ fi
 # A loopback-only host listener avoids publishing the test server externally.
 # Reject malformed values before they can become QEMU option fragments.
 hostfwd=
+if [ -z "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ] &&
+   [ -n "${NAS_VIRTIO_NET_GUESTFWD_PORT:-}" ]; then
+    echo 'NAS_VIRTIO_NET_GUESTFWD_PORT requires NAS_VIRTIO_NET_HOSTFWD_PORT' >&2
+    exit 2
+fi
 if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
     [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
         echo 'NAS_VIRTIO_NET_HOSTFWD_PORT requires NAS_VIRTIO_NET_USER=1' >&2
@@ -44,7 +49,19 @@ if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
         echo 'NAS_VIRTIO_NET_HOSTFWD_PORT out of range 1..65535' >&2
         exit 2
     }
-    hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:15432"
+    guestfwd_port=${NAS_VIRTIO_NET_GUESTFWD_PORT:-15432}
+    case "$guestfwd_port" in
+        *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_PORT must be decimal 1..65535' >&2; exit 2 ;;
+    esac
+    while [ "${guestfwd_port#0}" != "$guestfwd_port" ]; do
+        guestfwd_port=${guestfwd_port#0}
+    done
+    [ -n "$guestfwd_port" ] && [ "${#guestfwd_port}" -le 5 ] &&
+        [ "$guestfwd_port" -le 65535 ] || {
+        echo 'NAS_VIRTIO_NET_GUESTFWD_PORT out of range 1..65535' >&2
+        exit 2
+    }
+    hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:${guestfwd_port}"
 fi
 if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.

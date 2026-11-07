@@ -1,0 +1,134 @@
+name: NaSeed M229 original Alpine Valkey OpenRC host RESP RDB two-native-boot
+
+# First pilot is amd64.  After actual host RESP + ext4 PASS, an isolated
+# manual all-ISA run can exercise this same unchanged target-native pipeline.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m229-valkey-host-ingress.yml'
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Single native ISA pilot or all-three acceptance'
+        type: choice
+        required: true
+        default: amd64
+        options: [amd64, riscv64, arm64, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-alpine-valkey-host:
+    name: Real host authenticated RESP Valkey RDB / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Verify no fake Valkey, no host receipt replay and unchanged three-ISA ABI
+        run: |
+          set -eu
+          python3 scripts/test-m227-uart-login.py
+          python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m229-cohort-contract.py
+          python3 scripts/test-m229-valkey-guest-contract.py
+          python3 scripts/test-m229-host-resp.py
+          python3 scripts/test-m229-valkey-disk-check.py
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          python3 -m py_compile scripts/m229-alpine-uart.py scripts/m229-host-resp-check.py \
+            scripts/m229-resp-oracle.py scripts/m229-valkey-disk-check.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 scripts/test-m197-alpine-host.py
+      - name: Install original Alpine staging and native QEMU cross ABI tools
+        timeout-minutes: 20
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Two original Alpine PID1 QEMUs and independent authenticated host RESP
+        timeout-minutes: 85
+        env:
+          NAS_M229_VALKEY_HOST: '1'
+          NAS_M229_PUBLIC_QEMU_TIMEOUT: '2650'
+          NAS_M229_FIRST_SECONDS: '2500'
+          NAS_M229_REOPEN_QEMU_TIMEOUT: '1100'
+          NAS_M229_REOPEN_SECONDS: '950'
+          NAS_M229_HOST_PORT: '15445'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh '${{ matrix.port }}'
+      - name: Preserve native host RESP, original Alpine UART, NIC PCAP, RDB oracle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Raw PCAP necessarily includes the ephemeral disposable Valkey AUTH.
+          # It is a fresh one-run test token, never reused outside this disk;
+          # do NOT upload m229-auth files, guest disk images or private creds.
+          name: m229-valkey-host-resp-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-host-resp.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-host-resp.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-host-resp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-host-resp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-valkey-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 1

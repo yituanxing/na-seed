@@ -15,6 +15,13 @@ def check() -> None:
     both = ('naseed', 'localhost')
     assert owner.getty_login_host('\nlocalhost login: ', both) == 'localhost'
     assert owner.getty_login_host('\nnaseed login: ', both) == 'naseed'
+    # M197 amd64 run 42374117820 reached the original /sbin/getty, but the
+    # DHCP callback printk interrupted its non-newline-terminated prompt.
+    # This is real whole-line UART evidence, not a failed Alpine boot.
+    status = '[LWIP NETIF STATUS] up=1 link=1 dhcp=1 ip=10.0.2.15'
+    assert owner.getty_login_host('\nnaseed login: ' + status + '\n', both) == 'naseed'
+    assert owner.getty_login_host('\nlocalhost login: ' + status + '\n', both) == 'localhost'
+    assert owner.getty_login_host('\nlocalhost login: ' + status + '\n', ('naseed',)) is None
     assert owner.getty_login_host('\nlocalhost login: \r\n', both) is None
     assert owner.getty_login_host('\nlocalhost login: \n', both) == 'localhost'
     assert owner.getty_login_host('\nlocalhost login: ', ('naseed',)) is None
@@ -22,6 +29,17 @@ def check() -> None:
     assert owner.getty_login_host('naseed:~# echo localhost login: ', both) is None
     assert owner.getty_login_host('[EXEC] localhost login: ', both) is None
     assert owner.getty_login_host(' M227 localhost login: ', both) is None
+    for fake in (
+        '\nnaseed login: root\n',
+        '\nnaseed login: some ordinary text\n',
+        '\nnaseed login: ' + status + ' forged trailing bytes\n',
+        '\nnaseed login: [LWIP NETIF STATUS] bogus data\n',
+        '\nnaseed login: [LWIP NETIF STATUS] up=bad link=1 dhcp=1 ip=10.0.2.15\n',
+        '\nnaseed login: [LWIP DHCP BOUND] addr=10.0.2.15\n',
+        '[EXEC] naseed login: ' + status + '\n',
+        'sh: echo naseed login: ' + status + '\n',
+    ):
+        assert owner.getty_login_host(fake, both) is None, repr(fake)
     # Authentic getty prints the login prompt without a newline, then echoes
     # the typed username on that SAME line.  Its final transcript is no
     # longer a prompt-only line; authentication must preserve the previously
