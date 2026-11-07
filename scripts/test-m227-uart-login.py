@@ -21,6 +21,13 @@ def check() -> None:
     status = '[LWIP NETIF STATUS] up=1 link=1 dhcp=1 ip=10.0.2.15'
     assert owner.getty_login_host('\nnaseed login: ' + status + '\n', both) == 'naseed'
     assert owner.getty_login_host('\nlocalhost login: ' + status + '\n', both) == 'localhost'
+    # M229 run 42379360720: second real PID1/getty wrote the complete
+    # prompt, then the kernel appended this optional-syscall diagnostic on
+    # the *same* UART line. It must not leave the second boot waiting forever.
+    miss = '[MISS] syscall nr=324'
+    assert owner.getty_login_host('\nlocalhost login: ' + miss + '\n', both) == 'localhost'
+    assert owner.getty_login_host('\nnaseed login: ' + miss + '\r\n', both) == 'naseed'
+    assert owner.getty_login_host('\nlocalhost login: ' + miss + '\n', ('naseed',)) is None
     assert owner.getty_login_host('\nlocalhost login: ' + status + '\n', ('naseed',)) is None
     assert owner.getty_login_host('\nlocalhost login: \r\n', both) is None
     assert owner.getty_login_host('\nlocalhost login: \n', both) == 'localhost'
@@ -36,6 +43,12 @@ def check() -> None:
         '\nnaseed login: [LWIP NETIF STATUS] bogus data\n',
         '\nnaseed login: [LWIP NETIF STATUS] up=bad link=1 dhcp=1 ip=10.0.2.15\n',
         '\nnaseed login: [LWIP DHCP BOUND] addr=10.0.2.15\n',
+        '\nlocalhost login: [MISS] syscall nr=nope\n',
+        '\nlocalhost login: [MISS] syscall nr=324 forged trailer\n',
+        '\nlocalhost login: [MISS] syscall nr=324 \n',
+        '\nlocalhost login: [MISS] syscall nr=-1\n',
+        '[EXEC] localhost login: [MISS] syscall nr=324\n',
+        'sh: echo localhost login: [MISS] syscall nr=324\n',
         '[EXEC] naseed login: ' + status + '\n',
         'sh: echo naseed login: ' + status + '\n',
     ):

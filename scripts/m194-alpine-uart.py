@@ -81,8 +81,10 @@ def getty_login_host(text: str, allowed: tuple[str, ...] = ('naseed',)) -> str |
     OpenRC can set the distro's saved hostname to ``localhost`` on a later
     original PID1 boot. Callers opt in explicitly; historical M194/M197
     single-boot probes retain their strict ``naseed`` baseline. A real getty
-    prompt has no trailing newline; a late kernel DHCP callback can append
-    its own complete lwIP status printk to that same physical UART line.
+    prompt has no trailing newline; a late kernel DHCP callback or a missing
+    optional syscall printk can append its own complete diagnostic to that
+    same physical UART line. Only the two observed, complete kernel messages
+    are permitted as a suffix; an echoed username/command must still fail.
     """
     for line in text.split('\n'):
         for hostname in allowed:
@@ -92,13 +94,15 @@ def getty_login_host(text: str, allowed: tuple[str, ...] = ('naseed',)) -> str |
             suffix = line[len(prefix):]
             if suffix in ('', ' '):
                 return hostname
-            # M197 amd64 run 42374117820: the original /sbin/getty emitted
-            # "naseed login: ", immediately followed on the SAME UART line by
-            # "[LWIP NETIF STATUS] up=1 link=1 dhcp=1 ip=10.0.2.15".
-            # Recognize only this actual kernel printk shape, not a username,
-            # echoed shell command or an arbitrary string after "login:".
+            # Original /sbin/getty prints without a newline. M197 run
+            # 42374117820 observed a same-line complete lwIP NETIF status;
+            # M229 second-boot run 42379360720 observed the complete
+            # "[MISS] syscall nr=324" kernel diagnostic after "localhost
+            # login: ". Recognize only those two kernel printk shapes, never
+            # an echoed username, shell command, or arbitrary trailing text.
             if (suffix.startswith(' ') and _ASYNC_PRINTK.match(suffix[1:]) and
-                    _GETTY_LWIP_STATUS.fullmatch(suffix[1:])):
+                    (_GETTY_LWIP_STATUS.fullmatch(suffix[1:]) or
+                     _GETTY_MISS_SYSCALL.fullmatch(suffix[1:]))):
                 return hostname
     return None
 
@@ -125,6 +129,7 @@ _GETTY_LWIP_STATUS = re.compile(
     r'\[LWIP NETIF STATUS\] up=[01] link=[01] dhcp=[01] '
     r'ip=(?:[0-9]{1,3}\.){3}[0-9]{1,3}'
 )
+_GETTY_MISS_SYSCALL = re.compile(r'\[MISS\] syscall nr=[0-9]+\r?')
 
 
 def shell_prompt_after_step(segment: str) -> bool:
