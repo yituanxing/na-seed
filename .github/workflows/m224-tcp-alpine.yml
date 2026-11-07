@@ -69,6 +69,8 @@ jobs:
           tsv=build/external/m224-candidate-inventory/amd64/candidates.tsv
           awk -F '\t' 'NR > 1 {n++; if ($3 != "NATIVE_ELF" || length($4) != 64 || $4 ~ /[^0-9a-f]/) bad++}
             END {if (n != 3 || bad) exit 1}' "$tsv"
+      # Capture real guest serial on physical Nmap rejection before uploading
+      # fail-closed host/PCAP/ext4 evidence; no acceptance check is disabled.
       - name: First and independently reopened physical x86 QEMUs real TCP host PCAP and ext4
         timeout-minutes: 78
         env:
