@@ -1,8 +1,12 @@
 name: NaSeed M221 original Alpine RFC2136 nsupdate and host two native QEMUs
 
-# Static implementation stage. Deliberately dispatch-only until reviewed;
-# editing shared M197/M205 must not relaunch the accepted M218/M219/M220 runs.
+# Trigger only on this workflow's exact-head update. Shared M197/M205 changes
+# must not relaunch accepted M218/M219/M220 multi-ISA QEMU runs.
 on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m221-dns-update-alpine.yml'
   workflow_dispatch:
 
 permissions:

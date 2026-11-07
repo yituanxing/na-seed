@@ -210,7 +210,10 @@ def integration_contract() -> None:
         assert marker in runner, f"M197 shared first/reopen gate missing {marker}"
     assert "export NAS_M221_PILOT=1" in PILOT.read_text()
     flow = WORKFLOW.read_text()
-    assert "  workflow_dispatch:" in flow and "  push:" not in flow
+    assert "  workflow_dispatch:" in flow and "  push:" in flow
+    assert "    branches: [naseed-app-batch2]" in flow
+    assert "      - '.github/workflows/m221-dns-update-alpine.yml'" in flow
+    assert "      - 'tests/m205-software-workload.sh'" not in flow
     assert "needs: [authoritative-dns-amd64]" in flow
     for marker in ("m221-first-host-dns.log", "m221-reopen-host-dns.log",
                    "m221-first-wire.json", "m221-reopen-wire.json",
