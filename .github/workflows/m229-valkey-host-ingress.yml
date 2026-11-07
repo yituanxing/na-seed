@@ -1,7 +1,7 @@
 name: NaSeed M229 original Alpine Valkey OpenRC host RESP RDB two-native-boot
 
-# First pilot is amd64.  After actual host RESP + ext4 PASS, an isolated
-# manual all-ISA run can exercise this same unchanged target-native pipeline.
+# The real amd64 two-PID1 host RESP/RDB/ext4 pilot passed at #42384878249.
+# Promote the unchanged native pipeline to all three ISAs on this scoped push.
 on:
   push:
     branches: [naseed-app-batch2]
@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
     steps:
       - uses: actions/checkout@v4
         with:
