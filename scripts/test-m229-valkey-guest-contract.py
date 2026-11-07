@@ -35,7 +35,9 @@ def main() -> None:
     for needle in ('/root/m229-auth-token', 'stat -c %a',
                    'test "${#token}" -eq 64', 'requirepass $token',
                    'umask 077', 'protected-mode yes', 'port 15445',
-                   'cfgfile="/etc/valkey/m229.conf"'):
+                   'cfgfile="/etc/valkey/m229.conf"',
+                   'command_user="root:root"',
+                   'non-root DAC enforcement is not yet complete'):
         require(needle in source, 'missing private authenticated listener ' + needle)
     require(not re.search(r'(?m)^\s*(echo|printf|set -x).*\$token', source),
             'private token must never be printed to serial')

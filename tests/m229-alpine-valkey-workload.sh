@@ -82,9 +82,15 @@ maxclients 8
 VALKEY_CONFIG
         $busy chown root:valkey "$cfg"
         $busy chmod 0640 "$cfg"
-        # The official init script respects this documented OpenRC conf.d
-        # variable, and still owns daemon startup and its PID file.
-        $busy printf '%s\n' 'cfgfile="/etc/valkey/m229.conf"' >> /etc/conf.d/valkey
+        # The original Alpine init script still owns daemon launch and its
+        # PID file. NaSeed currently rejects non-root setgid/setuid because
+        # non-root DAC enforcement is not yet complete (EPERM for gid 102).
+        # This isolated, disposable QEMU service therefore explicitly runs
+        # as root; do NOT claim unprivileged daemon isolation. Its inbound
+        # listener still requires the fresh 256-bit AUTH and protected mode.
+        $busy printf '%s\n' \
+            'cfgfile="/etc/valkey/m229.conf"' \
+            'command_user="root:root"' >> /etc/conf.d/valkey
         rc-update add valkey default || fail 'original Valkey runlevel registration'
         test -L /etc/runlevels/default/valkey ||
             fail 'official OpenRC runlevel link absent'
@@ -104,6 +110,8 @@ VALKEY_CONFIG
 esac
 
 test -f "$cfg" && test ! -L "$cfg" || fail 'original Valkey config lost'
+$busy grep -qx 'command_user="root:root"' /etc/conf.d/valkey ||
+    fail 'current root-only kernel cannot perform Alpine valkey setgid(102)'
 test "$($busy stat -c %a "$cfg")" = 640 ||
     fail 'original Valkey config permissions changed'
 $busy grep -qx 'port 15445' "$cfg" || fail 'original Valkey port changed'

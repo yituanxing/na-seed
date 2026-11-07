@@ -44,7 +44,7 @@ def check():
         '/usr/bin/valkey-server': bytes(original),
         '/usr/bin/valkey-cli': bytes(original),
         '/etc/init.d/valkey': b'#!/sbin/openrc-run\n',
-        '/etc/conf.d/valkey': b'cfgfile="/etc/valkey/m229.conf"\n',
+        '/etc/conf.d/valkey': b'cfgfile="/etc/valkey/m229.conf"\ncommand_user="root:root"\n',
         '/etc/valkey/m229.conf': config,
         '/root/m229-auth-token': token + b'\n',
         '/var/lib/valkey/m229.rdb': b'REDIS0012\x00' + key.encode() +
@@ -59,6 +59,7 @@ def check():
     stat = metadata.__getitem__
     result = owner.check_artifacts(port, read, stat, receipt)
     assert result['original_valkey_openrc_default']
+    assert result['current_kernel_root_only_daemon_identity_no_unprivileged_DAC']
     assert result['real_physical_valkey_rdb_bytes'] > 64
     assert result['first_authenticated_host_value_sha256'] == receipt['value_sha256']
     for change in [
@@ -66,6 +67,8 @@ def check():
                                   files['/var/lib/valkey/m229.rdb'][3:]),
         lambda: files.__setitem__('/etc/valkey/m229.conf', config.replace(
             b'protected-mode yes', b'protected-mode no')),
+        lambda: files.__setitem__('/etc/conf.d/valkey',
+                                  b'cfgfile="/etc/valkey/m229.conf"\n'),
         lambda: files.__setitem__('/etc/apk/world', b'alpine-base\n'),
         lambda: files.__setitem__('/root/m229-auth-token', b'a' * 64),
     ]:

@@ -68,6 +68,8 @@ def check_artifacts(port: str, read, stat, receipt: dict) -> dict:
     confd = read('/etc/conf.d/valkey')
     if b'cfgfile="/etc/valkey/m229.conf"' not in confd:
         fail('original Alpine OpenRC configuration does not select Valkey service')
+    if confd.splitlines().count(b'command_user="root:root"') != 1:
+        fail('current kernel requires explicit audited root-only Valkey service identity')
     runlevel = stat('/etc/runlevels/default/valkey')
     if 'Type: symlink' not in runlevel or 'valkey' not in runlevel:
         fail('actual default-runlevel Valkey symlink absent')
@@ -102,6 +104,7 @@ def check_artifacts(port: str, read, stat, receipt: dict) -> dict:
     return {'original_signed_valkey_apk': sorted(SIGNED_PACKAGES),
             'valkey_original_native_elf': list(SIGNED_ELFS),
             'original_valkey_openrc_default': True,
+            'current_kernel_root_only_daemon_identity_no_unprivileged_DAC': True,
             'private_valkey_auth_file_and_config': True,
             'real_physical_valkey_rdb_bytes': len(snapshot),
             'real_physical_valkey_rdb_sha256': hashlib.sha256(snapshot).hexdigest(),
