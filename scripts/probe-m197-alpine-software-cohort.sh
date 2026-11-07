@@ -31,12 +31,14 @@ m218=${NAS_M218_PILOT:-0}
 case "$m218" in 0|1) ;; *) echo '[M218 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m219=${NAS_M219_PILOT:-0}
 case "$m219" in 0|1) ;; *) echo '[M219 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; } && \
+m220=${NAS_M220_PILOT:-0}
+case "$m220" in 0|1) ;; *) echo '[M220 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -67,7 +69,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ]; then
     # This pilot installs only the two signed package owners of its five
     # original ELFs. Never carry M213's unrelated LLVM/BIND/SSH closure.
     disk_mib=512
@@ -132,12 +134,21 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ]; then
     # Reuse the M205 signed-install/ledger owner for both independent cohorts;
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
-    if [ "$m219" = 1 ]; then
+    if [ "$m220" = 1 ]; then
+    cohort=m220
+    sudo install -m 0644 tests/m220-nping-workload.sh \
+        "$overlay/root/m220-nping-workload.sh"
+    sudo install -m 0644 scripts/m220-candidate-elfs.tsv \
+        "$overlay/root/m220-cohort.tsv"
+    sudo test -s "$overlay/root/m205-software-workload.sh"
+    sudo test -s "$overlay/root/m220-nping-workload.sh"
+    sudo test -s "$overlay/root/m220-cohort.tsv"
+    elif [ "$m219" = 1 ]; then
     cohort=m219
     sudo install -m 0644 tests/m219-utmpdump-workload.sh \
         "$overlay/root/m219-utmpdump-workload.sh"
@@ -352,6 +363,9 @@ fi
 if [ "$m219" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_PUBLIC_QEMU_TIMEOUT:-2500}
 fi
+if [ "$m220" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_PUBLIC_QEMU_TIMEOUT:-2500}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -371,6 +385,46 @@ fi
 if [ "$port" = amd64 ]; then
     export NAS_ACCEPTANCE_KERNEL="$PWD/build/${NAS_M191_BUILD_TAG:-m191-root}-virtio-x86/kernel.elf"
     test -s "$NAS_ACCEPTANCE_KERNEL"
+fi
+
+# M220 alone needs an independent *host process* to receive the original
+# guest's unprivileged UDP packet on each native QEMU boot. This lives outside
+# the guest and cannot be satisfied by a CLI exit marker or a user fixture.
+m220_host_pid=
+m220_stop_host() {
+    if [ -n "$m220_host_pid" ]; then
+        kill "$m220_host_pid" 2>/dev/null || :
+        wait "$m220_host_pid" 2>/dev/null || :
+        m220_host_pid=
+    fi
+}
+m220_start_host() {
+    phase=$1
+    log="$PWD/$work/m220-$phase-host-udp.log"
+    test ! -e "$log" || {
+        echo "[M220 HOST FAIL] stale independent $phase host UDP log" >&2
+        exit 1
+    }
+    python3 -u scripts/m220-nping-host-oracle.py "$phase" > "$log" 2>&1 &
+    m220_host_pid=$!
+    ready=0
+    for attempt in 1 2 3 4 5 6; do
+        if grep -Fxq "[M220 HOST READY] phase=$phase port=15416" "$log"; then
+            ready=1
+            break
+        fi
+        kill -0 "$m220_host_pid" 2>/dev/null || break
+        sleep 1
+    done
+    if [ "$ready" -ne 1 ]; then
+        echo "[M220 HOST FAIL] host UDP socket not ready on $phase QEMU" >&2
+        tail -30 "$log" >&2 || :
+        exit 1
+    fi
+}
+if [ "$m220" = 1 ]; then
+    trap 'm220_stop_host' EXIT
+    m220_start_host first
 fi
 
 if [ "$m199" = 1 ]; then
@@ -432,7 +486,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m219" = 1 ]; then
+    if [ "$m220" = 1 ]; then
+        python3 scripts/m220-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m220-first-runner.log" "$fifo"
+    elif [ "$m219" = 1 ]; then
         python3 scripts/m219-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m219-first-runner.log" "$fifo"
     elif [ "$m218" = 1 ]; then
@@ -456,6 +513,12 @@ else
     fi
 fi
 test -s "$serial" && test -s "$pcap"
+if [ "$m220" = 1 ]; then
+    m220_stop_host
+    python3 scripts/m220-nping-wire-check.py first \
+        "$pcap" "$PWD/$work/m220-first-host-udp.log" \
+        "$PWD/$work/m220-first-wire.json"
+fi
 cp "$serial" "$PWD/$work/m197-live.serial.log"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$serial" || {
     echo '[M197 PUBLIC WIRE FAIL] no real VirtIO DHCP lease' >&2
@@ -501,6 +564,12 @@ fi
 if [ "$m219" = 1 ]; then
     grep -Fq 'M219_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M219 FAIL] first original utmpdump ledger did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m220" = 1 ]; then
+    grep -Fq 'M220_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M220 FAIL] first original Nping ledger did not complete' >&2
         exit 1
     }
 fi
@@ -571,10 +640,21 @@ fi
 # A SECOND native QEMU has NO network requirement; it must observe and run
 # the genuine installed ELFs and all SQL/Git/application state from disk.
 unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+if [ "$m220" = 1 ]; then
+    # M197 normally unsets the first PCAP on reboot. M220 requires TWO
+    # independent captures and two different host-oracle nonce payloads.
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m220-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M220 HOST FAIL] stale second QEMU PCAP' >&2; exit 1;
+    }
+    m220_start_host reopen
+fi
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m219" = 1 ]; then
+    if [ "$m220" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m220-alpine-reopen-cases.tsv
+    elif [ "$m219" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m219-alpine-reopen-cases.tsv
     elif [ "$m218" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m218-alpine-reopen-cases.tsv
@@ -613,10 +693,20 @@ fi
 if [ "$m219" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_REOPEN_SECONDS:-600}
 fi
+if [ "$m220" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_REOPEN_SECONDS:-600}
+fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
     exit 1
+fi
+if [ "$m220" = 1 ]; then
+    m220_stop_host
+    python3 scripts/m220-nping-wire-check.py reopen \
+        "$PWD/$work/m220-reopen-wire.pcap" \
+        "$PWD/$work/m220-reopen-host-udp.log" \
+        "$PWD/$work/m220-reopen-wire.json"
 fi
 reopen="$PWD/$logs/m197-batch.clean.log"
 for marker in \
@@ -729,12 +819,25 @@ if [ "$m219" = 1 ]; then
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m219-compat-report.json" --require-all
 fi
+if [ "$m220" = 1 ]; then
+    grep -Fq 'M220_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M220 FAIL] second QEMU did not rerun original Nping' >&2
+        exit 1
+    }
+    python3 scripts/m220-compat-report.py \
+        scripts/m220-candidate-elfs.tsv \
+        "$PWD/$work/m197-live.serial.log" "$reopen" \
+        "$PWD/$work/m220-compat-report.json" --require-all
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-if [ "$m219" = 1 ]; then
+if [ "$m220" = 1 ]; then
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m220-alpine-disk-check.py "$port" "$root" "$disk"
+elif [ "$m219" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
         python3 scripts/m219-alpine-disk-check.py "$port" "$root" "$disk"
 elif [ "$m218" = 1 ]; then
@@ -811,6 +914,11 @@ else
         echo "[M219 ALPINE UTMPDUMP PILOT PASS] $port signed original utmpdump, "\
              'authentic native binary records decoded and reencoded on two ' \
              'independent QEMU boots, durable ext4 and public HTTPS preserved'
+    fi
+    if [ "$m220" = 1 ]; then
+        echo "[M220 ALPINE ORIGINAL NPING WIRE PASS] $port signed native Nping, "\
+             'two different genuine host-received UDP probes and independent ' \
+             'QEMU Ethernet PCAPs, clean ext4 and public HTTPS preserved'
     fi
 fi
 if [ "$m198" = 1 ]; then

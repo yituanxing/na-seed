@@ -1,0 +1,3 @@
+package	elf_path	family	probe
+# Previously BLOCKED M213 until independent host+PCAP proof of real packet.
+nmap-nping	usr/bin/nping	network	original-udp-wire-delivery

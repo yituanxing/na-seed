@@ -110,7 +110,7 @@ def main() -> None:
         "iproute2\tsbin/ifstat\tnetwork\tlive-interface-counter-delta")
 
     owner = OWNER.read_text()
-    assert "0:0:0:1)" in owner and "milestone=M218" in owner
+    assert "0:0:0:1:0:0)" in owner and "milestone=M218" in owner
     for marker in ("manifest=/root/m218-cohort.tsv",
                    "exercise_script=/root/m218-ifstat-workload.sh",
                    "first=/root/m218-first-results.tsv",

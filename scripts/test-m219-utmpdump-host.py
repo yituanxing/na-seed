@@ -158,7 +158,7 @@ def main() -> None:
     assert MANIFEST.read_text().splitlines()[-1] == (
         "util-linux-misc\tusr/bin/utmpdump\tterminal\tutmp-record-roundtrip")
     owner = OWNER.read_text()
-    assert "0:0:0:0:1)" in owner and "milestone=M219" in owner
+    assert "0:0:0:0:1:0)" in owner and "milestone=M219" in owner
     for marker in ("manifest=/root/m219-cohort.tsv",
                    "exercise_script=/root/m219-utmpdump-workload.sh",
                    "first=/root/m219-first-results.tsv",
