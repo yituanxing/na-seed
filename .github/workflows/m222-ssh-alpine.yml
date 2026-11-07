@@ -26,7 +26,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           submodules: true
-      - name: Require fail-closed host publickey/SHA/PCAP, three ISA and prior cohorts
+      - name: Require explicit APK world owner and fail-closed host PCAP/SHA checks
         run: |
           set -eu
           python3 scripts/test-m222-ssh-host.py
