@@ -106,6 +106,9 @@ int nas_lwip_socket_bound_ifindex(unsigned slot);
  * on this same OpenFile, or negative errno. The deferred path actually
  * changes the upstream PCB before subsequent TX; failure reaches SO_ERROR. */
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled);
+/* Original iperf3 TCP_INFO requests take a fresh native PCB snapshot via
+ * the existing async control path. The caller consumes its result once. */
+int nas_lwip_socket_tcp_info_begin(unsigned slot);
 /* Real lwIP PCB SOF_KEEPALIVE, not an ACK-only success. The native TCP
  * timer probes idle peers; listening TCP PCBs pass SOF_KEEPALIVE to accepted
  * children via upstream SOF_INHERITED. */

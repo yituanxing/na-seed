@@ -85,6 +85,7 @@ bool nas_task_wait_ready(const struct nas_task *task) {
        task->wait.blocked_op==NAS_SC_connect ||
        task->wait.blocked_op==NAS_SC_listen ||
        task->wait.blocked_op==NAS_SC_setsockopt ||
+       task->wait.blocked_op==NAS_SC_getsockopt ||
        task->wait.blocked_op==NAS_SC_shutdown ||
        task->wait.blocked_op==NAS_SC_getsockname ||
        task->wait.blocked_op==NAS_SC_getpeername)

@@ -635,6 +635,28 @@ int main(void) {
     connect_slot(31,38017);
     assert(nas_lwip_socket_peer_snapshot(31,&named)==0);
     assert(named.ipv4==UINT32_C(0x7f000001) && named.port==38017);
+    /* A live upstream TCP PCB snapshot must be obtained via tcpip_callback,
+     * never by reading a worker-foreign PCB from the caller's stack. */
+    assert(nas_lwip_socket_tcp_info_begin(20)==-ENOPROTOOPT); /* UDP */
+    assert(nas_lwip_socket_tcp_info_begin(31)==0);
+    struct nas_lwip_bridge_result tcp_info={0};
+    bool got_tcp_info=false;
+    for(unsigned attempt=0;attempt<200;attempt++) {
+        int rc=nas_lwip_socket_port_complete(31,&tcp_info);
+        assert(rc>=0);
+        if(rc==1){got_tcp_info=true;break;}
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_run(1);
+    }
+    assert(got_tcp_info && !tcp_info.status);
+    assert(tcp_info.tcp_metrics.state==1); /* genuine ESTABLISHED */
+    assert(tcp_info.tcp_metrics.send_mss>0);
+    assert(tcp_info.tcp_metrics.congestion_window>=
+           tcp_info.tcp_metrics.send_mss);
+    assert(tcp_info.tcp_metrics.send_window>0);
+    assert(tcp_info.tcp_metrics.receive_window>0);
+    /* No incoming segment size is measured by this upstream lwIP PCB. */
+    assert(tcp_info.tcp_metrics.receive_mss==0);
     assert(nas_lwip_socket_buffer_capacity(31,true)==TCP_SND_BUF);
     assert(nas_lwip_socket_buffer_capacity(31,false)==TCP_WND);
     assert(nas_lwip_socket_buffer_capacity(21,true)==-ENOPROTOOPT);

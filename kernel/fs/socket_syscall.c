@@ -4,6 +4,7 @@
  * No NIC policy, Netconn waits or ISA syscall numbers enter here. */
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "../errno.h"
 #include "../task.h"
 #include "../task/capability.h"
@@ -722,6 +723,25 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                                         (const uint8_t *)&actual,4) ?
                    0:(uint64_t)-EFAULT;
         }
+        if(level==6 && opt==11) { /* Linux TCP_INFO: real PCB snapshot */
+            unsigned slot=TASK.fds->entries[fd].slot;
+            if(nas_lwip_socket_type(slot)!=NAS_LWIP_BRIDGE_TCP)
+                return (uint64_t)-ENOPROTOOPT;
+            /* The first 104 bytes are the stable Linux tcp_info ABI from
+             * 2.6 onward. A newer user's larger struct is truncated to
+             * this supported prefix; smaller optlen is a valid partial
+             * request. The user buffer is checked BEFORE worker enqueue. */
+            const uint32_t copy=length<104U?length:104U;
+            if(!nas_user_prepare_write(size_ptr,4) ||
+               (copy && !nas_user_prepare_write(address,copy)))
+                return (uint64_t)-EFAULT;
+            if(!copy) {
+                uint32_t zero=0;
+                return nas_user_write_bytes(size_ptr,(uint8_t *)&zero,4) ?
+                    0:(uint64_t)-EFAULT;
+            }
+            return lwip_control_result(nas_lwip_socket_tcp_info_begin(slot));
+        }
         if(length<4)return (uint64_t)-EINVAL;
         unsigned slot=TASK.fds->entries[fd].slot;
         int type=nas_lwip_socket_type(slot);
@@ -772,6 +792,58 @@ static uint64_t sys_ipv4_getsockopt(uint64_t fd,uint64_t level,
                0:(uint64_t)-EFAULT;
     }
     return (uint64_t)-EBADF;
+}
+
+/* Linux's original 104-byte TCP_INFO prefix is shared by x86-64, RV64 and
+ * AArch64; each field is an explicit fixed-width integer, not a host libc
+ * struct with compiler- or ISA-specific padding. Zeros denote fields which
+ * this upstream lwIP PCB cannot observe, notably *lifetime* total_retrans:
+ * current pcb->nrtx must NOT be mislabeled as cumulative retransmits. */
+struct nas_linux_tcp_info {
+    uint8_t state,ca_state,retransmits,probes,backoff,options,wscale,app_limited;
+    uint32_t rto,ato,snd_mss,rcv_mss,unacked,sacked,lost,retrans,fackets;
+    uint32_t last_data_sent,last_ack_sent,last_data_recv,last_ack_recv;
+    uint32_t pmtu,rcv_ssthresh,rtt,rttvar,snd_ssthresh,snd_cwnd,advmss;
+    uint32_t reordering,rcv_rtt,rcv_space,total_retrans;
+};
+_Static_assert(sizeof(struct nas_linux_tcp_info)==104,
+               "Linux TCP_INFO original wire prefix is 104 bytes");
+_Static_assert(offsetof(struct nas_linux_tcp_info,snd_cwnd)==80 &&
+               offsetof(struct nas_linux_tcp_info,total_retrans)==100,
+               "Linux tcp_info 32-bit wire field offsets on all native ISAs");
+uint64_t nas_fs_socket_tcp_info_description(unsigned slot,uint64_t address,
+                                             uint64_t length_ptr) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       !nas_lwip_socket_is_slot(slot))return (uint64_t)-EBADF;
+    struct nas_lwip_bridge_result result={0};
+    int rc=nas_lwip_socket_port_complete(slot,&result);
+    if(rc==0)return (uint64_t)-EAGAIN;
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(result.status)return (uint64_t)(int64_t)result.status;
+    const struct nas_lwip_tcp_metrics *m=&result.tcp_metrics;
+    struct nas_linux_tcp_info info={0};
+    info.state=(uint8_t)m->state;
+    info.retransmits=(uint8_t)m->current_retransmissions;
+    info.rto=m->retransmission_timeout_us;
+    info.snd_mss=m->send_mss;
+    info.unacked=m->unacked_segments;
+    info.rtt=m->smoothed_rtt_us;
+    info.rttvar=m->rtt_variance_us;
+    info.snd_ssthresh=m->send_mss ?
+        m->slow_start_threshold/m->send_mss:0;
+    info.snd_cwnd=m->send_mss ? m->congestion_window/m->send_mss:0;
+    info.advmss=m->send_mss;
+    info.rcv_space=m->receive_window;
+    uint32_t requested;
+    if(!nas_user_read_bytes(length_ptr,(uint8_t *)&requested,4))
+        return (uint64_t)-EFAULT;
+    uint32_t copied=requested<sizeof(info)?requested:(uint32_t)sizeof(info);
+    if(!nas_user_prepare_write(length_ptr,4) ||
+       (copied && !nas_user_prepare_write(address,copied)))
+        return (uint64_t)-EFAULT;
+    return (!copied || nas_user_write_bytes(address,(uint8_t *)&info,copied)) &&
+           nas_user_write_bytes(length_ptr,(uint8_t *)&copied,4) ?
+           0:(uint64_t)-EFAULT;
 }
 static uint64_t sys_ipv4_setsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,

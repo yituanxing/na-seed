@@ -224,6 +224,19 @@ class PhysicalWitnessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no real transfer'):
             disk.iperf3_bytes(report, 'first')
 
+        class RealErrorFile:
+            @staticmethod
+            def debugfs_cat(_partition, path):
+                if not path.endswith('iperf3.err'):
+                    raise AssertionError('not the original stderr path')
+                return b'original native stderr\n'
+
+        evidence = disk.iperf3_physical_diagnostic(None, RealErrorFile,
+                                                   'first', report)
+        self.assertIn('original client control failed', evidence)
+        self.assertIn('original native stderr', evidence)
+        self.assertIn(hashlib.sha256(report).hexdigest(), evidence)
+
     def test_nmap_physical_requires_both_original_port_lines(self):
         real = b'PORT     STATE SERVICE\n15441/tcp open  unknown\n15442/tcp closed unknown\n'
         self.assertTrue(disk.nmap_port_contrast(real))

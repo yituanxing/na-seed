@@ -12,6 +12,7 @@
 #include "lwip/ip.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"
 #include "lwip/udp.h"
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
@@ -251,6 +252,71 @@ static err_t set_udp_pktinfo(struct netconn *connection,bool enabled) {
     err_t err=tcpip_callback(set_ip_option_on_core,&c);
     if(err!=ERR_OK)return err;
     if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    return c.status;
+}
+
+/* Linux TCP_INFO is a snapshot, not a fake per-socket rate counter. Read
+ * the *real* upstream TCP PCB under tcpip_thread ownership, just like our
+ * TCP_NODELAY mutation. Never dereference a PCB from a user Task/worker. */
+struct tcp_metrics_callback {
+    struct netconn *connection;
+    struct nas_lwip_tcp_metrics metrics;
+    struct nas_ksem completed;
+    err_t status;
+};
+static void tcp_metrics_on_core(void *arg) {
+    struct tcp_metrics_callback *c=arg;
+    const struct tcp_pcb *pcb=c->connection->pcb.tcp;
+    if(!pcb) {c->status=ERR_CONN;goto done;}
+    struct nas_lwip_tcp_metrics *m=&c->metrics;
+    /* lwIP state enum differs from Linux TCP_INFO state values. */
+    switch(pcb->state) {
+    case CLOSED:m->state=7;break;        /* TCP_CLOSE */
+    case LISTEN:m->state=10;break;
+    case SYN_SENT:m->state=2;break;
+    case SYN_RCVD:m->state=3;break;
+    case ESTABLISHED:m->state=1;break;
+    case FIN_WAIT_1:m->state=4;break;
+    case FIN_WAIT_2:m->state=5;break;
+    case CLOSE_WAIT:m->state=8;break;
+    case CLOSING:m->state=11;break;
+    case LAST_ACK:m->state=9;break;
+    case TIME_WAIT:m->state=6;break;
+    default:c->status=ERR_VAL;goto done;
+    }
+    /* tcp_pcb_listen has only TCP_PCB_COMMON: no full PCB fields. */
+    if(pcb->state==LISTEN)goto done;
+    m->send_mss=pcb->mss;
+    /* Linux tcpi_rcv_mss is a measured last incoming segment size; lwIP's
+     * negotiated outbound MSS does not establish that value. Unknown=0. */
+    m->send_window=pcb->snd_wnd;
+    m->receive_window=pcb->rcv_wnd;
+    m->congestion_window=pcb->cwnd;
+    m->slow_start_threshold=pcb->ssthresh;
+    m->current_retransmissions=pcb->nrtx;
+    /* lwIP keeps RTT/RTO in 500ms TCP_SLOW_INTERVAL ticks. The smoothed
+     * RTT `sa` has 1/8 tick precision, `sv` has 1/4 tick precision. */
+    const uint64_t tick_us=(uint64_t)TCP_SLOW_INTERVAL*1000U;
+    uint64_t micros=pcb->rto>0 ? (uint64_t)pcb->rto*tick_us:0;
+    m->retransmission_timeout_us=(uint32_t)(micros>UINT32_MAX ?
+                                             UINT32_MAX:micros);
+    micros=pcb->sa>0 ? (uint64_t)pcb->sa*tick_us/8U:0;
+    m->smoothed_rtt_us=(uint32_t)(micros>UINT32_MAX ? UINT32_MAX:micros);
+    micros=pcb->sv>0 ? (uint64_t)pcb->sv*tick_us/4U:0;
+    m->rtt_variance_us=(uint32_t)(micros>UINT32_MAX ? UINT32_MAX:micros);
+    for(const struct tcp_seg *seg=pcb->unacked;seg;seg=seg->next)
+        m->unacked_segments++;
+done:
+    (void)nas_ksem_post(&c->completed);
+}
+static err_t snapshot_tcp_metrics(struct netconn *connection,
+                                  struct nas_lwip_tcp_metrics *out) {
+    struct tcp_metrics_callback c={.connection=connection,.status=ERR_OK};
+    nas_ksem_init(&c.completed,0);
+    err_t err=tcpip_callback(tcp_metrics_on_core,&c);
+    if(err!=ERR_OK)return err;
+    if(!nas_ksem_wait(&c.completed))return ERR_VAL;
+    if(c.status==ERR_OK)*out=c.metrics;
     return c.status;
 }
 
@@ -589,6 +655,10 @@ static void execute(unsigned slot) {
         if(s->type!=NAS_LWIP_BRIDGE_UDP){out->status=-EOPNOTSUPP;return;}
         err=set_udp_pktinfo(s->connection,r->pktinfo);
         break;
+    case NAS_LWIP_BRIDGE_GETTCPINFO:
+        if(s->type!=NAS_LWIP_BRIDGE_TCP){out->status=-ENOPROTOOPT;return;}
+        err=snapshot_tcp_metrics(s->connection,&out->tcp_metrics);
+        break;
     default:out->status=-EINVAL;return;
     }
     if(err!=ERR_OK)out->status=-err_to_errno(err);
@@ -810,7 +880,7 @@ int nas_lwip_bridge_submit(struct nas_lwip_bridge_id id,
     if(s->queued || s->executing || s->finished)return -EBUSY;
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     if(request->op<NAS_LWIP_BRIDGE_BIND ||
-       request->op>NAS_LWIP_BRIDGE_SETPKTINFO ||
+       request->op>NAS_LWIP_BRIDGE_GETTCPINFO ||
        request->length>NAS_LWIP_BRIDGE_DATA ||
        (request->op==NAS_LWIP_BRIDGE_BIND_IF && !request->if_index) ||
        (request->op==NAS_LWIP_BRIDGE_SHUTDOWN && request->shutdown_how>2U) ||

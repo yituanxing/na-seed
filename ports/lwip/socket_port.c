@@ -473,7 +473,8 @@ int nas_lwip_socket_port_begin(unsigned slot,
     case NAS_LWIP_BRIDGE_SETREUSEADDR:case NAS_LWIP_BRIDGE_SETBROADCAST:
     case NAS_LWIP_BRIDGE_SETNODELAY:case NAS_LWIP_BRIDGE_BIND_IF:
     case NAS_LWIP_BRIDGE_SETKEEPALIVE:
-    case NAS_LWIP_BRIDGE_SETPKTINFO:break;
+    case NAS_LWIP_BRIDGE_SETPKTINFO:
+    case NAS_LWIP_BRIDGE_GETTCPINFO:break;
     default:return -EINVAL;
     }
     int rc=check(s);
@@ -520,6 +521,7 @@ int nas_lwip_socket_port_begin(unsigned slot,
                                 request->op==NAS_LWIP_BRIDGE_SETNODELAY ||
                                 request->op==NAS_LWIP_BRIDGE_SETKEEPALIVE ||
                                 request->op==NAS_LWIP_BRIDGE_SETPKTINFO ||
+                                request->op==NAS_LWIP_BRIDGE_GETTCPINFO ||
                                 request->op==NAS_LWIP_BRIDGE_BIND_IF;
     if(deferred_control &&
        (s->command==PORT_TX || s->command==PORT_RX || s->tx_length)) {
@@ -1072,6 +1074,15 @@ int nas_lwip_socket_bound_ifindex(unsigned slot) {
     if(!s)return -EBADF;
     (void)check(s);
     return (int)s->bound_ifindex;
+}
+int nas_lwip_socket_tcp_info_begin(unsigned slot) {
+    struct port_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(s->type!=NAS_LWIP_BRIDGE_TCP)return -ENOPROTOOPT;
+    const struct nas_lwip_bridge_request req={
+        .op=NAS_LWIP_BRIDGE_GETTCPINFO
+    };
+    return nas_lwip_socket_port_begin(slot,&req);
 }
 int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     struct port_socket *s=socket_at(slot);

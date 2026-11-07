@@ -215,7 +215,15 @@ def physical_guest_proof(phase: str, port: str, disk: Path,
                                  partition, name, nmap_text))
         report = m191.debugfs_cat(partition,
                                   f'/root/m224-work/{disk_oracle.CASES["iperf3"]}.{phase}/iperf3.json')
-        sent = disk_oracle.iperf3_bytes(report, phase)
+        try:
+            sent = disk_oracle.iperf3_bytes(report, phase)
+        except ValueError as exc:
+            # This is the FIRST per-boot physical check, before the final
+            # two-phase disk oracle. Retain the actual client error here too;
+            # otherwise a failed first boot destroys the only JSON witness.
+            raise ValueError(str(exc) + ': ' +
+                             disk_oracle.iperf3_physical_diagnostic(
+                                 partition, m191, phase, report)) from exc
     return {'physical_ncat_exact_random_bytes': len(source),
             'physical_nmap_port_contrast': True,
             'physical_original_iperf3_sent_bytes': sent}

@@ -56,6 +56,7 @@ static enum nas_lwip_bridge_type abi_type[NAS_OPEN_FILE_LIMIT];
 static struct nas_lwip_bridge_address abi_bound[NAS_OPEN_FILE_LIMIT];
 static struct nas_lwip_bridge_address abi_peer[NAS_OPEN_FILE_LIMIT];
 static bool abi_listening[NAS_OPEN_FILE_LIMIT],abi_control[NAS_OPEN_FILE_LIMIT];
+static bool abi_tcp_info_pending[NAS_OPEN_FILE_LIMIT];
 static unsigned abi_pending_checks[NAS_OPEN_FILE_LIMIT];
 static int abi_control_status[NAS_OPEN_FILE_LIMIT];
 static int abi_so_error[NAS_OPEN_FILE_LIMIT];
@@ -337,6 +338,15 @@ int nas_lwip_socket_tcp_nodelay(unsigned slot,bool write,bool *enabled) {
     } else *enabled=abi_nodelay_enabled[slot];
     return 0;
 }
+int nas_lwip_socket_tcp_info_begin(unsigned slot) {
+    if(!nas_lwip_socket_is_slot(slot))return -EBADF;
+    if(abi_type[slot]!=NAS_LWIP_BRIDGE_TCP)return -ENOPROTOOPT;
+    if(abi_control[slot])return -EALREADY;
+    abi_tcp_info_pending[slot]=true;
+    abi_control[slot]=true;
+    abi_pending_checks[slot]=1;
+    return 0;
+}
 int nas_lwip_socket_keepalive(unsigned slot,bool write,bool *enabled) {
     if(!nas_lwip_socket_is_slot(slot))return -EBADF;
     if(!enabled)return -EINVAL;
@@ -385,6 +395,18 @@ int nas_lwip_socket_port_complete(unsigned slot,
     if(!abi_control[slot] || abi_pending_checks[slot])return 0;
     out->status=nas_lwip_socket_control_finish(slot);
     if(!out->status)out->status=abi_control_status[slot];
+    if(abi_tcp_info_pending[slot]) {
+        /* Deterministic mock *only* for ABI layout/async ownership tests.
+         * The real PCB metrics are verified by test-lwip-socket-port. */
+        out->tcp_metrics=(struct nas_lwip_tcp_metrics){
+            .state=1,.send_mss=536,.receive_window=2144,
+            .congestion_window=2144,.slow_start_threshold=4288,
+            .unacked_segments=2,.retransmission_timeout_us=3000000,
+            .smoothed_rtt_us=125000,.rtt_variance_us=62500,
+            .current_retransmissions=1
+        };
+        abi_tcp_info_pending[slot]=false;
+    }
     abi_control_status[slot]=0;
     return 1;
 }
@@ -648,6 +670,53 @@ int main(void) {
     memcpy(&value,user_ptr(optaddr),4);assert(value==1072);
     assert(sys_ipv4_getsockopt(tcp_fd,1,8,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==2144);
+    /* Original iperf3 3.19.1 invokes getsockopt(IPPROTO_TCP,TCP_INFO)
+     * for each interval; this must query the genuine worker-owned TCP PCB. */
+    uint64_t infoaddr=TEST_BASE+2500;
+    uint32_t infolen=104;
+    memcpy(user_ptr(optlen),&infolen,4);
+    assert((int64_t)sys_ipv4_getsockopt(tcp_fd,6,11,infoaddr,optlen)==-EAGAIN);
+    assert(abi_tcp_info_pending[tcp_slot]);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_tcp_info_description(tcp_slot,infoaddr,optlen)==0);
+    memcpy(&infolen,user_ptr(optlen),4);assert(infolen==104);
+    assert(user_ptr(infoaddr)[0]==1); /* TCP_ESTABLISHED */
+    assert(user_ptr(infoaddr)[2]==1); /* current pcb->nrtx */
+    memcpy(&value,user_ptr(infoaddr)+8,4);assert(value==3000000);
+    memcpy(&value,user_ptr(infoaddr)+16,4);assert(value==536);
+    memcpy(&value,user_ptr(infoaddr)+20,4);assert(value==0); /* unknown rcvmss */
+    memcpy(&value,user_ptr(infoaddr)+24,4);assert(value==2);
+    memcpy(&value,user_ptr(infoaddr)+68,4);assert(value==125000);
+    memcpy(&value,user_ptr(infoaddr)+72,4);assert(value==62500);
+    memcpy(&value,user_ptr(infoaddr)+76,4);assert(value==8); /* ssthresh segments */
+    memcpy(&value,user_ptr(infoaddr)+80,4);assert(value==4); /* cwnd segments */
+    memcpy(&value,user_ptr(infoaddr)+100,4);assert(value==0); /* unavailable lifetime count */
+    assert((int64_t)nas_fs_socket_tcp_info_description(tcp_slot,infoaddr,optlen)
+           ==-EAGAIN); /* one-shot completed request */
+    infolen=1;memcpy(user_ptr(optlen),&infolen,4);
+    user_ptr(infoaddr)[1]=0xa5U;
+    assert((int64_t)sys_ipv4_getsockopt(tcp_fd,6,11,infoaddr,optlen)==-EAGAIN);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_tcp_info_description(tcp_slot,infoaddr,optlen)==0);
+    memcpy(&infolen,user_ptr(optlen),4);assert(infolen==1);
+    assert(user_ptr(infoaddr)[0]==1 && user_ptr(infoaddr)[1]==0xa5U);
+    infolen=512;memcpy(user_ptr(optlen),&infolen,4);
+    assert((int64_t)sys_ipv4_getsockopt(tcp_fd,6,11,infoaddr,optlen)==-EAGAIN);
+    assert(!nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_control_ready(tcp_slot));
+    assert(nas_fs_socket_tcp_info_description(tcp_slot,infoaddr,optlen)==0);
+    memcpy(&infolen,user_ptr(optlen),4);assert(infolen==104);
+    infolen=0;memcpy(user_ptr(optlen),&infolen,4);
+    assert(sys_ipv4_getsockopt(tcp_fd,6,11,0,optlen)==0);
+    memcpy(&infolen,user_ptr(optlen),4);assert(infolen==0);
+    infolen=104;memcpy(user_ptr(optlen),&infolen,4);
+    assert((int64_t)sys_ipv4_getsockopt(tcp_fd,6,11,0,optlen)==-EFAULT);
+    assert((int64_t)sys_ipv4_getsockopt(tcp_fd,6,11,infoaddr,0)==-EFAULT);
+    assert((int64_t)sys_ipv4_getsockopt(udp_fd,6,11,infoaddr,optlen)
+           ==-ENOPROTOOPT);
+    memcpy(user_ptr(optlen),&capacity,4);
     assert((int64_t)sys_ipv4_getsockopt(udp_fd,1,7,optaddr,optlen)==-ENOPROTOOPT);
     assert(sys_ipv4_getsockopt(tcp_fd,1,30,optaddr,optlen)==0);
     memcpy(&value,user_ptr(optaddr),4);assert(value==1);

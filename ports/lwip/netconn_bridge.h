@@ -32,7 +32,17 @@ enum nas_lwip_bridge_op {
  NAS_LWIP_BRIDGE_GETNAME, NAS_LWIP_BRIDGE_SHUTDOWN,
  NAS_LWIP_BRIDGE_SETREUSEADDR, NAS_LWIP_BRIDGE_SETBROADCAST,
  NAS_LWIP_BRIDGE_SETNODELAY, NAS_LWIP_BRIDGE_BIND_IF,
- NAS_LWIP_BRIDGE_SETKEEPALIVE, NAS_LWIP_BRIDGE_SETPKTINFO
+ NAS_LWIP_BRIDGE_SETKEEPALIVE, NAS_LWIP_BRIDGE_SETPKTINFO,
+ NAS_LWIP_BRIDGE_GETTCPINFO
+};
+/* A factual snapshot from the upstream TCP PCB on tcpip_thread. This is
+ * target-independent; Linux's tcp_info wire layout belongs to the syscall
+ * adapter. Fields absent from lwIP are deliberately not claimed here. */
+struct nas_lwip_tcp_metrics {
+ uint32_t state,send_mss,receive_mss,send_window,receive_window;
+ uint32_t congestion_window,slow_start_threshold,unacked_segments;
+ uint32_t retransmission_timeout_us,smoothed_rtt_us,rtt_variance_us;
+ uint32_t current_retransmissions;
 };
 struct nas_lwip_bridge_pktinfo {
  uint32_t ifindex; /* actual inbound lwIP netif index */
@@ -79,6 +89,7 @@ struct nas_lwip_bridge_result {
  struct nas_lwip_bridge_address local; /* post-LISTEN native endpoint only */
  struct nas_lwip_bridge_pktinfo packet_info; /* actual UDP RX Netbuf metadata */
  struct nas_lwip_bridge_id accepted; /* ACCEPT transfers an owned bridge ID */
+ struct nas_lwip_tcp_metrics tcp_metrics; /* GETTCPINFO: real PCB snapshot */
 };
 
 bool nas_lwip_bridge_start(void); /* call after tcpip_init; spawns native worker */

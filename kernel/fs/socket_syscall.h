@@ -32,6 +32,10 @@ uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
  * completion consumes its native worker result without re-submitting it. */
 bool nas_fs_socket_control_ready(unsigned slot);
 uint64_t nas_fs_socket_control_description(unsigned slot);
+/* Consume a genuine upstream TCP_INFO snapshot and serialize its Linux ABI
+ * in the original Task address space after its held OpenFile completes. */
+uint64_t nas_fs_socket_tcp_info_description(unsigned slot,uint64_t address,
+                                             uint64_t length_ptr);
 /* Worker-owned native GETNAME result is copied back after Task wake. */
 uint64_t nas_fs_socket_name_description(unsigned slot,uint64_t address,
                                         uint64_t length_ptr,bool peer);

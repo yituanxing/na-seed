@@ -215,6 +215,13 @@ static uint64_t finish_socket_accept(struct nas_task *task) {
 static uint64_t finish_socket_control(struct nas_task *task) {
     return nas_fs_socket_control_description(task->wait.description_slot);
 }
+/* TCP_INFO completion belongs to the held OpenFile. The original user
+ * address/optlen are resolved only by the resumed Task, never scheduler. */
+static uint64_t finish_socket_tcp_info(struct nas_task *task) {
+    const uint64_t *a=task->wait.blocked_args;
+    return nas_fs_socket_tcp_info_description(task->wait.description_slot,
+                                               a[3],a[4]);
+}
 static uint64_t finish_socket_name(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     return nas_fs_socket_name_description(task->wait.description_slot,
@@ -451,6 +458,9 @@ static uint64_t task_socket_control(uint64_t *frame,enum nas_syscall_op nr,
      * tears down the pin on success, caught signal and Task termination. */
     TASK.wait.description_slot=slot;
     TASK.wait.description_release=nas_fs_drop_kernel_description;
+    if(nr==NAS_SC_getsockopt)
+        return nas_task_block5(frame,nr,args[1],args[2],args[3],
+                               args[4],args[5],finish_socket_tcp_info);
     return nas_task_block(frame,nr,args[1],args[2],args[3],0,
                           nr==NAS_SC_getsockname || nr==NAS_SC_getpeername ?
                           finish_socket_name:finish_socket_control);
@@ -970,7 +980,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
 #endif
         if(nr==NAS_SC_bind || nr==NAS_SC_connect || nr==NAS_SC_listen ||
-           nr==NAS_SC_setsockopt || nr==NAS_SC_shutdown ||
+           nr==NAS_SC_setsockopt || nr==NAS_SC_getsockopt ||
+           nr==NAS_SC_shutdown ||
            nr==NAS_SC_getsockname || nr==NAS_SC_getpeername)
             return task_socket_control((uint64_t *)(uintptr_t)args,nr,args,
                                        fs_result.value);

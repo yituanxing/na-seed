@@ -1,7 +1,7 @@
 name: NaSeed M224 signed nmap iperf3 ncat real TCP in two QEMUs
 
-# M224 targeted x86 retry: reject original iperf3 JSON error even if bytes
-# reached the host, and retain the actual guest JSON error from physical ext4.
+# M224 targeted TCP_INFO repair: real lwIP PCB snapshot, Linux 104-byte ABI,
+# native socket gate, and strict original iperf3 JSON + physical wire evidence.
 # Do not replay already accepted M218-M223 long-running native-QEMU jobs.
 on:
   push:
