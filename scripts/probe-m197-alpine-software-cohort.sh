@@ -55,6 +55,22 @@ m230=${NAS_M230_DROPBEAR_HOST:-0}
 case "$m230" in 0|1) ;; *) echo '[M230 FAIL] invalid host SSH selector' >&2; exit 2 ;; esac
 m231=${NAS_M231_MOSQUITTO_HOST:-0}
 case "$m231" in 0|1) ;; *) echo '[M231 FAIL] invalid host MQTT selector' >&2; exit 2 ;; esac
+m232=${NAS_M232_MEMCACHED_HOST:-0}
+case "$m232" in 0|1) ;; *) echo '[M232 FAIL] invalid host cache selector' >&2; exit 2 ;; esac
+m232_host_pid=
+m232_stop_host() {
+    if [ -n "$m232_host_pid" ]; then
+        kill "$m232_host_pid" 2>/dev/null || :
+        wait "$m232_host_pid" 2>/dev/null || :
+        m232_host_pid=
+    fi
+}
+if [ "$m232" = 1 ]; then
+    trap 'm232_stop_host' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
 m231_host_pid=
 m231_stop_host() {
     if [ -n "$m231_host_pid" ]; then
@@ -118,12 +134,12 @@ if [ "$m229" = 1 ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
 fi
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ]; } && \
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] || [ "$m232" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231+m232))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -366,6 +382,22 @@ if [ "$m231" = 1 ]; then
             echo "[M231 FAIL] preseeded MQTT guest state: $guest" >&2; exit 1;
         }
     done
+fi
+if [ "$m232" = 1 ]; then
+    # The signed memcached ELF and original OpenRC unit are installed only
+    # inside the original PID1. This temporary cache starts EMPTY on reboot.
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo install -m 0644 tests/m232-alpine-memcached-workload.sh \
+        "$overlay/root/m232-alpine-memcached-workload.sh"
+    sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test -s "$overlay/root/m232-alpine-memcached-workload.sh"
+    sudo test ! -e "$overlay/etc/runlevels/default/memcached" || {
+        echo '[M232 FAIL] original OpenRC memcached service preenabled' >&2; exit 1;
+    }
+    sudo test ! -e "$overlay/root/m232-cache-record" || {
+        echo '[M232 FAIL] host cache challenge preseeded' >&2; exit 1;
+    }
 fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
@@ -682,6 +714,11 @@ if [ "$m231" = 1 ]; then
     export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M231_HOST_PORT:-15447}
     export NAS_VIRTIO_NET_GUESTFWD_PORT=15447
 fi
+if [ "$m232" = 1 ]; then
+    # Host-only TCP 15448 -> the existing single original VirtIO NIC.
+    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M232_HOST_PORT:-15448}
+    export NAS_VIRTIO_NET_GUESTFWD_PORT=15448
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -740,6 +777,9 @@ if [ "$m230" = 1 ]; then
 fi
 if [ "$m231" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_PUBLIC_QEMU_TIMEOUT:-2750}
+fi
+if [ "$m232" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_PUBLIC_QEMU_TIMEOUT:-2750}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -1109,6 +1149,62 @@ if [ "$m231" = 1 ]; then
     }
 fi
 
+if [ "$m232" = 1 ]; then
+    # Only the independent real HOST chooses key/value and proves the cold
+    # reboot LOST the previous volatile cache, then re-seeds and GETs it.
+    m232_start_host() {
+        phase=$1
+        host_serial=$2
+        receipt="$PWD/$work/m232-$phase-host-cache.json"
+        host_log="$PWD/$work/m232-$phase-host-cache.log"
+        test ! -e "$receipt" && test ! -e "$host_log" || {
+            echo "[M232 HOST FAIL] stale $phase host cache evidence" >&2; exit 1;
+        }
+        if [ "$phase" = reopen ]; then
+            python3 -u scripts/m232-host-cache-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --first-receipt "$PWD/$work/m232-first-host-cache.json" \
+                --ready-timeout "${NAS_M232_HOST_READY_SECONDS:-2750}" \
+                --cache-timeout "${NAS_M232_HOST_CACHE_SECONDS:-45}" \
+                > "$host_log" 2>&1 &
+        else
+            python3 -u scripts/m232-host-cache-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --ready-timeout "${NAS_M232_HOST_READY_SECONDS:-2750}" \
+                --cache-timeout "${NAS_M232_HOST_CACHE_SECONDS:-45}" \
+                > "$host_log" 2>&1 &
+        fi
+        m232_host_pid=$!
+    }
+    m232_finish_host() {
+        phase=$1
+        test -n "$m232_host_pid" || {
+            echo '[M232 HOST FAIL] external host watcher absent' >&2; exit 1;
+        }
+        join_seconds=0
+        while [ ! -s "$PWD/$work/m232-$phase-host-cache.json" ] && \
+              kill -0 "$m232_host_pid" 2>/dev/null && \
+              [ "$join_seconds" -lt 8 ]; do
+            sleep 1
+            join_seconds=$((join_seconds+1))
+        done
+        if [ ! -s "$PWD/$work/m232-$phase-host-cache.json" ]; then
+            echo "[M232 HOST FAIL] $phase QEMU lacks independent real host cache" >&2
+            m232_stop_host
+            tail -100 "$PWD/$work/m232-$phase-host-cache.log" >&2 || :
+            exit 1
+        fi
+        if wait "$m232_host_pid"; then
+            m232_host_pid=
+        else
+            m232_host_pid=
+            echo "[M232 HOST FAIL] $phase true cache miss/SET/GET" >&2
+            tail -100 "$PWD/$work/m232-$phase-host-cache.log" >&2 || :
+            exit 1
+        fi
+    }
+fi
+
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
     # independent second QEMU previously used a CPIO BusyBox entry instead.
@@ -1128,6 +1224,9 @@ if [ "$m230" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 if [ "$m231" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+fi
+if [ "$m232" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 
@@ -1184,7 +1283,27 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m231" = 1 ]; then
+    if [ "$m232" = 1 ]; then
+        test ! -e "$serial" || {
+            echo '[M232 FAIL] stale original first UART before host cache' >&2; exit 1;
+        }
+        echo "[M232 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        m232_start_host first "$serial"
+        if python3 scripts/m232-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m232-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m232-first.serial.log"
+            m232_finish_host first
+            echo "[M232 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m232_first_rc=$?
+            if [ -f "$serial" ]; then
+                cp "$serial" "$PWD/$work/m232-first.serial.log"
+            fi
+            echo "[M232 FIRST UART FAIL] rc=$m232_first_rc" >&2
+            tail -100 "$PWD/$work/m232-first-host-cache.log" >&2 || :
+            exit "$m232_first_rc"
+        fi
+    elif [ "$m231" = 1 ]; then
         test ! -e "$serial" || {
             echo '[M231 FAIL] stale first UART before MQTT watcher' >&2; exit 1;
         }
@@ -1455,6 +1574,16 @@ if [ "$m231" = 1 ]; then
         exit 1
     }
 fi
+if [ "$m232" = 1 ]; then
+    grep -Fq 'M232_FIRST_HOST_CACHE_WINDOW_COMPLETE' "$serial" || {
+        echo '[M232 FAIL] first original OpenRC host cache window incomplete' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m232-first-host-cache.json" || {
+        echo '[M232 FAIL] independent real-host cache transaction missing' >&2
+        exit 1
+    }
+fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
@@ -1583,6 +1712,62 @@ if [ "$m199" = 1 ]; then
     echo "[M199 ALPINE OPENRC TWO BOOT PASS] $port original signed Alpine "\
          'init/OpenRC twice, guest rc-update persisted, OpenRC daemon lifecycle, ' \
          'auto-restored physical GPU, QMP Vim and signed applications on ext4'
+    exit 0
+fi
+
+if [ "$m232" = 1 ]; then
+    # Original signed OpenRC service must auto-start after a fully different
+    # native QEMU reopens the SAME physical ext4; old cache key must be gone.
+    test -s "$PWD/$work/m232-first.serial.log" && \
+        test -s "$PWD/$work/m232-first-host-cache.json" || {
+        echo '[M232 FAIL] original first independent cache proof missing' >&2
+        exit 1
+    }
+    echo "[M232 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m232-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m232-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M232 FAIL] stale second independent real NIC PCAP' >&2; exit 1;
+    }
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_REOPEN_QEMU_TIMEOUT:-1100}
+    m232_start_host reopen "$serial"
+    if python3 scripts/m232-alpine-uart.py reopen "$runner" "$serial" \
+            "$PWD/$work/m232-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/m232-reopen.serial.log"
+        m232_finish_host reopen
+    else
+        m232_reopen_rc=$?
+        if [ -f "$serial" ]; then
+            cp "$serial" "$PWD/$work/m232-reopen.serial.log"
+        fi
+        echo "[M232 REOPEN UART FAIL] rc=$m232_reopen_rc" >&2
+        tail -100 "$PWD/$work/m232-reopen-host-cache.log" >&2 || :
+        exit "$m232_reopen_rc"
+    fi
+    grep -Fq 'M232_REOPEN_HOST_CACHE_WINDOW_COMPLETE' "$serial" || {
+        echo '[M232 FAIL] second original OpenRC host cache window incomplete' >&2
+        exit 1
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M232 FAIL] signed Bash/Lua/SQLite/Git durability absent' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m232-reopen-host-cache.json" || {
+        echo '[M232 FAIL] second true real-host memcached receipt absent' >&2
+        exit 1
+    }
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m232-memcached-disk-check.py "$port" "$root" "$disk" \
+        "$PWD/$work/m232-first-host-cache.json" \
+        "$PWD/$work/m232-reopen-host-cache.json" \
+        "$pcap" "$PWD/$work/m232-reopen-wire.pcap" \
+        "$PWD/$work/m232-memcached-final-oracle.json"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M232 ORIGINAL ALPINE MEMCACHED HOST VOLATILE TWO BOOT PASS] $port real "\
+         'host memcached miss/SET/GET then reboot miss/new SET/GET, ' \
+         'original signed Alpine PID1/OpenRC, dual NIC PCAP, physical ext4/fsck; root/localhost test only'
     exit 0
 fi
 

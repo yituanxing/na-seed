@@ -129,6 +129,18 @@ assert "master_process off;" in guest
 assert "--daemonize yes" not in guest
 assert "--daemonize no" in guest
 assert 'wait "$server_pid"' in guest
+# Redis first-boot startup races are transport readiness, not proof that the
+# signed Alpine server's SET semantics are broken. The guest may retry a real
+# PING for at most eight seconds, but must not retry SET/GET after readiness:
+# a wrong Redis response remains a genuine functional failure.
+redis_case = guest.split('        redis)\n', 1)[1].split('        make)\n', 1)[0]
+assert 'pong=$(redis-cli -p 16379 ping' in redis_case
+assert 'while [ "$attempts" -lt 8 ]' in redis_case
+assert 'if [ "$ping_result" -eq 0 ]; then' in redis_case
+assert '[ "$pong" = PONG ] && ready=1' in redis_case
+assert redis_case.count('redis-cli -p 16379 set m204 correct') == 1
+assert redis_case.count('redis-cli -p 16379 get m204') == 1
+assert 'test "$ready" -eq 1 && test "$result" -eq 0' in redis_case
 
 boot = (ROOT / "ports/lwext4/guest_boot.c").read_text()
 vfs = (ROOT / "kernel/fs/vfs.c").read_text()

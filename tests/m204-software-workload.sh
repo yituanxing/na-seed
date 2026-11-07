@@ -151,17 +151,45 @@ functional() {
                 --save '' --appendonly no --pidfile "$work/redis.pid" \
                 --dir "$work" > "$work/logs/redis-server.log" 2>&1 &
             server_pid=$!
-            sleep 1
-            answer=$(redis-cli -p 16379 set m204 correct 2>/dev/null)
-            result=$?
-            value=$(redis-cli -p 16379 get m204 2>/dev/null)
+            # An original Alpine Redis process can reach the scheduler before
+            # its TCP listener is ready: the first-boot x86 UART recorded the
+            # initial redis-cli SET exiting 1, then the immediate GET
+            # succeeding. Wait only for a genuine PONG (bounded); once ready,
+            # exercise SET/GET exactly once so semantic failures are not
+            # converted into transient success by retries.
+            attempts=0 ready=0 pong=
+            while [ "$attempts" -lt 8 ]; do
+                pong=$(redis-cli -p 16379 ping \
+                    2> "$work/logs/redis-client.log")
+                ping_result=$?
+                if [ "$ping_result" -eq 0 ]; then
+                    [ "$pong" = PONG ] && ready=1
+                    break
+                fi
+                attempts=$((attempts + 1))
+                sleep 1
+            done
+            answer= value= result=1
+            if [ "$ready" -eq 1 ]; then
+                answer=$(redis-cli -p 16379 set m204 correct \
+                    2>> "$work/logs/redis-client.log")
+                result=$?
+                value=$(redis-cli -p 16379 get m204 \
+                    2>> "$work/logs/redis-client.log")
+            else
+                printf 'redis readiness failed attempts=%s result=%s reply=%s\n' \
+                    "$attempts" "$ping_result" "$pong" >&2
+                /bin/busybox tail -n 2 "$work/logs/redis-client.log" >&2
+                /bin/busybox tail -n 2 "$work/logs/redis-server.log" >&2
+            fi
             /bin/busybox timeout 6 redis-cli -p 16379 shutdown nosave \
                 >/dev/null 2>&1 || :
             kill -TERM "$server_pid" 2>/dev/null || :
             sleep 1
             kill -KILL "$server_pid" 2>/dev/null || :
             wait "$server_pid" 2>/dev/null || :
-            test "$result" -eq 0 && test "$answer" = OK && test "$value" = correct
+            test "$ready" -eq 1 && test "$result" -eq 0 &&
+                test "$answer" = OK && test "$value" = correct
             ;;
         make)
             printf 'all:\n\tprintf "m204-make-ok\\n" > %s/make.out\n' "$work" \
