@@ -63,6 +63,44 @@ if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
     }
     hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:${guestfwd_port}"
 fi
+# Opt-in host-local UDP ingress on the SAME native NIC. Keep the historical
+# TCP-only path unchanged when these dedicated variables are not supplied.
+if [ -z "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ] &&
+   [ -n "${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-}" ]; then
+    echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT requires NAS_VIRTIO_NET_HOSTFWD_UDP_PORT' >&2
+    exit 2
+fi
+if [ -n "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ]; then
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+        echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT requires NAS_VIRTIO_NET_USER=1' >&2
+        exit 2
+    }
+    udp_host_port=$NAS_VIRTIO_NET_HOSTFWD_UDP_PORT
+    case "$udp_host_port" in
+        *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT must be decimal 1..65535' >&2; exit 2 ;;
+    esac
+    while [ "${udp_host_port#0}" != "$udp_host_port" ]; do
+        udp_host_port=${udp_host_port#0}
+    done
+    [ -n "$udp_host_port" ] && [ "${#udp_host_port}" -le 5 ] &&
+        [ "$udp_host_port" -le 65535 ] || {
+        echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT out of range 1..65535' >&2
+        exit 2
+    }
+    udp_guest_port=${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-15453}
+    case "$udp_guest_port" in
+        *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT must be decimal 1..65535' >&2; exit 2 ;;
+    esac
+    while [ "${udp_guest_port#0}" != "$udp_guest_port" ]; do
+        udp_guest_port=${udp_guest_port#0}
+    done
+    [ -n "$udp_guest_port" ] && [ "${#udp_guest_port}" -le 5 ] &&
+        [ "$udp_guest_port" -le 65535 ] || {
+        echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT out of range 1..65535' >&2
+        exit 2
+    }
+    hostfwd="${hostfwd},hostfwd=udp:127.0.0.1:${udp_host_port}-:${udp_guest_port}"
+fi
 if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.
     # Default QEMU hardware stays unchanged for all historical OS gates.

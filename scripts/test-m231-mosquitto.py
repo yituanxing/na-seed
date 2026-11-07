@@ -54,6 +54,9 @@ def contract(probe, workflow, guest):
         'cfgfile="/etc/mosquitto/m231.conf"',
         'rc-update add mosquitto default',
         'rc-service mosquitto start',
+        'rc-service mosquitto stop',
+        "test -s \"$database\" || fail 'retained MQTT DB missing after clean shutdown'",
+        "$busy sync || fail 'physical ext4 sync after original OpenRC stop'",
         'M231_REOPEN_HOST_MQTT_READY',
     )
     for kind, source, lines in [('probe', probe, required_probe),
@@ -64,6 +67,11 @@ def contract(probe, workflow, guest):
                 raise ValueError('M231 ' + kind + ' loses strict evidence: ' + text)
     if 'REOPEN)\n        rc-service mosquitto start' in guest:
         raise ValueError('second boot manually starts broker, not OpenRC')
+    stop = guest.index('rc-service mosquitto stop')
+    flush = guest.index("$busy sync || fail 'physical ext4 sync after original OpenRC stop'")
+    mark = guest.index('M231_FIRST_HOST_MQTT_WINDOW_COMPLETE')
+    if not stop < flush < mark:
+        raise ValueError('original OpenRC must stop/flush before QEMU hard stop')
 
 
 def reject(work):
@@ -147,6 +155,11 @@ def check():
                                                   'missing-second-NIC.pcap'), guest))
     reject(lambda: contract(probe, workflow, guest.replace('persistence true',
                                                          'persistence false')))
+    reject(lambda: contract(probe, workflow, guest.replace('rc-service mosquitto stop',
+                                                         'true # unsafe hard power cut')))
+    reject(lambda: contract(probe, workflow, guest.replace(
+        "$busy sync || fail 'physical ext4 sync after original OpenRC stop'",
+        ': # removed mandatory post-stop sync')))
     assert host.connect_packet('ab').startswith(b'\x10')
     assert host.publish_packet(TOPIC, VALUE)[0] == 0x33  # QoS1 + RETAIN
     assert host.retained_packet(TOPIC, VALUE)[0] == 0x31  # QoS0 + RETAIN

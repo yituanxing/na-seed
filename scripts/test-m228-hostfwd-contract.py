@@ -34,6 +34,9 @@ def original_shell_args(path: str, enabled: bool, port: str | None,
     env['NAS_VIRTIO_NET_USER'] = '1' if enabled else '0'
     env.pop('NAS_VIRTIO_NET_HOSTFWD_PORT', None)
     env.pop('NAS_VIRTIO_NET_GUESTFWD_PORT', None)
+    # M233's independent UDP opt-in must not leak into TCP-only regression.
+    env.pop('NAS_VIRTIO_NET_HOSTFWD_UDP_PORT', None)
+    env.pop('NAS_VIRTIO_NET_GUESTFWD_UDP_PORT', None)
     if port is not None:
         env['NAS_VIRTIO_NET_HOSTFWD_PORT'] = port
     if guest_port is not None:

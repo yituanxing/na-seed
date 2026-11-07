@@ -65,8 +65,22 @@ m232_stop_host() {
         m232_host_pid=
     fi
 }
-if [ "$m232" = 1 ]; then
-    trap 'm232_stop_host' EXIT
+m233=${NAS_M233_DNSMASQ_HOST:-0}
+case "$m233" in 0|1) ;; *) echo '[M233 FAIL] invalid host UDP+TCP DNS selector' >&2; exit 2 ;; esac
+m233_host_pid=
+m233_stop_host() {
+    if [ -n "$m233_host_pid" ]; then
+        kill "$m233_host_pid" 2>/dev/null || :
+        wait "$m233_host_pid" 2>/dev/null || :
+        m233_host_pid=
+    fi
+}
+if [ "$m232" = 1 ] || [ "$m233" = 1 ]; then
+    if [ "$m232" = 1 ]; then
+        trap 'm232_stop_host' EXIT
+    else
+        trap 'm233_stop_host' EXIT
+    fi
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -134,12 +148,12 @@ if [ "$m229" = 1 ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
 fi
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] || [ "$m232" = 1 ]; } && \
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] || [ "$m232" = 1 ] || [ "$m233" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231+m232))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231+m232+m233))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -170,7 +184,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] || [ "$m233" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -398,6 +412,19 @@ if [ "$m232" = 1 ]; then
     sudo test ! -e "$overlay/root/m232-cache-record" || {
         echo '[M232 FAIL] host cache challenge preseeded' >&2; exit 1;
     }
+fi
+if [ "$m233" = 1 ]; then
+    # No original DNS daemon, OpenRC link or DNS fixture config is preseeded.
+    # First real signed Alpine PID1 installs and generates them itself.
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo install -m 0644 tests/m233-alpine-dnsmasq-workload.sh \
+        "$overlay/root/m233-alpine-dnsmasq-workload.sh"
+    for guest in /etc/runlevels/default/dnsmasq /root/m233-dns-first-receipt; do
+        sudo test ! -e "$overlay$guest" || {
+            echo "[M233 FAIL] preseeded DNS state: $guest" >&2; exit 1;
+        }
+    done
 fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
@@ -719,6 +746,14 @@ if [ "$m232" = 1 ]; then
     export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M232_HOST_PORT:-15448}
     export NAS_VIRTIO_NET_GUESTFWD_PORT=15448
 fi
+if [ "$m233" = 1 ]; then
+    # One real slirp NIC; both host loopback protocols target the SAME
+    # original signed dnsmasq server. No public listener or extra adapter.
+    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M233_TCP_HOST_PORT:-15453}
+    export NAS_VIRTIO_NET_GUESTFWD_PORT=15453
+    export NAS_VIRTIO_NET_HOSTFWD_UDP_PORT=${NAS_M233_UDP_HOST_PORT:-15453}
+    export NAS_VIRTIO_NET_GUESTFWD_UDP_PORT=15453
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -780,6 +815,9 @@ if [ "$m231" = 1 ]; then
 fi
 if [ "$m232" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_PUBLIC_QEMU_TIMEOUT:-2750}
+fi
+if [ "$m233" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M233_PUBLIC_QEMU_TIMEOUT:-2750}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -1205,6 +1243,44 @@ if [ "$m232" = 1 ]; then
     }
 fi
 
+if [ "$m233" = 1 ]; then
+    m233_start_host() {
+        phase=$1
+        host_serial=$2
+        receipt="$PWD/$work/m233-$phase-host-dns.json"
+        host_log="$PWD/$work/m233-$phase-host-dns.log"
+        test ! -e "$receipt" && test ! -e "$host_log" || {
+            echo "[M233 HOST FAIL] stale $phase DNS evidence" >&2; exit 1;
+        }
+        python3 -u scripts/m233-host-dns-check.py "$phase" "$host_serial" \
+            "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$NAS_VIRTIO_NET_HOSTFWD_UDP_PORT" \
+            "$receipt" --ready-timeout "${NAS_M233_HOST_READY_SECONDS:-2750}" \
+            --request-timeout "${NAS_M233_HOST_REQUEST_SECONDS:-30}" \
+            > "$host_log" 2>&1 &
+        m233_host_pid=$!
+    }
+    m233_finish_host() {
+        phase=$1
+        test -n "$m233_host_pid" || {
+            echo '[M233 HOST FAIL] no independent DNS watcher' >&2; exit 1;
+        }
+        if [ ! -s "$PWD/$work/m233-$phase-host-dns.json" ]; then
+            echo "[M233 HOST FAIL] $phase DNS receipt missing" >&2
+            m233_stop_host
+            tail -100 "$PWD/$work/m233-$phase-host-dns.log" >&2 || :
+            exit 1
+        fi
+        if wait "$m233_host_pid"; then
+            m233_host_pid=
+        else
+            m233_host_pid=
+            echo "[M233 HOST FAIL] $phase actual UDP+TCP DNS failed" >&2
+            tail -100 "$PWD/$work/m233-$phase-host-dns.log" >&2 || :
+            exit 1
+        fi
+    }
+fi
+
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
     # independent second QEMU previously used a CPIO BusyBox entry instead.
@@ -1226,7 +1302,7 @@ fi
 if [ "$m231" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
-if [ "$m232" = 1 ]; then
+if [ "$m232" = 1 ] || [ "$m233" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 
@@ -1302,6 +1378,24 @@ else
             echo "[M232 FIRST UART FAIL] rc=$m232_first_rc" >&2
             tail -100 "$PWD/$work/m232-first-host-cache.log" >&2 || :
             exit "$m232_first_rc"
+        fi
+    elif [ "$m233" = 1 ]; then
+        test ! -e "$serial" || {
+            echo '[M233 FAIL] stale original first UART' >&2; exit 1;
+        }
+        echo "[M233 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        m233_start_host first "$serial"
+        if python3 scripts/m233-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m233-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m233-first.serial.log"
+            m233_finish_host first
+            echo "[M233 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m233_first_rc=$?
+            if [ -f "$serial" ]; then cp "$serial" "$PWD/$work/m233-first.serial.log"; fi
+            echo "[M233 FIRST UART FAIL] rc=$m233_first_rc; preserving host DNS" >&2
+            tail -100 "$PWD/$work/m233-first-host-dns.log" >&2 || :
+            exit "$m233_first_rc"
         fi
     elif [ "$m231" = 1 ]; then
         test ! -e "$serial" || {
@@ -1584,6 +1678,16 @@ if [ "$m232" = 1 ]; then
         exit 1
     }
 fi
+if [ "$m233" = 1 ]; then
+    grep -Fq 'M233_FIRST_HOST_DNS_WINDOW_COMPLETE' "$serial" || {
+        echo '[M233 FAIL] original DNS daemon first host window incomplete' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m233-first-host-dns.json" || {
+        echo '[M233 FAIL] independent first host UDP+TCP DNS proof missing' >&2
+        exit 1
+    }
+fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
@@ -1768,6 +1872,51 @@ if [ "$m232" = 1 ]; then
     echo "[M232 ORIGINAL ALPINE MEMCACHED HOST VOLATILE TWO BOOT PASS] $port real "\
          'host memcached miss/SET/GET then reboot miss/new SET/GET, ' \
          'original signed Alpine PID1/OpenRC, dual NIC PCAP, physical ext4/fsck; root/localhost test only'
+    exit 0
+fi
+
+if [ "$m233" = 1 ]; then
+    test -s "$PWD/$work/m233-first.serial.log" && \
+        test -s "$PWD/$work/m233-first-host-dns.json" || {
+        echo '[M233 FAIL] independent first QEMU DNS witness missing' >&2; exit 1;
+    }
+    echo "[M233 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m233-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m233-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M233 FAIL] stale second original NIC PCAP' >&2; exit 1;
+    }
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M233_REOPEN_QEMU_TIMEOUT:-1100}
+    m233_start_host reopen "$serial"
+    if python3 scripts/m233-alpine-uart.py reopen "$runner" "$serial" \
+            "$PWD/$work/m233-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/m233-reopen.serial.log"
+        m233_finish_host reopen
+    else
+        m233_reopen_rc=$?
+        if [ -f "$serial" ]; then cp "$serial" "$PWD/$work/m233-reopen.serial.log"; fi
+        echo "[M233 REOPEN UART FAIL] rc=$m233_reopen_rc" >&2
+        tail -100 "$PWD/$work/m233-reopen-host-dns.log" >&2 || :
+        exit "$m233_reopen_rc"
+    fi
+    grep -Fq 'M233_REOPEN_HOST_DNS_WINDOW_COMPLETE' "$serial" || {
+        echo '[M233 FAIL] original DNS OpenRC reboot host window missing' >&2; exit 1;
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M233 FAIL] original signed APK persistence regression' >&2; exit 1;
+    }
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m233-dnsmasq-disk-check.py "$port" "$root" "$disk" \
+        "$PWD/$work/m233-first-host-dns.json" \
+        "$PWD/$work/m233-reopen-host-dns.json" \
+        "$pcap" "$PWD/$work/m233-reopen-wire.pcap" \
+        "$PWD/$work/m233-dnsmasq-final-oracle.json"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M233 ORIGINAL ALPINE DNSMASQ OPENRC HOST UDP+TCP TWO BOOT PASS] $port "\
+         'two original PID1/OpenRC, independent host UDP and TCP DNS queries, ' \
+         'two physical NIC PCAPs, signed APK/ELF and clean read-only ext4 fsck'
     exit 0
 fi
 

@@ -70,7 +70,16 @@ case "$phase" in
 esac
 $busy sleep 55
 rc-service mosquitto status || fail 'broker died during host MQTT'
-test -s "$database" || fail 'retained MQTT DB missing from ext4'
+# The host MQTT receipt is produced during the live window above. A real
+# OpenRC service stop then flushes Mosquitto's rotating persistence database
+# before the QEMU monitor powers this disposable guest off. With a one-second
+# autosave interval an abrupt power cut can interrupt a .db.new rename/unlink
+# and leave an ext4 free-block/free-inode accounting mismatch. Preserve the
+# strict physical fsck oracle; test a normal service-managed shutdown here.
+rc-service mosquitto stop || fail 'original OpenRC graceful broker stop'
+test -s "$database" || fail 'retained MQTT DB missing after clean shutdown'
+$busy sync || fail 'physical ext4 sync after original OpenRC stop'
+test -L /etc/runlevels/default/mosquitto || fail 'OpenRC auto-start link lost'
 case "$phase" in
     FIRST) echo M231_FIRST_HOST_MQTT_WINDOW_COMPLETE ;;
     REOPEN) echo M231_REOPEN_HOST_MQTT_WINDOW_COMPLETE ;;
