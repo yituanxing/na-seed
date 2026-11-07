@@ -5,6 +5,7 @@ import csv
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -113,11 +114,27 @@ def verify(port: str, signed_root: Path, disk: Path,
            first_dir: Path, reopen_dir: Path) -> None:
     aliases = staging_aliases(port, signed_root)
     home = Path(__file__).resolve().parent.parent
-    owner.verify(port, signed_root, disk,
-                 candidates=home / 'scripts/m223-candidate-elfs.tsv',
-                 packages=home / 'rootfs/alpine/packages-m223-candidates.txt',
-                 expected_count=3, label='M223',
-                 allowed_staged_busybox_aliases=aliases)
+    try:
+        owner.verify(port, signed_root, disk,
+                     candidates=home / 'scripts/m223-candidate-elfs.tsv',
+                     packages=home / 'rootfs/alpine/packages-m223-candidates.txt',
+                     expected_count=3, label='M223',
+                     allowed_staged_busybox_aliases=aliases)
+    except subprocess.CalledProcessError as exc:
+        # Only a real strict ext4 fsck failure authorizes physical-disk
+        # forensics. Always re-raise the ORIGINAL failure: this diagnostic
+        # never changes the acceptance result or touches the guest disk.
+        argv = exc.cmd if isinstance(exc.cmd, (list, tuple)) else (exc.cmd,)
+        if any('check-ext4-fsck-clean.sh' in str(part) for part in argv):
+            report = disk.parent / 'm223-ext4-symlink-diagnostic.log'
+            command = [sys.executable,
+                       str(home / 'scripts/m223-ext4-symlink-diagnostic.py'),
+                       str(disk), str(report)]
+            result = subprocess.run(command, check=False)
+            if result.returncode:
+                print(f'[M223 EXT4 DIAGNOSTIC FAIL] code={result.returncode}',
+                      file=sys.stderr)
+        raise
     m191 = owner.load('m191-alpine-root-disk.py', 'm223_physical_m191')
     with tempfile.TemporaryDirectory(prefix='m223-physical-http-') as tmp:
         partition = Path(tmp) / 'root.ext4'
