@@ -1,0 +1,4 @@
+package	elf_path	family	probe
+# New original utility: no accepted PASS until actual binary utmp semantics
+# run on independently booted same physical ext4 across all three ISAs.
+util-linux-misc	usr/bin/utmpdump	terminal	utmp-record-roundtrip

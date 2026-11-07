@@ -1,0 +1,2 @@
+# Only the original signed Alpine owner of /usr/bin/utmpdump.
+util-linux-misc

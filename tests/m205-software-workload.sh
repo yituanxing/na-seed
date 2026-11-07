@@ -5,8 +5,8 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}" in
-    0:0:0:0)
+case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}:${NAS_M219_PILOT:-0}" in
+    0:0:0:0:0)
         milestone=M205
         manifest=/root/m205-cohort.tsv
         work=/root/m205-work
@@ -14,7 +14,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m205-reopen-results.tsv
         exercise_script=/root/m205-software-workload.sh
         ;;
-    0:1:0:0)
+    0:1:0:0:0)
         milestone=M206
         manifest=/root/m206-cohort.tsv
         work=/root/m206-work
@@ -22,7 +22,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m206-reopen-results.tsv
         exercise_script=/root/m206-software-workload.sh
         ;;
-    1:0:0:0)
+    1:0:0:0:0)
         milestone=M213
         manifest=/root/m213-cohort.tsv
         work=/root/m213-work
@@ -30,7 +30,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m213-reopen-results.tsv
         exercise_script=/root/m213-software-workload.sh
         ;;
-    0:0:1:0)
+    0:0:1:0:0)
         # The M215 pilot contains ONLY the five genuinely executable M213
         # cases; the other 15 remain blocked and cannot inflate acceptance.
         milestone=M215
@@ -40,13 +40,21 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         reopen=/root/m215-reopen-results.tsv
         exercise_script=/root/m213-software-workload.sh
         ;;
-    0:0:0:1)
+    0:0:0:1:0)
         milestone=M218
         manifest=/root/m218-cohort.tsv
         work=/root/m218-work
         first=/root/m218-first-results.tsv
         reopen=/root/m218-reopen-results.tsv
         exercise_script=/root/m218-ifstat-workload.sh
+        ;;
+    0:0:0:0:1)
+        milestone=M219
+        manifest=/root/m219-cohort.tsv
+        work=/root/m219-work
+        first=/root/m219-first-results.tsv
+        reopen=/root/m219-reopen-results.tsv
+        exercise_script=/root/m219-utmpdump-workload.sh
         ;;
     *) echo '[COMPAT ERROR] invalid/overlapping signed Alpine cohort selector' >&2; exit 2 ;;
 esac
@@ -532,6 +540,7 @@ cohort_rows=$(/bin/busybox awk -F '\t' '
 expected_rows=20
 [ "$milestone" = M215 ] && expected_rows=5
 [ "$milestone" = M218 ] && expected_rows=1
+[ "$milestone" = M219 ] && expected_rows=1
 test "$cohort_rows" -eq "$expected_rows" || {
     echo "[$milestone ERROR] expected $expected_rows guest cohort rows, got $cohort_rows" >&2
     exit 1
@@ -609,6 +618,7 @@ export NAS_M205_BOOT_PHASE="$phase"
 export NAS_M206_BOOT_PHASE="$phase"
 export NAS_M213_BOOT_PHASE="$phase"
 export NAS_M218_BOOT_PHASE="$phase"
+export NAS_M219_BOOT_PHASE="$phase"
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do

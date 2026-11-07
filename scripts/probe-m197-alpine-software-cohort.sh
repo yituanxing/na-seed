@@ -29,12 +29,14 @@ m215=${NAS_M215_PILOT:-0}
 case "$m215" in 0|1) ;; *) echo '[M215 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m218=${NAS_M218_PILOT:-0}
 case "$m218" in 0|1) ;; *) echo '[M218 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ]; } && \
+m219=${NAS_M219_PILOT:-0}
+case "$m219" in 0|1) ;; *) echo '[M219 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -65,7 +67,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; then
     # This pilot installs only the two signed package owners of its five
     # original ELFs. Never carry M213's unrelated LLVM/BIND/SSH closure.
     disk_mib=512
@@ -130,12 +132,21 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ]; then
     # Reuse the M205 signed-install/ledger owner for both independent cohorts;
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
-    if [ "$m218" = 1 ]; then
+    if [ "$m219" = 1 ]; then
+    cohort=m219
+    sudo install -m 0644 tests/m219-utmpdump-workload.sh \
+        "$overlay/root/m219-utmpdump-workload.sh"
+    sudo install -m 0644 scripts/m219-candidate-elfs.tsv \
+        "$overlay/root/m219-cohort.tsv"
+    sudo test -s "$overlay/root/m205-software-workload.sh"
+    sudo test -s "$overlay/root/m219-utmpdump-workload.sh"
+    sudo test -s "$overlay/root/m219-cohort.tsv"
+    elif [ "$m218" = 1 ]; then
     cohort=m218
     sudo install -m 0644 tests/m218-ifstat-workload.sh \
         "$overlay/root/m218-ifstat-workload.sh"
@@ -218,6 +229,24 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ]; the
         sudo install -m 0755 "$fixture_udp" \
             "$overlay/root/m205-fixtures/udp-traffic"
         sudo test -x "$overlay/root/m205-fixtures/udp-traffic"
+    fi
+    if [ "$m219" = 1 ]; then
+        # The host fixture is a deterministic target-native struct utmp
+        # writer/oracle, NOT an accepted Alpine program. /usr/bin/utmpdump
+        # itself must come only from the original signed APK inside guest.
+        case "$port" in
+            amd64) utmp_cc=gcc ;;
+            arm64) utmp_cc=aarch64-linux-gnu-gcc ;;
+            riscv64) utmp_cc=riscv64-linux-gnu-gcc ;;
+        esac
+        fixture_utmp="$PWD/$work/m219-utmp-fixture.elf"
+        "$utmp_cc" -static -O2 -Wall -Wextra -Werror \
+            tests/m219-utmpdump-fixture.c -o "$fixture_utmp"
+        test -s "$fixture_utmp"
+        sudo install -d -m 0755 "$overlay/root/m219-fixtures"
+        sudo install -m 0755 "$fixture_utmp" \
+            "$overlay/root/m219-fixtures/utmp-fixture"
+        sudo test -x "$overlay/root/m219-fixtures/utmp-fixture"
     fi
     # The M205 host census already fetched every package from Alpine's
     # signature-verified official indexes. Reuse the original byte-for-byte
@@ -320,6 +349,9 @@ fi
 if [ "$m218" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_PUBLIC_QEMU_TIMEOUT:-2500}
 fi
+if [ "$m219" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_PUBLIC_QEMU_TIMEOUT:-2500}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -400,7 +432,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m218" = 1 ]; then
+    if [ "$m219" = 1 ]; then
+        python3 scripts/m219-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m219-first-runner.log" "$fifo"
+    elif [ "$m218" = 1 ]; then
         python3 scripts/m218-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m218-first-runner.log" "$fifo"
     elif [ "$m215" = 1 ]; then
@@ -460,6 +495,12 @@ fi
 if [ "$m218" = 1 ]; then
     grep -Fq 'M218_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M218 FAIL] first original ifstat ledger did not complete' >&2
+        exit 1
+    }
+fi
+if [ "$m219" = 1 ]; then
+    grep -Fq 'M219_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M219 FAIL] first original utmpdump ledger did not complete' >&2
         exit 1
     }
 fi
@@ -533,7 +574,9 @@ unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m218" = 1 ]; then
+    if [ "$m219" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m219-alpine-reopen-cases.tsv
+    elif [ "$m218" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m218-alpine-reopen-cases.tsv
     elif [ "$m215" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m215-alpine-reopen-cases.tsv
@@ -566,6 +609,9 @@ if [ "$m215" = 1 ]; then
 fi
 if [ "$m218" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_REOPEN_SECONDS:-600}
+fi
+if [ "$m219" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_REOPEN_SECONDS:-600}
 fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
@@ -673,12 +719,25 @@ if [ "$m218" = 1 ]; then
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m218-compat-report.json" --require-all
 fi
+if [ "$m219" = 1 ]; then
+    grep -Fq 'M219_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M219 FAIL] second QEMU did not rerun original utmpdump' >&2
+        exit 1
+    }
+    python3 scripts/m219-compat-report.py \
+        scripts/m219-candidate-elfs.tsv \
+        "$PWD/$work/m197-live.serial.log" "$reopen" \
+        "$PWD/$work/m219-compat-report.json" --require-all
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-if [ "$m218" = 1 ]; then
+if [ "$m219" = 1 ]; then
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m219-alpine-disk-check.py "$port" "$root" "$disk"
+elif [ "$m218" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
         python3 scripts/m218-alpine-disk-check.py "$port" "$root" "$disk"
 elif [ "$m215" = 1 ]; then
@@ -747,6 +806,11 @@ else
         echo "[M218 ALPINE IFSTAT PILOT PASS] $port signed original ifstat, "\
              'actual network counters on two independent QEMU boots, clean ' \
              'durable ext4 and original M197 public HTTPS preserved'
+    fi
+    if [ "$m219" = 1 ]; then
+        echo "[M219 ALPINE UTMPDUMP PILOT PASS] $port signed original utmpdump, "\
+             'authentic native binary records decoded and reencoded on two ' \
+             'independent QEMU boots, durable ext4 and public HTTPS preserved'
     fi
 fi
 if [ "$m198" = 1 ]; then
