@@ -820,6 +820,37 @@ int main(void) {
     nas_open_files[44].lease_token=0;
     close_slot(44);
     close_slot(43);
+    /* A genuine Nmap -sT CLOSED port is not an established connection:
+     * the untouched upstream loopback TCP stack must reject its SYN,
+     * wake nonblocking poll/select through POLLERR and preserve the exact
+     * Linux ECONNREFUSED code until SO_ERROR consumes it once.  The
+     * success-only scanner test above cannot exercise this failure path. */
+    reserve(49,NAS_LWIP_BRIDGE_TCP);
+    nas_open_files[49].status_flags|=0x800ULL;
+    assert(nas_lwip_socket_connect(49,lo(38018))==0);
+    bool refused_ready=false;
+    uint16_t refused_events=0;
+    for(unsigned tries=0;tries<600;tries++) {
+        refused_events=ops->poll_description(49,4U);
+        if(refused_events&8U){refused_ready=true;break;}
+        assert(!(refused_events&4U)); /* closed port is never writable */
+        test_ns+=UINT64_C(1000000);
+        (void)nas_kthread_timers_tick(test_ns);
+        (void)nas_kthread_run(1);
+    }
+    assert(refused_ready && (refused_events&8U) && !(refused_events&4U));
+    /* select(writefds) must also wake on this socket's POLLERR; the
+     * select conversion layer is exercised separately by M89 tests. */
+    int refused_error=nas_lwip_socket_port_take_error(49);
+    if(refused_error!=-ECONNREFUSED)
+        fprintf(stderr,"[LWIP REFUSED CONNECT] SO_ERROR=%d expected=%d\n",
+                refused_error,-ECONNREFUSED);
+    assert(refused_error==-ECONNREFUSED);
+    assert(nas_lwip_socket_port_take_error(49)==0);
+    assert(!(ops->poll_description(49,4U)&4U));
+    close_slot(49);
+    puts("[LWIP CLOSED CONNECT PASS] real loopback RST -> POLLERR, "
+         "one-shot SO_ERROR=ECONNREFUSED");
     connect_slot(33,38017);
     struct nas_fd_slot_lease canceled=lease_slot(34,UINT64_C(0xAA00));
     listener_ready(30);

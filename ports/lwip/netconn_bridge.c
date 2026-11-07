@@ -38,6 +38,7 @@ struct bridge_slot {
     uint32_t generation;
     bool owned,closing,queued,executing,finished,accept_cancelled,listening;
     bool close_tx_active,close_tx_wait,close_tx_result_pending;
+    bool tcp_connect_pending;
     unsigned accept_pending;
     unsigned close_tx_attempts;
     uint16_t close_tx_position,close_tx_length;
@@ -383,6 +384,29 @@ static void execute(unsigned slot) {
         break;
     case NAS_LWIP_BRIDGE_CONNECT:
         err=netconn_connect(s->connection,&address,r->address.port);
+        if(s->type==NAS_LWIP_BRIDGE_TCP) {
+            if(err==ERR_INPROGRESS || err==ERR_ALREADY) {
+                s->tcp_connect_pending=true;
+            } else if(s->tcp_connect_pending) {
+                s->tcp_connect_pending=false;
+                if(err==ERR_CLSD) {
+                    /* On an initial SYN refusal, upstream err_tcp() saves
+                     * ERR_RST as pending_err and clears the PCB. A later
+                     * netconn_connect() probe therefore returns ERR_CLSD,
+                     * which normally maps to ENOTCONN. Only this pending
+                     * handshake with an actual RST means ECONNREFUSED. */
+                    err_t pending=netconn_err(s->connection);
+                    if(pending==ERR_RST) {
+                        out->status=-ECONNREFUSED;
+                        return;
+                    }
+                    if(pending!=ERR_OK) {
+                        out->status=-err_to_errno(pending);
+                        return;
+                    }
+                }
+            }
+        }
         break;
     case NAS_LWIP_BRIDGE_LISTEN:
         if(s->type!=NAS_LWIP_BRIDGE_TCP){err=ERR_ARG;break;}
