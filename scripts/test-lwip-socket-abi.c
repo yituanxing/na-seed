@@ -13,20 +13,6 @@
 /* Only the single upstream-lwIP AF_INET provider exists. The fake provider
  * below tests File publication/ABI, not another TCP/IP implementation. */
 void nas_unix_socket_init(unsigned slot){assert(slot<NAS_OPEN_FILE_LIMIT);}
-/* This fixture imports the real generic open syscall adapter, but exercises
- * network descriptors only. Opening a VT must remain observable as an
- * unexpected test path instead of leaving its production hook unresolved. */
-void nas_vt_open_session(uint64_t flags) {
-    (void)flags;
-    assert(!"unexpected virtual-terminal open in socket ABI fixture");
-}
-void nas_pty_open_session(unsigned slot,uint64_t flags) {
-    /* The imported M106 fixture explicitly exercises a mocked PTY open.
-     * Session ownership is separately verified against the real backend
-     * in check-m188-pty.sh; this socket test has no real PTY state. */
-    (void)slot;(void)flags;
-}
-
 #include "../ports/lwip/socket_port.h"
 /* This ABI-only fixture does not run native TCP listeners; the real
  * socket_port.c implementation is exercised by its separate host test. */

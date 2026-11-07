@@ -129,9 +129,20 @@ int nas_vfs_path_string(const struct nas_vfs_path *path,char output[256]) {
 int nas_pty_path_number(const char *path){
     return path && !strcmp(path,"/dev/pts/3") ? 3 : -1;
 }
+/* The isolated host fixture has no virtual-console backend. Its real
+ * open adapter must never silently claim a VT session. */
+void nas_vt_open_session(uint64_t flags) {
+    (void)flags;
+    assert(!"unexpected virtual-terminal open in M106 fixture");
+}
 #ifndef NAS_TEST_REAL_PTY
 /* M188 compiles this same real FileOps/usercopy fixture with the genuine
  * PTY provider rather than these M106 bootstrap-only identities. */
+void nas_pty_open_session(unsigned slot,uint64_t flags) {
+    /* Only simulated PTY opens in M106 and its socket-ABI importer. M188
+     * links the genuine session implementation instead. */
+    (void)slot;(void)flags;
+}
 bool nas_pty_present(unsigned number){return number==3 && bootstrap_pty_present;}
 bool nas_pty_controlling(void){return bootstrap_pty_controlling;}
 unsigned nas_pty_number(unsigned slot){(void)slot;return 3;}
