@@ -29,6 +29,7 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m223-http-host.py
+          python3 scripts/m223-ext4-symlink-diagnostic.py --self-test
           python3 scripts/test-m222-ssh-host.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
@@ -58,6 +59,9 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+      - name: Reproduce cert-hash long symlink allocation and prove clean ext4 remount
+        timeout-minutes: 8
+        run: sh scripts/check-lwext4-symlink-fsck.sh
       - name: Verify three signed exact x86 native ELF hashes and offline closure
         timeout-minutes: 18
         run: |
@@ -83,6 +87,7 @@ jobs:
             build/external/m223-candidate-inventory/amd64/signed-cache.sha256
             build/external/m223-candidate-inventory/amd64/apk-offline-proof.log
             build/external/m191-alpine-rootfs/amd64/m223-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m223-ext4-symlink-diagnostic.log
             build/external/m191-alpine-rootfs/amd64/m223-first-runner.log
             build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
             build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
@@ -113,6 +118,7 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m223-http-host.py
+          python3 scripts/m223-ext4-symlink-diagnostic.py --self-test
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
       - name: Install cross GCC QEMU native ELF ext4 and official Alpine signer
@@ -180,6 +186,7 @@ jobs:
             build/external/m223-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
             build/external/m223-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-ext4-symlink-diagnostic.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-runner.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
