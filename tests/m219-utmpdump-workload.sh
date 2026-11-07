@@ -41,10 +41,17 @@ fi
 
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C TZ=UTC
 fixture=/root/m219-fixtures/utmpdump-fixture
-[ -x /usr/bin/utmpdump ] && [ -x "$fixture" ] || {
-    echo '[M219 FAIL] signed original utmpdump or native utmp fixture absent' >&2
+if [ ! -x /usr/bin/utmpdump ]; then
+    echo '[M219 FAIL] original signed utmpdump is not executable inside installed guest' >&2
+    /bin/busybox ls -ld /usr/bin/utmpdump /usr/bin 2>&1 | /bin/busybox tail -n 3 >&2
+    /sbin/apk info -W /usr/bin/utmpdump 2>&1 | /bin/busybox head -n 2 >&2
     exit 1
-}
+fi
+if [ ! -x "$fixture" ]; then
+    echo '[M219 FAIL] host-built musl-ABI fixture is not executable inside guest' >&2
+    /bin/busybox ls -ld /root/m219-fixtures "$fixture" 2>&1 | /bin/busybox tail -n 3 >&2
+    exit 1
+fi
 magic=$(/bin/busybox od -An -tx1 -N4 /usr/bin/utmpdump 2>/dev/null |
     /bin/busybox tr -d ' \t\r\n')
 [ "$magic" = 7f454c46 ] || {

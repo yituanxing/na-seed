@@ -139,6 +139,9 @@ def check_strict_guest_report(directory: Path) -> None:
 def main() -> None:
     workload = WORKLOAD.read_text()
     assert "/usr/bin/utmpdump" in workload and "7f454c46" in workload
+    assert 'fixture=/root/m219-fixtures/utmpdump-fixture' in workload
+    assert 'original signed utmpdump is not executable inside installed guest' in workload
+    assert 'host-built musl-ABI fixture is not executable inside guest' in workload
     assert "--exercise" in workload and "utmp-record-roundtrip" in workload
     assert "utmpdump -r" in workload
     assert "--verify-original" in workload and "--verify-edited" in workload
@@ -166,7 +169,7 @@ def main() -> None:
     for marker in ("tests/m219-utmpdump-workload.sh",
                    '"$overlay/root/m219-utmpdump-workload.sh"',
                    "tests/m219-utmpdump-fixture.c",
-                   '"$overlay/root/m219-fixtures/utmp-fixture"',
+                   '"$overlay/root/m219-fixtures/utmpdump-fixture"',
                    "scripts/m219-candidate-elfs.tsv",
                    '"$overlay/root/m219-cohort.tsv"',
                    "scripts/m219-alpine-reopen-cases.tsv",

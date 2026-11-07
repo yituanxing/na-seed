@@ -245,8 +245,8 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
         test -s "$fixture_utmp"
         sudo install -d -m 0755 "$overlay/root/m219-fixtures"
         sudo install -m 0755 "$fixture_utmp" \
-            "$overlay/root/m219-fixtures/utmp-fixture"
-        sudo test -x "$overlay/root/m219-fixtures/utmp-fixture"
+            "$overlay/root/m219-fixtures/utmpdump-fixture"
+        sudo test -x "$overlay/root/m219-fixtures/utmpdump-fixture"
     fi
     # The M205 host census already fetched every package from Alpine's
     # signature-verified official indexes. Reuse the original byte-for-byte
