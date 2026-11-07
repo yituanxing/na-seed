@@ -29,7 +29,10 @@ BINARIES = M197.BINARIES + ('/usr/bin/wget', '/usr/bin/aria2c', '/usr/sbin/light
 DOCUMENT = b'M227_OPENRC_HTTP_DURABLE_2026\n'
 
 
-def verify(port: str, source: Path, disk: Path) -> None:
+def verify(port: str, source: Path, disk: Path,
+           expected_bind: bytes = b'127.0.0.1') -> None:
+    if expected_bind not in (b'127.0.0.1', b'0.0.0.0'):
+        raise ValueError('[M227 HOST FAIL] unsupported HTTP listen address')
     source = source.resolve(strict=True)
     disk = disk.resolve(strict=True)
     for path in ('/var/www/m227/index.txt', '/etc/runlevels/default/lighttpd',
@@ -49,7 +52,8 @@ def verify(port: str, source: Path, disk: Path) -> None:
         if read('/var/www/m227/index.txt') != DOCUMENT:
             raise ValueError('[M227 HOST FAIL] real HTTP response not durable on ext4')
         config = read('/etc/lighttpd/lighttpd.conf')
-        for rule in (b'server.bind = "127.0.0.1"', b'server.port = 15432',
+        for rule in (b'server.bind = "' + expected_bind + b'"',
+                     b'server.port = 15432',
                      b'server.document-root = "/var/www/m227"'):
             if rule not in config:
                 raise ValueError('[M227 HOST FAIL] genuine service configuration lost')

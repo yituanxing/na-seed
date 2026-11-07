@@ -141,8 +141,29 @@ boot_case() {
         set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
             -device virtio-blk-device,drive=m178_async
     fi
+    # M228: keep host TCP forward on THIS real slirp NIC only, opt-in.
+    hostfwd=
+    if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
+        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT requires NAS_VIRTIO_NET_USER=1' >&2
+            return 2
+        }
+        hostfwd_port=$NAS_VIRTIO_NET_HOSTFWD_PORT
+        case "$hostfwd_port" in
+            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_PORT must be decimal 1..65535' >&2; return 2 ;;
+        esac
+        while [ "${hostfwd_port#0}" != "$hostfwd_port" ]; do
+            hostfwd_port=${hostfwd_port#0}
+        done
+        [ -n "$hostfwd_port" ] && [ "${#hostfwd_port}" -le 5 ] &&
+            [ "$hostfwd_port" -le 65535 ] || {
+            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT out of range 1..65535' >&2
+            return 2
+        }
+        hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:15432"
+    fi
     if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
-        set -- "$@" -netdev user,id=naseed_net \
+        set -- "$@" -netdev "user,id=naseed_net${hostfwd}" \
                -device virtio-net-device,netdev=naseed_net
     fi
     if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then

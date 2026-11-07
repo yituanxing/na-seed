@@ -1,8 +1,8 @@
 name: NaSeed M227 headless Alpine OpenRC seven-program two-native-boot cohort
 
-# M227.4: keep the authentic whole-line getty observed BEFORE root is echoed;
-# re-matching a prompt-only line AFTER password-authenticated commands finish
-# rejects a valid original Alpine boot. This workflow
+# M227.5: both true original Alpine PID1 boots, HTTP and OpenRC now passed.
+# The final 512MiB disposable physical ext4 oracle must receive its explicit
+# disk geometry; the immutable signed M191 baseline remains 256MiB. This workflow
 # launches amd64 only. Older software
 # workflows keep their own path filters; unrelated changes do not relaunch M227.
 on:

@@ -53,16 +53,23 @@ case "${1:-}" in
     --first)
         check_signed
         test ! -e /var/www/m227 || fail 'first-boot persistent HTTP preseeded'
+        # M228 alone exercises a host->VirtIO-Net listener; the default M227
+        # service retains its proven loopback-only bind and identical config.
+        case "${NAS_M228_EXPOSE_ETH0:-0}" in
+            0) server_bind=127.0.0.1 ;;
+            1) server_bind=0.0.0.0 ;;
+            *) fail 'invalid opt-in eth0 listener selector' ;;
+        esac
         $busy mkdir -p /var/www/m227 /etc/lighttpd /var/log
         $busy printf '%s\n' "$expected" > "$document"
         $busy chmod 755 /var/www /var/www/m227
         $busy chmod 644 "$document"
         # Keep the authentic lighttpd-openrc service script untouched;
         # configure only original distro lighttpd's documented keys.
-        $busy cat > "$config" <<'CONF'
+        $busy cat > "$config" <<CONF
 server.modules = ( "mod_staticfile" )
 server.document-root = "/var/www/m227"
-server.bind = "127.0.0.1"
+server.bind = "$server_bind"
 server.port = 15432
 server.pid-file = "/run/lighttpd.pid"
 mimetype.assign = ( ".txt" => "text/plain" )
@@ -114,6 +121,13 @@ INTERFACES
         ;;
     --reopen)
         check_signed
+        if [ "${NAS_M228_EXPOSE_ETH0:-0}" = 1 ]; then
+            $busy grep -qx 'server.bind = "0.0.0.0"' "$config" ||
+                fail 'host ingress listener configuration lost'
+        else
+            test "${NAS_M228_EXPOSE_ETH0:-0}" = 0 ||
+                fail 'invalid opt-in eth0 listener selector'
+        fi
         test "$($busy cat "$document")" = "$expected" || fail 'ext4 document lost'
         test -L /etc/runlevels/default/lighttpd || fail 'rc-update link not durable'
         test -L /etc/runlevels/boot/networking || fail 'networking runlevel link lost'

@@ -47,12 +47,14 @@ m226=${NAS_M226_PILOT:-0}
 case "$m226" in 0|1) ;; *) echo '[M226 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m227=${NAS_M227_INTEGRATED_OPENRC:-0}
 case "$m227" in 0|1) ;; *) echo '[M227 FAIL] invalid integrated OpenRC selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ]; } && \
+m228=${NAS_M228_HOST_INBOUND:-0}
+case "$m228" in 0|1) ;; *) echo '[M228 FAIL] invalid host ingress selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -83,7 +85,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -194,6 +196,22 @@ if [ "$m227" = 1 ]; then
     }
     sudo test ! -e "$overlay/etc/runlevels/default/lighttpd" || {
         echo '[M227 FAIL] OpenRC service was pre-enabled' >&2; exit 1;
+    }
+fi
+if [ "$m228" = 1 ]; then
+    # Keep M227's complete original signed OpenRC guest workload and add an
+    # independently challenged real host-to-guest HTTP request window.
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo install -m 0644 tests/m228-alpine-host-ingress-workload.sh \
+        "$overlay/root/m228-alpine-host-ingress-workload.sh"
+    sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test -s "$overlay/root/m228-alpine-host-ingress-workload.sh"
+    sudo test ! -e "$overlay/var/www/m227" || {
+        echo '[M228 FAIL] original lighttpd document preseeded' >&2; exit 1;
+    }
+    sudo test ! -e "$overlay/etc/runlevels/default/lighttpd" || {
+        echo '[M228 FAIL] OpenRC service pre-enabled' >&2; exit 1;
     }
 fi
 if [ "$m204" = 1 ]; then
@@ -488,6 +506,11 @@ if [ "$replay" = 0 ]; then
     test ! -e "$pcap" || { echo '[M197 PUBLIC WIRE FAIL] stale PCAP'; exit 1; }
     export NAS_VIRTIO_NET_PCAP="$pcap"
 fi
+if [ "$m228" = 1 ]; then
+    # Opt in AFTER probe-m191 has built the exact unchanged target kernel.
+    # The runner appends hostfwd to the EXISTING NIC, not a second adapter.
+    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M228_HOST_PORT:-15433}
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -534,6 +557,9 @@ if [ "$m226" = 1 ]; then
 fi
 if [ "$m227" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_PUBLIC_QEMU_TIMEOUT:-1800}
+fi
+if [ "$m228" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_PUBLIC_QEMU_TIMEOUT:-2650}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -663,6 +689,71 @@ if [ "$m226" = 1 ]; then
     m226_start_host first
 fi
 
+if [ "$m228" = 1 ]; then
+    # Exactly one independent host observer per native QEMU. It waits for
+    # the signed guest's real UART READY line before initiating host TCP GET.
+    m228_host_pid=
+    m228_stop_host() {
+        if [ -n "$m228_host_pid" ]; then
+            kill "$m228_host_pid" 2>/dev/null || :
+            wait "$m228_host_pid" 2>/dev/null || :
+            m228_host_pid=
+        fi
+    }
+    m228_start_host() {
+        phase=$1
+        host_serial=$2
+        receipt="$PWD/$work/m228-$phase-host-inbound.json"
+        host_log="$PWD/$work/m228-$phase-host-inbound.log"
+        test ! -e "$receipt" && test ! -e "$host_log" || {
+            echo '[M228 HOST FAIL] refusing stale independent host evidence' >&2; exit 1;
+        }
+        python3 -u scripts/m228-host-inbound-check.py "$phase" "$host_serial" \
+            "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+            --ready-timeout "${NAS_M228_HOST_READY_SECONDS:-2650}" \
+            --http-timeout "${NAS_M228_HOST_HTTP_SECONDS:-35}" \
+            > "$host_log" 2>&1 &
+        m228_host_pid=$!
+    }
+    m228_finish_host() {
+        phase=$1
+        test -n "$m228_host_pid" || {
+            echo '[M228 HOST FAIL] no live host watcher' >&2; exit 1;
+        }
+        # UART has already completed the guest's bounded 45-second window.
+        # An absent host receipt can never be repaired by waiting another
+        # 45-minute ready-timeout after QEMU has EXITED. Bound this join.
+        m228_join_seconds=0
+        while [ ! -s "$PWD/$work/m228-$phase-host-inbound.json" ] && \
+              kill -0 "$m228_host_pid" 2>/dev/null && \
+              [ "$m228_join_seconds" -lt 8 ]; do
+            sleep 1
+            m228_join_seconds=$((m228_join_seconds+1))
+        done
+        if [ ! -s "$PWD/$work/m228-$phase-host-inbound.json" ]; then
+            echo "[M228 HOST FAIL] $phase QEMU exited without actual host HTTP receipt" >&2
+            m228_stop_host
+            tail -100 "$PWD/$work/m228-$phase-host-inbound.log" >&2 || :
+            exit 1
+        fi
+        if wait "$m228_host_pid"; then
+            m228_host_pid=
+            test -s "$PWD/$work/m228-$phase-host-inbound.json" || {
+                echo '[M228 HOST FAIL] actual host HTTP receipt absent' >&2; exit 1;
+            }
+        else
+            m228_host_pid=
+            echo "[M228 HOST FAIL] $phase real hostfwd HTTP observation" >&2
+            tail -100 "$PWD/$work/m228-$phase-host-inbound.log" >&2 || :
+            exit 1
+        fi
+    }
+    trap 'm228_stop_host' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
     # independent second QEMU previously used a CPIO BusyBox entry instead.
@@ -670,6 +761,9 @@ if [ "$m199" = 1 ]; then
 fi
 if [ "$m227" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
+fi
+if [ "$m228" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 
 if [ "$replay" = 0 ]; then
@@ -725,7 +819,31 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m227" = 1 ]; then
+    if [ "$m228" = 1 ]; then
+        # Physical native QEMU MUST remain alive while host issues the
+        # independent nonce-bearing TCP GET into guest eth0/lighttpd.
+        # The observer starts BEFORE M194 unlinks its own UART path; never
+        # allow it to mistake an older run's FIRST marker for this PID1.
+        test ! -e "$serial" || {
+            echo '[M228 FAIL] stale original first UART before host watcher' >&2; exit 1;
+        }
+        echo "[M228 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        m228_start_host first "$serial"
+        if python3 scripts/m228-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m228-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m228-first.serial.log"
+            m228_finish_host first
+            echo "[M228 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m228_first_rc=$?
+            if [ -f "$serial" ]; then
+                cp "$serial" "$PWD/$work/m228-first.serial.log"
+            fi
+            echo "[M228 FIRST UART FAIL] rc=$m228_first_rc; preserving independent host log" >&2
+            tail -100 "$PWD/$work/m228-first-host-inbound.log" >&2 || :
+            exit "$m228_first_rc"
+        fi
+    elif [ "$m227" = 1 ]; then
         # Keep the REAL first native UART even if the original signed Alpine
         # workload fails before M227 can reach its second QEMU. The artifact
         # uploader runs on failure, so this path must exist immediately.
@@ -868,6 +986,20 @@ if [ "$m227" = 1 ]; then
         exit 1
     }
 fi
+if [ "$m228" = 1 ]; then
+    grep -Fq 'M227_FIRST_OPENRC_HTTP_PASS' "$serial" || {
+        echo '[M228 FAIL] original first OpenRC lighttpd proof missing' >&2
+        exit 1
+    }
+    grep -Fq 'M228_FIRST_HOST_INGRESS_WINDOW_COMPLETE' "$serial" || {
+        echo '[M228 FAIL] first real host HTTP opportunity absent' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m228-first-host-inbound.json" || {
+        echo '[M228 FAIL] independent first host TCP response missing' >&2
+        exit 1
+    }
+fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
@@ -999,6 +1131,73 @@ if [ "$m199" = 1 ]; then
     exit 0
 fi
 
+if [ "$m228" = 1 ]; then
+    # A genuinely independent SECOND original Alpine /sbin/init on the same
+    # physical ext4 image. OpenRC must auto-start the original lighttpd;
+    # no second manual service start or host-side fake server is permitted.
+    test -s "$PWD/$work/m228-first.serial.log" || {
+        echo '[M228 FAIL] first real native UART snapshot absent' >&2; exit 1;
+    }
+    test -s "$PWD/$work/m228-first-host-inbound.json" || {
+        echo '[M228 FAIL] first host TCP response receipt absent' >&2; exit 1;
+    }
+    echo "[M228 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m228-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m228-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M228 FAIL] stale second independent NIC PCAP' >&2; exit 1;
+    }
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_REOPEN_QEMU_TIMEOUT:-1050}
+    m228_start_host reopen "$serial"
+    if python3 scripts/m228-alpine-uart.py reopen "$runner" "$serial" \
+            "$PWD/$work/m228-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/m228-reopen.serial.log"
+        m228_finish_host reopen
+    else
+        m228_reopen_rc=$?
+        if [ -f "$serial" ]; then
+            cp "$serial" "$PWD/$work/m228-reopen.serial.log"
+        fi
+        echo "[M228 REOPEN UART FAIL] rc=$m228_reopen_rc; preserving independent host log" >&2
+        tail -100 "$PWD/$work/m228-reopen-host-inbound.log" >&2 || :
+        exit "$m228_reopen_rc"
+    fi
+    echo "[M228 REOPEN ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    grep -Fq 'M227_SECOND_OPENRC_AUTO_HTTP_PASS' "$serial" || {
+        echo '[M228 FAIL] second true PID1 OpenRC auto-restoration absent' >&2
+        exit 1
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M228 FAIL] original public signed software persistence absent' >&2
+        exit 1
+    }
+    grep -Fq 'M228_REOPEN_HOST_INGRESS_WINDOW_COMPLETE' "$serial" || {
+        echo '[M228 FAIL] second real host HTTP opportunity absent' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m228-reopen-host-inbound.json" || {
+        echo '[M228 FAIL] independent second host TCP response receipt absent' >&2
+        exit 1
+    }
+    # M228's disposable signed-service disk is 512MiB; the immutable M191
+    # signed baseline remains 256MiB.  Pass exact geometry through sudo,
+    # which otherwise strips the environment and falsely rejects real ext4.
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m228-inbound-oracle.py "$port" "$root" "$disk" \
+        "$PWD/$work/m228-first-host-inbound.json" \
+        "$PWD/$work/m228-reopen-host-inbound.json" \
+        "$pcap" "$PWD/$work/m228-reopen-wire.pcap" \
+        "$PWD/$work/m228-inbound-oracle.json"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M228 ORIGINAL ALPINE HOST INGRESS TWO BOOT PASS] $port real "\
+         'host TCP GET via single VirtIO-Net hostfwd into original signed ' \
+         'OpenRC/lighttpd, two native PID1, two independent host nonce receipts, ' \
+         'two physical Ethernet PCAPs, and original signed ext4/fsck'
+    exit 0
+fi
+
 if [ "$m227" = 1 ]; then
     # M199's true second original PID1, without M199's GUI/QMP. A separate
     # UART log and FIFO prevent first-boot bytes from faking auto-restart.
@@ -1022,7 +1221,10 @@ if [ "$m227" = 1 ]; then
         echo '[M227 FAIL] original Bash/Lua/SQLite/Git persistence missing' >&2
         exit 1
     }
-    sudo python3 scripts/m227-alpine-disk-check.py "$port" "$root" "$disk"
+    # As in the other large-cohort disk oracles, the verifier must know the
+    # explicit 512MiB disposable geometry; sudo drops ordinary env vars.
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m227-alpine-disk-check.py "$port" "$root" "$disk"
     sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
     echo "[M227 ORIGINAL ALPINE OPENRC TWO BOOT PASS] $port signed public "\
          'Bash Lua SQLite Git wget aria2 lighttpd lighttpd-openrc, two real ' \

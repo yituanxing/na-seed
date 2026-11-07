@@ -30,6 +30,10 @@ def check() -> None:
     require('scripts/m227-alpine-uart.py first' in native and
             'scripts/m227-alpine-uart.py reopen' in native,
             'both UART phases are physical QEMU not synthetic scripts')
+    require('sudo env NAS_M191_DISK_MIB="$disk_mib"' in native and
+            'python3 scripts/m227-alpine-disk-check.py' in native and
+            'sudo python3 scripts/m191-alpine-root-disk.py verify' in native,
+            '512MiB disposable host oracle must preserve 256MiB signed baseline')
     require('owner.M194.run(' in uart and 'owner.build_commands(cache_index=True)' in uart,
             'reuse original M197 signed WAN and M194 authenticated UART')
     require("('naseed', 'localhost') if mode == 'reopen'" in uart and

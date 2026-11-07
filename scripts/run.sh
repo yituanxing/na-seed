@@ -23,10 +23,33 @@ if [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
     set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
         -device virtio-blk-pci,drive=m178_async,disable-legacy=on
 fi
+# M228: optional REAL host->guest TCP through the existing slirp NIC.
+# A loopback-only host listener avoids publishing the test server externally.
+# Reject malformed values before they can become QEMU option fragments.
+hostfwd=
+if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
+        echo 'NAS_VIRTIO_NET_HOSTFWD_PORT requires NAS_VIRTIO_NET_USER=1' >&2
+        exit 2
+    }
+    hostfwd_port=$NAS_VIRTIO_NET_HOSTFWD_PORT
+    case "$hostfwd_port" in
+        *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_PORT must be decimal 1..65535' >&2; exit 2 ;;
+    esac
+    while [ "${hostfwd_port#0}" != "$hostfwd_port" ]; do
+        hostfwd_port=${hostfwd_port#0}
+    done
+    [ -n "$hostfwd_port" ] && [ "${#hostfwd_port}" -le 5 ] &&
+        [ "$hostfwd_port" -le 65535 ] || {
+        echo 'NAS_VIRTIO_NET_HOSTFWD_PORT out of range 1..65535' >&2
+        exit 2
+    }
+    hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:15432"
+fi
 if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.
     # Default QEMU hardware stays unchanged for all historical OS gates.
-    set -- "$@" -netdev user,id=naseed_net \
+    set -- "$@" -netdev "user,id=naseed_net${hostfwd}" \
         -device virtio-net-pci,netdev=naseed_net,disable-legacy=on
 fi
 if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then
