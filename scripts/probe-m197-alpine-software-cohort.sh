@@ -972,11 +972,32 @@ fi
 if [ "$m224" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_REOPEN_SECONDS:-900}
 fi
+if [ "$m224" = 1 ]; then
+    # Both native QEMU runners reuse the m197-batch serial basename. The
+    # first guest UART is already retained in $work; discard only the old
+    # runner-generated copies so a failed second boot cannot upload a stale
+    # first-boot log under a reopen name.
+    rm -f "$PWD/$logs/m197-batch.serial.log" "$PWD/$logs/m197-batch.clean.log"
+fi
+m224_retain_reopen_serial() {
+    [ "$m224" = 1 ] || return 0
+    # The existing M224 workflow uploads build/acceptance/**/m197-batch*.log.
+    # Preserve BOTH the untouched UART and the normalized strict-report input
+    # on success or failure without changing the original validation path.
+    evidence="$PWD/build/acceptance/m224-reopen-$port"
+    mkdir -p "$evidence"
+    [ ! -s "$PWD/$logs/m197-batch.serial.log" ] ||
+        cp "$PWD/$logs/m197-batch.serial.log" "$evidence/m197-batch.serial.log"
+    [ ! -s "$PWD/$logs/m197-batch.clean.log" ] ||
+        cp "$PWD/$logs/m197-batch.clean.log" "$evidence/m197-batch.clean.log"
+}
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
+    m224_retain_reopen_serial
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
     exit 1
 fi
+m224_retain_reopen_serial
 if [ "$m220" = 1 ]; then
     m220_stop_host
     python3 scripts/m220-nping-wire-check.py reopen \
