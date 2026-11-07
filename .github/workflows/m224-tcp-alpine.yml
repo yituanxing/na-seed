@@ -61,6 +61,11 @@ jobs:
           fi
           command -v docker
           command -v iperf3
+      - name: Prove real upstream lwIP refused TCP RST errno and socket foundation
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/check-lwip-foundation.sh
       - name: Verify signed nmap iperf3 ncat native x86 ELF SHA and offline APK closure
         timeout-minutes: 20
         run: |
