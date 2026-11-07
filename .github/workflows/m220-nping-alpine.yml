@@ -1,8 +1,12 @@
 name: NaSeed M220 original Alpine Nping first/reopen real host UDP and PCAP
 
-# Explicit workflow dispatch only until the exact-head pilot is reviewed.
-# Never launch two expensive QEMU cohorts on unrelated commits.
+# Trigger the exact-head pilot only when its workflow changes. Shared M197/M205
+# changes also serve M218/M219 and must not relaunch all expensive cohorts.
 on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m220-nping-alpine.yml'
   workflow_dispatch:
 
 permissions:

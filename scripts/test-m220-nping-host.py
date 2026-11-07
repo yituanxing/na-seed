@@ -160,7 +160,10 @@ def integration_contract() -> None:
     assert "m220" in INVENTORY.read_text()
     assert "[M220 HOST UDP RECV]" in ORACLE.read_text()
     workflow = WORKFLOW.read_text()
-    assert "  workflow_dispatch:" in workflow and "  push:" not in workflow
+    assert "  workflow_dispatch:" in workflow and "  push:" in workflow
+    assert "    branches: [naseed-app-batch2]" in workflow
+    assert "      - '.github/workflows/m220-nping-alpine.yml'" in workflow
+    assert "      - 'tests/m205-software-workload.sh'" not in workflow
     assert "needs: [original-nping-amd64]" in workflow
     for marker in ("m220-first-host-udp.log", "m220-reopen-host-udp.log",
                    "m220-first-wire.json", "m220-reopen-wire.json",
