@@ -55,13 +55,29 @@ def verify(port: str, source: Path, disk: Path) -> None:
                 raise ValueError('[M227 HOST FAIL] genuine service configuration lost')
         if not read('/etc/init.d/lighttpd').startswith(b'#!'):
             raise ValueError('[M227 HOST FAIL] authentic signed OpenRC script absent')
-        link = subprocess.run(
-            ['debugfs', '-R', 'stat /etc/runlevels/default/lighttpd', str(partition)],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if 'Type: symlink' not in link.stdout or 'lighttpd' not in link.stdout:
-            raise ValueError('[M227 HOST FAIL] rc-update default symlink not present')
+        if not read('/etc/init.d/networking').startswith(b'#!'):
+            raise ValueError('[M227 HOST FAIL] authentic Alpine networking script absent')
+        interfaces = read('/etc/network/interfaces')
+        for rule in (b'auto eth0\n', b'iface eth0\n',
+                     b'pre-up /bin/sh /root/m227-network-ready.sh\n'):
+            if rule not in interfaces:
+                raise ValueError('[M227 HOST FAIL] original ifupdown-ng network handoff lost')
+        readiness = read('/root/m227-network-ready.sh')
+        for rule in (b'/proc/net/naseed-resolv.conf', b'/proc/net/dev',
+                     b'nameserver 10[.]0[.]2[.]3', b'eth0:', b'exit 1'):
+            if rule not in readiness:
+                raise ValueError('[M227 HOST FAIL] genuine DHCP readiness hook lost')
+        for service, runlevel in (('networking', 'boot'), ('lighttpd', 'default')):
+            link = subprocess.run(
+                ['debugfs', '-R', f'stat /etc/runlevels/{runlevel}/{service}',
+                 str(partition)], check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
+            if 'Type: symlink' not in link.stdout or service not in link.stdout:
+                raise ValueError('[M227 HOST FAIL] original OpenRC runlevel link lost: '
+                                 + service)
     print(f'[M227 OPENRC EXT4 HOST PASS] {port} original signed package DB and '
-          'lighttpd-openrc, guest-written HTTP, default symlink, complete '
+          'lighttpd-openrc, real ifupdown-ng DHCP hook, networking boot and '
+          'lighttpd default symlinks, guest-written HTTP, complete '
           'M197 SQLite/Git, strict read-only fsck; no guest clean unmount claimed')
 
 

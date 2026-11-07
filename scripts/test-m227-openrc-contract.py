@@ -37,22 +37,38 @@ def check() -> None:
     require('rc-update add lighttpd default' in guest and
             'rc-service lighttpd start' in guest,
             'guest first boot performs actual original OpenRC configuration')
+    require('auto eth0' in guest and 'iface eth0' in guest and
+            'pre-up /bin/sh /root/m227-network-ready.sh' in guest and
+            '/sbin/ifquery -i /etc/network/interfaces --list -a' in guest and
+            'rc-update add networking boot' in guest and
+            'rc-service networking start' in guest,
+            'native ifupdown-ng pre-up must validate kernel-owned live DHCP')
+    require('/proc/net/naseed-resolv.conf' in guest and
+            '/proc/net/dev' in guest and
+            'M227_ERROR kernel DHCP/eth0 unavailable' in guest,
+            'genuine DHCP/eth0 readiness must fail closed')
     reopen = guest.split('    --reopen)', 1)[1].split('    *)', 1)[0]
     active = '\n'.join(line for line in reopen.splitlines()
                        if not line.lstrip().startswith('#'))
     for forbidden in ('rc-update add', 'rc-service lighttpd start',
-                      '/usr/sbin/lighttpd -D', 'apk add'):
+                      'rc-service networking start', '/usr/sbin/lighttpd -D',
+                      'apk add'):
         require(forbidden not in active, 'second boot secretly starts/reinstalls service')
     require('rc-service lighttpd status' in active and
+            'rc-service networking status' in active and
             '/run/lighttpd.pid' in active,
-            'second boot must find genuine auto-started service PID')
+            'second boot must find genuine auto-started networking and HTTP PID')
     require('127.0.0.1:15432/index.txt' in guest and
             '/usr/bin/aria2c' in guest and '/usr/bin/wget' in guest,
             'two original HTTP clients must issue real guest loopback GET')
     require('M197.verify(port, source, disk)' in host and
             'M195.verify(port, source, disk' in host and
-            'default/lighttpd' in host,
-            'reuse exact Git/SQLite/strict fsck and physical OpenRC symlink')
+            "('networking', 'boot')" in host and
+            "('lighttpd', 'default')" in host,
+            'reuse Git/SQLite/strict fsck and both physical OpenRC symlinks')
+    require('pre-up /bin/sh /root/m227-network-ready.sh' in host and
+            '/proc/net/dev' in host and '/proc/net/naseed-resolv.conf' in host,
+            'physical ext4 oracle must verify real ifupdown-ng readiness bridge')
     require('hostfwd' not in guest + uart + host and
             'NAS_QEMU_QMP_SOCKET' not in uart,
             'no false host inbound or GUI/QMP claim')

@@ -68,6 +68,41 @@ server.pid-file = "/run/lighttpd.pid"
 mimetype.assign = ( ".txt" => "text/plain" )
 CONF
         /usr/sbin/lighttpd -tt -f "$config" || fail 'signed server config invalid'
+        # The original Alpine networking.initd needs valid ifupdown-ng input.
+        # Real eth0, IPv4 lease, routes and DNS already belong to kernel lwIP;
+        # its documented pre-up hook checks that live state instead of trying
+        # to reconfigure the kernel with unsupported SIOCSIFFLAGS ioctls.
+        # Keep the original /etc/init.d/networking and lighttpd scripts intact.
+        $busy mkdir -p /etc/network
+        $busy cat > /root/m227-network-ready.sh <<'NETREADY'
+#!/bin/sh
+set -eu
+n=0
+while [ "$n" -lt 90 ]; do
+    if grep -q '^nameserver 10[.]0[.]2[.]3$' /proc/net/naseed-resolv.conf 2>/dev/null &&
+       grep -q 'eth0:' /proc/net/dev 2>/dev/null; then
+        exit 0
+    fi
+    n=$((n+1))
+    sleep 1
+done
+echo 'M227_ERROR kernel DHCP/eth0 unavailable to original ifupdown-ng' >&2
+exit 1
+NETREADY
+        $busy chmod 0755 /root/m227-network-ready.sh
+        $busy cat > /etc/network/interfaces <<'INTERFACES'
+# NaSeed's physical eth0, DHCP lease and route belong to kernel lwIP.
+# Alpine ifupdown-ng verifies actual readiness via its native pre-up hook.
+auto eth0
+iface eth0
+    pre-up /bin/sh /root/m227-network-ready.sh
+INTERFACES
+        /sbin/ifquery -i /etc/network/interfaces --list -a |
+            $busy grep -qx eth0 || fail 'official ifquery did not parse eth0'
+        rc-update add networking boot || fail 'official OpenRC networking registration'
+        rc-service networking start || fail 'original Alpine networking start'
+        rc-service networking status || fail 'original Alpine networking not started'
+        test -L /etc/runlevels/boot/networking || fail 'network runlevel link absent'
         rc-update add lighttpd default || fail 'original OpenRC registration'
         test -L /etc/runlevels/default/lighttpd || fail 'OpenRC link absent'
         rc-service lighttpd start || fail 'first OpenRC lighttpd start'
@@ -81,6 +116,11 @@ CONF
         check_signed
         test "$($busy cat "$document")" = "$expected" || fail 'ext4 document lost'
         test -L /etc/runlevels/default/lighttpd || fail 'rc-update link not durable'
+        test -L /etc/runlevels/boot/networking || fail 'networking runlevel link lost'
+        /sbin/ifquery -i /etc/network/interfaces --list -a |
+            $busy grep -qx eth0 || fail 'persistent eth0 declaration lost'
+        # No service start here: original boot/default runlevels own both.
+        rc-service networking status || fail 'original Alpine networking not auto-started'
         # Deliberately no rc-service start and no raw lighttpd invocation.
         rc-status | $busy grep -q 'Runlevel: default' || fail 'not default runlevel'
         rc-service lighttpd status || fail 'OpenRC did not auto-start service'
