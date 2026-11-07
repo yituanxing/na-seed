@@ -366,8 +366,13 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                             if missing:
                                 raise RuntimeError("missing physical QEMU login proof: "
                                                    + ", ".join(missing))
-                            if (authenticated_login_host is None or
-                                getty_login_host(text, (authenticated_login_host,)) is None):
+                            # The getty prompt was anchored and validated
+                            # BEFORE we sent root.  A real getty echoes the
+                            # username on that same line ("login: root"), so
+                            # rescanning the final transcript with a prompt-
+                            # only pattern falsely rejects an authenticated
+                            # boot after every command has already passed.
+                            if authenticated_login_host is None:
                                 raise RuntimeError('missing genuine line-oriented getty prompt')
                             print(success_message or
                                   "[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "

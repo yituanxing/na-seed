@@ -22,6 +22,15 @@ def check() -> None:
     assert owner.getty_login_host('naseed:~# echo localhost login: ', both) is None
     assert owner.getty_login_host('[EXEC] localhost login: ', both) is None
     assert owner.getty_login_host(' M227 localhost login: ', both) is None
+    # Authentic getty prints the login prompt without a newline, then echoes
+    # the typed username on that SAME line.  Its final transcript is no
+    # longer a prompt-only line; authentication must preserve the previously
+    # validated host rather than attempt to rediscover the initial prompt.
+    assert owner.getty_login_host('\nnaseed login: root\nPassword:\n', both) is None
+    source_text = source.read_text(encoding='utf-8')
+    assert 'authenticated_login_host = detected_host' in source_text
+    assert 'if authenticated_login_host is None:' in source_text
+    assert 'getty_login_host(text, (authenticated_login_host,))' not in source_text
     print('[M227 UART LOGIN UNIT PASS] original naseed and restored localhost '
           'whole-line getty accepted only when opted in; command echo rejected')
 

@@ -1,7 +1,8 @@
 name: NaSeed M227 headless Alpine OpenRC seven-program two-native-boot cohort
 
-# M227.3: accept second Alpine getty's real localhost login prompt while
-# preserving password authentication and full PID1 proofs. This workflow
+# M227.4: keep the authentic whole-line getty observed BEFORE root is echoed;
+# re-matching a prompt-only line AFTER password-authenticated commands finish
+# rejects a valid original Alpine boot. This workflow
 # launches amd64 only. Older software
 # workflows keep their own path filters; unrelated changes do not relaunch M227.
 on:
