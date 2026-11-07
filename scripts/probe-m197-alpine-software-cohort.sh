@@ -53,6 +53,22 @@ m229=${NAS_M229_VALKEY_HOST:-0}
 case "$m229" in 0|1) ;; *) echo '[M229 FAIL] invalid host RESP selector' >&2; exit 2 ;; esac
 m230=${NAS_M230_DROPBEAR_HOST:-0}
 case "$m230" in 0|1) ;; *) echo '[M230 FAIL] invalid host SSH selector' >&2; exit 2 ;; esac
+m231=${NAS_M231_MOSQUITTO_HOST:-0}
+case "$m231" in 0|1) ;; *) echo '[M231 FAIL] invalid host MQTT selector' >&2; exit 2 ;; esac
+m231_host_pid=
+m231_stop_host() {
+    if [ -n "$m231_host_pid" ]; then
+        kill "$m231_host_pid" 2>/dev/null || :
+        wait "$m231_host_pid" 2>/dev/null || :
+        m231_host_pid=
+    fi
+}
+if [ "$m231" = 1 ]; then
+    trap 'm231_stop_host' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
 m230_host_pid=
 m230_client_dir=
 m230_stop_host() {
@@ -102,12 +118,12 @@ if [ "$m229" = 1 ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
 fi
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ]; } && \
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -138,7 +154,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -334,6 +350,22 @@ if [ "$m230" = 1 ]; then
     sudo install -m 0644 -o 0 -g 0 "$m230_client_dir/id_ed25519.pub" \
         "$overlay/root/m230-authorized-pubkey"
     sudo test -s "$overlay/root/m230-authorized-pubkey"
+fi
+if [ "$m231" = 1 ]; then
+    # Original signed APKs and original Alpine OpenRC are guest-created only;
+    # no broker/configuration/database/retained payload is staged in the image.
+    sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
+        "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo install -m 0644 tests/m231-alpine-mosquitto-workload.sh \
+        "$overlay/root/m231-alpine-mosquitto-workload.sh"
+    sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
+    sudo test -s "$overlay/root/m231-alpine-mosquitto-workload.sh"
+    for guest in /etc/mosquitto/m231.conf /var/lib/mosquitto/m231.db \
+            /etc/runlevels/default/mosquitto; do
+        sudo test ! -e "$overlay$guest" || {
+            echo "[M231 FAIL] preseeded MQTT guest state: $guest" >&2; exit 1;
+        }
+    done
 fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
@@ -644,6 +676,12 @@ if [ "$m230" = 1 ]; then
     export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M230_HOST_PORT:-12222}
     export NAS_VIRTIO_NET_GUESTFWD_PORT=15446
 fi
+if [ "$m231" = 1 ]; then
+    # The ONE real QEMU VirtIO-Net device exposes broker 15447 exclusively
+    # to host loopback: bounded disposable no-auth functional validation.
+    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M231_HOST_PORT:-15447}
+    export NAS_VIRTIO_NET_GUESTFWD_PORT=15447
+fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
@@ -699,6 +737,9 @@ if [ "$m229" = 1 ]; then
 fi
 if [ "$m230" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M230_PUBLIC_QEMU_TIMEOUT:-2850}
+fi
+if [ "$m231" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_PUBLIC_QEMU_TIMEOUT:-2750}
 fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
@@ -1012,6 +1053,62 @@ if [ "$m230" = 1 ]; then
     }
 fi
 
+if [ "$m231" = 1 ]; then
+    # Real host MQTT clients wait for the currently running original PID1
+    # UART ready signal; no synthetic broker or guest-issued challenge.
+    m231_start_host() {
+        phase=$1
+        host_serial=$2
+        receipt="$PWD/$work/m231-$phase-host-mqtt.json"
+        host_log="$PWD/$work/m231-$phase-host-mqtt.log"
+        test ! -e "$receipt" && test ! -e "$host_log" || {
+            echo "[M231 HOST FAIL] stale $phase MQTT proof" >&2; exit 1;
+        }
+        if [ "$phase" = reopen ]; then
+            python3 -u scripts/m231-host-mqtt-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --first-receipt "$PWD/$work/m231-first-host-mqtt.json" \
+                --ready-timeout "${NAS_M231_HOST_READY_SECONDS:-2750}" \
+                --mqtt-timeout "${NAS_M231_HOST_MQTT_SECONDS:-45}" \
+                > "$host_log" 2>&1 &
+        else
+            python3 -u scripts/m231-host-mqtt-check.py "$phase" "$host_serial" \
+                "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
+                --ready-timeout "${NAS_M231_HOST_READY_SECONDS:-2750}" \
+                --mqtt-timeout "${NAS_M231_HOST_MQTT_SECONDS:-45}" \
+                > "$host_log" 2>&1 &
+        fi
+        m231_host_pid=$!
+    }
+    m231_finish_host() {
+        phase=$1
+        test -n "$m231_host_pid" || {
+            echo '[M231 HOST FAIL] host MQTT observer absent' >&2; exit 1;
+        }
+        join_seconds=0
+        while [ ! -s "$PWD/$work/m231-$phase-host-mqtt.json" ] && \
+              kill -0 "$m231_host_pid" 2>/dev/null && \
+              [ "$join_seconds" -lt 8 ]; do
+            sleep 1
+            join_seconds=$((join_seconds+1))
+        done
+        if [ ! -s "$PWD/$work/m231-$phase-host-mqtt.json" ]; then
+            echo "[M231 HOST FAIL] $phase original QEMU lacks real MQTT receipt" >&2
+            m231_stop_host
+            tail -100 "$PWD/$work/m231-$phase-host-mqtt.log" >&2 || :
+            exit 1
+        fi
+        if wait "$m231_host_pid"; then
+            m231_host_pid=
+        else
+            m231_host_pid=
+            echo "[M231 HOST FAIL] $phase true retained MQTT transaction" >&2
+            tail -100 "$PWD/$work/m231-$phase-host-mqtt.log" >&2 || :
+            exit 1
+        fi
+    }
+fi
+
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
     # independent second QEMU previously used a CPIO BusyBox entry instead.
@@ -1028,6 +1125,9 @@ if [ "$m229" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 if [ "$m230" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+fi
+if [ "$m231" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
 fi
 
@@ -1084,7 +1184,27 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m230" = 1 ]; then
+    if [ "$m231" = 1 ]; then
+        test ! -e "$serial" || {
+            echo '[M231 FAIL] stale first UART before MQTT watcher' >&2; exit 1;
+        }
+        echo "[M231 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        m231_start_host first "$serial"
+        if python3 scripts/m231-alpine-uart.py first "$runner" "$serial" \
+                "$PWD/$work/m231-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/m231-first.serial.log"
+            m231_finish_host first
+            echo "[M231 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            m231_first_rc=$?
+            if [ -f "$serial" ]; then
+                cp "$serial" "$PWD/$work/m231-first.serial.log"
+            fi
+            echo "[M231 FIRST UART FAIL] rc=$m231_first_rc; preserving host MQTT log" >&2
+            tail -100 "$PWD/$work/m231-first-host-mqtt.log" >&2 || :
+            exit "$m231_first_rc"
+        fi
+    elif [ "$m230" = 1 ]; then
         test ! -e "$serial" || {
             echo '[M230 FAIL] stale original first UART before SSH watcher' >&2; exit 1;
         }
@@ -1325,6 +1445,16 @@ if [ "$m230" = 1 ]; then
         exit 1
     }
 fi
+if [ "$m231" = 1 ]; then
+    grep -Fq 'M231_FIRST_HOST_MQTT_WINDOW_COMPLETE' "$serial" || {
+        echo '[M231 FAIL] original first broker host window did not complete' >&2
+        exit 1
+    }
+    test -s "$PWD/$work/m231-first-host-mqtt.json" || {
+        echo '[M231 FAIL] independent retained MQTT host receipt absent' >&2
+        exit 1
+    }
+fi
 if [ "$m205" = 1 ]; then
     grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
@@ -1453,6 +1583,60 @@ if [ "$m199" = 1 ]; then
     echo "[M199 ALPINE OPENRC TWO BOOT PASS] $port original signed Alpine "\
          'init/OpenRC twice, guest rc-update persisted, OpenRC daemon lifecycle, ' \
          'auto-restored physical GPU, QMP Vim and signed applications on ext4'
+    exit 0
+fi
+
+if [ "$m231" = 1 ]; then
+    # Different native QEMU, SAME physical ext4, original Alpine PID1 must
+    # auto-start the broker and deliver the FIRST host's retained message.
+    test -s "$PWD/$work/m231-first.serial.log" && \
+        test -s "$PWD/$work/m231-first-host-mqtt.json" || {
+        echo '[M231 FAIL] first independent MQTT evidence absent' >&2
+        exit 1
+    }
+    echo "[M231 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m231-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m231-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M231 FAIL] stale second real NIC PCAP' >&2; exit 1;
+    }
+    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_REOPEN_QEMU_TIMEOUT:-1100}
+    m231_start_host reopen "$serial"
+    if python3 scripts/m231-alpine-uart.py reopen "$runner" "$serial" \
+            "$PWD/$work/m231-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/m231-reopen.serial.log"
+        m231_finish_host reopen
+    else
+        m231_reopen_rc=$?
+        if [ -f "$serial" ]; then
+            cp "$serial" "$PWD/$work/m231-reopen.serial.log"
+        fi
+        echo "[M231 REOPEN UART FAIL] rc=$m231_reopen_rc; preserving host MQTT log" >&2
+        tail -100 "$PWD/$work/m231-reopen-host-mqtt.log" >&2 || :
+        exit "$m231_reopen_rc"
+    fi
+    grep -Fq 'M231_REOPEN_HOST_MQTT_WINDOW_COMPLETE' "$serial" || {
+        echo '[M231 FAIL] second native broker MQTT window incomplete' >&2; exit 1;
+    }
+    grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
+        echo '[M231 FAIL] original signed Bash/Lua/SQLite/Git durability absent' >&2; exit 1;
+    }
+    test -s "$PWD/$work/m231-reopen-host-mqtt.json" || {
+        echo '[M231 FAIL] second host real retained MQTT receipt absent' >&2; exit 1;
+    }
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m231-mosquitto-disk-check.py "$port" "$root" "$disk" \
+        "$PWD/$work/m231-first-host-mqtt.json" \
+        "$PWD/$work/m231-reopen-host-mqtt.json" \
+        "$pcap" "$PWD/$work/m231-reopen-wire.pcap" \
+        "$PWD/$work/m231-mosquitto-final-oracle.json"
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
+    echo "[M231 ORIGINAL ALPINE MOSQUITTO HOST RETAINED MQTT TWO BOOT PASS] $port real "\
+         'host MQTT QoS1 retained PUB and independent SUB before/after reboot, ' \
+         'original signed Alpine PID1/OpenRC + persisted broker DB, ' \
+         'two NIC PCAPs and read-only fsck; anonymous/root test only'
     exit 0
 fi
 
