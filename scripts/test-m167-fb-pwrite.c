@@ -5,6 +5,7 @@
 #include "../kernel/drivers/display/fbdev.h"
 #include "../kernel/fs/file_ops.h"
 #include "../kernel/fs/io.h"
+#include "../kernel/fs/packet_socket.h"
 #include "../kernel/fs/vfs.h"
 #include "../kernel/fd.h"
 #include "../kernel/task.h"
@@ -47,6 +48,17 @@ int64_t nas_vfs_write_at(const struct nas_fs_node *node,uint64_t offset,
 }
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     (void)node;assert(!"unexpected VFS permission check");return false;
+}
+/* AF_PACKET was added to the real file_io.c device mmap dispatcher after
+ * this FBDEV-only host test.  Link-only stubs must never be invoked: the
+ * test's open descriptions are FD_FRAMEBUFFER, not FD_SOCKET.  Do not pull
+ * the real NIC/TPACKET provider into a standalone framebuffer test. */
+bool nas_packet_socket_is_slot(unsigned slot) {
+    (void)slot;assert(!"unexpected AF_PACKET lookup in FBDEV test");return false;
+}
+int nas_packet_socket_mmap_pin(unsigned slot,struct nas_vm_device **device) {
+    (void)slot;(void)device;
+    assert(!"unexpected AF_PACKET mmap in FBDEV test");return -EOPNOTSUPP;
 }
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     (void)node;assert(!"unexpected VFS size");return 0;
