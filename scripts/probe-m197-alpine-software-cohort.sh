@@ -35,12 +35,14 @@ m220=${NAS_M220_PILOT:-0}
 case "$m220" in 0|1) ;; *) echo '[M220 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
 m221=${NAS_M221_PILOT:-0}
 case "$m221" in 0|1) ;; *) echo '[M221 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
-if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ]; } && \
+m222=${NAS_M222_PILOT:-0}
+case "$m222" in 0|1) ;; *) echo '[M222 FAIL] invalid pilot selector' >&2; exit 2 ;; esac
+if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ]; } && \
    { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
     echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
     exit 2
 fi
-if [ "$((m204+m205+m206+m215+m218+m219+m220+m221))" -gt 1 ]; then
+if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222))" -gt 1 ]; then
     echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
     exit 2
 fi
@@ -71,7 +73,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ]; then
     # disposable guest disk, with matching geometry at prepare and fsck.
     disk_mib=768
 fi
-if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ]; then
+if [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ]; then
     # Small exact-owner pilots keep an isolated physical ext4 disk; never
     # carry M213's unrelated LLVM/BIND/SSH discovery pool closure.
     disk_mib=512
@@ -81,6 +83,18 @@ fi
 # accelerate ABI iteration, but that separate third-boot replay is
 # never current-commit public HTTPS/two-boot acceptance. Default always cold.
 disk="$PWD/$work/m197-software-disposable.img"
+if [ "$m222" = 1 ]; then
+    # M142's genuine temporary host OpenSSH daemon, now phase-unique and
+    # bound to the M197 2×QEMU signed physical-ext4 owner. The EXIT trap
+    # removes only identified ephemeral SSH secrets; never baseline media.
+    . scripts/m222-ssh-host.sh
+    trap 'm222_cleanup' EXIT
+    # Convert interruption to a normal nonzero exit so EXIT scrubs both
+    # transient private identities and the exact disposable ext4 image.
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
 checkpoint="$PWD/$work/m204-first-checkpoint.img"
 checkpoint_meta="$PWD/$work/m204-first-checkpoint.json"
 checkpoint_serial="$PWD/$work/m204-first-checkpoint.serial.log"
@@ -136,12 +150,32 @@ if [ "$m204" = 1 ]; then
         echo '[M204 FAIL] cohort results were preseeded' >&2; exit 1;
     }
 fi
-if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ]; then
+if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ]; then
     # Reuse the M205 signed-install/ledger owner for both independent cohorts;
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
-    if [ "$m221" = 1 ]; then
+    if [ "$m222" = 1 ]; then
+    cohort=m222
+    sudo install -m 0644 tests/m222-ssh-workload.sh \
+        "$overlay/root/m222-ssh-workload.sh"
+    sudo install -m 0644 scripts/m222-candidate-elfs.tsv \
+        "$overlay/root/m222-cohort.tsv"
+    sudo test -s "$overlay/root/m222-ssh-workload.sh"
+    sudo test -s "$overlay/root/m222-cohort.tsv"
+    m222_prepare_host first "$overlay"
+    m222_prepare_host reopen "$overlay"
+    cmp -s "$PWD/$work/m222-host-first/client_id_ed25519.pub" \
+        "$PWD/$work/m222-host-reopen/client_id_ed25519.pub" && {
+        echo '[M222 SECRET FAIL] first/reopen Ed25519 public identities repeated' >&2
+        exit 1
+    }
+    cmp -s "$PWD/$work/m222-host-first/ssh_host_ed25519_key.pub" \
+        "$PWD/$work/m222-host-reopen/ssh_host_ed25519_key.pub" && {
+        echo '[M222 SECRET FAIL] first/reopen host key identities repeated' >&2
+        exit 1
+    }
+    elif [ "$m221" = 1 ]; then
     cohort=m221
     sudo install -m 0644 tests/m221-dns-update-workload.sh \
         "$overlay/root/m221-dns-update-workload.sh"
@@ -380,6 +414,9 @@ fi
 if [ "$m221" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_PUBLIC_QEMU_TIMEOUT:-2500}
 fi
+if [ "$m222" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_PUBLIC_QEMU_TIMEOUT:-2500}
+fi
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -485,6 +522,12 @@ if [ "$m221" = 1 ]; then
     trap 'm221_stop_host' EXIT
     m221_start_host first
 fi
+if [ "$m222" = 1 ]; then
+    command -v sshd >/dev/null && command -v ssh-keygen >/dev/null || {
+        echo '[M222 HOST FAIL] real OpenSSH server/keygen missing' >&2; exit 1;
+    }
+    m222_start_host first
+fi
 
 if [ "$m199" = 1 ]; then
     # This is the SAME original /sbin/init manifest on BOTH boots; M198's
@@ -545,7 +588,10 @@ if [ "$m198" = 1 ]; then
     grep -Fq '[M198 PHYSICAL QMP PASS]' "$work/m198-qmp-check.log"
     fi
 else
-    if [ "$m221" = 1 ]; then
+    if [ "$m222" = 1 ]; then
+        python3 scripts/m222-alpine-uart.py "$runner" "$serial" \
+            "$PWD/$work/m222-first-runner.log" "$fifo"
+    elif [ "$m221" = 1 ]; then
         python3 scripts/m221-alpine-uart.py "$runner" "$serial" \
             "$PWD/$work/m221-first-runner.log" "$fifo"
     elif [ "$m220" = 1 ]; then
@@ -586,6 +632,13 @@ if [ "$m221" = 1 ]; then
     python3 scripts/m221-dns-wire-check.py first \
         "$pcap" "$PWD/$work/m221-first-host-dns.log" \
         "$PWD/$work/m221-first-wire.json"
+fi
+if [ "$m222" = 1 ]; then
+    m222_stop_host
+    NAS_M191_DISK_MIB="$disk_mib" python3 scripts/m222-ssh-wire-check.py first "$port" \
+        "$pcap" "$PWD/$work/m222-first-host-sshd.log" \
+        "$PWD/$work/m222-host-first" "$disk" \
+        "$PWD/$work/m222-first-wire.json"
 fi
 cp "$serial" "$PWD/$work/m197-live.serial.log"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$serial" || {
@@ -645,6 +698,11 @@ if [ "$m221" = 1 ]; then
     grep -Fq 'M221_FIRST_DISCOVERY_COMPLETE' "$serial" || {
         echo '[M221 FAIL] first original nsupdate+host ledger incomplete' >&2
         exit 1
+    }
+fi
+if [ "$m222" = 1 ]; then
+    grep -Fq 'M222_FIRST_DISCOVERY_COMPLETE' "$serial" || {
+        echo '[M222 FAIL] first original SSH/SCP/SFTP ledger incomplete' >&2; exit 1;
     }
 fi
 echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
@@ -730,10 +788,19 @@ if [ "$m221" = 1 ]; then
     }
     m221_start_host reopen
 fi
+if [ "$m222" = 1 ]; then
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m222-reopen-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M222 FAIL] stale second SSH QEMU PCAP' >&2; exit 1;
+    }
+    m222_start_host reopen
+fi
 if [ "$m198" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
 else
-    if [ "$m221" = 1 ]; then
+    if [ "$m222" = 1 ]; then
+        export BUSYBOX_PARITY_MANIFEST=scripts/m222-alpine-reopen-cases.tsv
+    elif [ "$m221" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m221-alpine-reopen-cases.tsv
     elif [ "$m220" = 1 ]; then
         export BUSYBOX_PARITY_MANIFEST=scripts/m220-alpine-reopen-cases.tsv
@@ -782,6 +849,9 @@ fi
 if [ "$m221" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_REOPEN_SECONDS:-700}
 fi
+if [ "$m222" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_REOPEN_SECONDS:-900}
+fi
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
@@ -800,6 +870,14 @@ if [ "$m221" = 1 ]; then
         "$PWD/$work/m221-reopen-wire.pcap" \
         "$PWD/$work/m221-reopen-host-dns.log" \
         "$PWD/$work/m221-reopen-wire.json"
+fi
+if [ "$m222" = 1 ]; then
+    m222_stop_host
+    NAS_M191_DISK_MIB="$disk_mib" python3 scripts/m222-ssh-wire-check.py reopen "$port" \
+        "$PWD/$work/m222-reopen-wire.pcap" \
+        "$PWD/$work/m222-reopen-host-sshd.log" \
+        "$PWD/$work/m222-host-reopen" "$disk" \
+        "$PWD/$work/m222-reopen-wire.json"
 fi
 reopen="$PWD/$logs/m197-batch.clean.log"
 for marker in \
@@ -932,12 +1010,24 @@ if [ "$m221" = 1 ]; then
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m221-compat-report.json" --require-all
 fi
+if [ "$m222" = 1 ]; then
+    grep -Fq 'M222_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
+        echo '[M222 FAIL] second original SSH/SCP/SFTP ledger incomplete' >&2; exit 1;
+    }
+    python3 scripts/m222-compat-report.py \
+        scripts/m222-candidate-elfs.tsv \
+        "$PWD/$work/m197-live.serial.log" "$reopen" \
+        "$PWD/$work/m222-compat-report.json" --require-all
+fi
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;
     }
 fi
-if [ "$m221" = 1 ]; then
+if [ "$m222" = 1 ]; then
+    sudo env NAS_M191_DISK_MIB="$disk_mib" \
+        python3 scripts/m222-alpine-disk-check.py "$port" "$root" "$disk"
+elif [ "$m221" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
         python3 scripts/m221-alpine-disk-check.py "$port" "$root" "$disk"
 elif [ "$m220" = 1 ]; then
