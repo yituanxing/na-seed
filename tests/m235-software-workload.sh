@@ -86,8 +86,8 @@ case "$case_id:$elf" in
         /usr/bin/jsonnet "$target/formatted.jsonnet" > "$target/formatted.json"
         $busy cmp -s "$target/expected.json" "$target/formatted.json"
         ;;
-    cidr-network-broadcast:usr/bin/ipcalc)
-        /usr/bin/ipcalc -n -b 198.51.100.77/27 > "$target/cidr.txt" 2>&1
+    cidr-network-broadcast:bin/ipcalc)
+        /bin/ipcalc -n -b 198.51.100.77/27 > "$target/cidr.txt" 2>&1
         $busy grep -Fq '198.51.100.64' "$target/cidr.txt" &&
             $busy grep -Fq '198.51.100.95' "$target/cidr.txt"
         ;;

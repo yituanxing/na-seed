@@ -9,7 +9,7 @@ db-utils	usr/bin/db_tuner	storage	bdb-btree-tune-analysis
 db-utils	usr/bin/db_upgrade	storage	bdb-upgrade-data-preserve
 jsonnet	usr/bin/jsonnet	data	jsonnet-evaluate-object
 jsonnet	usr/bin/jsonnetfmt	data	jsonnet-format-roundtrip
-ipcalc	usr/bin/ipcalc	network	cidr-network-broadcast
+ipcalc	bin/ipcalc	network	cidr-network-broadcast
 wireguard-tools-wg	usr/bin/wg	crypto	wireguard-key-derivation
 git-lfs	usr/bin/git-lfs	vcs	git-lfs-pointer-roundtrip
 xh	usr/bin/xh	http	http-response-body

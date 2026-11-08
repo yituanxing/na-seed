@@ -5,6 +5,10 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m235-original-alpine-batch.yml'
+      - 'scripts/m235-*'
+      - 'scripts/run-m235-ci.sh'
+      - 'rootfs/alpine/packages-m235-candidates.txt'
+      - 'tests/m235-software-workload.sh'
   workflow_dispatch:
 
 permissions:
