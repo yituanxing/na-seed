@@ -1,0 +1,10 @@
+package	elf_path	family	probe
+# Seven distinct native ELF binaries, six original signed Alpine 3.23 APKs.
+# libdeflate-gunzip is a hardlink/alias; exercise it but never count it twice.
+fossil	usr/bin/fossil	vcs	fossil-persisted-commit
+libdeflate-utils	usr/bin/libdeflate-gzip	codec	libdeflate-gzip-roundtrip
+dfu-util	usr/bin/dfu-prefix	firmware	dfu-stellaris-prefix-roundtrip
+dfu-util	usr/bin/dfu-suffix	firmware	dfu-suffix-crc-roundtrip
+ofarc	usr/bin/ofarc	archive	ofarc-zip-recovery
+ofhash	usr/bin/ofhash	crypto	ofhash-independent-digest
+xmlsec	usr/bin/xmlsec1	xml	xmlsec-hmac-signature
