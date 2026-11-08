@@ -13,6 +13,13 @@ test "$($busy od -An -tx1 -N4 "/$elf" | $busy tr -d ' \t\r\n')" = 7f454c46 || ex
 test ! -e "$target" || { echo '[M238 FAIL] preseeded original ELF witness' >&2; exit 1; }
 mkdir -p "$target"
 
+fail() {
+    # POSIX sh set -e cannot be relied on for the first failing command of
+    # an `&&` list; without an explicit exit, the final success log lies.
+    echo "[M238 GUEST SEMANTIC FAIL] case=$case_id phase=$phase original=/$elf" >&2
+    exit 1
+}
+
 reject() {
     if "$@" > "$target/rejected.log" 2>&1; then
         echo "[M238 FAIL] malformed input accepted by /$elf" >&2
@@ -22,12 +29,12 @@ reject() {
 }
 
 wasm_input() {
-    test -s "$state/add.wat" && test -s "$state/add.wasm"
+    test -s "$state/add.wat" && test -s "$state/add.wasm" || fail
     test "$($busy od -An -tx1 -N4 "$state/add.wasm" | $busy tr -d ' \t\r\n')" = 0061736d
 }
 
 spirv_input() {
-    test -s "$state/compute.spvasm" && test -s "$state/compute.spv"
+    test -s "$state/compute.spvasm" && test -s "$state/compute.spv" || fail
     test "$($busy od -An -tx1 -N4 "$state/compute.spv" | $busy tr -d ' \t\r\n')" = 03022307
 }
 
@@ -53,7 +60,7 @@ case "$case_id:$elf" in
         wasm_input
         /usr/bin/wasm-dis "$state/add.wasm" -o "$target/roundtrip.wat" > "$target/stdout.log" 2> "$target/stderr.log"
         $busy grep -Fq 'add' "$target/roundtrip.wat" &&
-            $busy grep -Fq 'i32.add' "$target/roundtrip.wat"
+            $busy grep -Fq 'i32.add' "$target/roundtrip.wat" || fail
         printf 'M238notwasm' > "$target/corrupted.wasm"
         reject /usr/bin/wasm-dis "$target/corrupted.wasm" -o "$target/bad.wat"
         ;;
@@ -62,7 +69,7 @@ case "$case_id:$elf" in
         /usr/bin/wasm-opt "$state/add.wasm" -O2 -o "$target/optimized.wasm" > "$target/stdout.log" 2> "$target/stderr.log"
         /usr/bin/wasm-dis "$target/optimized.wasm" -o "$target/optimized.wat"
         $busy grep -Fq 'add' "$target/optimized.wat" &&
-            $busy grep -Fq 'i32.add' "$target/optimized.wat"
+            $busy grep -Fq 'i32.add' "$target/optimized.wat" || fail
         printf 'M238notwasm' > "$target/corrupted.wasm"
         reject /usr/bin/wasm-opt "$target/corrupted.wasm" -O2 -o "$target/bad.wasm"
         ;;
@@ -73,7 +80,7 @@ case "$case_id:$elf" in
         /usr/bin/wasm-merge "$state/add.wasm" first "$target/ten.wasm" second -o "$target/merged.wasm" > "$target/stdout.log" 2> "$target/stderr.log"
         /usr/bin/wasm-dis "$target/merged.wasm" -o "$target/merged.wat"
         $busy grep -Fq 'add' "$target/merged.wat" &&
-            $busy grep -Fq 'ten' "$target/merged.wat"
+            $busy grep -Fq 'ten' "$target/merged.wat" || fail
         printf 'M238notwasm' > "$target/corrupted.wasm"
         reject /usr/bin/wasm-merge "$state/add.wasm" first "$target/corrupted.wasm" second -o "$target/bad.wasm"
         ;;
@@ -82,7 +89,7 @@ case "$case_id:$elf" in
         /usr/bin/wasm2js "$state/add.wasm" -o "$target/translated.js" > "$target/stdout.log" 2> "$target/stderr.log"
         test -s "$target/translated.js"
         $busy grep -Fq 'add' "$target/translated.js" &&
-            $busy grep -Eq '(function|=>|export)' "$target/translated.js"
+            $busy grep -Eq '(function|=>|export)' "$target/translated.js" || fail
         printf 'M238notwasm' > "$target/corrupted.wasm"
         reject /usr/bin/wasm2js "$target/corrupted.wasm" -o "$target/bad.js"
         ;;
@@ -120,7 +127,7 @@ case "$case_id:$elf" in
         spirv_input
         /usr/bin/spirv-dis "$state/compute.spv" -o "$target/disassembled.spvasm" > "$target/stdout.log" 2> "$target/stderr.log"
         $busy grep -Fq 'OpEntryPoint GLCompute' "$target/disassembled.spvasm" &&
-            $busy grep -Fq 'OpReturn' "$target/disassembled.spvasm"
+            $busy grep -Fq 'OpReturn' "$target/disassembled.spvasm" || fail
         printf 'BADspirv' > "$target/bad.spv"
         reject /usr/bin/spirv-dis "$target/bad.spv" -o "$target/bad.spvasm"
         ;;
@@ -147,7 +154,7 @@ case "$case_id:$elf" in
         # proof of a parsed function CFG. Require an actual function-entry box.
         $busy grep -Fq 'Fn ' "$target/control-flow.dot" &&
             $busy grep -Fq ' entry' "$target/control-flow.dot" &&
-            $busy grep -Fq 'shape=box' "$target/control-flow.dot"
+            $busy grep -Fq 'shape=box' "$target/control-flow.dot" || fail
         printf 'BADspirv' > "$target/bad.spv"
         reject /usr/bin/spirv-cfg "$target/bad.spv" -o "$target/bad.dot"
         ;;
@@ -176,7 +183,7 @@ case "$case_id:$elf" in
         test "$(/usr/bin/git -C "$state/sample.git" rev-list --count HEAD)" = 1
         (cd "$state/sample.git" && /usr/bin/git-sizer --json --json-version=1) > "$target/sizer.json" 2> "$target/sizer.err"
         $busy grep -Eq '"unique_commit_count"[[:space:]]*:[[:space:]]*1([,}]|$)' "$target/sizer.json" &&
-            $busy grep -Eq '"unique_blob_count"[[:space:]]*:[[:space:]]*2([,}]|$)' "$target/sizer.json"
+            $busy grep -Eq '"unique_blob_count"[[:space:]]*:[[:space:]]*2([,}]|$)' "$target/sizer.json" || fail
         ;;
     actions-yaml-lint:usr/bin/actionlint)
         printf 'name: M238\non: push\njobs:\n  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo M238\n' > "$target/valid.yml"

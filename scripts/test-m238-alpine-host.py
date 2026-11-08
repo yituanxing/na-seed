@@ -118,6 +118,22 @@ class M238SignedNativeTests(unittest.TestCase):
         disk.require_real_function_cfg(
             b'digraph { block [label="1\\nFn %main entry", shape=box]; }')
 
+    def test_all_positive_original_guest_conjunctions_fail_closed(self):
+        # `set -e; false && true; echo PASS` prints PASS in POSIX sh: all
+        # multi-part semantic checks must have their own explicit failure.
+        lines = (BASE.parent / 'tests/m238-software-workload.sh').read_text().splitlines()
+        self.assertIn('fail() {', '\n'.join(lines))
+        for index, line in enumerate(lines):
+            if '&&' not in line or line.lstrip().startswith('#') or '&& exit 1' in line:
+                continue
+            if '||' in line:
+                continue
+            if line.rstrip().endswith('&&'):
+                window = '\n'.join(lines[index:index + 5])
+                with self.subTest(line=index + 1):
+                    self.assertIn('|| fail', window,
+                                  f'original M238 ELF positive check can emit false PASS at line {index + 1}')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)
