@@ -25,7 +25,16 @@ _Static_assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT==MEMP_NUM_NETCONN,
                "bridge admission must match the real upstream Netconn pool");
 
 extern void nas_print(const char *);
-extern void nas_dec(uint64_t);
+static void trace_accept_number(unsigned number) {
+    char digits[11];
+    unsigned offset=sizeof(digits)-1U;
+    digits[offset]='\0';
+    do {
+        digits[--offset]=(char)('0'+number%10U);
+        number/=10U;
+    } while(number);
+    nas_print(digits+offset);
+}
 
 /* Genuine TCP accept errors are rare and must be visible on the native UART.
  * A completed TCP handshake followed by RST before an SSH banner otherwise
@@ -33,9 +42,9 @@ extern void nas_dec(uint64_t);
 static void trace_accept_error(const char *step,int error,unsigned pending,
                                unsigned active) {
     nas_print("[LWIP ACCEPT ERROR] step=");nas_print(step);
-    nas_print(" errno=");nas_dec(error<0 ? (uint64_t)-error:(uint64_t)error);
-    nas_print(" pending=");nas_dec(pending);
-    nas_print(" active=");nas_dec(active);
+    nas_print(" errno=");trace_accept_number((unsigned)(error<0 ? -error:error));
+    nas_print(" pending=");trace_accept_number(pending);
+    nas_print(" active=");trace_accept_number(active);
     nas_print("\n");
 }
 
