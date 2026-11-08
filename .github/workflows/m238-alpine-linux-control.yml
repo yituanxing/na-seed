@@ -1,0 +1,59 @@
+name: NaSeed M238 fifteen original Alpine ELF Linux host semantics preflight
+
+# This is a fast upstream-behavior comparison, NOT NaSeed native QEMU PASS.
+# The real M238 two-QEMU x three-ISA jobs are gated independently and are
+# intentionally not triggered by this isolated host preflight.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m238-alpine-linux-control.yml'
+      - 'tests/m238-software-workload.sh'
+      - 'scripts/m238-candidate-elfs.tsv'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  official-alpine-linux-amd64:
+    name: Execute all fifteen original signed ELF semantics on Alpine Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute exact guest workload in two independently created Linux containers
+        timeout-minutes: 20
+        run: |
+          set -eu
+          state="$RUNNER_TEMP/m238-alpine-linux-state"
+          mkdir -p "$state"
+          for phase in first reopen; do
+            echo "[M238 LINUX CONTROL] Starting separate Alpine container phase=$phase"
+            docker run --rm --platform linux/amd64 \
+              -v "$state:/root/m238-state" \
+              -v "$GITHUB_WORKSPACE/tests/m238-software-workload.sh:/tmp/m238-workload.sh:ro" \
+              -v "$GITHUB_WORKSPACE/scripts/m238-candidate-elfs.tsv:/tmp/m238-candidate-elfs.tsv:ro" \
+              -e NAS_M238_BOOT_PHASE="$phase" alpine:3.23 sh -ec '
+                # Alpine signs/indexes the APKs; no rebuilt, copied, or stub ELF.
+                apk add --no-cache binaryen spirv-tools cstool cppcheck git-sizer actionlint
+                seen=0
+                while IFS="$(printf "\t")" read -r package elf family probe || [ -n "$package" ]; do
+                  case "$package" in package|\#*|"") continue ;; esac
+                  test -x "/$elf" || {
+                    echo "[M238 LINUX FAIL] missing signed native ELF /$elf" >&2
+                    exit 1
+                  }
+                  sha=$(sha256sum "/$elf" | cut -d" " -f1)
+                  printf "%s\t%s\n" "$elf" "$sha" >> "/root/m238-state/signed-sha-${NAS_M238_BOOT_PHASE}.tsv"
+                  NAS_M238_BOOT_PHASE="$NAS_M238_BOOT_PHASE" \
+                    sh /tmp/m238-workload.sh --exercise "$probe" "$elf"
+                  seen=$((seen+1))
+                done < /tmp/m238-candidate-elfs.tsv
+                test "$seen" -eq 15
+                printf "[M238 LINUX 15/15] phase=%s exactly 15 original signed ELF functions\n" "$NAS_M238_BOOT_PHASE"
+              '
+          done
+          cmp "$state/signed-sha-first.tsv" "$state/signed-sha-reopen.tsv"
+          test "$(wc -l < "$state/signed-sha-first.tsv")" -eq 15
+          echo '[M238 LINUX HOST PASS] 15 original signed Alpine ELF functions in two separate Linux containers, stable SHA and persistent state; NOT NaSeed native QEMU PASS'

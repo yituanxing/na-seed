@@ -1,0 +1,17 @@
+package	elf_path	family	probe
+# Fifteen genuinely new original signed Alpine native ELFs; M109–M237 full name audit.
+binaryen	usr/bin/wasm-as	wasm	wasm-assemble
+binaryen	usr/bin/wasm-dis	wasm	wasm-disassemble
+binaryen	usr/bin/wasm-opt	wasm	wasm-optimize
+binaryen	usr/bin/wasm-merge	wasm	wasm-merge-modules
+binaryen	usr/bin/wasm2js	wasm	wasm-to-javascript
+binaryen	usr/bin/wasm-shell	wasm	wasm-spec-assert
+spirv-tools	usr/bin/spirv-as	spirv	spirv-assemble
+spirv-tools	usr/bin/spirv-dis	spirv	spirv-disassemble
+spirv-tools	usr/bin/spirv-val	spirv	spirv-validate
+spirv-tools	usr/bin/spirv-opt	spirv	spirv-optimize
+spirv-tools	usr/bin/spirv-cfg	spirv	spirv-control-flow
+cstool	usr/bin/cstool	disasm	capstone-decode
+cppcheck	usr/bin/cppcheck	analysis	cppcheck-errors
+git-sizer	usr/bin/git-sizer	vcs	git-repo-size
+actionlint	usr/bin/actionlint	yaml	actions-yaml-lint
