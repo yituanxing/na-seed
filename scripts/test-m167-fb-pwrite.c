@@ -63,6 +63,17 @@ int nas_packet_socket_mmap_pin(unsigned slot,struct nas_vm_device **device) {
 uint64_t nas_vfs_node_size(const struct nas_fs_node *node) {
     (void)node;assert(!"unexpected VFS size");return 0;
 }
+/* A filesystem without shared-page support must fail before attempting to
+ * allocate or pin a VMA owner.  These tripwires make that ordering explicit. */
+void *nas_heap_alloc(size_t length) {
+    (void)length;assert(!"unexpected VMA owner allocation");return NULL;
+}
+bool nas_heap_free(void *ptr) {
+    (void)ptr;assert(!"unexpected VMA owner release");return false;
+}
+int nas_vfs_node_pin(const struct nas_fs_node *node) {
+    (void)node;assert(!"unexpected VFS inode pin");return -EIO;
+}
 
 static uint64_t fb_read_positioned(unsigned slot,uint64_t offset,
                                    uint8_t *dst,uint64_t n) {
@@ -76,6 +87,11 @@ static const struct nas_file_ops framebuffer={
     .read_at=fb_read_positioned,.write_at=fb_write_positioned
 };
 static const struct nas_file_ops no_positioned_io={0};
+/* Model a mutable regular-file provider with working read_at but no
+ * coherent shared-page callback, as in the current lwext4 adapter. */
+static const struct nas_vfs_type no_shared_page_fs={
+    .read_at=nas_vfs_read_at,
+};
 
 int main(void) {
     enum { FD=6, ALIAS=7, SLOT=19, CAP=8192 };
@@ -106,6 +122,33 @@ int main(void) {
     nas_open_files[SLOT].status_flags=1; /* O_WRONLY */
     assert(nas_fs_mmap_device_pin(FD,false,&mmap_owner)==-EACCES);
     nas_open_files[SLOT].status_flags=2;
+
+    /* M236 libdeflate-gzip: original upstream calls MAP_SHARED/PROT_READ
+     * on an ext4 regular file.  Linux ENODEV accurately signals lack of
+     * mmap support and allows the program's original read() fallback;
+     * ENOSYS is wrong because the mmap syscall itself is implemented.
+     * Do not accept a private copy as a fake MAP_SHARED success. */
+    enum { REG_FD=8, REG_SLOT=20 };
+    descriptors.entries[REG_FD]=(struct nas_fd_entry){
+        .kind=FD_BOOTFS,.slot=REG_SLOT
+    };
+    nas_open_files[REG_SLOT].refcount=1;
+    nas_open_files[REG_SLOT].status_flags=0; /* O_RDONLY */
+    nas_open_files[REG_SLOT].vnode_pinned=true;
+    nas_open_files[REG_SLOT].vnode=(struct nas_fs_node){
+        .filesystem=&no_shared_page_fs,.mode=0100644U,
+    };
+    struct nas_mapped_file *mapped=(void *)(uintptr_t)1;
+    assert(nas_fs_mmap_pin(REG_FD,false,&mapped)==-ENODEV);
+    assert(mapped==NULL); /* no pretend coherent owner */
+    assert(nas_fs_mmap_pin(REG_FD,true,&mapped)==-EACCES);
+    nas_open_files[REG_SLOT].status_flags=1; /* O_WRONLY */
+    assert(nas_fs_mmap_pin(REG_FD,false,&mapped)==-EACCES);
+    nas_open_files[REG_SLOT].status_flags=0;
+    assert(nas_fs_mmap_pin(NAS_FD_LIMIT,false,&mapped)==-EBADF);
+    nas_open_files[REG_SLOT].vnode.mode=0040755U; /* directory */
+    assert(nas_fs_mmap_pin(REG_FD,false,&mapped)==-ENODEV);
+    nas_open_files[REG_SLOT].vnode.mode=0100644U;
 
     static uint8_t source[1300],target[1300];
     for(unsigned i=0;i<sizeof(source);i++)source[i]=(uint8_t)(i*17U+3U);

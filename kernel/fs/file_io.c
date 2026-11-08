@@ -137,10 +137,12 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
     if(node->is_dir || (node->mode&0170000U)!=0100000U ||
        !node->filesystem || !node->filesystem->read_at)
         return -ENODEV;
-    /* A provider without true shared physical pages is NOT equivalent to
-     * a private eager copy. In particular, ext4 requires a coherent page
-     * cache before participating. */
-    if(!node->filesystem->acquire_shared_page)return -ENOSYS;
+    /* Without a coherent page cache a mutable filesystem (e.g. ext4)
+     * cannot implement MAP_SHARED; a private snapshot is NOT equivalent.
+     * Linux mmap(2) reports ENODEV for unsupported filesystem mappings,
+     * allowing original callers such as libdeflate-gzip to fall back to
+     * read().  ENOSYS incorrectly claims that mmap itself is absent. */
+    if(!node->filesystem->acquire_shared_page)return -ENODEV;
     if(writable && !nas_vfs_can_write(node))return -EACCES;
     return mmap_pin_node(node,access==2U,out);
 }

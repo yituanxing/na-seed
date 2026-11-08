@@ -27,7 +27,7 @@ case "$case_id:$elf" in
                    /usr/bin/fossil open --nosync "$repo" &&
                    printf 'M236_REAL_FOSSIL_COMMITTED_DATA_2026\n' > payload.txt &&
                    /usr/bin/fossil add payload.txt &&
-                   /usr/bin/fossil commit --nosync --no-warnings \
+                   USER=m236 /usr/bin/fossil commit --nosync --no-warnings \
                        --user-override m236 -m 'M236 durable original fossil check-in' ) \
                     > "$target/commit.log" 2>&1; then
                 # The original Fossil stderr lives on physical ext4. Propagate
