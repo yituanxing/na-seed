@@ -117,8 +117,12 @@ class M237SignedNativeTests(unittest.TestCase):
         self.assertIn('11.999', geos)
         self.assertIn('12.001', geos)
         self.assertIn('if [ "$area_ok" -ne 1 ]; then', geos)
-        self.assertIn('M237_GEOS_DIAG phase=%s area_rc=%s numeric_area_ok=%s', geos)
-        self.assertIn('M237_GEOS_DIAG phase=%s help_rc=%s help_stderr=%s', geos)
+        self.assertIn('M237_GEOS_DIAG phase=%s area_rc=%s stderr=%s', geos)
+        self.assertIn('M237_GEOS_DIFF phase=%s literal_area=%s stdin_area=%s file_copy=%s literal_copy=%s', geos)
+        self.assertIn('/usr/bin/geosop -a "$literal" --format=txt area', geos)
+        self.assertIn('/usr/bin/geosop -a stdin --format=txt area', geos)
+        self.assertIn('/usr/bin/geosop -a "$state/rectangle.wkt" --format=txt copy', geos)
+        self.assertIn('/usr/bin/geosop -a "$literal" --format=txt copy', geos)
         self.assertIn('exit 1', geos)
 
 

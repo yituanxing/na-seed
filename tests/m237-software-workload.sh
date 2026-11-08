@@ -151,16 +151,25 @@ case "$case_id:$elf" in
         fi
         if [ "$area_ok" -ne 1 ]; then
             # The authoritative test remains the genuine 3x4 GEOS area.
-            # A failed original ELF may trap before writing any output;
-            # expose only three bounded lines through M205's UART error_tail.
-            geos_err=$($busy head -c 130 "$target/geos.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            area_out=$($busy head -c 100 "$target/area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            help_rc=0
-            $busy timeout 8 /usr/bin/geosop --help > "$target/help.txt" 2> "$target/help.err" || help_rc=$?
-            help_err=$($busy head -c 110 "$target/help.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            printf 'M237_GEOS_DIAG phase=%s area_rc=%s numeric_area_ok=%s stderr=%s\n' "$phase" "$geos_rc" "$area_ok" "$geos_err"
-            printf 'M237_GEOS_DIAG phase=%s area_prefix=%s\n' "$phase" "$area_out"
-            printf 'M237_GEOS_DIAG phase=%s help_rc=%s help_stderr=%s\n' "$phase" "$help_rc" "$help_err"
+            # Keep strict 3x4 area acceptance; isolate geometry parser,
+            # stream input, ext4 file input and GEOS operation independently.
+            # Each probe uses the same original signed Alpine geosop ELF.
+            literal='POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))'
+            lit_rc=0
+            $busy timeout 8 /usr/bin/geosop -a "$literal" --format=txt area > "$target/literal-area.txt" 2> "$target/literal-area.err" || lit_rc=$?
+            stdin_rc=0
+            $busy timeout 8 /usr/bin/geosop -a stdin --format=txt area < "$state/rectangle.wkt" > "$target/stdin-area.txt" 2> "$target/stdin-area.err" || stdin_rc=$?
+            file_copy_rc=0
+            $busy timeout 8 /usr/bin/geosop -a "$state/rectangle.wkt" --format=txt copy > "$target/file-copy.txt" 2> "$target/file-copy.err" || file_copy_rc=$?
+            lit_copy_rc=0
+            $busy timeout 8 /usr/bin/geosop -a "$literal" --format=txt copy > "$target/literal-copy.txt" 2> "$target/literal-copy.err" || lit_copy_rc=$?
+            geos_err=$($busy head -c 120 "$target/geos.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            lit_err=$($busy head -c 80 "$target/literal-area.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            lit_out=$($busy head -c 36 "$target/literal-area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            stdin_out=$($busy head -c 36 "$target/stdin-area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            printf 'M237_GEOS_DIAG phase=%s area_rc=%s stderr=%s\n' "$phase" "$geos_rc" "$geos_err"
+            printf 'M237_GEOS_DIFF phase=%s literal_area=%s stdin_area=%s file_copy=%s literal_copy=%s\n' "$phase" "$lit_rc" "$stdin_rc" "$file_copy_rc" "$lit_copy_rc"
+            printf 'M237_GEOS_DIFF_OUTPUT phase=%s literal=%s stdin=%s literal_err=%s\n' "$phase" "$lit_out" "$stdin_out" "$lit_err"
             exit 1
         fi
         ;;
