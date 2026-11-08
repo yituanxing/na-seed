@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
     steps:
       - uses: actions/checkout@v4
         with:
