@@ -5,6 +5,16 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
+if [ "${NAS_M235_COMPAT_COHORT:-0}" = 1 ]; then
+    # M235 is one twelve-ELF batch, using this unchanged signed APK owner.
+    test "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}:${NAS_M219_PILOT:-0}:${NAS_M220_PILOT:-0}:${NAS_M221_PILOT:-0}:${NAS_M222_PILOT:-0}:${NAS_M223_PILOT:-0}:${NAS_M224_PILOT:-0}" = '0:0:0:0:0:0:0:0:0:0' || exit 2
+    milestone=M235
+    manifest=/root/m235-cohort.tsv
+    work=/root/m235-work
+    first=/root/m235-first-results.tsv
+    reopen=/root/m235-reopen-results.tsv
+    exercise_script=/root/m235-software-workload.sh
+else
 case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT:-0}:${NAS_M218_PILOT:-0}:${NAS_M219_PILOT:-0}:${NAS_M220_PILOT:-0}:${NAS_M221_PILOT:-0}:${NAS_M222_PILOT:-0}:${NAS_M223_PILOT:-0}:${NAS_M224_PILOT:-0}" in
     0:0:0:0:0:0:0:0:0:0)
         milestone=M205
@@ -98,6 +108,7 @@ case "${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}:${NAS_M215_PILOT
         ;;
     *) echo '[COMPAT ERROR] invalid/overlapping signed Alpine cohort selector' >&2; exit 2 ;;
 esac
+fi
 tab=$(printf '\t')
 
 case "${1:-}" in
@@ -578,6 +589,7 @@ cohort_rows=$(/bin/busybox awk -F '\t' '
     END { print count+0 }
 ' "$manifest") || exit 1
 expected_rows=20
+[ "$milestone" = M235 ] && expected_rows=12
 [ "$milestone" = M215 ] && expected_rows=5
 [ "$milestone" = M218 ] && expected_rows=1
 [ "$milestone" = M219 ] && expected_rows=1
@@ -669,6 +681,7 @@ export NAS_M221_BOOT_PHASE="$phase"
 export NAS_M222_BOOT_PHASE="$phase"
 export NAS_M223_BOOT_PHASE="$phase"
 export NAS_M224_BOOT_PHASE="$phase"
+export NAS_M235_BOOT_PHASE="$phase"
 # M218/M220/M221 network probes must wait for DHCP on the independent second
 # CPIO boot. The other cohort budgets remain unchanged; this is not a
 # blanket timeout increase or a bypass of original ELF semantics.
@@ -679,6 +692,7 @@ exercise_budget=45
 [ "$milestone" = M222 ] && exercise_budget=240
 [ "$milestone" = M223 ] && exercise_budget=180
 [ "$milestone" = M224 ] && exercise_budget=180
+[ "$milestone" = M235 ] && exercise_budget=120
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do

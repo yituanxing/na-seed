@@ -1,0 +1,94 @@
+name: NaSeed M235 twelve original Alpine ELF first/reopen QEMU
+
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m235-original-alpine-batch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  amd64-first:
+    name: M235 AMD64 first strict 12/12 native QEMU pilot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Run signed 12-new-ELF batch, fresh first and second AMD64 QEMU
+        timeout-minutes: 105
+        env:
+          NAS_M235_PUBLIC_SECONDS: '4400'
+          NAS_M235_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M235_REOPEN_SECONDS: '1200'
+        run: sh scripts/run-m235-ci.sh amd64
+      - name: Preserve real APK and first/reopen xh TCP+physical ext4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m235-real-alpine-amd64
+          path: |
+            build/external/m235-candidate-inventory/amd64/candidates.tsv
+            build/external/m235-candidate-inventory/amd64/apk-install.log
+            build/external/m235-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m235-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m235-*.json
+            build/external/m191-alpine-rootfs/amd64/m235-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m223-*-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+          if-no-files-found: ignore
+
+  rv64-arm64-after-amd64:
+    name: M235 ${{ matrix.port }} independently signed 12/12 QEMU batch
+    needs: amd64-first
+    if: ${{ needs.amd64-first.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Run signed 12-new-ELF batch, first and second native QEMU
+        timeout-minutes: 105
+        env:
+          NAS_M235_PUBLIC_SECONDS: '4400'
+          NAS_M235_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M235_REOPEN_SECONDS: '1200'
+        run: sh scripts/run-m235-ci.sh ${{ matrix.port }}
+      - name: Preserve real APK and two-boot xh TCP+physical ext4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m235-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m235-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m235-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m235-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m235-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m235-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m235-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-*-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+          if-no-files-found: ignore

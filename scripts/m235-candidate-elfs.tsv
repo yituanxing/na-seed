@@ -1,0 +1,15 @@
+package	elf_path	family	probe
+# Twelve genuinely NEW original Alpine 3.23 native ELF paths in six packages.
+# Each path must execute semantics in one shared first QEMU and re-open.
+db-utils	usr/bin/db_load	storage	bdb-import-records
+db-utils	usr/bin/db_dump	storage	bdb-dump-records
+db-utils	usr/bin/db_verify	storage	bdb-verify-persisted
+db-utils	usr/bin/db_stat	storage	bdb-btree-record-stats
+db-utils	usr/bin/db_tuner	storage	bdb-btree-tune-analysis
+db-utils	usr/bin/db_upgrade	storage	bdb-upgrade-data-preserve
+jsonnet	usr/bin/jsonnet	data	jsonnet-evaluate-object
+jsonnet	usr/bin/jsonnetfmt	data	jsonnet-format-roundtrip
+ipcalc	usr/bin/ipcalc	network	cidr-network-broadcast
+wireguard-tools-wg	usr/bin/wg	crypto	wireguard-key-derivation
+git-lfs	usr/bin/git-lfs	vcs	git-lfs-pointer-roundtrip
+xh	usr/bin/xh	http	http-response-body
