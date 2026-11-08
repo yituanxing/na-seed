@@ -19,6 +19,7 @@ static unsigned exits, cpu_restores;
 static unsigned handler_installs;
 static unsigned last_handler_signal;
 static uint64_t observed_sigpending;
+static uint64_t incoming_sigmask;
 static uint8_t observed_sigwait_info[128];
 static bool reject_sigwait_info;
 static uint64_t incoming_action[4];
@@ -63,6 +64,11 @@ bool nas_user_write_u64(uint64_t addr,uint64_t value) {
     observed_sigpending=value;
     return true;
 }
+bool nas_user_read_u64(uint64_t addr,uint64_t *value) {
+    assert(addr==0x5000 && value);
+    *value=incoming_sigmask;
+    return true;
+}
 bool nas_user_read_bytes(uint64_t addr,uint8_t *dst,uint64_t size) {
     assert(addr==0x2000 && size==sizeof(incoming_action));
     memcpy(dst,incoming_action,sizeof(incoming_action));
@@ -102,6 +108,7 @@ static void reset(void) {
     exits=cpu_restores=0;
     handler_installs=last_handler_signal=0;
     observed_sigpending=0;
+    incoming_sigmask=0;
     memset(observed_sigwait_info,0,sizeof(observed_sigwait_info));
     reject_sigwait_info=false;
     monotonic_ns=0;
@@ -395,6 +402,69 @@ static void test_thread_private_caught_realtime_signal(void) {
     assert(!worker->pending_signals);
     puts("M141_HOST_PRIVATE_CAUGHT_REALTIME_SIGNAL_PASS");
 }
+static void test_sigabrt_default_fatal_group(void) {
+    /* musl abort() raises SIGABRT with tgkill. The default action must
+     * terminate the full thread group, not return EOPNOTSUPP and reach HLT. */
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    struct nas_task *leader=make(1,2,2,20,3,false);
+    struct nas_task *worker=make(2,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    assert(nas_signal_tgkill(2,3,NAS_SIGABRT,0)==0);
+    assert(exits==1 && last_exit_tgid==2 && last_exit_signal==NAS_SIGABRT);
+    assert(leader->state==NAS_TASK_ZOMBIE && worker->state==NAS_TASK_ZOMBIE);
+    assert(cpu_restores==2 && nas_current_task==&slots[0]);
+
+    /* kill(pid, SIGABRT) is the same default-fatal group operation. */
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    make(1,2,2,20,3,false);
+    assert(nas_signal_kill(2,NAS_SIGABRT,0)==0);
+    assert(exits==1 && last_exit_tgid==2 && last_exit_signal==NAS_SIGABRT);
+
+    /* Exact single-threaded tgkill(tgid, tid, SIGABRT) of a C++ abort(). */
+    reset();
+    nas_current_task=make(0,2,2,20,3,false);
+    uint64_t frame[8]={0};
+    assert(nas_signal_tgkill(2,2,NAS_SIGABRT,frame)==0);
+    assert(exits==1 && last_exit_tgid==2 && last_exit_signal==NAS_SIGABRT);
+    assert(slots[0].state==NAS_TASK_ZOMBIE);
+    puts("M105_HOST_SIGABRT_DEFAULT_FATAL_PASS");
+}
+static void test_sigabrt_blocked_caught_ignored(void) {
+    reset();
+    struct nas_task *leader=make(0,2,2,20,3,false);
+    struct nas_task *worker=make(1,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    nas_current_task=worker;
+    const uint64_t bit=1ULL<<(NAS_SIGABRT-1);
+    worker->blocked_signals=bit;
+    assert(nas_signal_tgkill(2,3,NAS_SIGABRT,0)==0);
+    assert(exits==0 && worker->pending_signals==bit);
+    incoming_sigmask=bit;
+    uint64_t frame[8]={0};
+    assert(nas_signal_procmask(1,0x5000,0,8,frame)==0); /* SIG_UNBLOCK */
+    assert(exits==1 && last_exit_tgid==2 && last_exit_signal==NAS_SIGABRT);
+    assert(!worker->pending_signals);
+
+    reset();
+    leader=make(0,2,2,20,3,false);
+    worker=make(1,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    nas_current_task=leader;
+    leader->sighand->actions[NAS_SIGABRT][0]=1; /* SIG_IGN */
+    assert(nas_signal_tgkill(2,3,NAS_SIGABRT,0)==0);
+    assert(exits==0 && !worker->pending_signals);
+
+    leader->sighand->actions[NAS_SIGABRT][0]=0x12340; /* caught */
+    assert(nas_signal_tgkill(2,3,NAS_SIGABRT,0)==0);
+    assert(exits==0 && worker->pending_signals==bit);
+    nas_current_task=worker;
+    nas_signal_user_return(frame);
+    assert(handler_installs==1 && last_handler_signal==NAS_SIGABRT);
+    assert(!worker->pending_signals && exits==0);
+    puts("M105_HOST_SIGABRT_MASK_HANDLER_IGNORE_PASS");
+}
 int main(void) {
     test_remote_tty_group_once();
     test_sender_in_target_group();
@@ -408,6 +478,8 @@ int main(void) {
     test_pid1_and_stop_preflight();
     test_sigchld_live_parent_worker();
     test_thread_private_caught_realtime_signal();
+    test_sigabrt_default_fatal_group();
+    test_sigabrt_blocked_caught_ignored();
     puts("M105_SIGNAL_GROUP_HOST_PASS");
     return 0;
 }

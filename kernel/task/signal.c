@@ -95,7 +95,8 @@ uint64_t nas_signal_sigaltstack(uint64_t new_ptr,uint64_t old_ptr) {
  * to the three native backends below; disposition and mask decisions must
  * agree across all user-visible entry, fork, TTY and pipe paths. */
 static bool terminating_default(unsigned sig) {
-    return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGKILL ||
+    return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGABRT ||
+           sig==NAS_SIGKILL ||
            sig==NAS_SIGPIPE || sig==NAS_SIGTERM ||
            sig==NAS_SIGUSR1 || sig==NAS_SIGUSR2;
 }
