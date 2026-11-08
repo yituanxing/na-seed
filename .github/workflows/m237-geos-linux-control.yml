@@ -1,0 +1,54 @@
+name: NaSeed M237 original signed Alpine GEOS Linux control
+
+# Host Linux differential only: this is NOT NaSeed native QEMU acceptance.
+# Run on changes to this one scoped control, never replay the expensive M237
+# guest suite solely for a Linux reference measurement.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m237-geos-linux-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  official-alpine-geos-amd64:
+    name: Exact signed GEOS ELF on ordinary Alpine Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Compare the exact signed original GEOS ELF under ordinary Alpine Linux
+        run: |
+          docker run --rm --platform linux/amd64 alpine:3.23 sh -ec '
+            apk add --no-cache geos=3.14.1-r0
+            echo "[M237 LINUX CONTROL] original signed APK version:"
+            apk info -v geos
+            actual=$(sha256sum /usr/bin/geosop | cut -d" " -f1)
+            expected=7eabe7d05c905d05804c44a93235ce24478c2d40d97307d09457a4b91bd8542a
+            printf "[M237 LINUX CONTROL] geosop_sha256=%s expected_sha256=%s\n" "$actual" "$expected"
+            test "$actual" = "$expected" || {
+              echo "[M237 LINUX CONTROL BLOCKED] GEOS APK ELF differs from native guest, no comparison permitted"
+              exit 1
+            }
+            wkt="POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))"
+            printf "%s\n" "$wkt" > /tmp/rectangle.wkt
+            /usr/bin/geosop --help >/tmp/help.log
+            /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt area > /tmp/file-area.out
+            /usr/bin/geosop -a "$wkt" --format=txt area > /tmp/literal-area.out
+            /usr/bin/geosop -a stdin --format=txt area </tmp/rectangle.wkt > /tmp/stdin-area.out
+            /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt copy > /tmp/file-copy.out
+            /usr/bin/geosop -a "$wkt" --format=txt copy > /tmp/literal-copy.out
+            for mode in file-area literal-area stdin-area; do
+              value=$(cat "/tmp/$mode.out")
+              printf "[M237 LINUX CONTROL] %s=%s\n" "$mode" "$value"
+              printf "%s\n" "$value" | grep -Eq "(^|[^0-9])12(\.0+)?($|[^0-9])"
+            done
+            for mode in file-copy literal-copy; do
+              value=$(cat "/tmp/$mode.out")
+              printf "[M237 LINUX CONTROL] %s=%s\n" "$mode" "$value"
+              printf "%s\n" "$value" | grep -Fq "POLYGON"
+            done
+            echo "[M237 LINUX CONTROL PASS] identical signed Alpine ELF executes original WKT, not NaSeed QEMU PASS"
+          '
