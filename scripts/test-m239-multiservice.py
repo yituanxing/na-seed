@@ -67,6 +67,18 @@ def main():
     assert "trap 'm239_stop_host; m233_stop_host' EXIT" in probe
     assert 'if [ "$m239" = 1 ]; then' in probe
     assert 'NAS_M239_MULTISERVICE' in probe
+    # The x86-64 pilot must hand the exact pinned Limine protocol header and
+    # UEFI archive to both child jobs. A live limine.h download once yielded
+    # RV64 HTTP 504/503/500 before QEMU (run #42477071454).
+    workflow = (ROOT / '.github/workflows/m239-four-openrc-services.yml').read_text()
+    assert workflow.count('m239-limine-verified-${{ github.sha }}') == 2
+    assert 'actions/upload-artifact@v4' in workflow
+    assert 'actions/download-artifact@v4' in workflow
+    assert 'sha256sum -c build/deps/limine-binary.tar.gz.sha256' in workflow
+    assert 'sha256sum -c build/deps/limine.h.sha256' in workflow
+    assert workflow.count('build/deps/limine.h.sha256') >= 2
+    for target in ('BOOTX64.EFI', 'BOOTRISCV64.EFI', 'BOOTAA64.EFI'):
+        assert target in workflow
     print('[M239 HOST CONTRACT PASS] multi-service original APK/OpenRC, '
           'three independent host protocols and three strict physical '
           'NIC/ext4 oracles wired; actual native QEMU remains required')

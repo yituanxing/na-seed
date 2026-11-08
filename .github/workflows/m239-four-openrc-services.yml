@@ -70,6 +70,30 @@ jobs:
           NAS_M233_TCP_HOST_PORT: '15453'
           NAS_M233_UDP_HOST_PORT: '15453'
         run: sh scripts/probe-m197-alpine-software-cohort.sh amd64
+      - name: Seal one verified Limine multi-ISA release for downstream QEMU jobs
+        run: |
+          set -eu
+          archive=build/deps/limine-binary.tar.gz
+          header=build/deps/limine.h
+          test -s "$archive"
+          test -s "$header"
+          for efi in BOOTX64.EFI BOOTRISCV64.EFI BOOTAA64.EFI; do
+            tar -tzf "$archive" | grep -Eq "(^|/)$efi$"
+          done
+          sha256sum "$archive" > "$archive.sha256"
+          sha256sum "$header" > "$header.sha256"
+          echo '[M239 LIMINE RELEASE SEALED] one bootloader and pinned protocol header for all ISA jobs'
+      - name: Preserve exactly the proven multi-ISA bootloader and protocol header for child jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: m239-limine-verified-${{ github.sha }}
+          path: |
+            build/deps/limine-binary.tar.gz
+            build/deps/limine-binary.tar.gz.sha256
+            build/deps/limine.h
+            build/deps/limine.h.sha256
+          if-no-files-found: error
+          retention-days: 7
       - name: Preserve two independent original Alpine boots and all real protocol proofs
         if: always()
         uses: actions/upload-artifact@v4
@@ -105,6 +129,20 @@ jobs:
         with:
           ref: ${{ github.sha }}
           submodules: true
+      - name: Reuse the successful x86-64 job's exact Limine bootloader and protocol header
+        uses: actions/download-artifact@v4
+        with:
+          name: m239-limine-verified-${{ github.sha }}
+          path: build/deps
+      - name: Verify bootloader SHA and three native UEFI targets without network
+        run: |
+          set -eu
+          sha256sum -c build/deps/limine-binary.tar.gz.sha256
+          sha256sum -c build/deps/limine.h.sha256
+          for efi in BOOTX64.EFI BOOTRISCV64.EFI BOOTAA64.EFI; do
+            tar -tzf build/deps/limine-binary.tar.gz | grep -Eq "(^|/)$efi$"
+          done
+          echo '[M239 LIMINE RELEASE REUSED] no repeated live GitHub release fetch'
       - name: Fail-closed host wiring, protocol and signal regression
         run: |
           set -eu
