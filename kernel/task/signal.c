@@ -103,8 +103,10 @@ static bool terminating_default(unsigned sig) {
 }
 static bool ignored_default(unsigned sig) {
     /* An explicit SIGCHLD can be caught or read from signalfd when masked,
-     * but a normal unblocked SIG_DFL SIGCHLD never terminates the parent. */
-    return sig==NAS_SIGCHLD;
+     * but a normal unblocked SIG_DFL SIGCHLD never terminates the parent.
+     * Linux also ignores an uncaught SIGWINCH: changing terminal geometry
+     * must not terminate the original SSH session or shell. */
+    return sig==NAS_SIGCHLD || sig==NAS_SIGWINCH;
 }
 enum signal_delivery { SIGNAL_UNSUPPORTED, SIGNAL_DISCARD,
                        SIGNAL_QUEUE, SIGNAL_TERMINATE };
@@ -567,7 +569,8 @@ int nas_signal_shutdown_users(void) {
  * reuse the existing Task lifecycle. */
 bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
     if(!sid || !pgid || (signum!=NAS_SIGINT && signum!=NAS_SIGQUIT &&
-                         signum!=NAS_SIGTSTP))return false;
+                         signum!=NAS_SIGTSTP &&
+                         signum!=NAS_SIGWINCH))return false;
     struct nas_task *targets[NAS_TASK_LIMIT];
     unsigned count=0;
     for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
@@ -603,7 +606,11 @@ bool nas_signal_tty_event(uint64_t sid,uint64_t pgid,unsigned signum) {
             signal_queue_process(task,signum);
             continue;
         }
-        if(signum==NAS_SIGTSTP) {
+        if(signum==NAS_SIGWINCH) {
+            /* POSIX terminal resize: default is ignored. A caught or
+             * masked resize was already queued above once per TGID. */
+            continue;
+        } else if(signum==NAS_SIGTSTP) {
             if(task->state!=NAS_TASK_STOPPED) {
                 task->stopped_from=task->state;
                 task->state=NAS_TASK_STOPPED;

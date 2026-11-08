@@ -537,6 +537,42 @@ static void test_sigchld_explicit_default_mask_and_caught(void) {
     assert(!leader->signal_group->pending);
     puts("M105_HOST_EXPLICIT_SIGCHLD_DISPOSITION_PASS");
 }
+static void test_pty_sigwinch_default_caught_and_masked(void) {
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    struct nas_task *leader=make(1,2,2,20,3,false);
+    struct nas_task *worker=make(2,3,2,20,3,true);
+    struct nas_task *other=make(3,4,4,20,3,false);
+    worker->sighand=leader->sighand;
+    const uint64_t bit=1ULL<<(NAS_SIGWINCH-1);
+    /* An actual PTY TIOCSWINSZ must not kill an unhandled shell. */
+    assert(nas_signal_tty_event(3,20,NAS_SIGWINCH));
+    assert(!exits && !leader->signal_group->pending &&
+           !other->signal_group->pending);
+    assert(nas_signal_kill(2,NAS_SIGWINCH,0)==0);
+    assert(!exits && !leader->signal_group->pending);
+
+    leader->sighand->actions[NAS_SIGWINCH][0]=0x12340;
+    assert(nas_signal_tty_event(3,20,NAS_SIGWINCH));
+    assert(leader->signal_group->pending==bit &&
+           !other->signal_group->pending && !exits);
+    nas_current_task=worker;
+    uint64_t frame[8]={0};
+    nas_signal_user_return(frame);
+    assert(handler_installs==1 && last_handler_signal==NAS_SIGWINCH);
+    assert(!leader->signal_group->pending && !exits);
+
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    leader=make(1,2,2,20,3,false);
+    leader->blocked_signals=bit;
+    assert(nas_signal_tty_event(3,20,NAS_SIGWINCH));
+    assert(!exits && leader->signal_group->pending==bit);
+    struct nas_signalfd_event event={0};
+    assert(nas_signal_signalfd_take(leader,bit,&event)==NAS_SIGWINCH);
+    assert(event.signo==NAS_SIGWINCH && !leader->signal_group->pending);
+    puts("M105_HOST_PTY_SIGWINCH_DEFAULT_CAUGHT_MASKED_PASS");
+}
 static void test_unknown_default_fails_before_group_effects(void) {
     reset();
     nas_current_task=make(0,1,1,1,1,false);
@@ -568,6 +604,7 @@ int main(void) {
     test_daemon_sighup_process_disposition();
     test_sigalrm_thread_mask_and_default();
     test_sigchld_explicit_default_mask_and_caught();
+    test_pty_sigwinch_default_caught_and_masked();
     test_unknown_default_fails_before_group_effects();
     puts("M105_SIGNAL_GROUP_HOST_PASS");
     return 0;

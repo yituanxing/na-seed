@@ -74,6 +74,23 @@ def main():
         blocked.wait()
         blocked.stdout.close()
 
+    # A third-session TCP reset must preserve a bounded host-side diagnostic
+    # instead of becoming the indistinguishable generic PTY timeout from the
+    # initial native pilot. A banner alone never satisfies a guest receipt.
+    reset = subprocess.Popen(['sh', '-c', "printf 'SSH-BANNER-ONLY\\n'"],
+                             stdout=subprocess.PIPE)
+    try:
+        try:
+            HOST.recv_until(reset, b'M240-PTY-FDS:YES', 2)
+        except TimeoutError as exc:
+            assert 'expected=' in str(exc) and 'stdout_tail=' in str(exc)
+            assert 'SSH-BANNER-ONLY' in str(exc)
+        else:
+            raise AssertionError('missing PTY marker accepted as success')
+    finally:
+        reset.wait(timeout=3)
+        reset.stdout.close()
+
     with tempfile.TemporaryDirectory(prefix='m240-pty-contract-') as tmp:
         base = Path(tmp)
         key = base / 'client-key'

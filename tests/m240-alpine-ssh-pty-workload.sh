@@ -110,6 +110,14 @@ esac
 # Independent host must establish nine genuine -tt sessions, all with an
 # actual guest /dev/pts/N. Guest readiness alone is NEVER final acceptance.
 $busy sleep 300
+# Preserve the official daemon's own bounded diagnostics in the serial log.
+# Failed third connections can be dropped before a PTY or a fork exists;
+# host-side encrypted NIC captures cannot explain Dropbear's userland reason.
+if test -r /var/log/messages; then
+    echo M240_GUEST_DROPBEAR_SYSLOG_BEGIN
+    $busy grep -i dropbear /var/log/messages | $busy tail -n 40 || :
+    echo M240_GUEST_DROPBEAR_SYSLOG_END
+fi
 rc-service dropbear status || fail 'Dropbear exited during PTY host validation'
 $busy kill -0 "$($busy cat /var/run/dropbear.pid)" ||
     fail 'original Dropbear PID disappeared during SSH PTY sessions'

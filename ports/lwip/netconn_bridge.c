@@ -24,6 +24,21 @@ _Static_assert(NAS_LWIP_BRIDGE_SLOTS==NAS_OPEN_FILE_LIMIT,
 _Static_assert(NAS_LWIP_BRIDGE_ACTIVE_LIMIT==MEMP_NUM_NETCONN,
                "bridge admission must match the real upstream Netconn pool");
 
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+
+/* Genuine TCP accept errors are rare and must be visible on the native UART.
+ * A completed TCP handshake followed by RST before an SSH banner otherwise
+ * looks identical to a userland Dropbear policy rejection in the PCAP. */
+static void trace_accept_error(const char *step,int error,unsigned pending,
+                               unsigned active) {
+    nas_print("[LWIP ACCEPT ERROR] step=");nas_print(step);
+    nas_print(" errno=");nas_dec(error<0 ? (uint64_t)-error:(uint64_t)error);
+    nas_print(" pending=");nas_dec(pending);
+    nas_print(" active=");nas_dec(active);
+    nas_print("\n");
+}
+
 /* Final close cannot wait on the Task stack. The native worker gives a
  * copied, already-admitted TCP tail a finite opportunity to enter lwIP's
  * TCP send buffer before FIN. TCP retransmission thereafter belongs to
@@ -502,12 +517,22 @@ static void execute(unsigned slot) {
         if(!accept_lease_valid(r->accept_slot,r->accept_lease_token) ||
            bridge.slots[r->accept_slot].owned ||
            bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT) {
+            trace_accept_error("lease-or-pool",ENFILE,s->accept_pending,
+                               bridge.active);
             out->status=-ENFILE;return;
         }
         struct netconn *accepted=NULL;
         err=netconn_accept(s->connection,&accepted);
-        if(err!=ERR_OK)break;
-        if(!accepted){out->status=-EIO;return;}
+        if(err!=ERR_OK) {
+            trace_accept_error("netconn_accept",err_to_errno(err),
+                               s->accept_pending,bridge.active);
+            break;
+        }
+        if(!accepted){
+            trace_accept_error("null-netconn",EIO,s->accept_pending,
+                               bridge.active);
+            out->status=-EIO;return;
+        }
         /* Linux accept() may request sockaddr_in. Query the ACTUAL peer on
          * this native worker stack; never invent 127.0.0.1 or borrow the
          * listener's local address for an accepted connection. */
@@ -515,6 +540,8 @@ static void execute(unsigned slot) {
         u16_t peer_port=0;
         err=netconn_getaddr(accepted,&peer_ip,&peer_port,0);
         if(err!=ERR_OK || !IP_IS_V4(&peer_ip)) {
+            trace_accept_error("peer-addr",err!=ERR_OK ? err_to_errno(err):
+                               EAFNOSUPPORT,s->accept_pending,bridge.active);
             (void)netconn_delete(accepted);
             out->status=err!=ERR_OK ? -err_to_errno(err):-EAFNOSUPPORT;
             return;
@@ -526,12 +553,16 @@ static void execute(unsigned slot) {
          * publishing a child into the former OpenFile slot. */
         if(s->accept_cancelled ||
            !accept_lease_valid(r->accept_slot,r->accept_lease_token)) {
+            trace_accept_error("cancelled-lease",ECANCELED,s->accept_pending,
+                               bridge.active);
             (void)netconn_delete(accepted);
             out->status=-ECANCELED;
             return;
         }
         struct nas_lwip_bridge_id id=reserve(r->accept_slot,NAS_LWIP_BRIDGE_TCP);
         if(!id.generation) {
+            trace_accept_error("reserve-child",ENFILE,s->accept_pending,
+                               bridge.active);
             (void)netconn_delete(accepted);
             out->status=-ENFILE;return;
         }

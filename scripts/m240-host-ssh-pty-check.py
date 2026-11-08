@@ -72,7 +72,13 @@ def recv_until(process: subprocess.Popen, expected: bytes, timeout: float,
             data.extend(chunk)
             if len(data) > 131072:
                 raise ValueError('SSH remote PTY output exceeded bounded buffer')
-    raise TimeoutError('original Dropbear PTY remote proof missing')
+    # An SSH transport reset and a guest PTY parsing failure are different
+    # failures. Keep a bounded escaped suffix so the native Job artifact can
+    # distinguish them without dumping full terminal transcripts or keys.
+    suffix = bytes(data[-320:]).decode('utf-8', errors='backslashreplace')
+    raise TimeoutError('original Dropbear PTY remote proof missing: '
+                       f'expected={expected!r} received={len(data)} '
+                       f'ssh_exit={process.poll()} stdout_tail={suffix!r}')
 
 
 def confirm_foreground_block(process: subprocess.Popen, natural_exit: bytes,
@@ -111,7 +117,7 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
     # No shell parsing of user input; challenge is freshly generated hex only.
     marker = ('M240-PTY-READY:' + nonce).encode()
     process = subprocess.Popen(ssh_argv(phase, port, key, hosts), stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                bufsize=0, start_new_session=True)
     output = b''
     try:
@@ -167,6 +173,21 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
                 'canonical_backspace': True, 'foreground_sigint': True,
                 'winsize_33x101': True,
                 'remote_stdout_sha256': hashlib.sha256(output).hexdigest()}
+    except (OSError, ValueError, RuntimeError, TimeoutError,
+            subprocess.SubprocessError) as exc:
+        if process.poll() is None:
+            process.kill()
+        try:
+            _, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stderr = b''
+        # OpenSSH's own authentication/connection diagnostics must be kept
+        # separate from the guest's remote stdout proof. Never count them as
+        # success, and never preserve unbounded error output.
+        stderr_tail = stderr[-480:].decode('utf-8', errors='backslashreplace')
+        raise ValueError(f'session={index}/{SESSION_COUNT} phase={phase}: '
+                         f'{exc}; ssh_exit={process.poll()} '
+                         f'ssh_stderr_tail={stderr_tail!r}') from exc
     finally:
         if process.poll() is None:
             process.kill()
@@ -178,6 +199,8 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
             process.stdin.close()
         if process.stdout is not None:
             process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
 
 def main() -> None:

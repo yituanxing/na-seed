@@ -18,6 +18,7 @@ struct nas_task;
 #define NAS_SIGTSTP 20U
 #define NAS_SIGTTIN 21U
 #define NAS_SIGTTOU 22U
+#define NAS_SIGWINCH 28U
 #define NAS_SIGKILL 9U
 #define NAS_SIGCONT 18U
 #define NAS_SIGSTOP 19U
