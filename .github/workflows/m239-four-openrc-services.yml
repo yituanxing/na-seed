@@ -11,6 +11,18 @@ on:
       - 'scripts/qemu-hostfwd-extra.sh'
       - 'scripts/test-qemu-extra-hostfwd.py'
       - 'scripts/m233-alpine-uart.py'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'scripts/run.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/m227-alpine-uart.py'
+      - 'scripts/m231-host-mqtt-check.py'
+      - 'scripts/m231-mosquitto-disk-check.py'
+      - 'scripts/m232-host-cache-check.py'
+      - 'scripts/m232-memcached-disk-check.py'
+      - 'scripts/m233-host-dns-check.py'
+      - 'scripts/m233-dnsmasq-disk-check.py'
+      - 'tests/m227-alpine-openrc-workload.sh'
   workflow_dispatch:
 
 permissions:
