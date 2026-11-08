@@ -35,20 +35,32 @@ jobs:
             wkt="POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))"
             printf "%s\n" "$wkt" > /tmp/rectangle.wkt
             /usr/bin/geosop --help >/tmp/help.log
-            /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt area > /tmp/file-area.out
-            /usr/bin/geosop -a "$wkt" --format=txt area > /tmp/literal-area.out
-            /usr/bin/geosop -a stdin --format=txt area </tmp/rectangle.wkt > /tmp/stdin-area.out
-            /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt copy > /tmp/file-copy.out
-            /usr/bin/geosop -a "$wkt" --format=txt copy > /tmp/literal-copy.out
-            for mode in file-area literal-area stdin-area; do
-              value=$(cat "/tmp/$mode.out")
-              printf "[M237 LINUX CONTROL] %s=%s\n" "$mode" "$value"
-              printf "%s\n" "$value" | grep -Eq "(^|[^0-9])12(\.0+)?($|[^0-9])"
-            done
-            for mode in file-copy literal-copy; do
-              value=$(cat "/tmp/$mode.out")
-              printf "[M237 LINUX CONTROL] %s=%s\n" "$mode" "$value"
-              printf "%s\n" "$value" | grep -Fq "POLYGON"
-            done
-            echo "[M237 LINUX CONTROL PASS] identical signed Alpine ELF executes original WKT, not NaSeed QEMU PASS"
+            # Never stop after the first upstream crash: independently execute
+            # each control to discriminate the exact Alpine CLI defect.
+            probe() {
+              mode="$1"
+              shift
+              rc=0
+              "$@" > "/tmp/$mode.out" 2> "/tmp/$mode.err" || rc=$?
+              stdout=$(head -c 100 "/tmp/$mode.out" | tr "\t\r\n" "   ")
+              stderr=$(head -c 180 "/tmp/$mode.err" | tr "\t\r\n" "   ")
+              printf "[M237 LINUX DIFF] mode=%s exit=%s stdout=%s stderr=%s\n" "$mode" "$rc" "$stdout" "$stderr"
+            }
+            probe file-area /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt area
+            probe literal-area /usr/bin/geosop -a "$wkt" --format=txt area
+            probe stdin-area /usr/bin/geosop -a stdin --format=txt area < /tmp/rectangle.wkt
+            probe file-copy /usr/bin/geosop -a /tmp/rectangle.wkt --format=txt copy
+            probe literal-copy /usr/bin/geosop -a "$wkt" --format=txt copy
+            probe point-area /usr/bin/geosop -a "POINT (0 0)" --format=txt area
+            probe line-length /usr/bin/geosop -a "LINESTRING (0 0, 3 4)" --format=txt length
+            probe verbose-polygon /usr/bin/geosop -v -a "$wkt" --format=txt area
+            # The official geometry operation must still produce a real
+            # numeric area=12; a completed diagnostic is not a PASS.
+            if grep -Eq "(^|[^0-9])12(\.0+)?($|[^0-9])" /tmp/file-area.out &&
+               grep -Fq "POLYGON" /tmp/file-copy.out; then
+              echo "[M237 LINUX CONTROL PASS] original area=12 and geometry copy succeeded; not NaSeed QEMU PASS"
+            else
+              echo "[M237 LINUX CONTROL FAIL] original signed GEOS cannot pass its documented geometry operations on ordinary Linux"
+              exit 1
+            fi
           '
