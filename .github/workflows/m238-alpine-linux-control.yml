@@ -36,7 +36,9 @@ jobs:
               -v "$GITHUB_WORKSPACE/scripts/m238-candidate-elfs.tsv:/tmp/m238-candidate-elfs.tsv:ro" \
               -e NAS_M238_BOOT_PHASE="$phase" alpine:3.23 sh -ec '
                 # Alpine signs/indexes the APKs; no rebuilt, copied, or stub ELF.
-                apk add --no-cache binaryen spirv-tools cstool cppcheck git-sizer actionlint
+                # M197 guest base already contains git; git-sizer itself does
+                # not declare a git APK dependency on plain Alpine Linux.
+                apk add --no-cache binaryen spirv-tools cstool cppcheck git-sizer actionlint git
                 seen=0
                 while IFS="$(printf "\t")" read -r package elf family probe || [ -n "$package" ]; do
                   case "$package" in package|\#*|"") continue ;; esac
