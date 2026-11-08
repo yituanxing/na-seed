@@ -1,0 +1,7 @@
+# Six signed Alpine v3.23 packages, fifteen actual new ELF entrypoints.
+binaryen
+spirv-tools
+cstool
+cppcheck
+git-sizer
+actionlint
