@@ -110,6 +110,17 @@ class M237SignedNativeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             disk.real_semantics(self.root / 'missing.ext4', M191)
 
+    def test_geos_failure_diagnostics_keep_original_strict_area_gate(self):
+        workload = (BASE.parent / 'tests/m237-software-workload.sh').read_text()
+        geos = workload.split('    geos-polygon-area:usr/bin/geosop)', 1)[1].split('        ;;', 1)[0]
+        self.assertIn('/usr/bin/geosop -a "$state/rectangle.wkt" --format=txt area', geos)
+        self.assertIn('11.999', geos)
+        self.assertIn('12.001', geos)
+        self.assertIn('if [ "$area_ok" -ne 1 ]; then', geos)
+        self.assertIn('M237_GEOS_DIAG phase=%s area_rc=%s numeric_area_ok=%s', geos)
+        self.assertIn('M237_GEOS_DIAG phase=%s help_rc=%s help_stderr=%s', geos)
+        self.assertIn('exit 1', geos)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)

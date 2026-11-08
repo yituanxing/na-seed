@@ -142,8 +142,27 @@ case "$case_id:$elf" in
             printf 'POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))\n' > "$state/rectangle.wkt"
         fi
         test -s "$state/rectangle.wkt"
-        /usr/bin/geosop -a "$state/rectangle.wkt" --format=txt area > "$target/area.txt" 2> "$target/geos.err"
-        $busy awk '{for(i=1;i<=NF;i++) if($i+0 >= 11.999 && $i+0 <= 12.001) found=1} END{exit !found}' "$target/area.txt"
+        geos_rc=0
+        /usr/bin/geosop -a "$state/rectangle.wkt" --format=txt area > "$target/area.txt" 2> "$target/geos.err" || geos_rc=$?
+        area_ok=0
+        if [ "$geos_rc" -eq 0 ] &&
+                $busy awk '{for(i=1;i<=NF;i++) if($i+0 >= 11.999 && $i+0 <= 12.001) found=1} END{exit !found}' "$target/area.txt"; then
+            area_ok=1
+        fi
+        if [ "$area_ok" -ne 1 ]; then
+            # The authoritative test remains the genuine 3x4 GEOS area.
+            # A failed original ELF may trap before writing any output;
+            # expose only three bounded lines through M205's UART error_tail.
+            geos_err=$($busy head -c 130 "$target/geos.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            area_out=$($busy head -c 100 "$target/area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            help_rc=0
+            $busy timeout 8 /usr/bin/geosop --help > "$target/help.txt" 2> "$target/help.err" || help_rc=$?
+            help_err=$($busy head -c 110 "$target/help.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
+            printf 'M237_GEOS_DIAG phase=%s area_rc=%s numeric_area_ok=%s stderr=%s\n' "$phase" "$geos_rc" "$area_ok" "$geos_err"
+            printf 'M237_GEOS_DIAG phase=%s area_prefix=%s\n' "$phase" "$area_out"
+            printf 'M237_GEOS_DIAG phase=%s help_rc=%s help_stderr=%s\n' "$phase" "$help_rc" "$help_err"
+            exit 1
+        fi
         ;;
     proj-crs-info:usr/bin/projinfo)
         /usr/bin/projinfo EPSG:4326 > "$target/crs.txt" 2> "$target/proj.err"

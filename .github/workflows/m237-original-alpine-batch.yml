@@ -41,6 +41,20 @@ jobs:
           NAS_M237_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M237_REOPEN_SECONDS: '1200'
         run: sh scripts/run-m237-local.sh --native amd64
+      - name: Inspect actual signed musl instruction bytes after AMD64 guest failure
+        if: failure()
+        run: |
+          libc=$(find build/external/m237-candidate-inventory/amd64 \
+            -type f \( -name 'ld-musl-x86_64.so.1' -o -name 'libc.musl-x86_64.so.1' \) \
+            -print -quit 2>/dev/null || true)
+          if [ -n "$libc" ]; then
+            echo "[M237 MUSL HLT] original signed Alpine libc: $libc"
+            readelf -lW "$libc" | head -35
+            objdump -d -Mintel --start-address=0x41d90 --stop-address=0x41f00 \
+              "$libc" | tail -90
+          else
+            echo '[M237 MUSL HLT] no extracted original libc to inspect'
+          fi
       - name: Preserve signed APK census, both QEMUs, native semantics and physical ext4 SHA proof
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,6 +73,7 @@ jobs:
             build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
             build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
             build/acceptance/**/m197-batch*.log
+            build/busybox-source-parity-x86/m197-batch*.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -102,5 +117,7 @@ jobs:
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
             build/acceptance/**/m197-batch*.log
+            build/port-riscv64/full/matrix-source/m197-batch*.log
+            build/port-aarch64/full/matrix-source/m197-batch*.log
           if-no-files-found: warn
           retention-days: 7
