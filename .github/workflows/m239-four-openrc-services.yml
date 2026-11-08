@@ -1,0 +1,142 @@
+name: NaSeed M239 original Alpine four concurrent OpenRC services
+
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m239-four-openrc-services.yml'
+      - 'tests/m239-alpine-multiservice-workload.sh'
+      - 'scripts/m239-*'
+      - 'scripts/ci-m239-toolchain.sh'
+      - 'scripts/qemu-hostfwd-extra.sh'
+      - 'scripts/test-qemu-extra-hostfwd.py'
+      - 'scripts/m233-alpine-uart.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  amd64-first:
+    name: One original Alpine PID1, four simultaneous OpenRC services, amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Fail-closed host wiring, protocol and signal regression
+        run: |
+          set -eu
+          python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-qemu-extra-hostfwd.py
+          python3 scripts/test-m231-mosquitto.py
+          python3 scripts/test-m232-memcached.py
+          python3 scripts/test-m233-dnsmasq.py
+          sh scripts/check-m105-signal-group.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+      - name: Prepare real native QEMU and official signed Alpine package tools
+        timeout-minutes: 20
+        run: sh scripts/ci-m239-toolchain.sh amd64
+      - name: Two real QEMU boots, simultaneous HTTP DNS MQTT cache and three host protocols
+        timeout-minutes: 95
+        env:
+          NAS_M233_DNSMASQ_HOST: '1'
+          NAS_M239_MULTISERVICE: '1'
+          NAS_M233_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M233_FIRST_SECONDS: '4250'
+          NAS_M233_REOPEN_QEMU_TIMEOUT: '1200'
+          NAS_M233_REOPEN_SECONDS: '1120'
+          NAS_M233_HOST_READY_SECONDS: '4250'
+          NAS_M239_HOST_READY_SECONDS: '4250'
+          NAS_M233_TCP_HOST_PORT: '15453'
+          NAS_M233_UDP_HOST_PORT: '15453'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh amd64
+      - name: Preserve two independent original Alpine boots and all real protocol proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m239-original-four-openrc-amd64
+          path: |
+            build/external/m191-alpine-rootfs/amd64/m233-*serial.log
+            build/external/m191-alpine-rootfs/amd64/m233-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m23*-first-host-*.json
+            build/external/m191-alpine-rootfs/amd64/m23*-reopen-host-*.json
+            build/external/m191-alpine-rootfs/amd64/m23*-first-host-*.log
+            build/external/m191-alpine-rootfs/amd64/m23*-reopen-host-*.log
+            build/external/m191-alpine-rootfs/amd64/m239-*-final-oracle.json
+            build/external/m191-alpine-rootfs/amd64/m233-dnsmasq-final-oracle.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m233-reopen-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  rv64-arm64-after-amd64:
+    name: Original Alpine concurrent OpenRC and host protocols / ${{ matrix.port }}
+    needs: amd64-first
+    if: ${{ needs.amd64-first.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Fail-closed host wiring, protocol and signal regression
+        run: |
+          set -eu
+          python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-qemu-extra-hostfwd.py
+          python3 scripts/test-m231-mosquitto.py
+          python3 scripts/test-m232-memcached.py
+          python3 scripts/test-m233-dnsmasq.py
+          sh scripts/check-m105-signal-group.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+      - name: Prepare real native QEMU and official signed Alpine package tools
+        timeout-minutes: 20
+        run: sh scripts/ci-m239-toolchain.sh '${{ matrix.port }}'
+      - name: Two real QEMU boots, simultaneous HTTP DNS MQTT cache and three host protocols
+        timeout-minutes: 95
+        env:
+          NAS_M233_DNSMASQ_HOST: '1'
+          NAS_M239_MULTISERVICE: '1'
+          NAS_M233_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M233_FIRST_SECONDS: '4250'
+          NAS_M233_REOPEN_QEMU_TIMEOUT: '1200'
+          NAS_M233_REOPEN_SECONDS: '1120'
+          NAS_M233_HOST_READY_SECONDS: '4250'
+          NAS_M239_HOST_READY_SECONDS: '4250'
+          NAS_M233_TCP_HOST_PORT: '15453'
+          NAS_M233_UDP_HOST_PORT: '15453'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh '${{ matrix.port }}'
+      - name: Preserve two independent original Alpine boots and all real protocol proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m239-original-four-openrc-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-*serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m23*-first-host-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m23*-reopen-host-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m23*-first-host-*.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m23*-reopen-host-*.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m239-*-final-oracle.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-dnsmasq-final-oracle.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7

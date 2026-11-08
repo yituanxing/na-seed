@@ -217,6 +217,9 @@ boot_case() {
         }
         hostfwd="${hostfwd},hostfwd=udp:127.0.0.1:${udp_host_port}-:${udp_guest_port}"
     fi
+    if [ -n "${NAS_VIRTIO_NET_EXTRA_HOSTFWD:-}" ]; then
+        hostfwd=$(sh scripts/qemu-hostfwd-extra.sh "$hostfwd") || return 2
+    fi
     if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
         set -- "$@" -netdev "user,id=naseed_net${hostfwd}" \
                -device virtio-net-device,netdev=naseed_net

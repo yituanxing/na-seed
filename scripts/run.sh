@@ -101,6 +101,12 @@ if [ -n "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ]; then
     }
     hostfwd="${hostfwd},hostfwd=udp:127.0.0.1:${udp_host_port}-:${udp_guest_port}"
 fi
+# Multiple services on the same real NIC may opt in to additional strictly
+# localhost-bound TCP/UDP rules. With the selector absent, the historical
+# single-forward/default QEMU command line remains byte-for-byte identical.
+if [ -n "${NAS_VIRTIO_NET_EXTRA_HOSTFWD:-}" ]; then
+    hostfwd=$(sh scripts/qemu-hostfwd-extra.sh "$hostfwd") || exit 2
+fi
 if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
     # Opt-in real modern PCI NIC with QEMU user/slirp DHCP and host gateway.
     # Default QEMU hardware stays unchanged for all historical OS gates.

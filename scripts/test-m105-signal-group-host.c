@@ -465,6 +465,91 @@ static void test_sigabrt_blocked_caught_ignored(void) {
     assert(!worker->pending_signals && exits==0);
     puts("M105_HOST_SIGABRT_MASK_HANDLER_IGNORE_PASS");
 }
+static void test_daemon_sighup_process_disposition(void) {
+    /* OpenRC-managed daemons normally catch SIGHUP to reload. It is a
+     * process-directed signal, not one copy for every daemon thread. */
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    struct nas_task *leader=make(1,2,2,20,3,false);
+    struct nas_task *worker=make(2,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    leader->sighand->actions[NAS_SIGHUP][0]=0x12340;
+    const uint64_t bit=1ULL<<(NAS_SIGHUP-1);
+    assert(nas_signal_kill(2,NAS_SIGHUP,0)==0);
+    assert(!exits && leader->signal_group->pending==bit);
+    nas_current_task=worker;
+    uint64_t frame[8]={0};
+    nas_signal_user_return(frame);
+    assert(handler_installs==1 && last_handler_signal==NAS_SIGHUP);
+    assert(!leader->signal_group->pending);
+
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    leader=make(1,2,2,20,3,false);
+    leader->sighand->actions[NAS_SIGHUP][0]=1;
+    assert(nas_signal_kill(2,NAS_SIGHUP,0)==0);
+    assert(!exits && !leader->signal_group->pending);
+    leader->sighand->actions[NAS_SIGHUP][0]=0;
+    assert(nas_signal_kill(2,NAS_SIGHUP,0)==0);
+    assert(exits==1 && last_exit_signal==NAS_SIGHUP);
+    puts("M105_HOST_SIGHUP_RELOAD_IGNORE_FATAL_PASS");
+}
+static void test_sigalrm_thread_mask_and_default(void) {
+    reset();
+    struct nas_task *leader=make(0,2,2,20,3,false);
+    struct nas_task *worker=make(1,3,2,20,3,true);
+    worker->sighand=leader->sighand;
+    nas_current_task=worker;
+    const uint64_t bit=1ULL<<(NAS_SIGALRM-1);
+    worker->blocked_signals=bit;
+    assert(nas_signal_tgkill(2,3,NAS_SIGALRM,0)==0);
+    assert(!exits && worker->pending_signals==bit);
+    incoming_sigmask=bit;
+    uint64_t frame[8]={0};
+    assert(nas_signal_procmask(1,0x5000,0,8,frame)==0);
+    assert(exits==1 && last_exit_signal==NAS_SIGALRM);
+    assert(!worker->pending_signals);
+    puts("M105_HOST_SIGALRM_MASK_DEFAULT_PASS");
+}
+static void test_sigchld_explicit_default_mask_and_caught(void) {
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    struct nas_task *leader=make(1,2,2,20,3,false);
+    const uint64_t bit=1ULL<<(NAS_SIGCHLD-1);
+    /* The default action is ignore, but a masked copy is readable by
+     * the original signalfd/sigwait implementation. */
+    assert(nas_signal_kill(2,NAS_SIGCHLD,0)==0);
+    assert(!exits && !leader->signal_group->pending);
+    leader->blocked_signals=bit;
+    assert(nas_signal_kill(2,NAS_SIGCHLD,0)==0);
+    assert(leader->signal_group->pending==bit);
+    struct nas_signalfd_event event={0};
+    assert(nas_signal_signalfd_take(leader,bit,&event)==NAS_SIGCHLD);
+    assert(event.signo==NAS_SIGCHLD && !leader->signal_group->pending);
+    leader->blocked_signals=0;
+    leader->sighand->actions[NAS_SIGCHLD][0]=0x12340;
+    assert(nas_signal_kill(2,NAS_SIGCHLD,0)==0);
+    assert(leader->signal_group->pending==bit && !exits);
+    nas_current_task=leader;
+    uint64_t frame[8]={0};
+    nas_signal_user_return(frame);
+    assert(handler_installs==1 && last_handler_signal==NAS_SIGCHLD);
+    assert(!leader->signal_group->pending);
+    puts("M105_HOST_EXPLICIT_SIGCHLD_DISPOSITION_PASS");
+}
+static void test_unknown_default_fails_before_group_effects(void) {
+    reset();
+    nas_current_task=make(0,1,1,1,1,false);
+    struct nas_task *caught=make(1,2,2,20,3,false);
+    make(2,3,3,20,3,false);
+    caught->sighand->actions[32][0]=0x12340;
+    assert(nas_signal_kill((uint64_t)(int64_t)-20,32,0)==
+           (uint64_t)-EOPNOTSUPP);
+    assert(!exits && !caught->signal_group->pending);
+    assert(nas_signal_kill(2,32,0)==0);
+    assert(caught->signal_group->pending==(1ULL<<31));
+    puts("M105_HOST_UNKNOWN_DEFAULT_ATOMIC_PREFLIGHT_PASS");
+}
 int main(void) {
     test_remote_tty_group_once();
     test_sender_in_target_group();
@@ -480,6 +565,10 @@ int main(void) {
     test_thread_private_caught_realtime_signal();
     test_sigabrt_default_fatal_group();
     test_sigabrt_blocked_caught_ignored();
+    test_daemon_sighup_process_disposition();
+    test_sigalrm_thread_mask_and_default();
+    test_sigchld_explicit_default_mask_and_caught();
+    test_unknown_default_fails_before_group_effects();
     puts("M105_SIGNAL_GROUP_HOST_PASS");
     return 0;
 }

@@ -75,6 +75,15 @@ m232_stop_host() {
 }
 m233=${NAS_M233_DNSMASQ_HOST:-0}
 case "$m233" in 0|1) ;; *) echo '[M233 FAIL] invalid host UDP+TCP DNS selector' >&2; exit 2 ;; esac
+m239=${NAS_M239_MULTISERVICE:-0}
+case "$m239" in 0|1) ;; *) echo '[M239 FAIL] invalid multi-service selector' >&2; exit 2 ;; esac
+if [ "$m239" = 1 ]; then
+    [ "$m233" = 1 ] || {
+        echo '[M239 FAIL] multi-service owner requires the M233 DNS base' >&2
+        exit 2
+    }
+    . scripts/m239-multi-host.sh
+fi
 m233_host_pid=
 m233_stop_host() {
     if [ -n "$m233_host_pid" ]; then
@@ -86,6 +95,8 @@ m233_stop_host() {
 if [ "$m232" = 1 ] || [ "$m233" = 1 ]; then
     if [ "$m232" = 1 ]; then
         trap 'm232_stop_host' EXIT
+    elif [ "$m239" = 1 ]; then
+        trap 'm239_stop_host; m233_stop_host' EXIT
     else
         trap 'm233_stop_host' EXIT
     fi
@@ -433,6 +444,19 @@ if [ "$m233" = 1 ]; then
             echo "[M233 FAIL] preseeded DNS state: $guest" >&2; exit 1;
         }
     done
+    if [ "$m239" = 1 ]; then
+        sudo install -m 0644 tests/m239-alpine-multiservice-workload.sh \
+            "$overlay/root/m239-alpine-multiservice-workload.sh"
+        sudo test -s "$overlay/root/m239-alpine-multiservice-workload.sh"
+        for guest in /etc/runlevels/default/mosquitto \
+                /etc/runlevels/default/memcached \
+                /var/lib/mosquitto/m231.db /etc/mosquitto/m231.conf; do
+            sudo test ! -e "$overlay$guest" || {
+                echo "[M239 FAIL] preseeded additional service: $guest" >&2
+                exit 1
+            }
+        done
+    fi
 fi
 if [ "$m204" = 1 ]; then
     sudo install -m 0644 tests/m204-software-workload.sh \
@@ -793,6 +817,14 @@ if [ "$m233" = 1 ]; then
     export NAS_VIRTIO_NET_GUESTFWD_PORT=15453
     export NAS_VIRTIO_NET_HOSTFWD_UDP_PORT=${NAS_M233_UDP_HOST_PORT:-15453}
     export NAS_VIRTIO_NET_GUESTFWD_UDP_PORT=15453
+    if [ "$m239" = 1 ]; then
+        # Two more protocols on the SAME original VirtIO NIC; never accept
+        # unreviewed extra maps or a second guest adapter for this test.
+        [ -z "${NAS_VIRTIO_NET_EXTRA_HOSTFWD:-}" ] || {
+            echo '[M239 FAIL] externally supplied extra hostfwd' >&2; exit 2;
+        }
+        export NAS_VIRTIO_NET_EXTRA_HOSTFWD='tcp:15447:15447,tcp:15448:15448'
+    fi
 fi
 export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
@@ -1310,6 +1342,9 @@ if [ "$m233" = 1 ]; then
             --request-timeout "${NAS_M233_HOST_REQUEST_SECONDS:-30}" \
             > "$host_log" 2>&1 &
         m233_host_pid=$!
+        if [ "$m239" = 1 ]; then
+            m239_start_host "$phase" "$host_serial"
+        fi
     }
     m233_finish_host() {
         phase=$1
@@ -1329,6 +1364,9 @@ if [ "$m233" = 1 ]; then
             echo "[M233 HOST FAIL] $phase actual UDP+TCP DNS failed" >&2
             tail -100 "$PWD/$work/m233-$phase-host-dns.log" >&2 || :
             exit 1
+        fi
+        if [ "$m239" = 1 ]; then
+            m239_finish_host "$phase"
         fi
     }
 fi
@@ -1754,6 +1792,12 @@ if [ "$m233" = 1 ]; then
         echo '[M233 FAIL] original DNS daemon first host window incomplete' >&2
         exit 1
     }
+    if [ "$m239" = 1 ]; then
+        grep -Fq 'M239_FIRST_FOUR_OPENRC_SERVICES_COMPLETE' "$serial" || {
+            echo '[M239 FAIL] original four-service first window incomplete' >&2
+            exit 1
+        }
+    fi
     test -s "$PWD/$work/m233-first-host-dns.json" || {
         echo '[M233 FAIL] independent first host UDP+TCP DNS proof missing' >&2
         exit 1
@@ -1999,6 +2043,11 @@ if [ "$m233" = 1 ]; then
     grep -Fq 'M233_REOPEN_HOST_DNS_WINDOW_COMPLETE' "$serial" || {
         echo '[M233 FAIL] original DNS OpenRC reboot host window missing' >&2; exit 1;
     }
+    if [ "$m239" = 1 ]; then
+        grep -Fq 'M239_REOPEN_FOUR_OPENRC_SERVICES_COMPLETE' "$serial" || {
+            echo '[M239 FAIL] original four-service reboot window missing' >&2; exit 1;
+        }
+    fi
     grep -Fq 'M197_REOPEN_WORKLOAD_PASS' "$serial" || {
         echo '[M233 FAIL] original signed APK persistence regression' >&2; exit 1;
     }
@@ -2008,10 +2057,33 @@ if [ "$m233" = 1 ]; then
         "$PWD/$work/m233-reopen-host-dns.json" \
         "$pcap" "$PWD/$work/m233-reopen-wire.pcap" \
         "$PWD/$work/m233-dnsmasq-final-oracle.json"
+    if [ "$m239" = 1 ]; then
+        # Each independent protocol oracle must see ITS OWN TCP flows in
+        # BOTH real NIC PCAPs and original guest-created durable state.
+        sudo env NAS_M191_DISK_MIB="$disk_mib" \
+            python3 scripts/m231-mosquitto-disk-check.py "$port" "$root" "$disk" \
+            "$PWD/$work/m231-first-host-mqtt.json" \
+            "$PWD/$work/m231-reopen-host-mqtt.json" \
+            "$pcap" "$PWD/$work/m233-reopen-wire.pcap" \
+            "$PWD/$work/m239-mqtt-final-oracle.json"
+        sudo env NAS_M191_DISK_MIB="$disk_mib" \
+            python3 scripts/m232-memcached-disk-check.py "$port" "$root" "$disk" \
+            "$PWD/$work/m232-first-host-cache.json" \
+            "$PWD/$work/m232-reopen-host-cache.json" \
+            "$pcap" "$PWD/$work/m233-reopen-wire.pcap" \
+            "$PWD/$work/m239-cache-final-oracle.json"
+    fi
     sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
-    echo "[M233 ORIGINAL ALPINE DNSMASQ OPENRC HOST UDP+TCP TWO BOOT PASS] $port "\
-         'two original PID1/OpenRC, independent host UDP and TCP DNS queries, ' \
-         'two physical NIC PCAPs, signed APK/ELF and clean read-only ext4 fsck'
+    if [ "$m239" = 1 ]; then
+        echo "[M239 ORIGINAL ALPINE FOUR SERVICE HOST PROTOCOL TWO BOOT PASS] $port "\
+            'genuine OpenRC lighttpd + dnsmasq UDP/TCP + Mosquitto retained MQTT ' \
+            '+ volatile memcached simultaneously, independent host wire/PCAP ' \
+            'challenges on both PID1 boots, official APK/ELF and strict ext4 fsck'
+    else
+        echo "[M233 ORIGINAL ALPINE DNSMASQ OPENRC HOST UDP+TCP TWO BOOT PASS] $port "\
+             'two original PID1/OpenRC, independent host UDP and TCP DNS queries, ' \
+             'two physical NIC PCAPs, signed APK/ELF and clean read-only ext4 fsck'
+    fi
     exit 0
 fi
 

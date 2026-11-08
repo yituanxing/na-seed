@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 struct nas_task;
+#define NAS_SIGHUP 1U
 #define NAS_SIGINT 2U
 #define NAS_SIGTRAP 5U
 #define NAS_SIGABRT 6U
@@ -10,6 +11,7 @@ struct nas_task;
 #define NAS_SIGUSR1 10U
 #define NAS_SIGUSR2 12U
 #define NAS_SIGPIPE 13U
+#define NAS_SIGALRM 14U
 #define NAS_SIGCHLD 17U
 #define NAS_SIGTERM 15U
 #define NAS_SIGQUIT 3U

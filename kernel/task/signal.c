@@ -95,10 +95,31 @@ uint64_t nas_signal_sigaltstack(uint64_t new_ptr,uint64_t old_ptr) {
  * to the three native backends below; disposition and mask decisions must
  * agree across all user-visible entry, fork, TTY and pipe paths. */
 static bool terminating_default(unsigned sig) {
-    return sig==NAS_SIGINT || sig==NAS_SIGQUIT || sig==NAS_SIGABRT ||
+    return sig==NAS_SIGHUP || sig==NAS_SIGINT || sig==NAS_SIGQUIT ||
+           sig==NAS_SIGABRT || sig==NAS_SIGALRM ||
            sig==NAS_SIGKILL ||
            sig==NAS_SIGPIPE || sig==NAS_SIGTERM ||
            sig==NAS_SIGUSR1 || sig==NAS_SIGUSR2;
+}
+static bool ignored_default(unsigned sig) {
+    /* An explicit SIGCHLD can be caught or read from signalfd when masked,
+     * but a normal unblocked SIG_DFL SIGCHLD never terminates the parent. */
+    return sig==NAS_SIGCHLD;
+}
+enum signal_delivery { SIGNAL_UNSUPPORTED, SIGNAL_DISCARD,
+                       SIGNAL_QUEUE, SIGNAL_TERMINATE };
+/* One decision for kill()'s TGID-pending and tgkill()'s TID-pending paths.
+ * Unsupported *default* actions must fail, while installed handlers and
+ * masks retain real pending ownership without fabricating a user sigframe. */
+static enum signal_delivery signal_delivery_for(const struct nas_task *task,
+                                                unsigned sig) {
+    if(sig==NAS_SIGKILL)return SIGNAL_TERMINATE;
+    const uint64_t disposition=task->sighand->actions[sig][0];
+    if(disposition==1)return SIGNAL_DISCARD;
+    if(disposition>1 || (task->blocked_signals&(1ULL<<(sig-1))))
+        return SIGNAL_QUEUE;
+    if(ignored_default(sig))return SIGNAL_DISCARD;
+    return terminating_default(sig) ? SIGNAL_TERMINATE : SIGNAL_UNSUPPORTED;
 }
 /* Linux standard signals have TWO ownership domains. tgkill/pthread_kill
  * enqueue per-TID; kill/TTY/child-exit enqueue once per process. A shared
@@ -285,25 +306,15 @@ static uint64_t signal_send_thread(uint64_t raw_tgid,uint64_t raw_tid,
         return (uint64_t)-ESRCH;
     if(!signo)return 0;
     if(target->tgid==1)return (uint64_t)-EPERM;
-    /* A thread-directed, user-caught signal does not need a default fatal
-     * action to be delivered. In particular musl's internal cancellation
-     * signal 32 has an installed handler; rejecting it solely because its
-     * default is not in our short fatal-signal list prevented pthread_cancel
-     * and real per-thread worker cleanup. Unknown uncaught defaults stay
-     * unsupported: we must not pretend they have Linux semantics. */
-    uint64_t disp=target->sighand->actions[signo][0];
-    if(signo!=NAS_SIGSTOP && signo!=NAS_SIGCONT &&
-       !terminating_default((unsigned)signo) && disp<=1)
-        return (uint64_t)-EOPNOTSUPP;
     if(signo==NAS_SIGSTOP || signo==NAS_SIGCONT)
         return nas_signal_kill(target->tgid,signo,frame);
-    uint64_t bit=1ULL<<(signo-1);
-    if(signo!=NAS_SIGKILL) {
-        if(disp==1)return 0;
-        if(disp>1 || (target->blocked_signals&bit)) {
-            target->pending_signals|=bit;
-            return 0;
-        }
+    switch(signal_delivery_for(target,(unsigned)signo)) {
+    case SIGNAL_UNSUPPORTED:return (uint64_t)-EOPNOTSUPP;
+    case SIGNAL_DISCARD:return 0;
+    case SIGNAL_QUEUE:
+        target->pending_signals|=1ULL<<(signo-1);
+        return 0;
+    case SIGNAL_TERMINATE:break;
     }
     /* Delivery of an unhandled fatal *thread-directed* signal kills
      * the whole group. Killing a thread must NOT leave its leader alive. */
@@ -385,9 +396,6 @@ static void signal_kill_other(struct nas_task *target,unsigned signal) {
 uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     int64_t pid = (int64_t)(int32_t)(uint32_t)raw_pid;
     if (signal > 64) return (uint64_t)-EINVAL;
-    if(signal && signal!=NAS_SIGSTOP && signal!=NAS_SIGCONT &&
-       !terminating_default((unsigned)signal))
-        return (uint64_t)-EOPNOTSUPP; /* no fake signal delivery */
     struct nas_task *sender = nas_current_task;
     struct nas_task *matches[NAS_TASK_LIMIT];
     unsigned count = 0;
@@ -420,65 +428,46 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     }
     if (!count) return (uint64_t)(protected_init ? -EPERM : -ESRCH);
     if (!signal) return 0;
+    /* Preflight the entire process-group selection before any delivery:
+     * an unknown uncaught default must not partially kill other groups. */
+    if(!per_thread_transition)for(unsigned i=0;i<count;i++) {
+        struct nas_task *target=matches[i];
+        if(signal_live_member(target) &&
+           signal_delivery_for(target,(unsigned)signal)==SIGNAL_UNSUPPORTED)
+            return (uint64_t)-EOPNOTSUPP;
+    }
     /* Snapshot before state transitions. A STOPPED task preserves its
      * previous READY/BLOCKED syscall resume contract. On CONT it must
      * either become runnable or remain waiting on its original FD.
      * No CPU-specific signal stack or fake success path is introduced. */
     for (unsigned i=0;i<count;i++) {
         struct nas_task *target=matches[i];
+        if(!per_thread_transition && signal_live_member(target)) {
+            enum signal_delivery delivery=signal_delivery_for(target,
+                                                              (unsigned)signal);
+            if(delivery==SIGNAL_DISCARD)continue;
+            if(delivery==SIGNAL_QUEUE) {
+                signal_queue_process(target,(unsigned)signal);
+                continue;
+            }
+        }
         if(!per_thread_transition && target->tgid==sender->tgid) {
             /* A target in the caller's own group must never be killed by
              * signal_kill_other(): exit_group would release the saved
              * sender Task before restore_cpu(sender). Defer self-fatal
              * teardown until every OTHER group has been processed. */
             if(!signal_live_member(target))continue;
-            const uint64_t bit=1ULL<<(signal-1);
-            const uint64_t disposition=target->sighand->actions[signal][0];
-            if(signal!=NAS_SIGKILL && disposition==1)continue;
-            if(signal!=NAS_SIGKILL &&
-               (disposition>1 || (target->blocked_signals&bit))) {
-                signal_queue_process(target,(unsigned)signal);
-                continue;
-            }
             self=true;
             self_terminate=true;
             continue;
         }
         if (target==sender) {
-            if (target->sighand->actions[signal][0]>1 &&
-                !(target->blocked_signals&(1ULL<<(signal-1))) &&
-                signal!=NAS_SIGKILL && signal!=NAS_SIGSTOP &&
-                signal!=NAS_SIGCONT) {
-                signal_queue_process(target,(unsigned)signal);
-                continue;
-            }
             self=true;
-            if(terminating_default((unsigned)signal) &&
-               signal!=NAS_SIGKILL &&
-               (target->blocked_signals&(1ULL<<(signal-1))))
-                signal_queue_process(target,(unsigned)signal);
-            else if(terminating_default((unsigned)signal) &&
-                    (signal==NAS_SIGKILL ||
-                     target->sighand->actions[signal][0]!=1))
-                self_terminate=true;
+            if(!per_thread_transition)self_terminate=true;
             continue;
         }
         if (target->state==NAS_TASK_ZOMBIE || target->state==NAS_TASK_FREE) continue;
         if(terminating_default((unsigned)signal)) {
-            if(signal!=NAS_SIGKILL &&
-               target->sighand->actions[signal][0]==1)continue; /* SIG_IGN */
-            if(signal!=NAS_SIGKILL &&
-               (target->blocked_signals&(1ULL<<(signal-1)))) {
-                signal_queue_process(target,(unsigned)signal);
-                continue;
-            }
-            if(target->sighand->actions[signal][0]>1 &&
-               signal!=NAS_SIGKILL) {
-                /* Delivery waits until THIS task's page tables and user
-                 * return frame are selected. Do not write a foreign stack. */
-                signal_queue_process(target,(unsigned)signal);
-                continue;
-            }
 #if defined(__x86_64__) && defined(NAS_ENABLE_M191_ALPINE_ROOT)
             /* Diagnostic for the genuine M204 x86 Redis apk hang. Capture
              * the *live* blocked syscall/FD before SIGTERM tears down the
