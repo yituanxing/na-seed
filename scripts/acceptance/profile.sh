@@ -52,6 +52,8 @@ nas_acceptance_parse_profile() {
     case "$m229" in 0) ;; 1) nas_acceptance_profile=m229 ;; *) echo '[M229 FAIL] invalid host RESP selector' >&2; exit 2 ;; esac
     m230=${NAS_M230_DROPBEAR_HOST:-0}
     case "$m230" in 0) ;; 1) nas_acceptance_profile=m230 ;; *) echo '[M230 FAIL] invalid host SSH selector' >&2; exit 2 ;; esac
+    m240=${NAS_M240_SSH_PTY:-0}
+    case "$m240" in 0) ;; 1) nas_acceptance_profile=m240 ;; *) echo '[M240 FAIL] invalid interactive SSH PTY selector' >&2; exit 2 ;; esac
     m231=${NAS_M231_MOSQUITTO_HOST:-0}
     case "$m231" in 0) ;; 1) nas_acceptance_profile=m231 ;; *) echo '[M231 FAIL] invalid host MQTT selector' >&2; exit 2 ;; esac
     m232=${NAS_M232_MEMCACHED_HOST:-0}
@@ -68,12 +70,12 @@ nas_acceptance_parse_profile() {
         }
     fi
     # Desktop cannot own a software cohort, including the M239/M233 pair.
-    if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] || [ "$m232" = 1 ] || [ "$m233" = 1 ] || [ "$m235" = 1 ] || [ "$m236" = 1 ] || [ "$m237" = 1 ] || [ "$m238" = 1 ]; } && \
+    if { [ "$m204" = 1 ] || [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [ "$m219" = 1 ] || [ "$m220" = 1 ] || [ "$m221" = 1 ] || [ "$m222" = 1 ] || [ "$m223" = 1 ] || [ "$m224" = 1 ] || [ "$m225" = 1 ] || [ "$m226" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] || [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m240" = 1 ] || [ "$m231" = 1 ] || [ "$m232" = 1 ] || [ "$m233" = 1 ] || [ "$m235" = 1 ] || [ "$m236" = 1 ] || [ "$m237" = 1 ] || [ "$m238" = 1 ]; } && \
        { [ "$m198" = 1 ] || [ "$m199" = 1 ]; }; then
         echo '[COMPAT FAIL] software cohort cannot enable a desktop' >&2
         exit 2
     fi
-    if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m231+m232+m233+m235+m236+m237+m238))" -gt 1 ]; then
+    if [ "$((m204+m205+m206+m215+m218+m219+m220+m221+m222+m223+m224+m225+m226+m227+m228+m229+m230+m240+m231+m232+m233+m235+m236+m237+m238))" -gt 1 ]; then
         echo '[COMPAT FAIL] software cohorts must own separate ledgers' >&2
         exit 2
     fi

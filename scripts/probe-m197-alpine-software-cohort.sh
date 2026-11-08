@@ -19,6 +19,38 @@ esac
 # distinct legacy inputs: M239 requires the M233 DNS owner and augments it.
 . scripts/acceptance/profile.sh
 nas_acceptance_parse_profile
+# M240 owns its own external selector and evidence ledger. Reuse the M230
+# *runner plumbing* only after the mutually-exclusive profile check; the
+# M230 key policy, host witness and ext4 oracle remain unchanged in M230 mode.
+ssh_profile=m230
+ssh_workload=tests/m230-alpine-dropbear-workload.sh
+ssh_uart=scripts/m230-alpine-uart.py
+ssh_host_checker=scripts/m230-host-ssh-check.py
+ssh_disk_checker=scripts/m230-dropbear-disk-check.py
+ssh_key_pub=m230-authorized-pubkey
+ssh_ready_marker=M230
+ssh_window_tag=HOST_SSH
+ssh_host_suffix=host-ssh
+ssh_first_qemu_timeout=${NAS_M230_PUBLIC_QEMU_TIMEOUT:-2850}
+ssh_reopen_qemu_timeout=${NAS_M230_REOPEN_QEMU_TIMEOUT:-1300}
+ssh_host_ready_timeout=${NAS_M230_HOST_READY_SECONDS:-2850}
+ssh_host_ssh_timeout=${NAS_M230_HOST_SSH_SECONDS:-135}
+if [ "$m240" = 1 ]; then
+    m230=1
+    ssh_profile=m240
+    ssh_workload=tests/m240-alpine-ssh-pty-workload.sh
+    ssh_uart=scripts/m240-alpine-uart.py
+    ssh_host_checker=scripts/m240-host-ssh-pty-check.py
+    ssh_disk_checker=scripts/m240-ssh-pty-disk-check.py
+    ssh_key_pub=m240-authorized-pubkey
+    ssh_ready_marker=M240
+    ssh_window_tag=HOST_SSH_PTY
+    ssh_host_suffix=host-ssh-pty
+    ssh_first_qemu_timeout=${NAS_M240_PUBLIC_QEMU_TIMEOUT:-2850}
+    ssh_reopen_qemu_timeout=${NAS_M240_REOPEN_QEMU_TIMEOUT:-1300}
+    ssh_host_ready_timeout=${NAS_M240_HOST_READY_SECONDS:-2850}
+    ssh_host_ssh_timeout=${NAS_M240_HOST_SSH_SECONDS:-260}
+fi
 if [ "$m239" = 1 ]; then
     . scripts/m239-multi-host.sh
     # M239 has three concurrently live host observers (DNS/MQTT/cache).
@@ -316,21 +348,21 @@ if [ "$m230" = 1 ]; then
     # NaSeed still lacks full non-root DAC: this is NOT production-safe SSH.
     sudo install -m 0644 tests/m227-alpine-openrc-workload.sh \
         "$overlay/root/m227-alpine-openrc-workload.sh"
-    sudo install -m 0644 tests/m230-alpine-dropbear-workload.sh \
-        "$overlay/root/m230-alpine-dropbear-workload.sh"
+    sudo install -m 0644 "$ssh_workload" \
+        "$overlay/root/$(basename "$ssh_workload")"
     sudo test -s "$overlay/root/m227-alpine-openrc-workload.sh"
-    sudo test -s "$overlay/root/m230-alpine-dropbear-workload.sh"
+    sudo test -s "$overlay/root/$(basename "$ssh_workload")"
     sudo test ! -e "$overlay/etc/runlevels/default/dropbear" || {
         echo '[M230 FAIL] Dropbear OpenRC service preenabled' >&2; exit 1;
     }
     sudo test ! -e "$overlay/root/.ssh/authorized_keys" && \
-        sudo test ! -e "$overlay/root/m230-authorized-pubkey" || {
+        sudo test ! -e "$overlay/root/$ssh_key_pub" || {
         echo '[M230 FAIL] SSH public identity preseeded' >&2; exit 1;
     }
     command -v ssh-keygen >/dev/null || {
         echo '[M230 HOST FAIL] ssh-keygen missing' >&2; exit 1;
     }
-    m230_client_dir=$(mktemp -d "$PWD/$work/m230-host-key.XXXXXXXX")
+    m230_client_dir=$(mktemp -d "$PWD/$work/$ssh_profile-host-key.XXXXXXXX")
     chmod 0700 "$m230_client_dir"
     ssh-keygen -q -t ed25519 -a 16 -N '' -f "$m230_client_dir/id_ed25519" \
         >/dev/null
@@ -339,8 +371,8 @@ if [ "$m230" = 1 ]; then
         echo '[M230 HOST FAIL] ephemeral Ed25519 key generation failed' >&2; exit 1;
     }
     sudo install -m 0644 -o 0 -g 0 "$m230_client_dir/id_ed25519.pub" \
-        "$overlay/root/m230-authorized-pubkey"
-    sudo test -s "$overlay/root/m230-authorized-pubkey"
+        "$overlay/root/$ssh_key_pub"
+    sudo test -s "$overlay/root/$ssh_key_pub"
 fi
 if [ "$m231" = 1 ]; then
     # Original signed APKs and original Alpine OpenRC are guest-created only;
@@ -738,7 +770,11 @@ fi
 if [ "$m230" = 1 ]; then
     # Separate host and guest SSH ports, same SINGLE real slirp VirtIO NIC.
     # Host listener remains strictly bound to 127.0.0.1 by QEMU's runner.
-    export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M230_HOST_PORT:-12222}
+    if [ "$m240" = 1 ]; then
+        export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M240_HOST_PORT:-12222}
+    else
+        export NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M230_HOST_PORT:-12222}
+    fi
     export NAS_VIRTIO_NET_GUESTFWD_PORT=15446
 fi
 if [ "$m231" = 1 ]; then
@@ -834,7 +870,7 @@ if [ "$m229" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_PUBLIC_QEMU_TIMEOUT:-2650}
 fi
 if [ "$m230" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M230_PUBLIC_QEMU_TIMEOUT:-2850}
+    export NAS_APP_BATCH_QEMU_TIMEOUT=$ssh_first_qemu_timeout
 fi
 if [ "$m231" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_PUBLIC_QEMU_TIMEOUT:-2750}
@@ -1103,27 +1139,27 @@ if [ "$m230" = 1 ]; then
     m230_start_host() {
         phase=$1
         host_serial=$2
-        receipt="$PWD/$work/m230-$phase-host-ssh.json"
-        host_log="$PWD/$work/m230-$phase-host-ssh.log"
+        receipt="$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json"
+        host_log="$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log"
         test ! -e "$receipt" && test ! -e "$host_log" || {
             echo "[M230 HOST FAIL] refusing stale $phase SSH evidence" >&2; exit 1;
         }
         if [ "$phase" = reopen ]; then
-            python3 -u scripts/m230-host-ssh-check.py "$phase" "$host_serial" \
+            python3 -u "$ssh_host_checker" "$phase" "$host_serial" \
                 "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
                 --client-key "$m230_client_dir/id_ed25519" \
                 --known-hosts "$m230_client_dir/known_hosts" \
-                --first-receipt "$PWD/$work/m230-first-host-ssh.json" \
-                --ready-timeout "${NAS_M230_HOST_READY_SECONDS:-2850}" \
-                --ssh-timeout "${NAS_M230_HOST_SSH_SECONDS:-135}" \
+                --first-receipt "$PWD/$work/$ssh_profile-first-$ssh_host_suffix.json" \
+                --ready-timeout "$ssh_host_ready_timeout" \
+                --ssh-timeout "$ssh_host_ssh_timeout" \
                 > "$host_log" 2>&1 &
         else
-            python3 -u scripts/m230-host-ssh-check.py "$phase" "$host_serial" \
+            python3 -u "$ssh_host_checker" "$phase" "$host_serial" \
                 "$NAS_VIRTIO_NET_HOSTFWD_PORT" "$receipt" \
                 --client-key "$m230_client_dir/id_ed25519" \
                 --known-hosts "$m230_client_dir/known_hosts" \
-                --ready-timeout "${NAS_M230_HOST_READY_SECONDS:-2850}" \
-                --ssh-timeout "${NAS_M230_HOST_SSH_SECONDS:-135}" \
+                --ready-timeout "$ssh_host_ready_timeout" \
+                --ssh-timeout "$ssh_host_ssh_timeout" \
                 > "$host_log" 2>&1 &
         fi
         m230_host_pid=$!
@@ -1134,16 +1170,16 @@ if [ "$m230" = 1 ]; then
             echo '[M230 HOST FAIL] no live SSH watcher' >&2; exit 1;
         }
         join_seconds=0
-        while [ ! -s "$PWD/$work/m230-$phase-host-ssh.json" ] && \
+        while [ ! -s "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json" ] && \
               kill -0 "$m230_host_pid" 2>/dev/null && \
               [ "$join_seconds" -lt 8 ]; do
             sleep 1
             join_seconds=$((join_seconds+1))
         done
-        if [ ! -s "$PWD/$work/m230-$phase-host-ssh.json" ]; then
+        if [ ! -s "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json" ]; then
             echo "[M230 HOST FAIL] $phase native QEMU lacks real SSH receipt" >&2
             m230_stop_host
-            tail -100 "$PWD/$work/m230-$phase-host-ssh.log" >&2 || :
+            tail -100 "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log" >&2 || :
             exit 1
         fi
         if wait "$m230_host_pid"; then
@@ -1151,7 +1187,7 @@ if [ "$m230" = 1 ]; then
         else
             m230_host_pid=
             echo "[M230 HOST FAIL] $phase authenticated Dropbear command" >&2
-            tail -100 "$PWD/$work/m230-$phase-host-ssh.log" >&2 || :
+            tail -100 "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log" >&2 || :
             exit 1
         fi
     }
@@ -1462,18 +1498,18 @@ else
         }
         echo "[M230 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         m230_start_host first "$serial"
-        if python3 scripts/m230-alpine-uart.py first "$runner" "$serial" \
-                "$PWD/$work/m230-first-runner.log" "$fifo"; then
-            cp "$serial" "$PWD/$work/m230-first.serial.log"
+        if python3 "$ssh_uart" first "$runner" "$serial" \
+                "$PWD/$work/$ssh_profile-first-runner.log" "$fifo"; then
+            cp "$serial" "$PWD/$work/$ssh_profile-first.serial.log"
             m230_finish_host first
             echo "[M230 FIRST ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         else
             m230_first_rc=$?
             if [ -f "$serial" ]; then
-                cp "$serial" "$PWD/$work/m230-first.serial.log"
+                cp "$serial" "$PWD/$work/$ssh_profile-first.serial.log"
             fi
             echo "[M230 FIRST UART FAIL] rc=$m230_first_rc; preserving independent host SSH log" >&2
-            tail -100 "$PWD/$work/m230-first-host-ssh.log" >&2 || :
+            tail -100 "$PWD/$work/$ssh_profile-first-$ssh_host_suffix.log" >&2 || :
             exit "$m230_first_rc"
         fi
     elif [ "$m229" = 1 ]; then
@@ -1707,11 +1743,11 @@ if [ "$m229" = 1 ]; then
     }
 fi
 if [ "$m230" = 1 ]; then
-    grep -Fq 'M230_FIRST_HOST_SSH_WINDOW_COMPLETE' "$serial" || {
+    grep -Fq "${ssh_ready_marker}_FIRST_${ssh_window_tag}_WINDOW_COMPLETE" "$serial" || {
         echo '[M230 FAIL] original guest did not complete SSH first window' >&2
         exit 1
     }
-    test -s "$PWD/$work/m230-first-host-ssh.json" || {
+    test -s "$PWD/$work/$ssh_profile-first-$ssh_host_suffix.json" || {
         echo '[M230 FAIL] no independent first host SSH command receipt' >&2
         exit 1
     }
@@ -2093,36 +2129,36 @@ fi
 if [ "$m230" = 1 ]; then
     # Original Alpine PID1 reopens the *same* physical ext4. Its own OpenRC
     # service, not this harness, must auto-start the original Dropbear ELF.
-    test -s "$PWD/$work/m230-first.serial.log" && \
-        test -s "$PWD/$work/m230-first-host-ssh.json" || {
+    test -s "$PWD/$work/$ssh_profile-first.serial.log" && \
+        test -s "$PWD/$work/$ssh_profile-first-$ssh_host_suffix.json" || {
         echo '[M230 FAIL] first native UART/SSH witness absent before reboot' >&2
         exit 1
     }
     echo "[M230 REOPEN ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
-    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m230-reopen-input.fifo"
-    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m230-reopen-wire.pcap"
+    export NAS_QEMU_SERIAL_FIFO="$PWD/$work/$ssh_profile-reopen-input.fifo"
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/$ssh_profile-reopen-wire.pcap"
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M230 FAIL] stale independent second NIC PCAP' >&2; exit 1;
     }
     export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M230_REOPEN_QEMU_TIMEOUT:-1300}
+    export NAS_APP_BATCH_QEMU_TIMEOUT=$ssh_reopen_qemu_timeout
     m230_start_host reopen "$serial"
-    if python3 scripts/m230-alpine-uart.py reopen "$runner" "$serial" \
-            "$PWD/$work/m230-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
-        cp "$serial" "$PWD/$work/m230-reopen.serial.log"
+    if python3 "$ssh_uart" reopen "$runner" "$serial" \
+            "$PWD/$work/$ssh_profile-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
+        cp "$serial" "$PWD/$work/$ssh_profile-reopen.serial.log"
         m230_finish_host reopen
     else
         m230_reopen_rc=$?
         if [ -f "$serial" ]; then
-            cp "$serial" "$PWD/$work/m230-reopen.serial.log"
+            cp "$serial" "$PWD/$work/$ssh_profile-reopen.serial.log"
         fi
         echo "[M230 REOPEN UART FAIL] rc=$m230_reopen_rc; preserving SSH log" >&2
-        tail -100 "$PWD/$work/m230-reopen-host-ssh.log" >&2 || :
+        tail -100 "$PWD/$work/$ssh_profile-reopen-$ssh_host_suffix.log" >&2 || :
         exit "$m230_reopen_rc"
     fi
     echo "[M230 REOPEN ORIGINAL PID1 UART COMPLETE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    grep -Fq 'M230_REOPEN_HOST_SSH_WINDOW_COMPLETE' "$serial" || {
+    grep -Fq "${ssh_ready_marker}_REOPEN_${ssh_window_tag}_WINDOW_COMPLETE" "$serial" || {
         echo '[M230 FAIL] original Dropbear SSH reopen window incomplete' >&2
         exit 1
     }
@@ -2130,21 +2166,27 @@ if [ "$m230" = 1 ]; then
         echo '[M230 FAIL] original signed applications did not persist' >&2
         exit 1
     }
-    test -s "$PWD/$work/m230-reopen-host-ssh.json" || {
+    test -s "$PWD/$work/$ssh_profile-reopen-$ssh_host_suffix.json" || {
         echo '[M230 FAIL] no second true host SSH auth/command receipt' >&2
         exit 1
     }
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m230-dropbear-disk-check.py "$port" "$root" "$disk" \
-        "$PWD/$work/m230-first-host-ssh.json" \
-        "$PWD/$work/m230-reopen-host-ssh.json" \
-        "$pcap" "$PWD/$work/m230-reopen-wire.pcap" \
-        "$PWD/$work/m230-dropbear-final-oracle.json"
+        python3 "$ssh_disk_checker" "$port" "$root" "$disk" \
+        "$PWD/$work/$ssh_profile-first-$ssh_host_suffix.json" \
+        "$PWD/$work/$ssh_profile-reopen-$ssh_host_suffix.json" \
+        "$pcap" "$PWD/$work/$ssh_profile-reopen-wire.pcap" \
+        "$PWD/$work/$ssh_profile-dropbear-final-oracle.json"
     sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
-    echo "[M230 ORIGINAL ALPINE DROPBEAR HOST SSH TWO BOOT PASS] $port real "\
-         'host-only Ed25519 client authentication and nonce remote command, ' \
-         'two original signed Alpine PID1/OpenRC boots, persisted host key, ' \
-         'two independent NIC PCAPs, original APK and ext4/fsck oracle'
+    if [ "$m240" = 1 ]; then
+        echo "[M240 ORIGINAL ALPINE DROPBEAR HOST SSH PTY TWO BOOT PASS] $port real "\
+             '9x2 SSH PTYs, canonical erase, foreground Ctrl-C, host key pinning, ' \
+             'original signed Alpine/OpenRC, independent NIC PCAPs, ext4/fsck'
+    else
+        echo "[M230 ORIGINAL ALPINE DROPBEAR HOST SSH TWO BOOT PASS] $port real "\
+             'host-only Ed25519 client authentication and nonce remote command, ' \
+             'two original signed Alpine PID1/OpenRC boots, persisted host key, ' \
+             'two independent NIC PCAPs, original APK and ext4/fsck oracle'
+    fi
     exit 0
 fi
 

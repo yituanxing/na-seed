@@ -37,6 +37,7 @@ SELECTORS = (
     ('m228', 'NAS_M228_HOST_INBOUND', 'invalid host ingress selector'),
     ('m229', 'NAS_M229_VALKEY_HOST', 'invalid host RESP selector'),
     ('m230', 'NAS_M230_DROPBEAR_HOST', 'invalid host SSH selector'),
+    ('m240', 'NAS_M240_SSH_PTY', 'invalid interactive SSH PTY selector'),
     ('m231', 'NAS_M231_MOSQUITTO_HOST', 'invalid host MQTT selector'),
     ('m232', 'NAS_M232_MEMCACHED_HOST', 'invalid host cache selector'),
     ('m233', 'NAS_M233_DNSMASQ_HOST', 'invalid host UDP+TCP DNS selector'),
@@ -78,7 +79,7 @@ def failure(overrides, message):
 
 
 def main():
-    assert len(SELECTORS) == 27 and len(BY_MODE) == 27
+    assert len(SELECTORS) == 28 and len(BY_MODE) == 28
     main_shell = (ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
     profile_shell = (ROOT / 'scripts/acceptance/profile.sh').read_text()
     assert main_shell.count('. scripts/acceptance/profile.sh') == 1
@@ -131,7 +132,7 @@ def main():
             '[M239 FAIL] multi-service owner requires the M233 DNS base')
     failure({BY_MODE['m198']: 'bad', **valid_multi},
             '[M198 FAIL] invalid desktop selector')
-    print('[ACCEPTANCE PROFILE CONTRACT PASS] 27 selectors; legacy precedence, '
+    print('[ACCEPTANCE PROFILE CONTRACT PASS] 28 selectors (27 historical); legacy precedence, '
           'all valid profiles, pairwise exclusivity, M199 inheritance, '
           'M239/M233 composition and exact stderr/exit-2')
 
