@@ -72,6 +72,11 @@ def receipt(path: Path, phase: str) -> dict:
             value = row.get(sha)
             if not isinstance(value, str) or not HEX64.fullmatch(value):
                 fail(phase + ' host PTY session lacks ' + sha)
+        nonce = row.get('nonce')
+        if not isinstance(nonce, str) or not M230.HOST.HEX_48.fullmatch(nonce):
+            fail(phase + ' host PTY session lacks a real fresh challenge nonce')
+        if hashlib.sha256(nonce.encode()).hexdigest() != row['nonce_sha256']:
+            fail(phase + ' SSH PTY host challenge digest does not match nonce')
         nonces.add(row['nonce_sha256'])
     if len(nonces) != HOST.SESSION_COUNT:
         fail(phase + ' guest SSH PTY challenge nonces reused')
@@ -140,7 +145,8 @@ def verify(port: str, root: Path, disk: Path, first: Path, reopen: Path,
             a['client_pubkey_sha256'] != b['client_pubkey_sha256'] or
             a['host_key_fingerprint'] != b['host_key_fingerprint'] or
             a['timestamp_utc'] >= b['timestamp_utc'] or
-            a['sessions'][0]['nonce_sha256'] == b['sessions'][0]['nonce_sha256']):
+            {x['nonce_sha256'] for x in a['sessions']} &
+            {x['nonce_sha256'] for x in b['sessions']}):
         fail('two QEMU boots do not preserve host key or fresh PTY session evidence')
     captures = (first_pcap.read_bytes(), reopen_pcap.read_bytes())
     if (not all(captures) or

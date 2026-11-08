@@ -2,8 +2,10 @@
 """Fail-closed M240 SSH PTY contract: no QEMU, guest network or credentials."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 
 
@@ -48,8 +50,29 @@ def main():
     assert 'M240_FIRST_HOST_SSH_PTY_READY' in guest
     assert 'M240_REOPEN_HOST_SSH_PTY_READY' in guest
     assert 'M240_FIRST_SCRIPT_RC=0' in uart and 'M240_REOPEN_SCRIPT_RC=0' in uart
+    assert 'M240-READ-READY:' in (HERE / 'm240-host-ssh-pty-check.py').read_text()
+    assert 'M240-SLEEP-NATURAL:' in (HERE / 'm240-host-ssh-pty-check.py').read_text()
     assert 'NAS_M240_SSH_PTY' in workflow
     assert 'NAS_M230_DROPBEAR_HOST' not in workflow
+
+    # A healthy foreground command must remain blocked until genuine ISIG.
+    # An instantly failing/nonexistent sleep must NEVER fake the Ctrl-C proof.
+    broken = subprocess.Popen(['sh', '-c', "printf 'M240-SLEEP-NATURAL:fake\\n'; sleep 2"],
+                              stdout=subprocess.PIPE)
+    try:
+        must_reject(lambda: HOST.confirm_foreground_block(
+            broken, b'M240-SLEEP-NATURAL:fake', b'', 0.35))
+    finally:
+        broken.kill()
+        broken.wait()
+        broken.stdout.close()
+    blocked = subprocess.Popen(['sh', '-c', 'sleep 2'], stdout=subprocess.PIPE)
+    try:
+        HOST.confirm_foreground_block(blocked, b'M240-SLEEP-NATURAL:fake', b'', 0.15)
+    finally:
+        blocked.kill()
+        blocked.wait()
+        blocked.stdout.close()
 
     with tempfile.TemporaryDirectory(prefix='m240-pty-contract-') as tmp:
         base = Path(tmp)
@@ -64,9 +87,10 @@ def main():
 
         path = base / 'first.json'
         must_reject(lambda: DISK.receipt(path, 'first'))
-        nonces = ['%064x' % (i + 1) for i in range(HOST.SESSION_COUNT)]
+        nonces = ['%048x' % (i + 1) for i in range(HOST.SESSION_COUNT)]
         sessions = [
-            {'session': i + 1, 'nonce_sha256': nonces[i],
+            {'session': i + 1, 'nonce': nonces[i],
+             'nonce_sha256': hashlib.sha256(nonces[i].encode()).hexdigest(),
              'remote_stdout_sha256': '%064x' % (i + 100),
              'tty_allocated': True, 'canonical_backspace': True,
              'foreground_sigint': True, 'winsize_33x101': True}

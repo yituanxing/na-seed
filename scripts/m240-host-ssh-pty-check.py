@@ -75,6 +75,30 @@ def recv_until(process: subprocess.Popen, expected: bytes, timeout: float,
     raise TimeoutError('original Dropbear PTY remote proof missing')
 
 
+def confirm_foreground_block(process: subprocess.Popen, natural_exit: bytes,
+                             initial: bytes, seconds: float) -> bytes:
+    """Reject a missing/instant-failing sleep before attempting PTY Ctrl-C."""
+    data = bytearray(initial)
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if process.poll() is not None:
+            raise ValueError('SSH session exited before foreground PTY Ctrl-C')
+        if natural_exit in data.replace(b'\r', b'').split(b'\n'):
+            raise ValueError('foreground /bin/sleep exited before PTY Ctrl-C')
+        readable, _, _ = select.select(
+            [process.stdout], [], [], max(0, min(0.1, end - time.monotonic())))
+        if readable:
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                raise ValueError('SSH PTY stream closed before foreground Ctrl-C')
+            data.extend(chunk)
+            if len(data) > 131072:
+                raise ValueError('foreground PTY output exceeded bounded buffer')
+    if natural_exit in data.replace(b'\r', b'').split(b'\n'):
+        raise ValueError('foreground sleep returned without signal')
+    return bytes(data)
+
+
 def send(process: subprocess.Popen, payload: bytes) -> None:
     if process.poll() is not None or process.stdin is None:
         raise ValueError('original Dropbear SSH PTY session terminated early')
@@ -91,9 +115,9 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
                                bufsize=0, start_new_session=True)
     output = b''
     try:
-        send(process, b"stty -echo; stty erase '^?'; printf 'M240-PTY-READY:%s\\n' " +
+        send(process, b"stty -echo; stty erase '^?'; printf '\\nM240-PTY-READY:%s\\n' " +
              nonce.encode() + b'; tty; stty rows 33 cols 101; stty size; '
-             b"test -t 0 && test -t 1 && echo M240-PTY-FDS:YES\n")
+             b"test -t 0 && test -t 1 && printf '\\nM240-PTY-FDS:YES\\n'\n")
         output = recv_until(process, b'M240-PTY-FDS:YES', min(40, deadline - time.monotonic()))
         normalized = output.replace(b'\r', b'')
         if (marker not in normalized.split(b'\n') or
@@ -103,7 +127,10 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
 
         # A real ICANON DEL must remove X from the actual guest read buffer.
         # With -echo, remote output cannot be mistaken for echoed host input.
-        send(process, b"read -r answer; printf 'M240-CANON:%s\\n' \"$answer\"\n")
+        send(process, b"printf '\\nM240-READ-READY:%s\\n' " + nonce.encode() +
+             b"; read -r answer; printf '\\nM240-CANON:%s\\n' \"$answer\"\n")
+        output = recv_until(process, ('M240-READ-READY:' + nonce).encode(),
+                            min(15, deadline - time.monotonic()), output)
         send(process, nonce.encode() + b'X\x7f\n')
         output = recv_until(process, ('M240-CANON:' + nonce).encode(),
                             min(25, deadline - time.monotonic()), output)
@@ -111,17 +138,22 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
             raise ValueError('canonical PTY backspace did not erase erroneous byte')
 
         # The foreground real guest sleep must be interrupted by PTY ISIG.
-        send(process, b"printf 'M240-SLEEP-START:%s\\n' " + nonce.encode() +
-             b'; /bin/sleep 30\n')
+        send(process, b"printf '\\nM240-SLEEP-START:%s\\n' " + nonce.encode() +
+             b"; /bin/sleep 30; printf '\\nM240-SLEEP-NATURAL:%s\\n' " +
+             nonce.encode() + b'\n')
         output = recv_until(process, ('M240-SLEEP-START:' + nonce).encode(),
                             min(15, deadline - time.monotonic()), output)
-        # Let the guest foreground sleep enter its wait path before ISIG.
-        time.sleep(0.2)
+        # The shell MUST remain genuinely blocked by the foreground command;
+        # otherwise an absent/failed sleep could fake the later shell marker.
+        output = confirm_foreground_block(
+            process, ('M240-SLEEP-NATURAL:' + nonce).encode(), output, 1.2)
         interrupt_at = time.monotonic()
         send(process, b'\x03')
-        send(process, b"printf 'M240-ISIG:%s\\n' " + nonce.encode() + b'\n')
+        send(process, b"printf '\\nM240-ISIG:%s\\n' " + nonce.encode() + b'\n')
         output = recv_until(process, ('M240-ISIG:' + nonce).encode(),
                             min(15, deadline - time.monotonic()), output)
+        if ('M240-SLEEP-NATURAL:' + nonce).encode() in output:
+            raise ValueError('foreground sleep completed naturally without SIGINT')
         if time.monotonic() - interrupt_at >= 15:
             raise ValueError('PTY Ctrl-C did not interrupt foreground sleep')
         # Graceful exit exercises PTY close and owner FD cleanup.
@@ -129,7 +161,8 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
         process.wait(timeout=max(1, min(15, deadline - time.monotonic())))
         if process.returncode != 0:
             raise ValueError('SSH interactive PTY failed to cleanly exit')
-        return {'session': index, 'nonce_sha256': hashlib.sha256(nonce.encode()).hexdigest(),
+        return {'session': index, 'nonce': nonce,
+                'nonce_sha256': hashlib.sha256(nonce.encode()).hexdigest(),
                 'tty_allocated': True,
                 'canonical_backspace': True, 'foreground_sigint': True,
                 'winsize_33x101': True,

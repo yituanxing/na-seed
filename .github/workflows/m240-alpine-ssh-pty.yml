@@ -11,6 +11,10 @@ on:
       - 'tests/m240-alpine-ssh-pty-workload.sh'
       - 'scripts/m240-*.py'
       - 'scripts/test-m240-*.py'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'scripts/acceptance/profile.sh'
+      - 'kernel/drivers/pty.c'
+      - 'kernel/task/signal.c'
   workflow_dispatch:
     inputs:
       port:
