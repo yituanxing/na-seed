@@ -40,6 +40,9 @@ on:
       - 'kernel/platform/**'
       - 'kernel/time/**'
       - 'rootfs/alpine/**'
+      # New independent M23x signed-software candidates have their own native
+      # workflows; candidate-only manifests must not replay M197/M204 QEMU.
+      - '!rootfs/alpine/packages-m23*-candidates.txt'
 
 permissions:
   contents: read
