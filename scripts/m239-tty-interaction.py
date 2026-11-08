@@ -17,6 +17,7 @@ def output_line(segment: str, marker: str) -> re.Match[str] | None:
 class M239TTYInteraction:
     """Bounded by the owning M194 QEMU deadline; no background guest daemon."""
 
+    REARM_OK = "M239_TTY_FOUR_OPENRC_REARM_PASS"
     CANON_READY = "M239_TTY_CANON_READY"
     CANON_OK = "M239_TTY_CANON_BACKSPACE_READ_PASS"
     SIGINT_ARMED = "M239_TTY_SIGINT_ARMED"
@@ -61,6 +62,24 @@ class M239TTYInteraction:
         segment = text[self.offset:]
 
         if self.state == "first_prompt":
+            if self.prompt(segment):
+                # The existing M239 MQTT persistence oracle deliberately
+                # stops mosquitto to flush m231.db before the final sync.
+                # Re-arm it through genuine OpenRC *after* that oracle has
+                # completed; the tty/SIGINT check requires four live daemons.
+                self._type("alive=1; rc-service mosquitto start >/dev/null 2>&1 || alive=0; "
+                           "for svc in lighttpd dnsmasq mosquitto memcached; "
+                           "do rc-service \"$svc\" status >/dev/null 2>&1 || alive=0; "
+                           "done; [ \"$alive\" = 1 ] && "
+                           "printf 'M239_TTY_FOUR_OPENRC_REARM_PASS\\n'\r",
+                           "rearm_result", len(text))
+        elif self.state == "rearm_result":
+            if match := output_line(segment, self.REARM_OK):
+                self.offset += match.end()
+                self.state = "rearm_prompt"
+            elif self.prompt(segment):
+                raise RuntimeError("M239 OpenRC re-arm failed before tty probe")
+        elif self.state == "rearm_prompt":
             if self.prompt(segment):
                 self._type("stty -a >/dev/null && printf 'M239_TTY_CANON_READY\\n'; "
                            "read -r answer; [ \"$answer\" = alpine ] && "
@@ -130,7 +149,9 @@ class M239TTYInteraction:
                 self._type("alive=1; [ \"$(id -u)\" = 0 ] || alive=0; "
                            "for svc in lighttpd dnsmasq mosquitto memcached; "
                            "do rc-service \"$svc\" status >/dev/null 2>&1 || alive=0; "
-                           "done; [ \"$alive\" = 1 ] && sync && "
+                           "done; [ \"$alive\" = 1 ] && "
+                           "rc-service mosquitto stop >/dev/null 2>&1 && "
+                           "[ -s /var/lib/mosquitto/m231.db ] && sync && "
                            "printf 'M239_TTY_GETTY_RELOGIN_FOUR_OPENRC_PASS\\n'\r",
                            "final_result", len(text))
         elif self.state == "final_result":

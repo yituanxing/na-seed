@@ -54,6 +54,10 @@ def reject(callback, label: str):
 def reach_sigint_arm():
     t = Transcript()
     assert not t.append('naseed:~# ')
+    assert t.probe.state == 'rearm_result'
+    assert 'rc-service mosquitto start' in t.sent[-1]
+    assert not t.append('\nM239_TTY_FOUR_OPENRC_REARM_PASS\n')
+    assert not t.append('naseed:~# ')
     assert t.probe.state == 'canon_ready'
     assert 'read -r answer' in t.sent[-1]
     assert not t.append('\nM239_TTY_CANON_READY\n')
@@ -86,6 +90,8 @@ def valid_cycle():
                         'localhost:~# ')
     assert t.probe.state == 'final_result'
     assert 'id -u' in t.sent[-1]
+    assert 'rc-service mosquitto stop' in t.sent[-1]
+    assert '[ -s /var/lib/mosquitto/m231.db ]' in t.sent[-1]
     assert '&& sync &&' in t.sent[-1], 'final physical ext4 writes must flush'
     assert not t.append('\nM239_TTY_GETTY_RELOGIN_FOUR_OPENRC_PASS\n')
     assert t.append('localhost:~# ')
@@ -96,12 +102,19 @@ def negative_cases():
     # An echoed command containing an output-marker literal is not evidence.
     fake = Transcript()
     fake.append('naseed:~# ')
-    fake.append("naseed:~# printf 'M239_TTY_CANON_READY\\n'; read -r x")
-    assert fake.probe.state == 'canon_ready'
+    fake.append("naseed:~# printf 'M239_TTY_FOUR_OPENRC_REARM_PASS\\n'")
+    assert fake.probe.state == 'rearm_result'
 
     reject(lambda: (lambda t: (
         t.append('naseed:~# '), t.append('naseed:~# ')))(Transcript()),
-        'returned before canonical input')
+        'returned before four OpenRC re-arm')
+
+    t = Transcript()
+    t.append('naseed:~# ')
+    t.append('\nM239_TTY_FOUR_OPENRC_REARM_PASS\n')
+    t.append('naseed:~# ')
+    reject(lambda: t.append('naseed:~# '),
+           'returned before canonical input')
 
     t = reach_sigint_arm()
     t.append('\nM239_TTY_SIGINT_ARMED\n', now=1.0)
