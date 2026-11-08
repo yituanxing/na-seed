@@ -135,7 +135,12 @@ def main() -> None:
     owner.verify(sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]),
                  candidates=base / 'scripts/m235-candidate-elfs.tsv',
                  packages=base / 'rootfs/alpine/packages-m235-candidates.txt',
-                 expected_count=12, label='M235')
+                 expected_count=12, label='M235',
+                 # Base Alpine exposes ipcalc as a BusyBox applet symlink.
+                 # The shared M206 verifier accepts this exact pre-APK alias
+                 # ONLY when it resolves to the ISA-matched original BusyBox;
+                 # an actual preinstalled independent ELF still fails.
+                 allowed_staged_busybox_aliases=('/bin/ipcalc',))
     validate_persistent_data(sys.argv[1], Path(sys.argv[3]))
     print('[M235 PHYSICAL DISK PASS] 12 distinct original native ELF hashes, '
           'six signed APK identities, two-boot real DB/JSON/IP/WG/LFS/HTTP '
