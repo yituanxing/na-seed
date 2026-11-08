@@ -1,6 +1,6 @@
 #!/bin/sh
 # Host-only candidate census; this does NOT run or accept guest programs.
-# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64 [m141|m205|m206|m213|m215|m218|m219|m220|m221|m222|m223|m224|m225|m226|m235|m236|m237]
+# Usage: sh scripts/inventory-m141-signed-apks.sh amd64|riscv64|arm64 [m141|m205|m206|m213|m215|m218|m219|m220|m221|m222|m223|m224|m225|m226|m235|m236|m237|m238]
 # Download official signed Alpine 3.23 APKs once and classify candidate paths.
 set -eu
 
@@ -8,7 +8,7 @@ set -eu
 port=$1
 profile=${2:-m141}
 case "$profile" in
-    m141|m205|m206|m213|m215|m218|m219|m220|m221|m222|m223|m224|m225|m226|m235|m236|m237) ;;
+    m141|m205|m206|m213|m215|m218|m219|m220|m221|m222|m223|m224|m225|m226|m235|m236|m237|m238) ;;
     *) echo '[CANDIDATE ERROR] unknown pool profile' >&2; exit 2 ;;
 esac
 case "$port" in
@@ -40,7 +40,7 @@ test -n "$package_list"
 # APK v3.0 (Alpine 3.23) supports --cache-predownload and recognizes this
 # conventional ext4-backed /etc/apk/cache symlink. Never use --allow-untrusted.
 cache_flags=
-if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; then
+if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; then
     # The guest's genuine PTY/metadata regression also installs the signed
     # util-linux-misc helper. It is not one of the 20 candidate entrypoints,
     # but must be present in the offline package closure.
@@ -58,7 +58,7 @@ fi
 if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
     cp -a "build/external/m39-packages/$port/rootfs/." "$root/"
-    if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; then
+    if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; then
         # The cached M39 minirootfs was copied only NOW. Configure the cache
         # after copying it, so no base-root entry can replace the link.
         mkdir -p "$root/var/cache/apk"
@@ -94,7 +94,7 @@ if [ ! -f "$work/packages-$package_sha/signed-install.ok" ]; then
     touch "$work/packages-$package_sha/signed-install.ok"
 fi
 
-if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; then
+if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; then
     # The guest M191 disk already pins BOTH official repositories. Mirror
     # that exact configuration in this host-only cross-ISA root as well:
     # apk-tools 3's index cache update follows persistent repository config,
@@ -117,14 +117,14 @@ if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ 
         grep -Ec '\.[0-9a-f]{8}\.apk$' || :)
     index_count=$(find "$cache" -maxdepth 1 -type f -name 'APKINDEX*' | wc -l)
     min_archives=16
-    { [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; } && min_archives=2
+    { [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; } && min_archives=2
     # A two-package pilot can exceed its archive-count floor even if a
     # previous interrupted fetch omitted one transitive dependency. Until
     # an independent empty-root offline install passed, refresh the complete
     # signed closure rather than repeatedly failing from a partial cache.
     m215_verified="$work/packages-$package_sha/offline-verified.ok"
     if [ "$canonical_count" -lt "$min_archives" ] || [ "$index_count" -lt 2 ] || \
-       { { [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; } && [ ! -f "$m215_verified" ]; }; then
+       { { [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; } && [ ! -f "$m215_verified" ]; }; then
         if ! docker run --rm --volume "$root_canonical:/target" \
             --volume "$root_canonical/var/cache/apk:/var/cache/apk" \
             --env APK_ARCH="$arch" --env APK_PACKAGES="$package_list" \
@@ -237,7 +237,7 @@ if [ "$profile" = m205 ] || [ "$profile" = m206 ] || [ "$profile" = m213 ] || [ 
         tail -60 "$work/apk-offline-proof.log" >&2
         exit 1
     fi
-    if [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ]; then
+    if [ "$profile" = m215 ] || [ "$profile" = m218 ] || [ "$profile" = m219 ] || [ "$profile" = m220 ] || [ "$profile" = m221 ] || [ "$profile" = m222 ] || [ "$profile" = m223 ] || [ "$profile" = m224 ] || [ "$profile" = m225 ] || [ "$profile" = m226 ] || [ "$profile" = m235 ] || [ "$profile" = m236 ] || [ "$profile" = m237 ] || [ "$profile" = m238 ]; then
         touch "$m215_verified"
     fi
     echo "[M205 SIGNED CACHE PASS] $port $archive_count upstream APK archives, $index_count retained indexes, SHA256 pinned; independent empty-root offline install PASS"
