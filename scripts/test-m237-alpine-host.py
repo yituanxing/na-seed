@@ -110,20 +110,42 @@ class M237SignedNativeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             disk.real_semantics(self.root / 'missing.ext4', M191)
 
-    def test_geos_failure_diagnostics_keep_original_strict_area_gate(self):
+    def test_signed_geos_binary_case_uses_persisted_points_and_three_real_operations(self):
         workload = (BASE.parent / 'tests/m237-software-workload.sh').read_text()
-        geos = workload.split('    geos-polygon-area:usr/bin/geosop)', 1)[1].split('        ;;', 1)[0]
-        self.assertIn('/usr/bin/geosop -a "$state/rectangle.wkt" --format=txt area', geos)
-        self.assertIn('11.999', geos)
-        self.assertIn('12.001', geos)
-        self.assertIn('if [ "$area_ok" -ne 1 ]; then', geos)
-        self.assertIn('M237_GEOS_DIAG phase=%s area_rc=%s stderr=%s', geos)
-        self.assertIn('M237_GEOS_DIFF phase=%s literal_area=%s stdin_area=%s file_copy=%s literal_copy=%s', geos)
-        self.assertIn('/usr/bin/geosop -a "$literal" --format=txt area', geos)
-        self.assertIn('/usr/bin/geosop -a stdin --format=txt area', geos)
-        self.assertIn('/usr/bin/geosop -a "$state/rectangle.wkt" --format=txt copy', geos)
-        self.assertIn('/usr/bin/geosop -a "$literal" --format=txt copy', geos)
-        self.assertIn('exit 1', geos)
+        geos = workload.split('    geos-binary-distance-intersects:usr/bin/geosop)', 1)[1].split('        ;;', 1)[0]
+        self.assertIn('if [ "$phase" = first ]; then', geos)
+        self.assertIn("printf 'POINT (0 0)\\n' > \"$state/geos-origin.wkt\"", geos)
+        self.assertIn("printf 'POINT (3 4)\\n' > \"$state/geos-diagonal.wkt\"", geos)
+        self.assertIn('test -s "$state/geos-origin.wkt" && test -s "$state/geos-diagonal.wkt"', geos)
+        self.assertEqual(geos.count('/usr/bin/geosop -a "$state/geos-origin.wkt"'), 3)
+        self.assertIn('-b "$state/geos-diagonal.wkt"', geos)
+        self.assertIn('-b "$state/geos-origin.wkt"', geos)
+        for expected in ('--format=txt distance > "$target/distance.txt"',
+                         '--format=txt intersects > "$target/intersects-true.txt"',
+                         '--format=txt intersects > "$target/intersects-false.txt"',
+                         "$busy grep -Eq '^5(\\.0+)?$'", '$busy grep -Fxq true',
+                         '$busy grep -Fxq false'):
+            self.assertIn(expected, geos)
+        self.assertNotIn('--format=txt area', geos)
+        self.assertNotIn('M237_GEOS_DIAG', geos)
+
+    def test_signed_geos_physical_binary_semantics_fail_closed(self):
+        disk.verify_geos_binary('first', b'5\n', b'true\n', b'false\n')
+        disk.verify_geos_binary('reopen', b'5.000\n', b'true\n', b'false\n')
+        bad_outputs = (
+            (b'0\n', b'true\n', b'false\n'),
+            (b'5.0001\n', b'true\n', b'false\n'),
+            (b'5\nextra\n', b'true\n', b'false\n'),
+            (b'5\n', b'false\n', b'false\n'),
+            (b'5\n', b'true\n', b'true\n'),
+            (b'5\n', b'', b'false\n'),
+            (b'5\n', b'true\n', b''),
+        )
+        for phase in ('first', 'reopen'):
+            for values in bad_outputs:
+                with self.subTest(phase=phase, values=values):
+                    with self.assertRaises(ValueError):
+                        disk.verify_geos_binary(phase, *values)
 
 
 if __name__ == '__main__':

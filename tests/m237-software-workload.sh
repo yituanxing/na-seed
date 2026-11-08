@@ -137,41 +137,29 @@ case "$case_id:$elf" in
             echo 'M237 minisign incorrectly accepted modified signed bytes' >&2; exit 1
         fi
         ;;
-    geos-polygon-area:usr/bin/geosop)
+    geos-binary-distance-intersects:usr/bin/geosop)
+        # The original Alpine 3.23 GEOS 3.14.1 geosop has an upstream
+        # executeUnary null-B dereference, independently reproduced on Linux.
+        # Its original signed binary ops work: test both numeric geometry and
+        # positive/negative topology against persisted real ext4 WKT files.
         if [ "$phase" = first ]; then
-            printf 'POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))\n' > "$state/rectangle.wkt"
+            test ! -e "$state/geos-origin.wkt" && test ! -e "$state/geos-diagonal.wkt"
+            printf 'POINT (0 0)\n' > "$state/geos-origin.wkt"
+            printf 'POINT (3 4)\n' > "$state/geos-diagonal.wkt"
         fi
-        test -s "$state/rectangle.wkt"
-        geos_rc=0
-        /usr/bin/geosop -a "$state/rectangle.wkt" --format=txt area > "$target/area.txt" 2> "$target/geos.err" || geos_rc=$?
-        area_ok=0
-        if [ "$geos_rc" -eq 0 ] &&
-                $busy awk '{for(i=1;i<=NF;i++) if($i+0 >= 11.999 && $i+0 <= 12.001) found=1} END{exit !found}' "$target/area.txt"; then
-            area_ok=1
-        fi
-        if [ "$area_ok" -ne 1 ]; then
-            # The authoritative test remains the genuine 3x4 GEOS area.
-            # Keep strict 3x4 area acceptance; isolate geometry parser,
-            # stream input, ext4 file input and GEOS operation independently.
-            # Each probe uses the same original signed Alpine geosop ELF.
-            literal='POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))'
-            lit_rc=0
-            $busy timeout 8 /usr/bin/geosop -a "$literal" --format=txt area > "$target/literal-area.txt" 2> "$target/literal-area.err" || lit_rc=$?
-            stdin_rc=0
-            $busy timeout 8 /usr/bin/geosop -a stdin --format=txt area < "$state/rectangle.wkt" > "$target/stdin-area.txt" 2> "$target/stdin-area.err" || stdin_rc=$?
-            file_copy_rc=0
-            $busy timeout 8 /usr/bin/geosop -a "$state/rectangle.wkt" --format=txt copy > "$target/file-copy.txt" 2> "$target/file-copy.err" || file_copy_rc=$?
-            lit_copy_rc=0
-            $busy timeout 8 /usr/bin/geosop -a "$literal" --format=txt copy > "$target/literal-copy.txt" 2> "$target/literal-copy.err" || lit_copy_rc=$?
-            geos_err=$($busy head -c 120 "$target/geos.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            lit_err=$($busy head -c 80 "$target/literal-area.err" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            lit_out=$($busy head -c 36 "$target/literal-area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            stdin_out=$($busy head -c 36 "$target/stdin-area.txt" | $busy tr '\t\r\n' '   ' | $busy tr -cd '\040-\176')
-            printf 'M237_GEOS_DIAG phase=%s area_rc=%s stderr=%s\n' "$phase" "$geos_rc" "$geos_err"
-            printf 'M237_GEOS_DIFF phase=%s literal_area=%s stdin_area=%s file_copy=%s literal_copy=%s\n' "$phase" "$lit_rc" "$stdin_rc" "$file_copy_rc" "$lit_copy_rc"
-            printf 'M237_GEOS_DIFF_OUTPUT phase=%s literal=%s stdin=%s literal_err=%s\n' "$phase" "$lit_out" "$stdin_out" "$lit_err"
-            exit 1
-        fi
+        test -s "$state/geos-origin.wkt" && test -s "$state/geos-diagonal.wkt"
+        /usr/bin/geosop -a "$state/geos-origin.wkt" -b "$state/geos-diagonal.wkt" \
+            --format=txt distance > "$target/distance.txt" 2> "$target/distance.err"
+        /usr/bin/geosop -a "$state/geos-origin.wkt" -b "$state/geos-origin.wkt" \
+            --format=txt intersects > "$target/intersects-true.txt" 2> "$target/intersects-true.err"
+        /usr/bin/geosop -a "$state/geos-origin.wkt" -b "$state/geos-diagonal.wkt" \
+            --format=txt intersects > "$target/intersects-false.txt" 2> "$target/intersects-false.err"
+        $busy grep -Eq '^5(\.0+)?$' "$target/distance.txt" &&
+            $busy grep -Fxq true "$target/intersects-true.txt" &&
+            $busy grep -Fxq false "$target/intersects-false.txt" || {
+                echo 'M237 GEOS original binary geometry returned wrong distance/topology' >&2
+                exit 1
+            }
         ;;
     proj-crs-info:usr/bin/projinfo)
         /usr/bin/projinfo EPSG:4326 > "$target/crs.txt" 2> "$target/proj.err"

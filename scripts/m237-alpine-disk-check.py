@@ -61,6 +61,17 @@ def signed_sha(port: str, partition: Path, m191, home: Path = ROOT) -> dict[str,
     return fingerprints
 
 
+def verify_geos_binary(phase: str, distance: bytes, intersects_true: bytes,
+                       intersects_false: bytes) -> None:
+    """Fail closed on original geosop geometry stdout from physical ext4."""
+    if not re.fullmatch(rb'5(?:\.0+)?\r?\n', distance):
+        raise ValueError(f'[M237 SEMANTIC FAIL] {phase} GEOS binary point distance != 5')
+    if intersects_true != b'true\n':
+        raise ValueError(f'[M237 SEMANTIC FAIL] {phase} GEOS same-point intersection != true')
+    if intersects_false != b'false\n':
+        raise ValueError(f'[M237 SEMANTIC FAIL] {phase} GEOS distinct-point intersection != false')
+
+
 def real_semantics(partition: Path, m191) -> dict[str, str]:
     read = lambda relative: m191.debugfs_cat(partition, '/root/m237-state/' + relative)
     result = lambda case, phase, name: read(f'{case}.{phase}/{name}')
@@ -73,8 +84,9 @@ def real_semantics(partition: Path, m191) -> dict[str, str]:
         raise ValueError('[M237 SEMANTIC FAIL] first-boot JSON input absent')
     if read('signed.message') != b'M237_ORIGINAL_MINISIGN_DURABLE_SIGNATURE\n':
         raise ValueError('[M237 SEMANTIC FAIL] signed message input absent')
-    if read('rectangle.wkt') != b'POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))\n':
-        raise ValueError('[M237 SEMANTIC FAIL] original geometry input absent')
+    if (read('geos-origin.wkt') != b'POINT (0 0)\n' or
+            read('geos-diagonal.wkt') != b'POINT (3 4)\n'):
+        raise ValueError('[M237 SEMANTIC FAIL] original persistent GEOS point inputs absent')
     if read('longitude-latitude.txt') != b'10 20\n':
         raise ValueError('[M237 SEMANTIC FAIL] original geographic input absent')
     private = read('minisign.secret')
@@ -97,7 +109,7 @@ def real_semantics(partition: Path, m191) -> dict[str, str]:
         'yajl-parse-reformat': 'reformatted.json',
         'yajl-valid-invalid': 'invalid.json',
         'minisign-persistent-signature': 'verified.log',
-        'geos-polygon-area': 'area.txt',
+        'geos-binary-distance-intersects': 'distance.txt',
         'proj-crs-info': 'crs.txt',
         'proj-mercator-coordinates': 'mercator.xy',
     }
@@ -150,10 +162,10 @@ def real_semantics(partition: Path, m191) -> dict[str, str]:
             raise ValueError('[M237 SEMANTIC FAIL] original Ed25519 verify/tamper rejection absent')
         if b'M237_ORIGINAL_MINISIGN_TAMPERED_SIGNATURE' != actual('minisign-persistent-signature', 'tampered.message').strip():
             raise ValueError('[M237 SEMANTIC FAIL] signed-byte tamper did not change contents')
-        area = actual('geos-polygon-area', 'area.txt')
-        if not any(11.999 <= float(tok) <= 12.001
-                   for tok in area.decode(errors='replace').split() if re.fullmatch(r'-?\d+(\.\d+)?', tok)):
-            raise ValueError('[M237 SEMANTIC FAIL] real 3×4 GEOS geometry area wrong')
+        geos = 'geos-binary-distance-intersects'
+        verify_geos_binary(phase, actual(geos, 'distance.txt'),
+                           actual(geos, 'intersects-true.txt'),
+                           actual(geos, 'intersects-false.txt'))
         crs = actual('proj-crs-info', 'crs.txt')
         if not re.search(rb'(WGS 84|longlat|geographic)', crs, re.I):
             raise ValueError('[M237 SEMANTIC FAIL] real PROJ CRS lookup wrong')
@@ -167,6 +179,8 @@ def real_semantics(partition: Path, m191) -> dict[str, str]:
 
         for case, file in expected_fingerprints.items():
             physical_sha[f'{case}.{phase}/{file}'] = hashlib.sha256(actual(case, file)).hexdigest()
+        for file in ('intersects-true.txt', 'intersects-false.txt'):
+            physical_sha[f'{geos}.{phase}/{file}'] = hashlib.sha256(actual(geos, file)).hexdigest()
     return physical_sha
 
 
@@ -180,6 +194,8 @@ def verify(port: str, signed_root: Path, disk: Path) -> None:
         m191.extract_partition(disk.resolve(strict=True), partition)
         original = signed_sha(port, partition, m191)
         outputs = real_semantics(partition, m191)
+        if len(outputs) != 34:
+            raise ValueError('[M237 SEMANTIC FAIL] expected 34 first/reopen physical output witnesses')
         proof = dict(milestone='M237', port=port, original_signed_elf_sha256=original,
                      first_and_reopen_physical_output_sha256=outputs,
                      physical_ext4_real_app_semantics=True,
@@ -187,7 +203,7 @@ def verify(port: str, signed_root: Path, disk: Path) -> None:
     (disk.parent / 'm237-physical-ext4-evidence.json').write_text(
         json.dumps(proof, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     print('[M237 PHYSICAL DISK PASS] 15 unique signed original Alpine ELF SHA '
-          'and 30 first/reopen real semantic byte witnesses match actual physical ext4')
+          'and 34 first/reopen real semantic byte witnesses match actual physical ext4')
 
 
 if __name__ == '__main__':

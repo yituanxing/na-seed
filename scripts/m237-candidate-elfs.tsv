@@ -12,6 +12,6 @@ recutils	usr/bin/recset	data	rec-set-field
 yajl-tools	usr/bin/json_reformat	json	yajl-parse-reformat
 yajl-tools	usr/bin/json_verify	json	yajl-valid-invalid
 minisign	usr/bin/minisign	crypto	minisign-persistent-signature
-geos	usr/bin/geosop	geometry	geos-polygon-area
+geos	usr/bin/geosop	geometry	geos-binary-distance-intersects
 proj-util	usr/bin/projinfo	projection	proj-crs-info
 proj-util	usr/bin/cs2cs	projection	proj-mercator-coordinates
