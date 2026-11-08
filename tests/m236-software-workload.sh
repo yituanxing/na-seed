@@ -23,13 +23,20 @@ case "$case_id:$elf" in
             test ! -e "$repo"
             mkdir -p "$state/fossil-work"
             /usr/bin/fossil init -A m236 "$repo" > "$target/init.log" 2>&1
-            ( cd "$state/fossil-work" &&
-              /usr/bin/fossil open --nosync "$repo" &&
-              printf 'M236_REAL_FOSSIL_COMMITTED_DATA_2026\n' > payload.txt &&
-              /usr/bin/fossil add payload.txt &&
-              /usr/bin/fossil commit --nosync --no-warnings \
-                  --user-override m236 -m 'M236 durable original fossil check-in' ) \
-                > "$target/commit.log" 2>&1
+            if ! ( cd "$state/fossil-work" &&
+                   /usr/bin/fossil open --nosync "$repo" &&
+                   printf 'M236_REAL_FOSSIL_COMMITTED_DATA_2026\n' > payload.txt &&
+                   /usr/bin/fossil add payload.txt &&
+                   /usr/bin/fossil commit --nosync --no-warnings \
+                       --user-override m236 -m 'M236 durable original fossil check-in' ) \
+                    > "$target/commit.log" 2>&1; then
+                # The original Fossil stderr lives on physical ext4. Propagate
+                # its bounded actual last lines to UART before strict FAIL,
+                # never infer a syscall problem from an exit status alone.
+                echo 'M236 FOSSIL original checkout/commit exit nonzero' >&2
+                $busy tail -n 3 "$target/commit.log" >&2
+                exit 1
+            fi
         fi
         test -s "$repo" && test -s "$payload"
         /usr/bin/fossil cat -R "$repo" payload.txt > "$target/checked-out.txt" 2> "$target/cat.err"
@@ -40,7 +47,15 @@ case "$case_id:$elf" in
     libdeflate-gzip-roundtrip:usr/bin/libdeflate-gzip)
         if [ "$phase" = first ]; then
             printf 'M236_LIBDEFLATE_FIRST_EXT4_2026\nPAYLOAD=alpha,beta,gamma\n' > "$state/codec.txt"
-            /usr/bin/libdeflate-gzip -c "$state/codec.txt" > "$state/codec.gz" 2> "$target/compress.err"
+            if ! /usr/bin/libdeflate-gzip -c "$state/codec.txt" > "$state/codec.gz" 2> "$target/compress.err"; then
+                echo 'M236 LIBDEFLATE original gzip compression exit nonzero' >&2
+                if [ -s "$target/compress.err" ]; then
+                    $busy tail -n 3 "$target/compress.err" >&2
+                else
+                    echo 'M236 LIBDEFLATE original stderr empty; inspect native syscall trace' >&2
+                fi
+                exit 1
+            fi
         fi
         test -s "$state/codec.txt" && test -s "$state/codec.gz"
         # The historical upstream installs gunzip as a binary alias. It is
