@@ -1,0 +1,17 @@
+package	elf_path	family	probe
+# Fifteen genuinely new original Alpine native ELFs; none in M109-M236.
+recutils	usr/bin/csv2rec	data	rec-csv-import
+recutils	usr/bin/rec2csv	data	rec-csv-export
+recutils	usr/bin/recdel	data	rec-remove-selected
+recutils	usr/bin/recfix	data	rec-structural-check
+recutils	usr/bin/recfmt	data	rec-template-render
+recutils	usr/bin/recinf	data	rec-record-count
+recutils	usr/bin/recins	data	rec-insert-record
+recutils	usr/bin/recsel	data	rec-select-expression
+recutils	usr/bin/recset	data	rec-set-field
+yajl-tools	usr/bin/json_reformat	json	yajl-parse-reformat
+yajl-tools	usr/bin/json_verify	json	yajl-valid-invalid
+minisign	usr/bin/minisign	crypto	minisign-persistent-signature
+geos	usr/bin/geosop	geometry	geos-polygon-area
+proj-util	usr/bin/projinfo	projection	proj-crs-info
+proj-util	usr/bin/cs2cs	projection	proj-mercator-coordinates

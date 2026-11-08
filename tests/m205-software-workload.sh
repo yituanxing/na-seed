@@ -5,7 +5,15 @@
 set -u
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin HOME=/root LC_ALL=C LANG=C
 
-if [ "${NAS_M236_COMPAT_COHORT:-0}" = 1 ]; then
+if [ "${NAS_M237_COMPAT_COHORT:-0}" = 1 ]; then
+    test "${NAS_M236_COMPAT_COHORT:-0}:${NAS_M235_COMPAT_COHORT:-0}:${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" = '0:0:0:0' || exit 2
+    milestone=M237
+    manifest=/root/m237-cohort.tsv
+    work=/root/m237-work
+    first=/root/m237-first-results.tsv
+    reopen=/root/m237-reopen-results.tsv
+    exercise_script=/root/m237-software-workload.sh
+elif [ "${NAS_M236_COMPAT_COHORT:-0}" = 1 ]; then
     test "${NAS_M235_COMPAT_COHORT:-0}:${NAS_M213_COMPAT_COHORT:-0}:${NAS_M206_COMPAT_COHORT:-0}" = '0:0:0' || exit 2
     milestone=M236
     manifest=/root/m236-cohort.tsv
@@ -599,6 +607,7 @@ cohort_rows=$(/bin/busybox awk -F '\t' '
 expected_rows=20
 [ "$milestone" = M235 ] && expected_rows=12
 [ "$milestone" = M236 ] && expected_rows=7
+[ "$milestone" = M237 ] && expected_rows=15
 [ "$milestone" = M215 ] && expected_rows=5
 [ "$milestone" = M218 ] && expected_rows=1
 [ "$milestone" = M219 ] && expected_rows=1
@@ -692,6 +701,7 @@ export NAS_M223_BOOT_PHASE="$phase"
 export NAS_M224_BOOT_PHASE="$phase"
 export NAS_M235_BOOT_PHASE="$phase"
 export NAS_M236_BOOT_PHASE="$phase"
+export NAS_M237_BOOT_PHASE="$phase"
 # M218/M220/M221 network probes must wait for DHCP on the independent second
 # CPIO boot. The other cohort budgets remain unchanged; this is not a
 # blanket timeout increase or a bypass of original ELF semantics.
@@ -704,6 +714,7 @@ exercise_budget=45
 [ "$milestone" = M224 ] && exercise_budget=180
 [ "$milestone" = M235 ] && exercise_budget=120
 [ "$milestone" = M236 ] && exercise_budget=150
+[ "$milestone" = M237 ] && exercise_budget=160
 
 total=0
 while IFS="$tab" read -r package elf family case_id <&9 || [ -n "$package" ]; do
