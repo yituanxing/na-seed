@@ -7,6 +7,7 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m229-valkey-host-ingress.yml'
+      - '.github/actions/naseed-limine-seed/**'
       - 'tests/m229-alpine-valkey-workload.sh'
       - 'scripts/m229-*.py'
       - 'scripts/test-m229-*.py'
@@ -21,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -104,6 +106,10 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+      - name: Restore immutable three-ISA proven Limine before native boot
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
       - name: Two original Alpine PID1 QEMUs and independent authenticated host RESP
         timeout-minutes: 85
         env:
