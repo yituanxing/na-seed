@@ -87,6 +87,8 @@ for invalid_first, invalid_reopen in (
         raise AssertionError("forged/missing/inconsistent cohort evidence accepted")
 
 old_probe = (ROOT / "scripts/probe-m197-alpine-software-cohort.sh").read_text()
+assert '. scripts/acceptance/profile.sh' in old_probe
+old_probe += '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
 new_probe = (ROOT / "scripts/probe-m204-alpine-compat-cohort.sh").read_text()
 assert "NAS_M204_COMPAT_COHORT:-0" in old_probe
 assert "scripts/m204-alpine-uart.py" in old_probe

@@ -83,6 +83,17 @@ def main():
     assert 'sha256sum -c build/deps/limine-binary.tar.gz.sha256' in workflow
     assert 'sha256sum -c build/deps/limine.h.sha256' in workflow
     assert workflow.count('build/deps/limine.h.sha256') >= 2
+    # A previously proven exact three-ISA artifact must seed the first AMD64
+    # build. Otherwise a transient upstream release HTTP failure blocks M191
+    # before either real QEMU boot (observed on run 42482763655).
+    assert 'run-id: 42480429066' in workflow
+    assert 'm239-limine-verified-6cceaccb3852121a395fe8b4050e3185a2630ed1' in workflow
+    assert 'actions/cache/restore@v4' in workflow
+    assert 'actions/cache/save@v4' in workflow
+    assert workflow.count('b38aabb042b0c0f9f562b7741be3c1204838d7bbacfa78bb411c674bd5b984ee') == 2
+    assert workflow.count('0aadf2633c85d8cb145344c968add158aeb1deb68af567d55ba8431c492b6d4c') == 2
+    assert (workflow.index('Verify exact old three-ISA PASS bootloader bytes') <
+            workflow.index('Two real QEMU boots, simultaneous HTTP DNS MQTT cache'))
     for target in ('BOOTX64.EFI', 'BOOTRISCV64.EFI', 'BOOTAA64.EFI'):
         assert target in workflow
     print('[M239 HOST CONTRACT PASS] multi-service original APK/OpenRC, '

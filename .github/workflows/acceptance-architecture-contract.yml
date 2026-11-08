@@ -13,6 +13,9 @@ on:
       - 'scripts/qemu-hostfwd-extra.sh'
       - 'scripts/test-acceptance-*.py'
       - 'scripts/test-acceptance-*.sh'
+      - 'scripts/test-m199-openrc-host.py'
+      - 'scripts/test-m204-alpine-host.py'
+      - 'scripts/test-m227-openrc-contract.py'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +46,9 @@ jobs:
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh
           python3 scripts/test-m197-alpine-host.py
+          python3 scripts/test-m199-openrc-host.py
+          python3 scripts/test-m204-alpine-host.py
+          python3 scripts/test-m227-openrc-contract.py
           python3 scripts/test-m228-hostfwd-contract.py
           python3 scripts/test-m233-hostfwd-udp-contract.py
           python3 scripts/test-qemu-extra-hostfwd.py

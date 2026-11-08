@@ -17,7 +17,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def check() -> None:
-    native = read('scripts/probe-m197-alpine-software-cohort.sh')
+    runner = read('scripts/probe-m197-alpine-software-cohort.sh')
+    require('. scripts/acceptance/profile.sh' in runner,
+            'M197 must source the sole legacy cohort selector owner')
+    native = runner + '\n' + read('scripts/acceptance/profile.sh')
     manifest = read('scripts/m227-alpine-boot-cases.tsv')
     uart = read('scripts/m227-alpine-uart.py')
     guest = read('tests/m227-alpine-openrc-workload.sh')

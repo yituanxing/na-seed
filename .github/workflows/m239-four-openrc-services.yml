@@ -28,6 +28,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,6 +51,9 @@ jobs:
           python3 scripts/test-acceptance-profiles.py
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh
+          python3 scripts/test-m199-openrc-host.py
+          python3 scripts/test-m204-alpine-host.py
+          python3 scripts/test-m227-openrc-contract.py
           python3 scripts/test-qemu-extra-hostfwd.py
           python3 scripts/test-m231-mosquitto.py
           python3 scripts/test-m232-memcached.py
@@ -60,6 +64,47 @@ jobs:
       - name: Prepare real native QEMU and official signed Alpine package tools
         timeout-minutes: 20
         run: sh scripts/ci-m239-toolchain.sh amd64
+      - name: Restore previously verified multi-ISA Limine seed from CI cache
+        id: limine-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/deps/limine-binary.tar.gz
+            build/deps/limine-binary.tar.gz.sha256
+            build/deps/limine.h
+            build/deps/limine.h.sha256
+          key: naseed-limine-m239-proven-0641680706a97041a688557004daba3723ad678811c375b2cf79baeb6d1971ad
+      - name: Reuse same-repository proven Limine seed when cache is cold
+        if: steps.limine-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: m239-limine-verified-6cceaccb3852121a395fe8b4050e3185a2630ed1
+          run-id: 42480429066
+          github-token: ${{ github.token }}
+          path: build/deps
+      - name: Verify exact old three-ISA PASS bootloader bytes before building
+        run: |
+          set -eu
+          test -s build/deps/limine-binary.tar.gz
+          test -s build/deps/limine.h
+          sha256sum -c build/deps/limine-binary.tar.gz.sha256
+          sha256sum -c build/deps/limine.h.sha256
+          echo 'b38aabb042b0c0f9f562b7741be3c1204838d7bbacfa78bb411c674bd5b984ee  build/deps/limine-binary.tar.gz' | sha256sum -c -
+          echo '0aadf2633c85d8cb145344c968add158aeb1deb68af567d55ba8431c492b6d4c  build/deps/limine.h' | sha256sum -c -
+          for efi in BOOTX64.EFI BOOTRISCV64.EFI BOOTAA64.EFI; do
+            tar -tzf build/deps/limine-binary.tar.gz | grep -Eq "(^|/)$efi$"
+          done
+          echo '[M239 PROVEN LIMINE REUSED] archive/header verified before native QEMU'
+      - name: Cache SHA-verified Limine seed for subsequent real runs
+        if: steps.limine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/deps/limine-binary.tar.gz
+            build/deps/limine-binary.tar.gz.sha256
+            build/deps/limine.h
+            build/deps/limine.h.sha256
+          key: naseed-limine-m239-proven-0641680706a97041a688557004daba3723ad678811c375b2cf79baeb6d1971ad
       - name: Two real QEMU boots, simultaneous HTTP DNS MQTT cache and three host protocols
         timeout-minutes: 95
         env:
@@ -143,6 +188,8 @@ jobs:
           set -eu
           sha256sum -c build/deps/limine-binary.tar.gz.sha256
           sha256sum -c build/deps/limine.h.sha256
+          echo 'b38aabb042b0c0f9f562b7741be3c1204838d7bbacfa78bb411c674bd5b984ee  build/deps/limine-binary.tar.gz' | sha256sum -c -
+          echo '0aadf2633c85d8cb145344c968add158aeb1deb68af567d55ba8431c492b6d4c  build/deps/limine.h' | sha256sum -c -
           for efi in BOOTX64.EFI BOOTRISCV64.EFI BOOTAA64.EFI; do
             tar -tzf build/deps/limine-binary.tar.gz | grep -Eq "(^|/)$efi$"
           done
@@ -154,6 +201,9 @@ jobs:
           python3 scripts/test-acceptance-profiles.py
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh
+          python3 scripts/test-m199-openrc-host.py
+          python3 scripts/test-m204-alpine-host.py
+          python3 scripts/test-m227-openrc-contract.py
           python3 scripts/test-qemu-extra-hostfwd.py
           python3 scripts/test-m231-mosquitto.py
           python3 scripts/test-m232-memcached.py

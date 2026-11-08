@@ -144,6 +144,8 @@ def check() -> None:
     assert cases[0][0] == 'm197-batch'
     assert cases[0][1] == 'cpio' and cases[0][5] == '/sbin/init'
     driver = read('scripts/probe-m197-alpine-software-cohort.sh')
+    assert '. scripts/acceptance/profile.sh' in driver
+    driver += '\n' + read('scripts/acceptance/profile.sh')
     assert 'NAS_M199_ORIGINAL_OPENRC_DESKTOP:-0' in driver
     assert re.search(r'if \[ "\$m199" = 1 \]; then[\s\S]{0,260}?\n\s*m198=1', driver)
     assert 'scripts/stage-m199-alpine-openrc.sh "$port" "$overlay"' in driver
