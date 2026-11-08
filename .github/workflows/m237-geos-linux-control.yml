@@ -54,6 +54,20 @@ jobs:
             probe point-area /usr/bin/geosop -a "POINT (0 0)" --format=txt area
             probe line-length /usr/bin/geosop -a "LINESTRING (0 0, 3 4)" --format=txt length
             probe verbose-polygon /usr/bin/geosop -v -a "$wkt" --format=txt area
+            # GEOS 3.14.1 executeOp unconditionally dereferences *gB;
+            # unary ops pass nullptr, while real binary ops supply B.
+            probe point-distance /usr/bin/geosop -a "POINT (0 0)" -b "POINT (3 4)" --format=txt distance
+            probe point-intersects /usr/bin/geosop -a "POINT (0 0)" -b "POINT (0 0)" --format=txt intersects
+            probe point-disjoint /usr/bin/geosop -a "POINT (0 0)" -b "POINT (3 4)" --format=txt intersects
+            probe polygon-intersection /usr/bin/geosop -a "$wkt" -b "$wkt" --format=txt intersection
+            if grep -Eq "(^|[^0-9])5(\.0+)?($|[^0-9])" /tmp/point-distance.out &&
+               grep -Eiq "true|^1$" /tmp/point-intersects.out &&
+               grep -Eiq "false|^0$" /tmp/point-disjoint.out &&
+               grep -Fq "POLYGON" /tmp/polygon-intersection.out; then
+              echo "[M237 LINUX BINARY CONTROL PASS] exact signed geosop computes distance=5, true/false topology and polygon intersection"
+            else
+              echo "[M237 LINUX BINARY CONTROL FAIL] original binary GEOS operations not proven"
+            fi
             # The official geometry operation must still produce a real
             # numeric area=12; a completed diagnostic is not a PASS.
             if grep -Eq "(^|[^0-9])12(\.0+)?($|[^0-9])" /tmp/file-area.out &&
