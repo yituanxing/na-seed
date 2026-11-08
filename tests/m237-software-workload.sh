@@ -13,6 +13,13 @@ target="$state/$case_id.$phase"
 test ! -e "$target" || { echo 'M237: preseeded semantic result' >&2; exit 1; }
 mkdir -p "$target"
 
+fail() {
+    # dash/BusyBox ash with set -e does NOT exit on an early failed `&&`
+    # command. Every multi-part positive semantic check must explicitly fail.
+    echo "[M237 GUEST SEMANTIC FAIL] case=$case_id phase=$phase original=/$elf" >&2
+    exit 1
+}
+
 rec_fixture() {
     test -s "$state/contacts.rec" && test -s "$state/contacts.csv" || return 1
     /usr/bin/recsel -t Contact -c "$state/contacts.rec" > "$target/source.count"
@@ -22,7 +29,7 @@ rec_fixture() {
 case "$case_id:$elf" in
     rec-csv-import:usr/bin/csv2rec)
         if [ "$phase" = first ]; then
-            test ! -e "$state/contacts.rec" && test ! -e "$state/contacts.csv"
+            test ! -e "$state/contacts.rec" && test ! -e "$state/contacts.csv" || fail
             printf 'Name,Role\nAda,Engineer\nLin,Researcher\n' > "$state/contacts.csv"
             printf '%%rec: Contact\n\nName: Ada\nRole: Engineer\n\nName: Lin\nRole: Researcher\n' > "$state/contacts.rec"
         fi
@@ -31,13 +38,16 @@ case "$case_id:$elf" in
         /usr/bin/recsel -t Contact -c "$target/imported.rec" > "$target/import.count"
         $busy grep -Fxq 2 "$target/import.count" &&
             $busy grep -Fq 'Name: Ada' "$target/imported.rec" &&
-            $busy grep -Fq 'Name: Lin' "$target/imported.rec"
+            $busy grep -Fq 'Name: Lin' "$target/imported.rec" || fail
         ;;
     rec-csv-export:usr/bin/rec2csv)
         rec_fixture
         /usr/bin/rec2csv -t Contact "$state/contacts.rec" > "$target/export.csv" 2> "$target/export.err"
-        $busy grep -Fq 'Ada,Engineer' "$target/export.csv" &&
-            $busy grep -Fq 'Lin,Researcher' "$target/export.csv"
+        # Original signed recutils 1.9-r2 CSV quotes EVERY field; a bare
+        # Ada,Engineer search is incorrect (host Linux control #42452263322).
+        $busy grep -Fxq '"Name","Role"' "$target/export.csv" &&
+            $busy grep -Fxq '"Ada","Engineer"' "$target/export.csv" &&
+            $busy grep -Fxq '"Lin","Researcher"' "$target/export.csv" || fail
         ;;
     rec-remove-selected:usr/bin/recdel)
         rec_fixture
@@ -46,7 +56,7 @@ case "$case_id:$elf" in
         /usr/bin/recsel -t Contact -c "$target/deleted.rec" > "$target/count.txt"
         $busy grep -Fxq 1 "$target/count.txt" &&
             ! $busy grep -Fq 'Name: Lin' "$target/deleted.rec" &&
-            $busy grep -Fq 'Name: Ada' "$target/deleted.rec"
+            $busy grep -Fq 'Name: Ada' "$target/deleted.rec" || fail
         ;;
     rec-structural-check:usr/bin/recfix)
         rec_fixture
@@ -64,7 +74,7 @@ case "$case_id:$elf" in
         /usr/bin/recsel -t Contact "$state/contacts.rec" |
             /usr/bin/recfmt 'CONTACT={{Name}}|{{Role}}' > "$target/rendered.txt" 2> "$target/render.err"
         $busy grep -Fq 'CONTACT=Ada|Engineer' "$target/rendered.txt" &&
-            $busy grep -Fq 'CONTACT=Lin|Researcher' "$target/rendered.txt"
+            $busy grep -Fq 'CONTACT=Lin|Researcher' "$target/rendered.txt" || fail
         ;;
     rec-record-count:usr/bin/recinf)
         rec_fixture
@@ -79,14 +89,14 @@ case "$case_id:$elf" in
         /usr/bin/recsel -t Contact -c "$target/inserted.rec" > "$target/count.txt"
         $busy grep -Fxq 3 "$target/count.txt" &&
             $busy grep -Fq 'Name: Grace' "$target/inserted.rec" &&
-            $busy grep -Fq 'Role: Scientist' "$target/inserted.rec"
+            $busy grep -Fq 'Role: Scientist' "$target/inserted.rec" || fail
         ;;
     rec-select-expression:usr/bin/recsel)
         rec_fixture
         /usr/bin/recsel -t Contact -e "Name = 'Lin'" "$state/contacts.rec" > "$target/selected.rec" 2> "$target/select.err"
         $busy grep -Fq 'Name: Lin' "$target/selected.rec" &&
             $busy grep -Fq 'Role: Researcher' "$target/selected.rec" &&
-            ! $busy grep -Fq 'Name: Ada' "$target/selected.rec"
+            ! $busy grep -Fq 'Name: Ada' "$target/selected.rec" || fail
         ;;
     rec-set-field:usr/bin/recset)
         rec_fixture
@@ -96,7 +106,7 @@ case "$case_id:$elf" in
         /usr/bin/recsel -t Contact -e "Name = 'Ada'" "$target/updated.rec" > "$target/selected.rec"
         $busy grep -Fq 'Role: ResearchLead' "$target/selected.rec" &&
             ! $busy grep -Fq 'Role: Engineer' "$target/selected.rec" &&
-            $busy grep -Fq 'Role: Researcher' "$target/updated.rec"
+            $busy grep -Fq 'Role: Researcher' "$target/updated.rec" || fail
         ;;
     yajl-parse-reformat:usr/bin/json_reformat)
         if [ "$phase" = first ]; then
@@ -108,7 +118,7 @@ case "$case_id:$elf" in
         /usr/bin/json_verify < "$target/reformatted.json" > "$target/verify.log" 2>&1
         $busy grep -Fq '"NaSeed"' "$target/reformatted.json" &&
             $busy grep -Fq 'true' "$target/reformatted.json" &&
-            $busy grep -Fq '5' "$target/reformatted.json"
+            $busy grep -Fq '5' "$target/reformatted.json" || fail
         ;;
     yajl-valid-invalid:usr/bin/json_verify)
         test -s "$state/structure.json"
@@ -121,13 +131,13 @@ case "$case_id:$elf" in
         ;;
     minisign-persistent-signature:usr/bin/minisign)
         if [ "$phase" = first ]; then
-            test ! -e "$state/minisign.secret" && test ! -e "$state/minisign.pub"
+            test ! -e "$state/minisign.secret" && test ! -e "$state/minisign.pub" || fail
             printf 'M237_ORIGINAL_MINISIGN_DURABLE_SIGNATURE\n' > "$state/signed.message"
             /usr/bin/minisign -G -W -p "$state/minisign.pub" -s "$state/minisign.secret" > "$target/keygen.log" 2>&1
             /usr/bin/minisign -S -m "$state/signed.message" -s "$state/minisign.secret" \
                 -x "$state/message.minisig" > "$target/sign.log" 2>&1
         fi
-        test -s "$state/minisign.secret" && test -s "$state/minisign.pub" && test -s "$state/message.minisig"
+        test -s "$state/minisign.secret" && test -s "$state/minisign.pub" && test -s "$state/message.minisig" || fail
         /usr/bin/minisign -V -m "$state/signed.message" -p "$state/minisign.pub" \
             -x "$state/message.minisig" > "$target/verified.log" 2>&1
         $busy sed s/DURABLE/TAMPERED/ "$state/signed.message" > "$target/tampered.message"
@@ -143,11 +153,11 @@ case "$case_id:$elf" in
         # Its original signed binary ops work: test both numeric geometry and
         # positive/negative topology against persisted real ext4 WKT files.
         if [ "$phase" = first ]; then
-            test ! -e "$state/geos-origin.wkt" && test ! -e "$state/geos-diagonal.wkt"
+            test ! -e "$state/geos-origin.wkt" && test ! -e "$state/geos-diagonal.wkt" || fail
             printf 'POINT (0 0)\n' > "$state/geos-origin.wkt"
             printf 'POINT (3 4)\n' > "$state/geos-diagonal.wkt"
         fi
-        test -s "$state/geos-origin.wkt" && test -s "$state/geos-diagonal.wkt"
+        test -s "$state/geos-origin.wkt" && test -s "$state/geos-diagonal.wkt" || fail
         /usr/bin/geosop -a "$state/geos-origin.wkt" -b "$state/geos-diagonal.wkt" \
             --format=txt distance > "$target/distance.txt" 2> "$target/distance.err"
         /usr/bin/geosop -a "$state/geos-origin.wkt" -b "$state/geos-origin.wkt" \
@@ -164,7 +174,7 @@ case "$case_id:$elf" in
     proj-crs-info:usr/bin/projinfo)
         /usr/bin/projinfo EPSG:4326 > "$target/crs.txt" 2> "$target/proj.err"
         $busy grep -Ei '(WGS 84|longlat|geographic)' "$target/crs.txt" >/dev/null &&
-            $busy grep -Eq '(EPSG|4326)' "$target/crs.txt"
+            $busy grep -Eq '(EPSG|4326)' "$target/crs.txt" || fail
         ;;
     proj-mercator-coordinates:usr/bin/cs2cs)
         if [ "$phase" = first ]; then

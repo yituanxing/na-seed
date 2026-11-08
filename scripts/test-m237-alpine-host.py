@@ -147,6 +147,39 @@ class M237SignedNativeTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         disk.verify_geos_binary(phase, *values)
 
+    def test_original_recutils_csv_physical_bytes_and_negative_cases(self):
+        canonical = b'"Name","Role"\n"Ada","Engineer"\n"Lin","Researcher"\n'
+        self.assertEqual(len(canonical), 50)
+        for phase in ('first', 'reopen'):
+            disk.verify_rec_csv_export(phase, canonical)
+            for wrong in (b'Name,Role\nAda,Engineer\nLin,Researcher\n',
+                          b'"Name","Role"\n"Ada","Scientist"\n"Lin","Researcher"\n',
+                          b'"Name","Role"\n"Ada","Engineer"\n',
+                          canonical + b'"Injected","User"\n', b''):
+                with self.subTest(phase=phase, wrong=wrong):
+                    with self.assertRaises(ValueError):
+                        disk.verify_rec_csv_export(phase, wrong)
+        workload = (BASE.parent / 'tests/m237-software-workload.sh').read_text()
+        export = workload.split('    rec-csv-export:usr/bin/rec2csv)', 1)[1].split('        ;;', 1)[0]
+        for quoted in ('"Name","Role"', '"Ada","Engineer"', '"Lin","Researcher"'):
+            self.assertIn("grep -Fxq '" + quoted + "'", export)
+        self.assertIn('|| fail', export)
+
+    def test_all_positive_guest_and_lists_fail_closed_under_posix_shell(self):
+        lines = (BASE.parent / 'tests/m237-software-workload.sh').read_text().splitlines()
+        for index, line in enumerate(lines):
+            if '&&' not in line or line.lstrip().startswith(('#', '$busy awk')):
+                continue
+            if '&& exit 1' in line or '||' in line:
+                continue
+            if line.rstrip().endswith('&&'):
+                # Guard the entire group, not only its last grep: under dash
+                # `set -e; false && true; echo PASS` prints false PASS.
+                window = '\n'.join(lines[index:index + 5])
+                with self.subTest(line=index + 1):
+                    self.assertTrue('|| fail' in window or '|| {' in window,
+                                    f'unguarded M237 conjunction at line {index + 1}')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)

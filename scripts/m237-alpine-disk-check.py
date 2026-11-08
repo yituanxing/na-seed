@@ -72,6 +72,20 @@ def verify_geos_binary(phase: str, distance: bytes, intersects_true: bytes,
         raise ValueError(f'[M237 SEMANTIC FAIL] {phase} GEOS distinct-point intersection != false')
 
 
+def verify_rec_csv_export(phase: str, output: bytes) -> None:
+    """Check the exact original quoted Recutils CSV, not unquoted substrings."""
+    # Original signed Alpine recutils 1.9-r2 Linux run #42452263322 proved
+    # this 50-byte output; independent physical ext4 must contain those bytes.
+    expected = b'"Name","Role"\n"Ada","Engineer"\n"Lin","Researcher"\n'
+    try:
+        parsed = list(csv.reader(output.decode('utf-8').splitlines()))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise ValueError(f'[M237 SEMANTIC FAIL] {phase} Recutils invalid CSV syntax') from exc
+    if (parsed != [['Name', 'Role'], ['Ada', 'Engineer'], ['Lin', 'Researcher']]
+            or output != expected):
+        raise ValueError(f'[M237 SEMANTIC FAIL] {phase} original Recutils CSV bytes/records wrong')
+
+
 def real_semantics(partition: Path, m191) -> dict[str, str]:
     read = lambda relative: m191.debugfs_cat(partition, '/root/m237-state/' + relative)
     result = lambda case, phase, name: read(f'{case}.{phase}/{name}')
@@ -126,8 +140,7 @@ def real_semantics(partition: Path, m191) -> dict[str, str]:
                 result('rec-csv-import', phase, 'import.count').strip() != b'2'):
             raise ValueError('[M237 SEMANTIC FAIL] CSV→Rec conversion wrong')
         csv_export = actual('rec-csv-export', 'export.csv')
-        if b'Ada,Engineer' not in csv_export or b'Lin,Researcher' not in csv_export:
-            raise ValueError('[M237 SEMANTIC FAIL] Rec→CSV conversion wrong')
+        verify_rec_csv_export(phase, csv_export)
         deleted = actual('rec-remove-selected', 'deleted.rec')
         if (b'Name: Ada' not in deleted or b'Name: Lin' in deleted or
                 result('rec-remove-selected', phase, 'count.txt').strip() != b'1'):
