@@ -17,6 +17,7 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m197-alpine-software-cohort.yml'
+      - '.github/actions/naseed-limine-seed/**'
       - 'scripts/m197-*'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'tests/m197-*'
@@ -46,6 +47,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -144,6 +146,10 @@ jobs:
           fi
           command -v docker
           command -v sudo
+      - name: Restore immutable three-ISA proven Limine before native boot
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
       - name: Inspect prior verified checkpoint (download only for manual replay)
         id: m204_restore
         if: github.event_name == 'push' || inputs.compat_cohort

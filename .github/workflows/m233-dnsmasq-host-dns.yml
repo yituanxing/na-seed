@@ -5,6 +5,7 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m233-dnsmasq-host-dns.yml'
+      - '.github/actions/naseed-limine-seed/**'
       - 'tests/m233-alpine-dnsmasq-workload.sh'
       - 'scripts/m233-*.py'
       - 'scripts/test-m233-*.py'
@@ -19,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -99,6 +101,10 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+      - name: Restore immutable three-ISA proven Limine before native boot
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
       - name: Two original Alpine PID1 QEMUs and true host DNS UDP TCP through single NIC
         timeout-minutes: 85
         env:

@@ -7,6 +7,7 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/m230-dropbear-host-ssh.yml'
+      - '.github/actions/naseed-limine-seed/**'
       - 'tests/m230-alpine-dropbear-workload.sh'
       - 'scripts/m230-*.py'
       - 'scripts/test-m230-*.py'
@@ -21,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -103,6 +105,10 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+      - name: Restore immutable three-ISA proven Limine before native boot
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
       - name: Two true original Alpine PID1 QEMUs and independent host SSH
         timeout-minutes: 100
         env:
