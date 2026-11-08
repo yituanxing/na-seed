@@ -12,6 +12,8 @@ on:
       - 'scripts/acceptance/**'
       - 'scripts/test-qemu-extra-hostfwd.py'
       - 'scripts/m233-alpine-uart.py'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/test-m239-tty-interaction.py'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'scripts/run.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
@@ -48,6 +50,7 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-m239-tty-interaction.py
           python3 scripts/test-acceptance-profiles.py
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh
@@ -198,6 +201,7 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-m239-tty-interaction.py
           python3 scripts/test-acceptance-profiles.py
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh

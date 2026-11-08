@@ -294,7 +294,8 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
         success_message: str | None = None,
         failure_watch: Path | None = None,
         before_command_barriers: dict[int, Path] | None = None,
-        login_hostnames: tuple[str, ...] = ('naseed',)) -> None:
+        login_hostnames: tuple[str, ...] = ('naseed',),
+        terminal_probe=None) -> None:
     if not commands:
         raise ValueError("Alpine UART acceptance needs at least one real guest command")
     fifo.parent.mkdir(parents=True, exist_ok=True)
@@ -397,19 +398,29 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                             # boot after every command has already passed.
                             if authenticated_login_host is None:
                                 raise RuntimeError('missing genuine line-oriented getty prompt')
-                            print(success_message or
-                                  "[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "
-                                  "-> OpenRC -> password login -> genuine apk database "
-                                  "-> rc-service crond start/status/pid/stop "
-                                  "-> guest ext4 write/sync/readback; "
-                                  "timeout was NOT a PASS", flush=True)
-                            return
+                            if terminal_probe is not None:
+                                terminal_probe.start(
+                                    step_end,
+                                    send=lambda data: m193.sent(hold, data),
+                                    prompt=shell_prompt_after_step,
+                                    getty=lambda data: getty_login_host(data, login_hostnames),
+                                    password=m193.PASSWORD)
+                                state = "terminal"
+                            else:
+                                print(success_message or
+                                      "[M194 ALPINE SERVICES PASS] original ext4 Alpine PID1 "
+                                      "-> OpenRC -> password login -> genuine apk database "
+                                      "-> rc-service crond start/status/pid/stop "
+                                      "-> guest ext4 write/sync/readback; "
+                                      "timeout was NOT a PASS", flush=True)
+                                return
                         # Let upstream ash complete its read/execute/print
                         # cycle.  Its VT100 prompt may arrive later than the
                         # printf marker, especially around OpenRC daemon
                         # startup.  Queueing the next command too early can
                         # interleave with a cursor-position report.
-                        state = "await_prompt"
+                        if step < len(commands):
+                            state = "await_prompt"
                     elif shell_prompt_after_step(segment):
                         # A new REAL ash prompt means this command already
                         # returned.  Stop immediately when apk/rc-service or
@@ -430,6 +441,13 @@ def run(runner: str, log_name: Path, runner_log: Path, fifo: Path, deadline: int
                         step_start = len(text)
                         m193.sent(hold, commands[step][0])
                         state = "commands"
+                elif state == "terminal" and terminal_probe.feed(text, time.monotonic()):
+                    print(success_message or '[M194 ALPINE SERVICES PASS]', flush=True)
+                    print('[M239 ORIGINAL ALPINE INTERACTIVE TTY PASS] '
+                          'canonical erase/read, foreground SIGINT, four live OpenRC '
+                          'services, Ctrl-D and second real getty/password login',
+                          flush=True)
+                    return
 
                 if proc.poll() is not None:
                     raise RuntimeError(f"native QEMU runner exited before proof: {proc.returncode}")

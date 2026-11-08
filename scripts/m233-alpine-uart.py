@@ -47,6 +47,16 @@ def multiservice_commands(commands):
                   token, description) for command, token, description in commands)
 
 
+def m239_terminal_probe():
+    """Only M239's second original Alpine login gets extra physical tty RX."""
+    source = Path(__file__).with_name('m239-tty-interaction.py')
+    spec = importlib.util.spec_from_file_location('m239_interactive_tty', source)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.M239TTYInteraction()
+
+
 def main() -> None:
     if len(sys.argv) != 6 or sys.argv[1] not in ('first', 'reopen'):
         raise SystemExit('usage: m233-alpine-uart.py first|reopen RUNNER SERIAL RUNNER_LOG FIFO')
@@ -65,6 +75,8 @@ def main() -> None:
                          stage=('M239-' if multiservice == '1' else 'M233-') + phase.upper(),
                          login_hostnames=(('naseed', 'localhost') if phase == 'reopen'
                                           else ('naseed',)),
+                         terminal_probe=(m239_terminal_probe() if multiservice == '1'
+                                         and phase == 'reopen' else None),
                          success_message='[' + ('M239' if multiservice == '1' else 'M233') +
                          ' ' + phase.upper() +
                          ' UART PASS] signed Alpine PID1/OpenRC; external host '

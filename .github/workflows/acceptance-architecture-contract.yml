@@ -10,6 +10,9 @@ on:
       - 'scripts/run.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/m233-alpine-uart.py'
+      - 'scripts/m239-tty-interaction.py'
       - 'scripts/qemu-hostfwd-extra.sh'
       - 'scripts/test-acceptance-*.py'
       - 'scripts/test-acceptance-*.sh'
@@ -62,6 +65,7 @@ jobs:
           python3 scripts/test-m232-memcached.py
           python3 scripts/test-m233-dnsmasq.py
           python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-m239-tty-interaction.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           echo '[NAS ACCEPTANCE ARCHITECTURE HOST PASS] exact-head selectors, real NIC builder and watcher lifecycle; native QEMU separately REQUIRED'
