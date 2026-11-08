@@ -121,7 +121,8 @@ def fixture(phase):
 
 def main():
     root = Path(__file__).resolve().parent.parent
-    probe = (root/'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+    probe = ((root/'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+             + '\n' + (root/'scripts/acceptance/profile.sh').read_text())
     workflow = (root/'.github/workflows/m232-memcached-host-cache.yml').read_text()
     guest = (root/'tests/m232-alpine-memcached-workload.sh').read_text()
     contract(probe, workflow, guest)

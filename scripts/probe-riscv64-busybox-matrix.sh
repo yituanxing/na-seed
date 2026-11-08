@@ -141,104 +141,19 @@ boot_case() {
         set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
             -device virtio-blk-device,drive=m178_async
     fi
-    # M228: keep host TCP forward on THIS real slirp NIC only, opt-in.
-    hostfwd=
-    if [ -z "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ] &&
-       [ -n "${NAS_VIRTIO_NET_GUESTFWD_PORT:-}" ]; then
-        echo 'NAS_VIRTIO_NET_GUESTFWD_PORT requires NAS_VIRTIO_NET_HOSTFWD_PORT' >&2
-        return 2
-    fi
-    if [ -n "${NAS_VIRTIO_NET_HOSTFWD_PORT:-}" ]; then
-        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
-            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT requires NAS_VIRTIO_NET_USER=1' >&2
-            return 2
-        }
-        hostfwd_port=$NAS_VIRTIO_NET_HOSTFWD_PORT
-        case "$hostfwd_port" in
-            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_PORT must be decimal 1..65535' >&2; return 2 ;;
-        esac
-        while [ "${hostfwd_port#0}" != "$hostfwd_port" ]; do
-            hostfwd_port=${hostfwd_port#0}
-        done
-        [ -n "$hostfwd_port" ] && [ "${#hostfwd_port}" -le 5 ] &&
-            [ "$hostfwd_port" -le 65535 ] || {
-            echo 'NAS_VIRTIO_NET_HOSTFWD_PORT out of range 1..65535' >&2
-            return 2
-        }
-        guestfwd_port=${NAS_VIRTIO_NET_GUESTFWD_PORT:-15432}
-        case "$guestfwd_port" in
-            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_PORT must be decimal 1..65535' >&2; return 2 ;;
-        esac
-        while [ "${guestfwd_port#0}" != "$guestfwd_port" ]; do
-            guestfwd_port=${guestfwd_port#0}
-        done
-        [ -n "$guestfwd_port" ] && [ "${#guestfwd_port}" -le 5 ] &&
-            [ "$guestfwd_port" -le 65535 ] || {
-            echo 'NAS_VIRTIO_NET_GUESTFWD_PORT out of range 1..65535' >&2
-            return 2
-        }
-        hostfwd=",hostfwd=tcp:127.0.0.1:${hostfwd_port}-:${guestfwd_port}"
-    fi
-    # Opt-in host-local UDP ingress on the SAME VirtIO-MMIO NIC. The existing
-    # TCP/default builder is byte-for-byte unaffected with UDP envs unset.
-    if [ -z "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ] &&
-       [ -n "${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-}" ]; then
-        echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT requires NAS_VIRTIO_NET_HOSTFWD_UDP_PORT' >&2
-        return 2
-    fi
-    if [ -n "${NAS_VIRTIO_NET_HOSTFWD_UDP_PORT:-}" ]; then
-        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
-            echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT requires NAS_VIRTIO_NET_USER=1' >&2
-            return 2
-        }
-        udp_host_port=$NAS_VIRTIO_NET_HOSTFWD_UDP_PORT
-        case "$udp_host_port" in
-            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT must be decimal 1..65535' >&2; return 2 ;;
-        esac
-        while [ "${udp_host_port#0}" != "$udp_host_port" ]; do
-            udp_host_port=${udp_host_port#0}
-        done
-        [ -n "$udp_host_port" ] && [ "${#udp_host_port}" -le 5 ] &&
-            [ "$udp_host_port" -le 65535 ] || {
-            echo 'NAS_VIRTIO_NET_HOSTFWD_UDP_PORT out of range 1..65535' >&2
-            return 2
-        }
-        udp_guest_port=${NAS_VIRTIO_NET_GUESTFWD_UDP_PORT:-15453}
-        case "$udp_guest_port" in
-            *[!0-9]*|'') echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT must be decimal 1..65535' >&2; return 2 ;;
-        esac
-        while [ "${udp_guest_port#0}" != "$udp_guest_port" ]; do
-            udp_guest_port=${udp_guest_port#0}
-        done
-        [ -n "$udp_guest_port" ] && [ "${#udp_guest_port}" -le 5 ] &&
-            [ "$udp_guest_port" -le 65535 ] || {
-            echo 'NAS_VIRTIO_NET_GUESTFWD_UDP_PORT out of range 1..65535' >&2
-            return 2
-        }
-        hostfwd="${hostfwd},hostfwd=udp:127.0.0.1:${udp_host_port}-:${udp_guest_port}"
-    fi
-    if [ -n "${NAS_VIRTIO_NET_EXTRA_HOSTFWD:-}" ]; then
-        hostfwd=$(sh scripts/qemu-hostfwd-extra.sh "$hostfwd") || return 2
-    fi
-    if [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ]; then
-        set -- "$@" -netdev "user,id=naseed_net${hostfwd}" \
-               -device virtio-net-device,netdev=naseed_net
+    # M228: one shared, fail-closed three-ISA M228/M233 slirp/hostfwd owner.
+    . scripts/acceptance/qemu-netdev.sh
+    nas_qemu_netdev_prepare || return 2
+    if [ -n "$nas_qemu_netdev_primary" ]; then
+        set -- "$@" -netdev "$nas_qemu_netdev_primary" \
+            -device virtio-net-device,netdev=naseed_net
     fi
     if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then
-        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
-            echo 'NAS_VIRTIO_NET_SECOND_USER requires NAS_VIRTIO_NET_USER=1' >&2
-            return 2
-        }
-        set -- "$@" -netdev user,id=naseed_net2,net=10.0.3.0/24 \
-               -device virtio-net-device,netdev=naseed_net2
+        set -- "$@" -netdev "$nas_qemu_netdev_secondary" \
+            -device virtio-net-device,netdev=naseed_net2
     fi
-    if [ -n "${NAS_VIRTIO_NET_PCAP:-}" ]; then
-        [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || {
-            echo 'NAS_VIRTIO_NET_PCAP requires NAS_VIRTIO_NET_USER=1' >&2
-            return 2
-        }
-        set -- "$@" -object \
-            "filter-dump,id=naseed_wire_capture,netdev=naseed_net,file=$NAS_VIRTIO_NET_PCAP"
+    if [ -n "$nas_qemu_netdev_capture" ]; then
+        set -- "$@" -object "$nas_qemu_netdev_capture"
     fi
     if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
         set -- "$@" -device virtio-keyboard-device \

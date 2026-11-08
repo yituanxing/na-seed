@@ -141,7 +141,8 @@ def fixture(phase):
 
 def check():
     root = Path(__file__).resolve().parent.parent
-    probe = (root / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+    probe = ((root / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+             + '\n' + (root / 'scripts/acceptance/profile.sh').read_text())
     workflow = (root / '.github/workflows/m231-mosquitto-host-mqtt.yml').read_text()
     guest = (root / 'tests/m231-alpine-mosquitto-workload.sh').read_text()
     contract(probe, workflow, guest)

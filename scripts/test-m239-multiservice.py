@@ -64,7 +64,13 @@ def main():
     assert "NAS_VIRTIO_NET_EXTRA_HOSTFWD='tcp:15447:15447,tcp:15448:15448'" in probe
     assert '[M239 ORIGINAL ALPINE FOUR SERVICE HOST PROTOCOL TWO BOOT PASS]' in probe
     assert 'm239_finish_host "$phase"' in probe
-    assert "trap 'm239_stop_host; m233_stop_host' EXIT" in probe
+    # One POSIX EXIT owner reaps DNS, MQTT and cache observers on any failure
+    # (including signal interruption); the old split trap has been retired.
+    assert 'nas_acceptance_host_supervisor_install' in probe
+    assert 'nas_acceptance_host_supervisor_register "$m233_host_pid"' in probe
+    assert 'nas_acceptance_host_supervisor_register "$m239_mqtt_pid"' in host
+    assert 'nas_acceptance_host_supervisor_register "$m239_cache_pid"' in host
+    assert 'nas_acceptance_host_supervisor_unregister "$pid"' in host
     assert 'if [ "$m239" = 1 ]; then' in probe
     assert 'NAS_M239_MULTISERVICE' in probe
     # The x86-64 pilot must hand the exact pinned Limine protocol header and

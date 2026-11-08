@@ -116,7 +116,7 @@ def main() -> None:
                    "first=/root/m218-first-results.tsv",
                    "reopen=/root/m218-reopen-results.tsv"):
         assert marker in owner, f"M218 owner missing: {marker}"
-    runner = RUNNER.read_text()
+    runner = RUNNER.read_text() + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
     assert "m218=${NAS_M218_PILOT:-0}" in runner
     for marker in ("tests/m218-ifstat-workload.sh",
                    '"$overlay/root/m218-ifstat-workload.sh"',

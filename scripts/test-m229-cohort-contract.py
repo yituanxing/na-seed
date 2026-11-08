@@ -4,7 +4,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COHORT = (ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+COHORT = ((ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+          + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text())
 UART = (ROOT / 'scripts/m229-alpine-uart.py').read_text()
 WORKFLOW = (ROOT / '.github/workflows/m229-valkey-host-ingress.yml').read_text()
 

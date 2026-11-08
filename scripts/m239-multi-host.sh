@@ -4,16 +4,9 @@
 # owns MQTT/cache watchers and is only sourced by the explicit M239 opt-in.
 m239_mqtt_pid=
 m239_cache_pid=
-m239_stop_host() {
-    for pid in "$m239_mqtt_pid" "$m239_cache_pid"; do
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || :
-            wait "$pid" 2>/dev/null || :
-        fi
-    done
-    m239_mqtt_pid=
-    m239_cache_pid=
-}
+# The M239 acceptance owner installs one shared EXIT supervisor before
+# sourcing these observers. On a failed boot it terminates all live PIDs;
+# normally each observer is explicitly reaped and unregistered below.
 m239_start_host() {
     phase=$1
     host_serial=$2
@@ -34,23 +27,27 @@ m239_start_host() {
             --ready-timeout "${NAS_M239_HOST_READY_SECONDS:-2750}" \
             --mqtt-timeout 45 > "$mqtt_log" 2>&1 &
         m239_mqtt_pid=$!
+        nas_acceptance_host_supervisor_register "$m239_mqtt_pid"
         python3 -u scripts/m232-host-cache-check.py "$phase" "$host_serial" \
             15448 "$cache_receipt" \
             --first-receipt "$PWD/$work/m232-first-host-cache.json" \
             --ready-timeout "${NAS_M239_HOST_READY_SECONDS:-2750}" \
             --cache-timeout 45 > "$cache_log" 2>&1 &
         m239_cache_pid=$!
+        nas_acceptance_host_supervisor_register "$m239_cache_pid"
     else
         python3 -u scripts/m231-host-mqtt-check.py "$phase" "$host_serial" \
             15447 "$mqtt_receipt" \
             --ready-timeout "${NAS_M239_HOST_READY_SECONDS:-2750}" \
             --mqtt-timeout 45 > "$mqtt_log" 2>&1 &
         m239_mqtt_pid=$!
+        nas_acceptance_host_supervisor_register "$m239_mqtt_pid"
         python3 -u scripts/m232-host-cache-check.py "$phase" "$host_serial" \
             15448 "$cache_receipt" \
             --ready-timeout "${NAS_M239_HOST_READY_SECONDS:-2750}" \
             --cache-timeout 45 > "$cache_log" 2>&1 &
         m239_cache_pid=$!
+        nas_acceptance_host_supervisor_register "$m239_cache_pid"
     fi
 }
 m239_finish_host() {
@@ -77,10 +74,12 @@ m239_finish_host() {
             exit 1
         fi
         if ! wait "$pid"; then
+            nas_acceptance_host_supervisor_unregister "$pid"
             echo "[M239 HOST FAIL] $phase $service protocol mismatch" >&2
             tail -100 "$logfile" >&2 || :
             exit 1
         fi
+        nas_acceptance_host_supervisor_unregister "$pid"
         case "$service" in mqtt) m239_mqtt_pid= ;; cache) m239_cache_pid= ;; esac
     done
 }

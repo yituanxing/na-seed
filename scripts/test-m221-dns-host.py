@@ -197,7 +197,7 @@ def integration_contract() -> None:
                    'export NAS_M221_BOOT_PHASE="$phase"',
                    '"$milestone" = M221 ] && exercise_budget=140'):
         assert marker in owner, f"M205 strict two-ELF ledger missing {marker}"
-    runner = RUNNER.read_text()
+    runner = RUNNER.read_text() + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
     for marker in ("m221=${NAS_M221_PILOT:-0}", "m221_start_host first",
                    "m221_start_host reopen", "m221_stop_host",
                    "scripts/m221-dns-wire-check.py first",

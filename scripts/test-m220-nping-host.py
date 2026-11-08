@@ -140,7 +140,7 @@ def integration_contract() -> None:
                    'export NAS_M220_BOOT_PHASE="$phase"',
                    '"$milestone" = M220 ] && exercise_budget=140'):
         assert marker in owner, f"guest owner missing {marker}"
-    runner = RUNNER.read_text()
+    runner = RUNNER.read_text() + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
     for marker in ("m220=${NAS_M220_PILOT:-0}",
                    "tests/m220-nping-workload.sh",
                    '"$overlay/root/m220-nping-workload.sh"',

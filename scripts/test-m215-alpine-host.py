@@ -67,7 +67,7 @@ def adapter_contract() -> None:
     assert "exercise_script=/root/m213-software-workload.sh" in dispatcher
     assert "expected_rows=5" in dispatcher and "cohort_rows" in dispatcher
     assert "exec 0</dev/null" in dispatcher and 'done 9< "$manifest"' in dispatcher
-    base = RUNNER.read_text()
+    base = RUNNER.read_text() + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
     assert 'm215=${NAS_M215_PILOT:-0}' in base
     assert 'm204+m205+m206+m215' in base, "overlapping modes must fail"
     for needle in (

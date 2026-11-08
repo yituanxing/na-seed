@@ -46,10 +46,14 @@ def original_shell_args(path: str, enabled: bool, port: str | None,
 
 
 def check() -> None:
+    helper = (ROOT / 'scripts/acceptance/qemu-netdev.sh').read_text()
+    assert 'nas_qemu_netdev_legacy_pair tcp' in helper
+    assert 'hostfwd=${nas_qemu_netdev_proto}:127.0.0.1:' in helper
     for path, device in RUNNERS:
         subprocess.run(['sh', '-n', str(ROOT / path)], check=True)
         source = (ROOT / path).read_text()
-        assert source.count('hostfwd=tcp:127.0.0.1:') == 1, path
+        assert source.count('. scripts/acceptance/qemu-netdev.sh') == 1, path
+        assert source.count('nas_qemu_netdev_prepare') == 1, path
         default = original_shell_args(path, enabled=True, port=None)
         assert default.returncode == 0, (path, default.stderr)
         assert default.stdout.splitlines() == [

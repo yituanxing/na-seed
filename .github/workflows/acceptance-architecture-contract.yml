@@ -1,0 +1,61 @@
+name: NaSeed Alpine acceptance architecture host contract
+
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/acceptance-architecture-contract.yml'
+      - 'scripts/acceptance/**'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'scripts/run.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/qemu-hostfwd-extra.sh'
+      - 'scripts/test-acceptance-*.py'
+      - 'scripts/test-acceptance-*.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-head-host-contract:
+    name: Shared Alpine profile, QEMU NIC and watcher lifecycle contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Prove source-level acceptance wiring and fail-closed inputs
+        run: |
+          set -eu
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          sh -n scripts/run.sh
+          sh -n scripts/probe-riscv64-busybox-matrix.sh
+          sh -n scripts/probe-aarch64-busybox-matrix.sh
+          python3 scripts/test-acceptance-profiles.py
+          python3 scripts/acceptance/test-qemu-netdev.py
+          sh scripts/test-acceptance-host-supervisor.sh
+          python3 scripts/test-m197-alpine-host.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m233-hostfwd-udp-contract.py
+          python3 scripts/test-qemu-extra-hostfwd.py
+          python3 scripts/test-m215-alpine-host.py
+          python3 scripts/test-m218-ifstat-host.py
+          python3 scripts/test-m220-nping-host.py
+          python3 scripts/test-m221-dns-host.py
+          python3 scripts/test-m229-cohort-contract.py
+          python3 scripts/test-m230-cohort-contract.py
+          python3 scripts/test-m231-mosquitto.py
+          python3 scripts/test-m232-memcached.py
+          python3 scripts/test-m233-dnsmasq.py
+          python3 scripts/test-m239-multiservice.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          echo '[NAS ACCEPTANCE ARCHITECTURE HOST PASS] exact-head selectors, real NIC builder and watcher lifecycle; native QEMU separately REQUIRED'

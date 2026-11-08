@@ -77,7 +77,8 @@ def gate(source: str, workflow: str) -> None:
 
 
 def negative() -> None:
-    script = (ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+    script = ((ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
+              + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text())
     workflow = (ROOT / '.github/workflows/m230-dropbear-host-ssh.yml').read_text()
     gate(script, workflow)
     broken = [

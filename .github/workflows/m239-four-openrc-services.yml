@@ -9,6 +9,7 @@ on:
       - 'scripts/m239-*'
       - 'scripts/ci-m239-toolchain.sh'
       - 'scripts/qemu-hostfwd-extra.sh'
+      - 'scripts/acceptance/**'
       - 'scripts/test-qemu-extra-hostfwd.py'
       - 'scripts/m233-alpine-uart.py'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
@@ -46,6 +47,9 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-acceptance-profiles.py
+          python3 scripts/acceptance/test-qemu-netdev.py
+          sh scripts/test-acceptance-host-supervisor.sh
           python3 scripts/test-qemu-extra-hostfwd.py
           python3 scripts/test-m231-mosquitto.py
           python3 scripts/test-m232-memcached.py
@@ -147,6 +151,9 @@ jobs:
         run: |
           set -eu
           python3 scripts/test-m239-multiservice.py
+          python3 scripts/test-acceptance-profiles.py
+          python3 scripts/acceptance/test-qemu-netdev.py
+          sh scripts/test-acceptance-host-supervisor.sh
           python3 scripts/test-qemu-extra-hostfwd.py
           python3 scripts/test-m231-mosquitto.py
           python3 scripts/test-m232-memcached.py

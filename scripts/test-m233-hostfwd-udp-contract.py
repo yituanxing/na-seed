@@ -72,11 +72,15 @@ def expect(path: str, device: str, *, udp_host: str | None = None,
 
 
 def check() -> None:
+    helper = (ROOT / 'scripts/acceptance/qemu-netdev.sh').read_text()
+    assert 'nas_qemu_netdev_legacy_pair tcp' in helper
+    assert 'nas_qemu_netdev_legacy_pair udp' in helper
+    assert 'hostfwd=${nas_qemu_netdev_proto}:127.0.0.1:' in helper
     for path, device in RUNNERS:
         subprocess.run(['sh', '-n', str(ROOT / path)], check=True)
         source = (ROOT / path).read_text()
-        assert source.count('hostfwd=udp:127.0.0.1:') == 1, path
-        assert source.count('hostfwd=tcp:127.0.0.1:') == 1, path
+        assert source.count('. scripts/acceptance/qemu-netdev.sh') == 1, path
+        assert source.count('nas_qemu_netdev_prepare') == 1, path
         expect(path, device)  # Existing plain NIC unchanged.
         expect(path, device, tcp_host='15446', expected_tcp_host='15446')
         for requested, normalized in (
