@@ -74,9 +74,12 @@ const char *nas_boot_prepare(const char *selected,
         const char *path = selected ? selected : "/bin/busybox";
         if (path[0] != '/')
             return "CPIO executable must be an absolute path";
-        const struct bootfs_entry *app = bootfs_find(path);
+        char app_path[256];
+        if (bootfs_resolve(path,true,app_path))
+            return "CPIO executable path not found";
+        const struct bootfs_entry *app = bootfs_find(app_path);
         if (!app) return "CPIO executable path not found";
-        if (bootfs_is_dir(app) || !(app->mode & 0111U))
+        if ((app->mode&0170000U)!=0100000U || !(app->mode & 0111U))
             return "CPIO selected path is not an executable regular file";
         out->image = app->data;
         out->size = app->size;
@@ -86,9 +89,13 @@ const char *nas_boot_prepare(const char *selected,
                 out->interpreter_path,sizeof(out->interpreter_path),
                 &wants_loader))
             return "CPIO selected executable has invalid ELF interpreter";
-        const struct bootfs_entry *ldso = wants_loader ?
-            bootfs_find(out->interpreter_path) : NULL;
-        if (ldso && !bootfs_is_dir(ldso) && (ldso->mode&0111U)) {
+        char resolved_loader[256];
+        const struct bootfs_entry *ldso = NULL;
+        if (wants_loader &&
+            !bootfs_resolve(out->interpreter_path,true,resolved_loader))
+            ldso=bootfs_find(resolved_loader);
+        if (ldso && (ldso->mode&0170000U)==0100000U &&
+            (ldso->mode&0111U)) {
             out->interpreter = ldso->data;
             out->interpreter_size = ldso->size;
             out->has_interpreter = true;
@@ -155,7 +162,8 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
     *out=(struct nas_boot_image){0};
     char canonical[256];
     if(nas_fs_lookup_node(selected,true,&out->source,canonical) ||
-       out->source.is_dir || !(out->source.mode&0111U))
+       (out->source.mode&0170000U)!=0100000U ||
+       !(out->source.mode&0111U))
         return "M191 root PID1 executable not found or not executable";
     if(nas_vfs_node_pin(&out->source))
         return "M191 root PID1 inode lease failed";
@@ -177,7 +185,8 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
     if (wants_loader) {
         if (nas_fs_lookup_node(out->interpreter_path,true,
                                &out->loader,canonical) ||
-            out->loader.is_dir || !(out->loader.mode&0111U) ||
+            (out->loader.mode&0170000U)!=0100000U ||
+            !(out->loader.mode&0111U) ||
             nas_vfs_node_pin(&out->loader)) {
             nas_boot_image_release(out);
             return "M191 original PID1 ELF interpreter not executable";

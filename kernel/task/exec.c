@@ -279,7 +279,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     nas_fs_path_end(&request);
     if(err)return (uint64_t)(int64_t)err;
     app_pinned=true;
-    if(app.is_dir || !(app.mode&0111U)) {
+    if((app.mode&0170000U)!=0100000U || !(app.mode&0111U)) {
         result=(uint64_t)-EACCES;goto exec_fail;
     }
     struct elf_image main_img=elf_from_fs_node(&app);
@@ -312,7 +312,7 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         if(err) {
             result=(uint64_t)(int64_t)err;goto exec_fail;
         }
-        if(bin.is_dir || !(bin.mode&0111U)) {
+        if((bin.mode&0170000U)!=0100000U || !(bin.mode&0111U)) {
             exec_drop_image_sources(&bin,NULL);
             result=(uint64_t)-EACCES;goto exec_fail;
         }
@@ -364,7 +364,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             result=(uint64_t)(int64_t)err;goto exec_fail;
         }
         interpreter_pinned=true;
-        if (loader.is_dir || !(loader.mode&0111U)) {
+        if ((loader.mode&0170000U)!=0100000U ||
+            !(loader.mode&0111U)) {
             result=(uint64_t)-EACCES;goto exec_fail;
         }
         interp_img=elf_from_fs_node(&loader);
