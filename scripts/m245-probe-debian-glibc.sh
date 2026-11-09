@@ -92,6 +92,7 @@ NAS_ACCEPTANCE_CPIO="$archive" \
 BUSYBOX_PARITY_BINARY="$work/static-busybox" \
 BUSYBOX_PARITY_MANIFEST="$case_file" \
 BUSYBOX_PARITY_CASE="$case_id" \
+NAS_SYSCALL_TRACE=1 \
 sh scripts/probe-x86-busybox-parity.sh
 
 log=build/busybox-source-parity-x86/$case_id.clean.log
