@@ -39,7 +39,31 @@ POLICY = ('DROPBEAR_OPTS="-s -g -j -k -m -p 0.0.0.0:15446 '
 KEY_POLICY = "no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
 
 
-FIRST_COMMANDS = m243.FIRST_COMMANDS + (
+# Keep M243's standalone CLI acceptance unchanged. In the M244 combined
+# workload, both sets of original signed Alpine APKs are installed in ONE
+# genuine guest HTTPS transaction. The two independent apk invocations in
+# the prior M244 path each took ~2 minutes on real three-ISA QEMU; repeating
+# the signed-index/TLS work did not exercise any additional kernel behavior.
+# Check the Dropbear baseline BEFORE the single install, then retain all
+# M243/M244 package DB, native ELF, OpenRC, reboot, host SSH and disk oracles.
+_m243_apk_steps = [i for i, step in enumerate(m243.FIRST_COMMANDS)
+                   if step[1] == "M243_PUBLIC_APK_RC=0"]
+if len(_m243_apk_steps) != 1:
+    raise RuntimeError("M244 requires exactly one original M243 APK install step")
+_apk_step = _m243_apk_steps[0]
+_combined_m243_first = (
+    *m243.FIRST_COMMANDS[:_apk_step],
+    ("if apk info -e dropbear >/dev/null 2>&1 || "
+     "apk info -e dropbear-openrc >/dev/null 2>&1; "
+     "then echo M244_DROPBEAR_PREEXISTS; else echo M244_DROPBEAR_ABSENT; fi\r",
+     "M244_DROPBEAR_ABSENT", "original signed Dropbear absent before combined install"),
+    ("apk --no-cache add tree jq dropbear dropbear-openrc; "
+     "printf 'M243_PUBLIC_APK_RC=%d\\n' \"$?\"\r",
+     "M243_PUBLIC_APK_RC=0", "one public HTTPS signed APK transaction for both workloads"),
+    *m243.FIRST_COMMANDS[_apk_step + 1:],
+)
+
+FIRST_COMMANDS = _combined_m243_first + (
     ("test -x /root/m244-network-ready.sh && mkdir -p /etc/network && "
      "printf '%s\\n' 'auto eth0' 'iface eth0' "
      "'    pre-up /bin/sh /root/m244-network-ready.sh' > /etc/network/interfaces && "
@@ -52,13 +76,10 @@ FIRST_COMMANDS = m243.FIRST_COMMANDS + (
      "test -L /etc/runlevels/boot/networking; "
      "printf 'M244_FIRST_NETWORKING_RC=%d\\n' \"$?\"\r",
      "M244_FIRST_NETWORKING_RC=0", "original OpenRC networking dependency started"),
-    ("if apk info -e dropbear >/dev/null 2>&1 || "
-     "apk info -e dropbear-openrc >/dev/null 2>&1; "
-     "then echo M244_DROPBEAR_PREEXISTS; else echo M244_DROPBEAR_ABSENT; fi\r",
-     "M244_DROPBEAR_ABSENT", "original signed Dropbear absent from base"),
-    ("apk --no-cache add dropbear dropbear-openrc; "
+    ("apk info -e dropbear >/dev/null && "
+     "apk info -e dropbear-openrc >/dev/null; "
      "printf 'M244_SIGNED_DROPBEAR_APK_RC=%d\\n' \"$?\"\r",
-     "M244_SIGNED_DROPBEAR_APK_RC=0", "original public signed Dropbear packages"),
+     "M244_SIGNED_DROPBEAR_APK_RC=0", "signed Dropbear package DB after combined install"),
     ("test -x /usr/sbin/dropbear && test -x /usr/bin/dropbearkey && "
      "test -x /etc/init.d/dropbear && test -f /etc/conf.d/dropbear && "
      "test -f " + PUBKEY + " && test ! -L " + PUBKEY + "; "

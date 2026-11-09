@@ -10,6 +10,13 @@ on:
       - 'scripts/probe-m244-alpine-ssh-reboot.sh'
       - 'tests/m244-alpine-network-ready.sh'
       - 'scripts/probe-m241-alpine-poweroff.sh'
+      # The M244 combined guest imports these live command/oracle owners.
+      # Changes to them must never silently skip the native M244 gate.
+      - 'scripts/m243-alpine-cli-uart.py'
+      - 'scripts/m242-alpine-reboot-uart.py'
+      - 'scripts/m191-stage-alpine-rootfs.sh'
+      - 'rootfs/alpine/build.sh'
+      - 'rootfs/alpine/packages-m191-rootfs.txt'
       - 'scripts/m244-alpine-ssh-uart.py'
       - 'scripts/m194-alpine-uart.py'
       - 'scripts/test-m194-uart-prompt.py'

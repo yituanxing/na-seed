@@ -44,16 +44,41 @@ class OriginalAlpineM244HostSSHTests(unittest.TestCase):
         uart.verify_two_boots(self.complete)
 
     def test_retains_every_original_public_apk_crond_m243_marker(self):
-        self.assertEqual(uart.FIRST_MARKERS[:len(uart.m243.FIRST_MARKERS)],
-                         uart.m243.FIRST_MARKERS)
+        # M244 inserts a missing-package check before the ONE merged APK
+        # transaction; M243's entire ordered proof must still be present.
+        remaining = iter(uart.FIRST_MARKERS)
+        for marker in uart.m243.FIRST_MARKERS:
+            self.assertIn(marker, remaining)
         self.assertEqual(uart.SECOND_MARKERS[:len(uart.m243.SECOND_MARKERS)],
                          uart.m243.SECOND_MARKERS)
 
     def test_first_dropbear_must_be_upstream_signed_and_absent_preinstall(self):
         combined = "\n".join(item[0] for item in uart.FIRST_COMMANDS)
         self.assertIn("M244_DROPBEAR_ABSENT", combined)
-        self.assertIn("apk --no-cache add dropbear dropbear-openrc", combined)
+        self.assertIn("apk --no-cache add tree jq dropbear dropbear-openrc", combined)
+        self.assertEqual(combined.count("apk --no-cache add"), 1)
+        self.assertLess(combined.index("M243_PACKAGES_ABSENT"),
+                        combined.index("M244_DROPBEAR_ABSENT"))
+        self.assertLess(combined.index("M244_DROPBEAR_ABSENT"),
+                        combined.index("apk --no-cache add"))
+        self.assertLess(combined.index("apk --no-cache add"),
+                        combined.index("M244_SIGNED_DROPBEAR_APK_RC"))
+        self.assertIn("apk info -e dropbear-openrc", combined)
         self.assertIn("/usr/sbin/dropbear", combined)
+
+    def test_standalone_m243_still_uses_its_original_signed_apk_transaction(self):
+        original = "\n".join(item[0] for item in uart.m243.FIRST_COMMANDS)
+        self.assertIn("apk --no-cache add tree jq;", original)
+        self.assertNotIn("apk --no-cache add tree jq dropbear", original)
+
+    def test_missing_preinstall_dropbear_absence_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "M244_DROPBEAR_ABSENT"):
+            uart.verify_two_boots(self.complete.replace("M244_DROPBEAR_ABSENT", ""))
+
+    def test_failed_combined_apk_transaction_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "M243_PUBLIC_APK_RC"):
+            uart.verify_two_boots(self.complete.replace("M243_PUBLIC_APK_RC=0",
+                                                        "M243_PUBLIC_APK_RC=1"))
 
     def test_original_dropbear_openrc_not_manually_started_on_reboot(self):
         first = "\n".join(item[0] for item in uart.FIRST_COMMANDS)
