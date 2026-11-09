@@ -33,8 +33,39 @@ BASE = load_base()
 READY = {'first': b'M240_FIRST_HOST_SSH_PTY_READY',
          'reopen': b'M240_REOPEN_HOST_SSH_PTY_READY'}
 TTY_RE = re.compile(rb'(?m)^/dev/pts/[0-9]+\r?$')
+SHELL_PROMPT_RE = re.compile(rb'(?:^|[:~/])[^\n]{0,55}# ?$')
 SESSION_COUNT = 9  # NAS_PTY_LIMIT=8; a ninth fresh PTY must be reusable.
 TRANSPORT = 'host-localhost-QEMU-user-hostfwd-guest-eth0-original-dropbear-ssh-pty'
+
+
+class TerminalCursorResponder:
+    """Minimal host terminal reply to the standard ANSI CSI 6n DSR query.
+
+    OpenSSH -tt connects a real remote PTY to host *pipes*, not an actual
+    terminal emulator. BusyBox ash's interactive line editor can request the
+    cursor position before reading a command; without CSI row;col R it waits
+    forever even though the guest's PTY and SSH transport are working.
+    Respond only to a query actually observed in NEW remote output. Preserve
+    the last three bytes so a query split across read() calls is recognized.
+    """
+
+    QUERY = b'\x1b[6n'
+    REPLY = b'\x1b[1;1R'  # this headless terminal uses a virtual origin
+    MAX_REPLIES = 32
+
+    def __init__(self) -> None:
+        self.tail = b''
+        self.count = 0
+
+    def observe(self, process: subprocess.Popen, chunk: bytes) -> None:
+        combined = self.tail + chunk
+        queries = combined.count(self.QUERY)
+        if self.count + queries > self.MAX_REPLIES:
+            raise ValueError('remote PTY issued excessive cursor queries')
+        for _ in range(queries):
+            send(process, self.REPLY)
+        self.count += queries
+        self.tail = combined[-(len(self.QUERY) - 1):]
 
 
 def ssh_argv(phase: str, port: int, key: Path, hosts: Path) -> list[str]:
@@ -55,8 +86,45 @@ def ssh_argv(phase: str, port: int, key: Path, hosts: Path) -> list[str]:
             'root@127.0.0.1', '/bin/ash -i']
 
 
+def wait_shell_ready(process: subprocess.Popen, timeout: float,
+                     terminal: TerminalCursorResponder) -> bytes:
+    """Sync first input to a genuine ash prompt, not merely a PTY echo.
+
+    An early command can collide with ash's VT100 cursor-position query.
+    Reply to actual DSR output and require a short quiet interval following
+    the prompt. This is INPUT READINESS only; it never satisfies M240 proof.
+    """
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    prompt_seen = False
+    last_output_at = time.monotonic()
+    while time.monotonic() < deadline:
+        if prompt_seen and time.monotonic() - last_output_at >= 0.6:
+            return bytes(output)
+        remaining = max(0, min(0.15, deadline - time.monotonic()))
+        readable, _, _ = select.select([process.stdout], [], [], remaining)
+        if not readable:
+            continue
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        terminal.observe(process, chunk)
+        output.extend(chunk)
+        last_output_at = time.monotonic()
+        if len(output) > 131072:
+            raise ValueError('SSH pre-command shell banner exceeded bounded buffer')
+        clean = re.sub(rb'\x1b\[[0-9;]*[A-Za-z]', b'',
+                       bytes(output[-512:]).replace(b'\r', b''))
+        prompt_seen = prompt_seen or bool(SHELL_PROMPT_RE.search(
+            clean.split(b'\n')[-1]))
+    suffix = bytes(output[-320:]).decode('utf-8', errors='backslashreplace')
+    raise TimeoutError('original Dropbear interactive ash prompt missing: '
+                       f'ssh_exit={process.poll()} stdout_tail={suffix!r}')
+
+
 def recv_until(process: subprocess.Popen, expected: bytes, timeout: float,
-               initial: bytes = b'') -> bytes:
+               initial: bytes = b'',
+               terminal: TerminalCursorResponder | None = None) -> bytes:
     """Observe an exact newline-delimited remote proof; bound untrusted output."""
     data = bytearray(initial)
     deadline = time.monotonic() + timeout
@@ -69,6 +137,8 @@ def recv_until(process: subprocess.Popen, expected: bytes, timeout: float,
             chunk = os.read(process.stdout.fileno(), 4096)
             if not chunk:
                 break
+            if terminal is not None:
+                terminal.observe(process, chunk)
             data.extend(chunk)
             if len(data) > 131072:
                 raise ValueError('SSH remote PTY output exceeded bounded buffer')
@@ -82,7 +152,8 @@ def recv_until(process: subprocess.Popen, expected: bytes, timeout: float,
 
 
 def confirm_foreground_block(process: subprocess.Popen, natural_exit: bytes,
-                             initial: bytes, seconds: float) -> bytes:
+                             initial: bytes, seconds: float,
+                             terminal: TerminalCursorResponder | None = None) -> bytes:
     """Reject a missing/instant-failing sleep before attempting PTY Ctrl-C."""
     data = bytearray(initial)
     end = time.monotonic() + seconds
@@ -97,6 +168,8 @@ def confirm_foreground_block(process: subprocess.Popen, natural_exit: bytes,
             chunk = os.read(process.stdout.fileno(), 4096)
             if not chunk:
                 raise ValueError('SSH PTY stream closed before foreground Ctrl-C')
+            if terminal is not None:
+                terminal.observe(process, chunk)
             data.extend(chunk)
             if len(data) > 131072:
                 raise ValueError('foreground PTY output exceeded bounded buffer')
@@ -120,11 +193,17 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                bufsize=0, start_new_session=True)
     output = b''
+    terminal = TerminalCursorResponder()
     try:
+        output = wait_shell_ready(process, min(40, deadline - time.monotonic()),
+                                  terminal)
         send(process, b"stty -echo; stty erase '^?'; printf '\\nM240-PTY-READY:%s\\n' " +
              nonce.encode() + b'; tty; stty rows 33 cols 101; stty size; '
              b"test -t 0 && test -t 1 && printf '\\nM240-PTY-FDS:YES\\n'\n")
-        output = recv_until(process, b'M240-PTY-FDS:YES', min(40, deadline - time.monotonic()))
+        output = recv_until(process, b'M240-PTY-FDS:YES',
+                            min(40, deadline - time.monotonic()),
+                            output,
+                            terminal=terminal)
         normalized = output.replace(b'\r', b'')
         if (marker not in normalized.split(b'\n') or
                 TTY_RE.search(normalized) is None or
@@ -136,10 +215,12 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
         send(process, b"printf '\\nM240-READ-READY:%s\\n' " + nonce.encode() +
              b"; read -r answer; printf '\\nM240-CANON:%s\\n' \"$answer\"\n")
         output = recv_until(process, ('M240-READ-READY:' + nonce).encode(),
-                            min(15, deadline - time.monotonic()), output)
+                            min(15, deadline - time.monotonic()), output,
+                            terminal=terminal)
         send(process, nonce.encode() + b'X\x7f\n')
         output = recv_until(process, ('M240-CANON:' + nonce).encode(),
-                            min(25, deadline - time.monotonic()), output)
+                            min(25, deadline - time.monotonic()), output,
+                            terminal=terminal)
         if b'\nM240-CANON:' + nonce.encode() + b'\n' not in output.replace(b'\r', b''):
             raise ValueError('canonical PTY backspace did not erase erroneous byte')
 
@@ -148,16 +229,19 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
              b"; /bin/sleep 30; printf '\\nM240-SLEEP-NATURAL:%s\\n' " +
              nonce.encode() + b'\n')
         output = recv_until(process, ('M240-SLEEP-START:' + nonce).encode(),
-                            min(15, deadline - time.monotonic()), output)
+                            min(15, deadline - time.monotonic()), output,
+                            terminal=terminal)
         # The shell MUST remain genuinely blocked by the foreground command;
         # otherwise an absent/failed sleep could fake the later shell marker.
         output = confirm_foreground_block(
-            process, ('M240-SLEEP-NATURAL:' + nonce).encode(), output, 1.2)
+            process, ('M240-SLEEP-NATURAL:' + nonce).encode(), output, 1.2,
+            terminal=terminal)
         interrupt_at = time.monotonic()
         send(process, b'\x03')
         send(process, b"printf '\\nM240-ISIG:%s\\n' " + nonce.encode() + b'\n')
         output = recv_until(process, ('M240-ISIG:' + nonce).encode(),
-                            min(15, deadline - time.monotonic()), output)
+                            min(15, deadline - time.monotonic()), output,
+                            terminal=terminal)
         if ('M240-SLEEP-NATURAL:' + nonce).encode() in output:
             raise ValueError('foreground sleep completed naturally without SIGINT')
         if time.monotonic() - interrupt_at >= 15:
@@ -172,6 +256,7 @@ def run_session(phase: str, port: int, key: Path, hosts: Path,
                 'tty_allocated': True,
                 'canonical_backspace': True, 'foreground_sigint': True,
                 'winsize_33x101': True,
+                'terminal_cursor_queries_answered': terminal.count,
                 'remote_stdout_sha256': hashlib.sha256(output).hexdigest()}
     except (OSError, ValueError, RuntimeError, TimeoutError,
             subprocess.SubprocessError) as exc:

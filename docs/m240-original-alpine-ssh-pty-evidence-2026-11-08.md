@@ -6,6 +6,32 @@ OpenSSH `-tt` PTYs per boot, full terminal interaction, separate NIC PCAPs,
 and the original signed Alpine physical ext4/OpenRC chain**. Neither a green
 workflow nor an SSH TCP connection alone is a substitute for this proof.
 
+## 2026-11-09: genuine 9/9 first boot and 7/9 second boot; still FAIL
+
+- [Real M240 x86-64 QEMU run #42549065918](https://github.com/yituanxing/na-seed/actions/runs/42549065918),
+  kernel accept-lease repair [`a91d4b7`](https://github.com/yituanxing/na-seed/commit/a91d4b7a6673a06a3569f9e40c7e997b057b5a97):
+  **the first independent boot completed all nine actual host OpenSSH `-tt`
+  sessions** with canonical DEL, PTY winsize, genuine foreground SIGINT and
+  shell exit. The second original signed Alpine/OpenRC/Dropbear boot completed
+  **seven** such sessions; host session 8/9 timed out. The overall required
+  **9x2 oracle remains FAIL**. QEMU run conclusion was failure; do not turn
+  9/9 + 7/9 into a complete pass.
+- Artifact `13644949287`, original GitHub ZIP SHA-256
+  `965a8e392f2a95aa15d3b475f9d761d71d876bac55792a86fb4bff30664df70a`:
+  first boot host JSON receipt, both original UART logs, host SSH logs and
+  distinct boot NIC PCAPs. The second UART includes genuine native lwIP
+  `[LWIP ACCEPT PARKED]` and `[LWIP ACCEPT REPLAYED]` records, directly
+  exercising the repaired FD-lease lifecycle. The repair also has an
+  independent native Netconn final-listener-close regression in `c2aa0df`.
+- The eighth second-boot SSH session successfully reached original guest
+  Dropbear and interactive BusyBox `ash`; host stdout ended with the actual
+  `~ # \x1b[6n` cursor-position request. The host currently pipes OpenSSH's
+  forced remote PTY to non-terminal file descriptors, with no ANSI terminal
+  emulator to answer CSI 6n. This suggests **host terminal emulation** as
+  the next concrete blocker, not an observed TCP RST. The updated host
+  checker replies to CSI 6n **only when actually received** and preserves
+  all original PTY acceptance assertions; native 9x2 revalidation is pending.
+
 ## Two x86-64 pilots: real failure, not M240 PASS
 
 1. [Initial run #42495058653](https://github.com/yituanxing/na-seed/actions/runs/42495058653),

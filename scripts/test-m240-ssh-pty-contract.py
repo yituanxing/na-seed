@@ -4,8 +4,10 @@
 import importlib.util
 import hashlib
 import json
+import io
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -90,6 +92,95 @@ def main():
     finally:
         reset.wait(timeout=3)
         reset.stdout.close()
+
+    # The host uses OpenSSH -tt over pipes, without a graphical terminal
+    # emulator. A real interactive ash may issue CSI 6n before its prompt is
+    # ready; the host must reply to that query, including split read chunks,
+    # without treating the reply itself as evidence of the remote PTY proof.
+    class FakeSSH:
+        stdin = io.BytesIO()
+
+        @staticmethod
+        def poll():
+            return None
+
+    fake = FakeSSH()
+    terminal = HOST.TerminalCursorResponder()
+    terminal.observe(fake, b'\r\n~ # \x1b[')
+    assert terminal.count == 0 and fake.stdin.getvalue() == b''
+    terminal.observe(fake, b'6n')
+    assert terminal.count == 1 and fake.stdin.getvalue() == b'\x1b[1;1R'
+    terminal.observe(fake, b'ordinary prompt bytes')
+    assert terminal.count == 1 and fake.stdin.getvalue() == b'\x1b[1;1R'
+
+    # End-to-end synthetic remote line editor blocks until the exact host
+    # cursor reply arrives; it alone cannot fabricate a guest proof marker.
+    emulator = subprocess.Popen([
+        sys.executable, '-u', '-c',
+        "import sys,time; "
+        "sys.stdout.buffer.write(b'\\x1b['); sys.stdout.flush(); "
+        "time.sleep(.1); "
+        "sys.stdout.buffer.write(b'6n'); sys.stdout.flush(); "
+        "reply=sys.stdin.buffer.read(6); "
+        "sys.stdout.buffer.write(b'\\nDSR-RESPONDED\\n' "
+        "if reply==b'\\x1b[1;1R' else b'\\nDSR-BAD\\n'); "
+        "sys.stdout.flush()"
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        response = HOST.recv_until(emulator, b'DSR-RESPONDED', 3,
+                                   terminal=HOST.TerminalCursorResponder())
+        assert b'\nDSR-RESPONDED\n' in response
+        assert emulator.wait(timeout=2) == 0
+    finally:
+        if emulator.poll() is None:
+            emulator.kill()
+        emulator.wait(timeout=2)
+        emulator.stdin.close()
+        emulator.stdout.close()
+
+    # Real ash can print its prompt and then block on DSR before it is
+    # prepared to read the *first* command. Synchronize shell readiness
+    # independently; no receipt may be inferred from a prompt or query.
+    starting = subprocess.Popen([
+        sys.executable, '-u', '-c',
+        "import sys,time; "
+        "sys.stdout.buffer.write(b'\\n~ # \\x1b['); sys.stdout.flush(); "
+        "time.sleep(.1); "
+        "sys.stdout.buffer.write(b'6n'); sys.stdout.flush(); "
+        "reply=sys.stdin.buffer.read(6); "
+        "time.sleep(.05); "
+        "sys.stdout.buffer.write(b'\\n~ # '); sys.stdout.flush(); "
+        "line=sys.stdin.buffer.readline(); "
+        "sys.stdout.buffer.write(b'\\nM240-SYNC:' + line "
+        "if reply==b'\\x1b[1;1R' else b'\\nM240-BAD\\n'); "
+        "sys.stdout.flush()"
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        live_terminal = HOST.TerminalCursorResponder()
+        start_output = HOST.wait_shell_ready(starting, 3, live_terminal)
+        assert b'\x1b[6n' in start_output and live_terminal.count == 1
+        HOST.send(starting, b'challenge\n')
+        response = HOST.recv_until(starting, b'M240-SYNC:challenge', 2,
+                                   start_output, terminal=live_terminal)
+        assert b'M240-SYNC:challenge\n' in response
+        assert starting.wait(timeout=2) == 0
+    finally:
+        if starting.poll() is None:
+            starting.kill()
+        starting.wait(timeout=2)
+        starting.stdin.close()
+        starting.stdout.close()
+
+    # A banner and terminal echo alone must not count as a ready guest shell.
+    echo_only = subprocess.Popen(['sh', '-c', "printf 'early echoed command\r\n'"],
+                                 stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+    try:
+        must_reject(lambda: HOST.wait_shell_ready(
+            echo_only, 0.4, HOST.TerminalCursorResponder()))
+    finally:
+        echo_only.wait(timeout=2)
+        echo_only.stdin.close()
+        echo_only.stdout.close()
 
     with tempfile.TemporaryDirectory(prefix='m240-pty-contract-') as tmp:
         base = Path(tmp)
