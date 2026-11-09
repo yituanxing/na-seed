@@ -34,6 +34,8 @@ on:
       - 'kernel/task/user_stack.c'
       - 'kernel/syscall/**'
       - 'kernel/mm/vm.c'
+      - 'kernel/mm/mmap_abi.h'
+      - 'scripts/test-mmap-abi.c'
   workflow_dispatch:
 
 permissions:
@@ -66,6 +68,9 @@ jobs:
           python3 -B tests/m247-debian-dash-host.py
           python3 -B tests/m248-debian-multiarch-host.py
           sh -n scripts/m248-probe-debian-dash-pid1.sh
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c \
+            -o /tmp/naseed-m248-mmap-abi
+          /tmp/naseed-m248-mmap-abi
           python3 - <<'PY'
           import ast
           from pathlib import Path
