@@ -318,14 +318,18 @@ finish:
 }
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
-    const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL, MAP_FIXED=0x10ULL;
+    /* glibc's ELF loader maps DSOs with MAP_COPY=MAP_PRIVATE|MAP_DENYWRITE.
+     * Linux keeps MAP_DENYWRITE for ABI compatibility but ignores it.
+     * It must not change the mapping's ownership, sharing or protections. */
+    const uint64_t MAP_SHARED=0x01ULL, MAP_PRIVATE=0x02ULL,
+                   MAP_FIXED=0x10ULL, MAP_DENYWRITE=0x800ULL;
     if (!length ||
         length > UINT64_MAX-(PAGE-1) ||
         (offset & (PAGE-1)) || offset > UINT64_MAX-length)
         return (uint64_t)-EINVAL;
     bool shared=(flags & MAP_SHARED)!=0;
     bool private_map=(flags & MAP_PRIVATE)!=0;
-    if ((flags & ~(MAP_PRIVATE|MAP_SHARED|MAP_FIXED)) ||
+    if ((flags & ~(MAP_PRIVATE|MAP_SHARED|MAP_FIXED|MAP_DENYWRITE)) ||
         (private_map == shared))
         return (uint64_t)-ENOSYS;
     if (!prot || (prot & ~7ULL)) return (uint64_t)-ENOSYS;

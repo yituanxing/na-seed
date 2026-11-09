@@ -16,6 +16,9 @@ on:
       - 'kernel/task/elf_segments.c'
       - 'kernel/task/elf_segments.h'
       - 'kernel/task/exec.c'
+      - 'kernel/task/sched.c'
+      - 'kernel/mm/vm.c'
+      - 'scripts/test-m86-txn.c'
       - 'kernel/boot_image.c'
       - 'kernel/boot_image.h'
   workflow_dispatch:
@@ -41,6 +44,7 @@ jobs:
         run: |
           set -eu
           python3 tests/m245-debian-dynamic-host.py
+          sh scripts/check-m86-txn.sh
           sh -n scripts/m245-probe-debian-glibc.sh
           python3 - <<'PY'
           import ast

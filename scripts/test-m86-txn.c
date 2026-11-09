@@ -316,7 +316,10 @@ int main(void){
     assert(slot(BASE,false)->pa==original_pa0 &&
            slot(BASE+P,false)->pa==original_pa1 &&
            living()==baseline && ram[original_pa0]==0xa0);
-    assert(nas_vm_file_mmap(BASE,2*P,1,0x12,4,0)==BASE);
+    /* Genuine glibc dl-map-segments uses MAP_COPY, which includes the
+     * obsolete-but-ignored Linux MAP_DENYWRITE bit (0x800). */
+    assert((int64_t)nas_vm_file_mmap(BASE,2*P,1,0x1012,4,0)==-38);
+    assert(nas_vm_file_mmap(BASE,2*P,1,0x812,4,0)==BASE);
     const struct nas_anon_region *v=nas_vma_find(&space.mmap_vmas,BASE);
     assert(v && v->prot==1 && v->kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT);
     assert(slot(BASE,false)->pa!=original_pa0 &&
@@ -329,6 +332,10 @@ int main(void){
                              UINT64_MAX,0)==BASE);
     assert(!nas_mmu_user_byte(BASE) && !nas_mmu_user_byte(BASE+P));
     assert(nas_vma_find(&space.mmap_vmas,BASE)->prot==0);
+    assert(living()==0);
+    uint64_t glibc_dso=nas_vm_file_mmap(0,P,1,0x802,4,0);
+    assert((int64_t)glibc_dso>0);
+    assert(nas_vm_munmap(glibc_dso,P)==0);
     assert(living()==0);
     /* A mixed resident + reserved range must change only VMA policy and
      * existing PTE permissions. A protection change must NOT fault in an

@@ -308,10 +308,13 @@ static void native_dispatcher(void) {
         unsigned slot=0;
         struct nas_task *next=nas_sched_scan_next(&scan,&slot);
         if(next) {
+            /* scan_next already consumed a BLOCKED task's readiness check.
+             * Rechecking a one-shot PTY/wait completion here can observe a
+             * changed state and reject a valid native continuation. The
+             * completion path handles a lost wake by re-parking the task. */
             if(!next->resume_valid ||
                (next->state!=NAS_TASK_READY &&
-                (next->state!=NAS_TASK_BLOCKED ||
-                 !nas_task_wait_ready(next))))
+                next->state!=NAS_TASK_BLOCKED))
                 sched_fail("invalid native schedule candidate");
             if(next->state==NAS_TASK_BLOCKED &&
                !next->kernel_exec.cpu.saved_sp)
