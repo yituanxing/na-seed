@@ -140,7 +140,10 @@ if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     # The genuine guest apk changed /etc/apk/world and the installed DB.
     # Use the existing M195 signed original ELF/world oracle, not the M191
     # byte-for-byte immutable-world oracle reserved for M241/M242.
-    python3 scripts/m243-verify-cli-disk.py "$port" "$root" "$disk"
+    # M191's pristine Alpine /root remains mode 0700 and UID 0. The
+    # independent read-only oracle needs root to inspect that source; this
+    # is a host permission fix, not a guest privilege escalation or bypass.
+    sudo python3 scripts/m243-verify-cli-disk.py "$port" "$root" "$disk"
     test -s "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M243 NETWORK FAIL] no real QEMU VirtIO packet capture' >&2
         exit 1
