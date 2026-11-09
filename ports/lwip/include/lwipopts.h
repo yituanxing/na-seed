@@ -28,6 +28,14 @@
 #define LWIP_ICMP 1
 #define LWIP_UDP 1
 #define LWIP_TCP 1
+/* Alpine HTTPS APKINDEX traffic measured a 2144-byte default receive window
+ * (4 * TCP_MSS, 536-byte MSS) and about 24KiB/s signed-index transfer.
+ * Double the advertised window without exceeding the eight-entry native
+ * TCP receive mailbox's worst-case MSS-sized packet capacity. A separate
+ * close-under-pressure test caught lost admitted bytes with an 8KiB window;
+ * do not increase the window without resolving the mailbox/backpressure
+ * boundary and rerunning the real TCP close drain. */
+#define TCP_WND (4U * 1024U)
 #define SO_REUSE 1 /* native SO_REUSEADDR for real Alpine ncat listeners */
 #define IP_SOF_BROADCAST 1 /* native UDP SO_BROADCAST on official IP PCB */
 #define LWIP_ARP 1

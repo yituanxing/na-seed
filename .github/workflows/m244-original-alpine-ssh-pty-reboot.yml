@@ -27,6 +27,8 @@ on:
       - 'scripts/test-m244-verify-ssh-disk.py'
       - 'kernel/init/main.c'
       - 'kernel/platform/platform.h'
+      - 'ports/lwip/include/lwipopts.h'
+      - 'scripts/test-lwip-netconn-bridge.c'
       - 'scripts/acceptance/qemu-netdev.sh'
 
 permissions:

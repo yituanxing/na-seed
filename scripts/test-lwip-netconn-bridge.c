@@ -15,6 +15,9 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The native mailbox remains bounded at eight MSS-sized TCP receive items. */
+_Static_assert(TCP_WND == 4096U, "native TCP receive window regression");
+
 static uint64_t now_ns;
 uint64_t nas_arch_monotonic_ns(void){return now_ns;}
 void nas_print(const char *s){fputs(s,stdout);}
