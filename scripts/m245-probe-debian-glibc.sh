@@ -82,7 +82,7 @@ test "$(readlink "$verify/lib/x86_64-linux-gnu")" = ../usr/lib/x86_64-linux-gnu
 # proven VFS-dynamic class avoids modifying or weakening shared CI code.
 case_id=m105-m245-debian-glibc
 case_file="$work/m245-cases.tsv"
-args='sh -c '\''exec /usr/bin/printf "M245-DEBIAN-DYNAMIC-GLIBC-OK\n"'\'''
+args='sh -c '\''exec /usr/bin/printf "M245-DEBIAN-DYNAMIC-GLIBC-OK\\n"'\'''
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$case_id" cpio "$args" M245-DEBIAN-DYNAMIC-GLIBC-OK - /bin/busybox \
     > "$case_file"

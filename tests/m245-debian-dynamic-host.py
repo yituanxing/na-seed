@@ -64,6 +64,9 @@ class SignedPackageContracts(unittest.TestCase):
 
     def test_guest_marker_is_post_real_qemu_only(self):
         probe = Path("scripts/m245-probe-debian-glibc.sh").read_text()
+        # Limine's argv parser consumes one backslash. Preserve the second
+        # so genuine GNU printf receives \n rather than the literal 'n'.
+        self.assertIn(r"M245-DEBIAN-DYNAMIC-GLIBC-OK\\n", probe)
         self.assertIn("sh scripts/probe-x86-busybox-parity.sh", probe)
         self.assertIn("[EXEC] replaced process with CPIO ELF: /usr/bin/printf", probe)
         self.assertIn("[DYN] real ELF interpreter loaded, entry=", probe)
