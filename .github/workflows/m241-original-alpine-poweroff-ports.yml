@@ -76,10 +76,12 @@ jobs:
           case '${{ matrix.port }}' in
             riscv64)
               command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
-              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64" ;;
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
             arm64)
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
-              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64" ;;
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
           esac
           if [ -n "$missing" ]; then
             sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq

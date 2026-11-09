@@ -104,6 +104,15 @@ reach that platform action, after ext4 teardown. The M241-only runner
 awaits a genuine QEMU process exit; it must not host-kill QEMU for PASS.
 These changes require independent remote native acceptance on both ISAs.
 
+Run `42567126109` independently **passed RV64** (artifact `13652011615`):
+authentic Alpine login, nonce write/guest readback, original poweroff,
+PID1 quiescence, OpenSBI SBI SRST naturally terminating QEMU, clean
+physical ext4 and host nonce readback. The first AArch64 trial on the
+same run stopped **before QEMU guest boot**, due to absent packaged
+`efi-virtio.rom` in the CI runner. The workflow now installs
+`ipxe-qemu`, as the preexisting M193 cross-ISA workflow did; AArch64
+native shutdown remains UNPROVEN until a new actual guest run passes.
+
 The automatically push-triggered `m241-original-alpine-poweroff-ports.yml`
 executes one QEMU boot per RV64/AArch64 ISA and does not replay the prior
 M191 QEMU baseline or M240 SSH matrix. A green host preflight is not proof
