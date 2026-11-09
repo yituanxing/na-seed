@@ -66,6 +66,16 @@ fi
 overlay=$(mktemp -d "$PWD/$work/m241-auth-overlay.XXXXXX")
 sudo cp -a "$root/." "$overlay/"
 sudo python3 scripts/m193-alpine-login-overlay.py "$root" "$overlay"
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    # Reuse the already-proven M197 public APK trust + live DHCP resolver.
+    # No original upstream Alpine applet, repository, key or CA is replaced.
+    sudo python3 scripts/m197-alpine-stage.py "$root" "$overlay"
+    test ! -e "$root/etc/runlevels/default/crond" &&
+      test ! -L "$root/etc/runlevels/default/crond" || {
+        echo '[M243 STAGE FAIL] crond was already enabled in original Alpine baseline' >&2
+        exit 1
+      }
+fi
 disk="$PWD/$work/m241-poweroff-disposable.img"
 sudo python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
 sudo chown "$(id -u):$(id -g)" "$disk"
@@ -84,6 +94,13 @@ export BUSYBOX_PARITY_CASE=m193-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m193-login-cases.tsv
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_APP_BATCH_QEMU_TIMEOUT="${NAS_M241_QEMU_TIMEOUT:-180}"
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m243-original-apk-wire.pcap"
+    test ! -e "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M243 STAGE FAIL] refusing existing PCAP proof' >&2
+        exit 1
+    }
+fi
 
 # Always compile the changed kernel. A cached M191 .elf would test OLD PID1
 # semantics and produce a misleading guest result.
@@ -106,7 +123,9 @@ fifo="$PWD/$work/m241-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 runner_log="$PWD/$work/m241-poweroff-runner.log"
 log="$PWD/$logs/m193-batch.serial.log"
-if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    python3 scripts/m243-alpine-cli-uart.py "$runner" "$log" "$runner_log" "$fifo"
+elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
     # M242 adds a real in-process firmware reset and SECOND Alpine boot;
     # staging, ELF identity, native QEMU and durable-disk checks stay shared.
     python3 scripts/m242-alpine-reboot-uart.py "$runner" "$log" "$runner_log" "$fifo"
@@ -117,8 +136,21 @@ fi
 # Only reached when original PID1 signal + final poweroff(2), actual deferred
 # upstream ext4 unmount, and native QEMU exit all succeeded. Recheck the same
 # mutable guest disk after QEMU exit; no synthetic fsck or external kill PASS.
-sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$overlay" "$disk"
-if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    # The genuine guest apk changed /etc/apk/world and the installed DB.
+    # Use the existing M195 signed original ELF/world oracle, not the M191
+    # byte-for-byte immutable-world oracle reserved for M241/M242.
+    python3 scripts/m243-verify-cli-disk.py "$port" "$root" "$disk"
+    test -s "$NAS_VIRTIO_NET_PCAP" || {
+        echo '[M243 NETWORK FAIL] no real QEMU VirtIO packet capture' >&2
+        exit 1
+    }
+else
+    sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$overlay" "$disk"
+fi
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    :
+elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
     python3 scripts/m242-verify-reboot-disk.py "$disk"
 else
     python3 scripts/m241-verify-poweroff-disk.py "$disk"
@@ -128,7 +160,11 @@ sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
     cd "$PWD"
     sha256sum -c "$work/smoke/original-alpine-elfs.sha256"
 )
-if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+    cp "$log" "$PWD/$work/m243-cli.serial.log"
+    cp "$runner_log" "$PWD/$work/m243-cli-runner.log"
+    echo "[M243 ORIGINAL ALPINE CLI NATIVE PASS] $port real public signed apk add tree+jq, original OpenRC crond automatic recovery after SAME-QEMU platform reboot, ext4 package DB/ELF/runlevel persistence and natural poweroff"
+elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
     cp "$log" "$PWD/$work/m242-reboot.serial.log"
     cp "$runner_log" "$PWD/$work/m242-reboot-runner.log"
     echo "[M242 ORIGINAL ALPINE REBOOT NATIVE PASS] $port SAME QEMU original Alpine reboot -> SECOND OpenRC/login/readback -> poweroff; durable ext4 host fsck verified"
