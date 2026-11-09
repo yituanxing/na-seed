@@ -172,6 +172,36 @@ static void concurrent_tcp_round(void){
      if(nas_kthread_run(1)==0)break;
  puts("[LWIP MULTIPEER PASS] 12 genuine simultaneous loopback TCP pairs and exact bidirectional socket ownership");
 }
+/* A deferred accepted Netconn must consume actual native-pool capacity, and
+ * closing the listener must free it without a Task claiming the child FD. */
+static void deferred_listener_close_round(void) {
+ struct nas_lwip_bridge_id listener=open_conn(54,NAS_LWIP_BRIDGE_TCP);
+ assert(command(listener,NAS_LWIP_BRIDGE_BIND,lo(38019),0,NULL,0).status==0);
+ assert(command(listener,NAS_LWIP_BRIDGE_LISTEN,lo(0),0,NULL,0).status==0);
+ struct nas_lwip_bridge_id client=open_conn(55,NAS_LWIP_BRIDGE_TCP);
+ struct nas_lwip_bridge_result result=command(client,NAS_LWIP_BRIDGE_CONNECT,
+                                            lo(38019),0,NULL,0);
+ assert(result.status==0 || result.status==-EINPROGRESS);
+ for(unsigned tries=0;tries<120 && !nas_lwip_bridge_listener_readable(listener);
+     tries++)assert(nas_kthread_run(1)==1);
+ assert(nas_lwip_bridge_listener_readable(listener));
+ struct nas_fd_slot_lease canceled=lease_open(56);
+ result=command(listener,NAS_LWIP_BRIDGE_ACCEPT,lo(0),56,NULL,0);
+ assert(result.status==0 && result.accepted.slot==56);
+ assert(nas_lwip_bridge_park_accepted(listener,result.accepted)==0);
+ assert(!nas_lwip_bridge_alive(result.accepted));
+ lease_close(canceled);
+ assert(nas_lwip_bridge_listener_readable(listener));
+ /* Releasing the guest listener owns this unclaimed TCP child. The native
+  * worker must retire BOTH objects before another 32 Netconns fit. */
+ assert(nas_lwip_bridge_release(listener)==0);
+ assert(nas_lwip_bridge_release(client)==0);
+ for(unsigned tries=0;tries<600;tries++)
+     if(nas_kthread_run(1)==0)break;
+ capacity_round(NAS_LWIP_BRIDGE_TCP);
+ puts("[LWIP ACCEPT DEFERRED CLOSE PASS] saved TCP peer released on listener "
+      "close, all 32 native slots reclaimed");
+}
 int main(void){
  nas_kthread_system_init();
  sys_init();
@@ -516,6 +546,7 @@ int main(void){
          assert(finish(replacement).status==0);
          assert(nas_lwip_bridge_release(replacement)==0);
          concurrent_tcp_round();
+         deferred_listener_close_round();
          puts("[LWIP NETCONN BRIDGE PASS] real upstream UDP/TCP, copied commands, async native Netconn, FD-slot generation, final release");
          return 0;
      }
