@@ -102,7 +102,7 @@ shutdown, and on AArch64 the QEMU `virt` HVC conduit requests PSCI
 SYSTEM_OFF. Only a fully validated original BusyBox POWER_OFF state can
 reach that platform action, after ext4 teardown. The M241-only runner
 awaits a genuine QEMU process exit; it must not host-kill QEMU for PASS.
-These changes require independent remote native acceptance on both ISAs.
+Both platform-power paths have now received independent native QEMU proof.
 
 Run `42567126109` independently **passed RV64** (artifact `13652011615`):
 authentic Alpine login, nonce write/guest readback, original poweroff,
@@ -110,15 +110,33 @@ PID1 quiescence, OpenSBI SBI SRST naturally terminating QEMU, clean
 physical ext4 and host nonce readback. The first AArch64 trial on the
 same run stopped **before QEMU guest boot**, due to absent packaged
 `efi-virtio.rom` in the CI runner. The workflow now installs
-`ipxe-qemu`, as the preexisting M193 cross-ISA workflow did; AArch64
-native shutdown remains UNPROVEN until a new actual guest run passes.
+`ipxe-qemu`, as the preexisting M193 cross-ISA workflow did.
+
+The follow-up automatic run `42567422597` at commit `e6f5a825` finished
+with **both native jobs successful**, independently verifying RV64 and
+AArch64 original Alpine password login, original ash and `/sbin/poweroff`,
+PID1 quiescence, clean ext4 unmount, standard firmware-requested QEMU
+natural exit, no host kill, released physical disk lock and post-exit
+e2fsck/nonce readback. This run contains physical serial artifacts:
+
+| Native ISA | GitHub Actions run | Raw serial artifact | Status |
+| --- | --- | --- | --- |
+| x86-64 | `42566040745` | `13651178821` | **PASS** |
+| RV64 | `42567422597` | `13651967310` | **PASS** |
+| AArch64 | `42567422597` | `13652370819` | **PASS** |
+
+The cross-ISA run lasted roughly two minutes from workflow start to
+completion, including signed staging and two independent native QEMU boots
+running in parallel. Each proof used one QEMU boot per ISA, not M240's
+larger historical SSH-PTY matrix. Artifacts currently expire seven days
+after their run; immutable commit and run IDs remain in this document.
 
 The automatically push-triggered `m241-original-alpine-poweroff-ports.yml`
 executes one QEMU boot per RV64/AArch64 ISA and does not replay the prior
 M191 QEMU baseline or M240 SSH matrix. A green host preflight is not proof
 of either native platform shutdown.
 
-## Native acceptance still required
+## Native acceptance contract (now PASS on all three ISAs)
 
 Start one independent original signed Alpine root disk (no replacement
 `/sbin/init` or test-provided reboot implementation). On the guest:
@@ -132,8 +150,11 @@ Start one independent original signed Alpine root disk (no replacement
    check physical ext4 with read-only `e2fsck` and `debugfs` the original
    guest-written nonce. A second *independent* QEMU boot is a later
    cross-boot persistence regression, not a prerequisite for this fast pilot.
-5. After the first native ISA passes, repeat unchanged on AArch64 and RV64.
+5. Repeat on AArch64 and RV64, requiring actual SBI SRST or PSCI SYSTEM_OFF
+   to make QEMU exit naturally, without host kill. **Both passed.**
 
-Do not report a three-ISA M241 PASS until all three native proofs exist.
-Keep the M240 original SSH PTY proof immutable and avoid rerunning all
-historic cohorts for each small kernel change.
+M241 meets this three-ISA shutdown contract. It does **not** yet prove
+`RB_AUTOBOOT` restart, second-boot guest-origin nonce readback, firmware-
+independent physical board power control, or the M240 historical multi-
+service matrix on this new feature-branch commit. Keep those as distinct
+later gates, preserving M240's proven original SSH PTY evidence.
