@@ -8,6 +8,11 @@ on:
     branches: [feat/m253-alpine-nonroot-dac]
     paths:
       - '.github/workflows/m253-original-alpine-multiuser.yml'
+      - 'kernel/fs/**'
+      - 'kernel/task/**'
+      - 'kernel/syscall/dispatch.c'
+      - 'scripts/inotify-vfs-test-stubs.c'
+      - 'scripts/vfs-host-sources.sh'
       - 'scripts/probe-m253-alpine-multiuser.sh'
       - 'scripts/m253-alpine-multiuser-uart.py'
       - 'scripts/m253-host-ssh-two-epoch.py'
