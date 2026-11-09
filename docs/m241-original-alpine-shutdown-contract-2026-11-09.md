@@ -158,3 +158,8 @@ M241 meets this three-ISA shutdown contract. It does **not** yet prove
 independent physical board power control, or the M240 historical multi-
 service matrix on this new feature-branch commit. Keep those as distinct
 later gates, preserving M240's proven original SSH PTY evidence.
+
+**Subsequent independent gate completed:** [M242 same-process original
+Alpine reboot and physical ext4 persistence](m242-original-alpine-same-qemu-reboot-2026-11-09.md)
+has now passed on x86-64, RV64 and AArch64 in run `42569731989`.
+This does not retroactively change M241's one-boot acceptance definition.
