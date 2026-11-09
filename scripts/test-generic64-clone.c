@@ -6,7 +6,13 @@
 #define __riscv 1
 #define __riscv_xlen 64
 #include "../kernel/arch/linux_syscall_abi.h"
+#include "../kernel/syscall/reboot_policy.h"
 int main(void) {
+    assert(nas_linux_decode_syscall(142U)==NAS_SC_reboot);
+    uint32_t shutdown_cmd=0;
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2,NAS_LINUX_REBOOT_POWER_OFF,&shutdown_cmd)==0);
+    assert(shutdown_cmd==NAS_LINUX_REBOOT_POWER_OFF);
     uint64_t call[8]={220,0x01200011ULL,0,0,0,0x1a1d30ULL,0,0};
     assert(nas_linux_decode_call(call)==NAS_SC_fork_child_tid);
     assert(nas_linux_clone_child_tid(call)==0x1a1d30ULL);

@@ -366,6 +366,42 @@ static void test_pid1_and_stop_preflight(void) {
            slots[3].state==NAS_TASK_BLOCKED && exits==0);
     puts("M105_HOST_PID1_STOP_PREFLIGHT_PASS");
 }
+static void test_original_busybox_pid1_shutdown_signals(void) {
+    reset();
+    struct nas_task *init=make(0,1,1,1,1,false);
+    struct nas_task *sender=make(1,2,2,20,2,false);
+    const uint64_t shutdown_mask=(1ULL<<(NAS_SIGUSR1-1)) |
+                                 (1ULL<<(NAS_SIGUSR2-1)) |
+                                 (1ULL<<(NAS_SIGTERM-1));
+    init->blocked_signals=shutdown_mask;
+    nas_current_task=sender;
+    /* Original Alpine BusyBox sends one process-directed shutdown signal
+     * to PID 1. The masked signal is queued for its sigtimedwait loop. */
+    assert(nas_signal_kill(1,NAS_SIGUSR2,0)==0);
+    assert(init->signal_group->pending==(1ULL<<(NAS_SIGUSR2-1)));
+    assert(nas_signal_timedwait_ready(init,shutdown_mask));
+    nas_current_task=init;
+    assert(nas_signal_timedwait_consume(shutdown_mask,0)==NAS_SIGUSR2);
+    assert(!init->signal_group->pending && exits==0);
+
+    nas_current_task=sender;
+    assert(nas_signal_kill(1,NAS_SIGTERM,0)==0);
+    assert(nas_signal_kill(1,NAS_SIGUSR1,0)==0);
+    assert(nas_signal_kill(1,NAS_SIGKILL,0)==(uint64_t)-EPERM);
+    assert(nas_signal_kill(1,NAS_SIGSTOP,0)==(uint64_t)-EPERM);
+    assert(nas_signal_tgkill(1,1,NAS_SIGUSR2,0)==0);
+    assert(init->pending_signals==(1ULL<<(NAS_SIGUSR2-1)));
+    assert(nas_signal_tkill(1,NAS_SIGKILL,0)==(uint64_t)-EPERM);
+    assert(exits==0);
+
+    init->blocked_signals=0;
+    init->signal_group->pending=0;
+    init->pending_signals=0;
+    assert(nas_signal_kill(1,NAS_SIGTERM,0)==(uint64_t)-EPERM);
+    assert(nas_signal_tgkill(1,1,NAS_SIGUSR2,0)==(uint64_t)-EPERM);
+    assert(exits==0 && init->state==NAS_TASK_BLOCKED);
+    puts("M105_HOST_ORIGINAL_BUSYBOX_PID1_SHUTDOWN_SIGNALS_PASS");
+}
 static void test_sigchld_live_parent_worker(void) {
     reset();
     make(0,1,1,1,1,false);
@@ -597,6 +633,7 @@ int main(void) {
     test_posix_timer_process_vs_thread_direction();
     test_dead_leader_live_worker();
     test_pid1_and_stop_preflight();
+    test_original_busybox_pid1_shutdown_signals();
     test_sigchld_live_parent_worker();
     test_thread_private_caught_realtime_signal();
     test_sigabrt_default_fatal_group();

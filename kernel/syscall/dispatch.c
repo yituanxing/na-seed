@@ -31,6 +31,8 @@
 #include "../time/clock.h"
 #include "../task/signal.h"
 #include "../task/user_stack.h"
+#include "../init/main.h"
+#include "reboot_policy.h"
 #include "../fs/io.h"
 #include "../fs/syscall.h"
 #include "../fs/user_broker.h"
@@ -260,11 +262,23 @@ static uint64_t finish_sigsuspend(struct nas_task *task) {
     (void)task;
     return (uint64_t)-EINTR;
 }
+static uint64_t consume_sigtimedwait(struct nas_task *task,uint64_t mask,
+                                     uint64_t info) {
+    uint64_t result=nas_signal_timedwait_consume(mask,info);
+    /* PID1 may request a platform shutdown only after the original init
+     * process ACTUALLY consumed its masked signal; a mere kill(1) success
+     * is not proof that init ran its own shutdown state machine. Cover
+     * both immediate and scheduler-resumed sigtimedwait paths. */
+    if(task->tgid==1 && (result==NAS_SIGUSR1 ||
+                         result==NAS_SIGUSR2 || result==NAS_SIGTERM))
+        nas_init_note_pid1_shutdown_consumed((unsigned)result);
+    return result;
+}
 static uint64_t finish_sigtimedwait(struct nas_task *task) {
     const uint64_t *a=task->wait.blocked_args;
     /* A matching signal takes priority if it arrived at the deadline.
      * Timeout without a matching pending signal is EAGAIN, not EINTR. */
-    return nas_signal_timedwait_consume(a[0],a[1]);
+    return consume_sigtimedwait(task,a[0],a[1]);
 }
 
 static uint64_t nas_time_sleep_syscall(uint64_t *frame,enum nas_syscall_op nr,
@@ -1007,7 +1021,7 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         }
         mask &= ~((1ULL<<8)|(1ULL<<18));
         if(nas_signal_timedwait_ready(&TASK,mask))
-            return nas_signal_timedwait_consume(mask,args[2]);
+            return consume_sigtimedwait(&TASK,mask,args[2]);
         if(args[3] && !delta)return (uint64_t)-EAGAIN;
         if(args[3]) {
             TASK.wait.deadline_ns=nas_time_add_deadline(
@@ -1046,7 +1060,19 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     }
     if (nr == NAS_SC_rt_sigprocmask) return nas_signal_procmask(args[1], args[2], args[3], args[4],
                                                                 (uint64_t *)(uintptr_t)args);
-    if (nr == NAS_SC_kill) return nas_signal_kill(args[1], args[2], (uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_kill)
+        return nas_signal_kill(args[1],args[2],(uint64_t *)(uintptr_t)args);
+    if (nr == NAS_SC_reboot) {
+        uint32_t command=0;
+        uint64_t result=nas_linux_reboot_validate(args[1],args[2],args[3],
+                                                  &command);
+        if(result)return result;
+        /* BusyBox PID1 invokes reboot from its *vfork child*, not PID1.
+         * A return of zero only records a valid request; on the parent
+         * PID1's later exit the deferred service closes all live FDs,
+         * drains the worker and durably unmounts ext4 before host exit. */
+        return nas_init_alpine_power_request(&TASK,command);
+    }
     if (nr == NAS_SC_tkill) return nas_signal_tkill(args[1],args[2],(uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_tgkill) return nas_signal_tgkill(args[1],args[2],args[3],(uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_umask) {

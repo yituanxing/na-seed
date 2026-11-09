@@ -307,7 +307,13 @@ static uint64_t signal_send_thread(uint64_t raw_tgid,uint64_t raw_tid,
        (verify_tgid && target->tgid!=(uint64_t)tgid))
         return (uint64_t)-ESRCH;
     if(!signo)return 0;
-    if(target->tgid==1)return (uint64_t)-EPERM;
+    /* BusyBox PID 1 blocks SIGTERM/SIGUSR1/SIGUSR2 and consumes them via
+     * sigtimedwait() to run its original shutdown actions. Preserve PID 1's
+     * immunity to default-fatal/unmaskable signals, but do not reject
+     * signals that its own signal mask or handler explicitly accepts. */
+    if(target->tgid==1 &&
+       signal_delivery_for(target,(unsigned)signo)!=SIGNAL_QUEUE)
+        return (uint64_t)-EPERM;
     if(signo==NAS_SIGSTOP || signo==NAS_SIGCONT)
         return nas_signal_kill(target->tgid,signo,frame);
     switch(signal_delivery_for(target,(unsigned)signo)) {
@@ -408,8 +414,17 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
         struct nas_task *target = nas_task_at(i);
         if (!signal_target_matches(target,pid,sender))continue;
         if (signal && target->tgid==1) {
-            protected_init=true; /* PID 1 workers are also protected. */
-            continue;
+            /* Only a live PID 1 recipient that explicitly catches or
+             * blocks this signal may receive it. In particular SIGKILL,
+             * SIGSTOP and an unmasked default-fatal signal cannot tear
+             * down init before its own ordered shutdown sequence. */
+            struct nas_task *init_recipient=
+                signal_group_recipient(target->tgid,(unsigned)signal);
+            if (!init_recipient ||
+                signal_delivery_for(init_recipient,(unsigned)signal)!=SIGNAL_QUEUE) {
+                protected_init=true;
+                continue;
+            }
         }
         if(per_thread_transition) {
             if(!signal_live_member(target))continue;

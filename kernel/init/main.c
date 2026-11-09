@@ -4,6 +4,8 @@
 #include "../task.h"
 #include "../fd.h"
 #include "../boot_image.h"
+#include "../syscall/reboot_policy.h"
+#include "../errno.h"
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -19,6 +21,8 @@ static bool pid1_exit_waiting;
 #endif
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
 static bool pid1_shutdown_quiesced;
+static uint64_t pid1_shutdown_signals;
+static uint32_t pid1_power_command;
 #endif
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
 extern void nas_lwext4_m180_shutdown_request(void);
@@ -164,12 +168,69 @@ static void nas_init_finish_success(void) {
         nas_fail("upstream ramfs guest VFS unmount failed");
 #endif
 #endif
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* A failed/unsupported final reboot(2) may still make original PID1
+     * exit after its shutdown actions. Always finish the real ext4
+     * teardown BEFORE reporting this failure: panic-on-exit would otherwise
+     * strand dirty filesystem buffers and invalidate subsequent boots. */
+    if(pid1_shutdown_signals && !pid1_power_command)
+        nas_fail("Alpine PID1 shutdown lacked a supported final reboot(2)");
+    /* Printed only AFTER final Files close, the async worker drains, and
+     * the actual ext4 filesystem is durably unmounted. A QEMU test exit
+     * is NOT a physical FPGA board's power controller. */
+    if(pid1_power_command==NAS_LINUX_REBOOT_POWER_OFF)
+        nas_print("[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount\n");
+    else if(pid1_power_command==NAS_LINUX_REBOOT_HALT)
+        nas_print("[ALPINE HALT] original BusyBox; durable ext4 unmount\n");
+#endif
     if(nas_boot_argv_enabled())
         nas_print("[PASS] cmdline userspace exit 0\n");
     else
         nas_print("[PASS] userspace exit 0\n");
     nas_platform_debug_exit(0);
     nas_fail("QEMU debug exit returned unexpectedly");
+}
+
+void nas_init_note_pid1_shutdown_consumed(unsigned signal) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    const struct nas_task *init=nas_task_by_pid(1);
+    if(!init || init->tgid!=1 || init->state==NAS_TASK_ZOMBIE)return;
+    if(signal==NAS_SIGUSR1 || signal==NAS_SIGUSR2 || signal==NAS_SIGTERM)
+        pid1_shutdown_signals |= UINT64_C(1)<<(signal-1);
+#else
+    (void)signal;
+#endif
+}
+
+uint64_t nas_init_alpine_power_request(const struct nas_task *caller,
+                                       uint32_t command) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* Original BusyBox PID1 runs shutdown actions, then vforks a child
+     * for reboot(2) and waits for it. A direct `poweroff -f` from a
+     * random shell cannot silently succeed while init stays alive. */
+    const struct nas_task *init=nas_task_by_pid(1);
+    if(!caller || caller->ppid!=1 || caller->tgid==1 ||
+       caller->vfork_parent_pid!=1 || !caller->vfork_shared_vm ||
+       !init || init->tgid!=1 || init->state==NAS_TASK_ZOMBIE)
+        return (uint64_t)-EPERM;
+    unsigned required_signal=0;
+    if(command==NAS_LINUX_REBOOT_POWER_OFF)required_signal=NAS_SIGUSR2;
+    else if(command==NAS_LINUX_REBOOT_HALT)required_signal=NAS_SIGUSR1;
+    else if(command==NAS_LINUX_REBOOT_RESTART)required_signal=NAS_SIGTERM;
+    else return (uint64_t)-EOPNOTSUPP;
+    if(!(pid1_shutdown_signals&(UINT64_C(1)<<(required_signal-1))))
+        return (uint64_t)-EPERM;
+    /* A reset is not yet implemented across all actual board backends;
+     * never claim a QEMU debug exit is a true physical reboot. */
+    if(command==NAS_LINUX_REBOOT_RESTART)return (uint64_t)-EOPNOTSUPP;
+    if(pid1_power_command && pid1_power_command!=command)
+        return (uint64_t)-EBUSY;
+    pid1_power_command=command;
+    return 0;
+#else
+    (void)caller;(void)command;
+    return (uint64_t)-EOPNOTSUPP;
+#endif
 }
 
 void nas_init_process_terminated(uint32_t code,uint32_t signal) {

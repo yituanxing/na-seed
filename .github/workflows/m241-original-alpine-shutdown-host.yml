@@ -1,0 +1,40 @@
+name: NaSeed M241 original Alpine shutdown fast preflight
+
+# Keep a seconds-scale gate on the isolated M241 feature branch. Do not
+# rerun M240's six long QEMU boots merely to check a syscall dispatch edit.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m241-original-alpine-shutdown-host.yml'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/init/main.c'
+      - 'kernel/init/main.h'
+      - 'kernel/syscall/**'
+      - 'kernel/task/signal.c'
+      - 'scripts/check-m241-original-alpine-shutdown.sh'
+      - 'scripts/check-m191-pid1-quiesce.sh'
+      - 'scripts/check-m105-signal-group.sh'
+      - 'scripts/test-m241-reboot-dispatch.c'
+      - 'scripts/test-m191-pid1-deferred-order.c'
+      - 'scripts/test-m105-signal-group-host.c'
+      - 'scripts/test-syscall-abi.c'
+      - 'scripts/test-generic64-clone.c'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-kernel-host-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Original BusyBox PID1 signal and deferred durable shutdown
+        run: sh scripts/check-m241-original-alpine-shutdown.sh

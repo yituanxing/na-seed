@@ -160,6 +160,7 @@ enum nas_syscall_op {
     NAS_SC_pselect6,
     NAS_SC_select,
     NAS_SC_read,
+    NAS_SC_reboot,
     NAS_SC_pread64,
     NAS_SC_readv,
     NAS_SC_readlink,

@@ -182,6 +182,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_ppoll: return NAS_SC_ppoll;
     case __NR_pselect6: return NAS_SC_pselect6;
     case __NR_read: return NAS_SC_read;
+    case __NR_reboot: return NAS_SC_reboot;
     case __NR_pread64: return NAS_SC_pread64;
     case __NR_readv: return NAS_SC_readv;
     case __NR_readlink: return NAS_SC_readlink;
@@ -353,6 +354,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 15U: return NAS_SC_lremovexattr;
     case 16U: return NAS_SC_fremovexattr;
     case 129U: return NAS_SC_kill; /* Linux asm-generic kill */
+    case 142U: return NAS_SC_reboot; /* Linux asm-generic reboot */
     case 130U: return NAS_SC_tkill;
     case 131U: return NAS_SC_tgkill;
     case 37U: return NAS_SC_linkat; /* Linux asm-generic */

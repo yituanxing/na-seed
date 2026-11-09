@@ -19,3 +19,5 @@ ${CC:-cc} -O2 -std=c11 -Wall -Wextra -Werror \
     -Wl,--gc-sections -o build/m191-pid1-quiesce/deferred-order
 timeout 30s build/m191-pid1-quiesce/deferred-order --armed
 timeout 30s build/m191-pid1-quiesce/deferred-order --unarmed
+timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff
+timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff-armed

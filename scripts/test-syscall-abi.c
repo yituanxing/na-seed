@@ -1,6 +1,7 @@
 #include <assert.h>
 #include "../kernel/arch/linux_syscall_abi.h"
 #include "../kernel/task/credentials.h"
+#include "../kernel/syscall/reboot_policy.h"
 int main(void) {
     /* Real root-only primary identity, with task-owned supplementary GIDs.
      * Ordinary BusyBox login calls initgroups(root,0) before switching to
@@ -18,6 +19,22 @@ int main(void) {
     assert(nas_linux_decode_syscall(__NR_setfsgid) == NAS_SC_setfsgid);
     assert(nas_linux_decode_syscall(__NR_setgroups) == NAS_SC_setgroups);
     assert(nas_linux_decode_syscall(__NR_sethostname) == NAS_SC_sethostname);
+    assert(__NR_reboot==169);
+    assert(nas_linux_decode_syscall(__NR_reboot)==NAS_SC_reboot);
+    uint32_t shutdown_cmd=0;
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2,NAS_LINUX_REBOOT_POWER_OFF,&shutdown_cmd)==0);
+    assert(shutdown_cmd==NAS_LINUX_REBOOT_POWER_OFF);
+    assert(nas_linux_reboot_validate(1,NAS_LINUX_REBOOT_MAGIC2,
+        NAS_LINUX_REBOOT_POWER_OFF,&shutdown_cmd)==(uint64_t)-EINVAL);
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,1,
+        NAS_LINUX_REBOOT_POWER_OFF,&shutdown_cmd)==(uint64_t)-EINVAL);
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2A,NAS_LINUX_REBOOT_HALT,&shutdown_cmd)==0);
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2B,NAS_LINUX_REBOOT_RESTART,&shutdown_cmd)==0);
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2,0,&shutdown_cmd)==(uint64_t)-EOPNOTSUPP);
     assert(nas_linux_decode_syscall(__NR_getgroups) == NAS_SC_getgroups);
     assert(nas_credentials_set_id(0)==0);
     assert((int64_t)nas_credentials_set_id(1)==-EPERM);
