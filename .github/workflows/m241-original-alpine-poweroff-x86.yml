@@ -14,8 +14,11 @@ on:
       - 'kernel/init/main.h'
       - 'kernel/task/signal.c'
       - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/fs/vfs.h'
+      - 'kernel/fs/vfs_providers.c'
       - 'kernel/syscall/reboot_policy.h'
       - 'kernel/syscall/dispatch.c'
+      - 'ports/lwext4/guest_boot.c'
 
 permissions:
   contents: read

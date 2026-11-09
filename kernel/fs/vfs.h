@@ -240,6 +240,10 @@ int nas_vfs_mount_tmpfs(const char *target,const char *source,
                         uint32_t mode,bool read_only,uint64_t max_pages,
                         uint64_t max_inodes,bool strict_atime);
 int nas_vfs_umount_tmpfs(const char *target);
+/* After every userspace Task has exited, unmount runtime tmpfs attachments
+ * deepest-first before detaching bootstrap pseudo mounts and the ext4 root.
+ * Runtime mount ownership remains with the same ordinary tmpfs provider. */
+int nas_vfs_shutdown_runtime_tmpfs(void);
 /* Early boot may select a real block-backed root BEFORE default pseudo
  * mounts acquire parent Dentries. This is a one-shot boot policy, never a
  * runtime root replacement or a second pathname resolution mechanism. */

@@ -29,4 +29,5 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -ffreestanding \
     -DNAS_ENABLE_M180_FS_USER_IRQ=1 kernel/init/main.c
 python3 scripts/check-architecture-boundaries.py
 python3 scripts/check-three-isa-core.py
+sh scripts/check-m191-root-provider.sh
 echo '[M241 HOST PREFLIGHT PASS] actual syscall decoder, PID1 signal consumption, vfork shutdown contract, deferred ext4 teardown; native QEMU still REQUIRED'

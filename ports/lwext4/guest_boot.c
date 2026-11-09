@@ -257,7 +257,12 @@ bool nas_lwext4_guest_boot_mount(void) {
 bool nas_lwext4_guest_boot_shutdown(void) {
     if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
-    int rc=nas_vfs_shutdown_external_root_pseudos();
+    /* Original OpenRC mounts real runtime tmpfs (such as /run), which
+     * retains parent/covered root Dentries even after PID1 and its shell
+     * exit. Quiescence has already closed every File and cwd owner here. */
+    int rc=nas_vfs_shutdown_runtime_tmpfs();
+    if(rc)return boot_shutdown_failed("runtime tmpfs teardown",rc);
+    rc=nas_vfs_shutdown_external_root_pseudos();
     if(rc)return boot_shutdown_failed("pseudo-mount teardown",rc);
 #endif
     /* A read-only image cannot have dirty metadata to commit and some

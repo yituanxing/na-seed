@@ -44,6 +44,11 @@ a host debug-exit from the child's syscall stack.
    BusyBox's indefinitely sleeping PID1 through its real `exit_group`/FD
    cleanup. Only then may the **existing** deferred task quiescence,
    asynchronous worker drain, actual ext4 unmount and durable flush proceed.
+   Original OpenRC also creates runtime tmpfs mounts (e.g. `/run`). The
+   final shutdown first detaches *all* runtime tmpfs superblocks through
+   ordinary VFS unmount and inode teardown, deepest first, **before** the
+   built-in pseudo mounts and physical ext4 root. Never force-zero a live
+   mount reference to bypass `EBUSY`.
 5. A missing final request fails PID1 completion instead of printing a
    fraudulent normal-shutdown PASS. Direct `poweroff -f` from unrelated
    processes is rejected instead of reporting a false success.
@@ -75,6 +80,12 @@ An independent `m241-original-alpine-poweroff-x86.yml` push workflow runs
 the first native proof automatically on this feature branch. It stages one
 verified original Alpine disk and runs **one** x86-64 QEMU, reusing the M193
 Limine boot profile but never running the prior M191 baseline QEMU first.
+
+First native run `42564799325` did execute genuine OpenRC poweroff and
+reach PID1 quiescence. It correctly **failed** at ext4 root unmount with
+`open_refs=2 child_refs=1`, identifying the one remaining OpenRC-created
+runtime tmpfs attachment. This is a failure receipt, not a native PASS;
+the runtime mount teardown fix requires a fresh native run.
 
 ## Native acceptance still required
 

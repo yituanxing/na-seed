@@ -535,6 +535,37 @@ int nas_vfs_umount_tmpfs(const char *target) {
     }
     return -EINVAL;
 }
+
+/* A real Alpine OpenRC boot can create runtime tmpfs mounts (notably /run)
+ * that outlive the shell and even PID1. The usual syscall unmount is not
+ * automatically invoked on process exit. For final physical ext4 shutdown,
+ * once all Tasks and their FS/OpenFile references are quiesced, replay that
+ * same provider-owned unmount in deepest-first order. Otherwise its counted
+ * parent/covered Dentry anchors keep ext4's root child_refs and open_refs
+ * nonzero and upstream ext4_umount correctly refuses EBUSY. */
+int nas_vfs_shutdown_runtime_tmpfs(void) {
+    for(unsigned remaining=0;remaining<NAS_RUNTIME_TMPFS_MAX;remaining++) {
+        struct runtime_tmpfs *selected=NULL;
+        size_t deepest=0;
+        for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++) {
+            struct runtime_tmpfs *entry=&runtime_tmpfs[i];
+            if(!entry->used)continue;
+            size_t depth=strlen(entry->target);
+            if(!selected || depth>deepest) {
+                selected=entry;
+                deepest=depth;
+            }
+        }
+        if(!selected)return 0;
+        /* umount owns the VFS registration and actual tmpfs inode tree;
+         * do not clear a slot or decrement parent pins behind its back. */
+        int rc=nas_vfs_umount_tmpfs(selected->target);
+        if(rc)return rc;
+    }
+    for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++)
+        if(runtime_tmpfs[i].used)return -EBUSY;
+    return 0;
+}
 static void proc_fill(struct nas_proc_node p,struct nas_fs_node *out) {
     *out=(struct nas_fs_node){.ino=nas_proc_ino(p),
       .nlink=nas_proc_is_dir(p)?2:1,.mode=nas_proc_mode(p),
