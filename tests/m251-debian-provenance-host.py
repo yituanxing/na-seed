@@ -103,6 +103,29 @@ class M251SignedProvenanceTests(unittest.TestCase):
         self.assertEqual(parsed["SHA256"], "c" * 64)
         self.assertIn("APT::Get::AllowUnauthenticated=false", " ".join(execute.call_args_list[0].args))
 
+    def test_signed_library_pool_filename_with_debian_tilde_release(self):
+        policy = "libselinux1:\n  Installed: (none)\n  Candidate: 3.8.1-1~deb13u1\n"
+        pool = "pool/main/s/selinux/libselinux1_3.8.1-1~deb13u1_arm64.deb"
+        record = ("Package: libselinux1\nVersion: 3.8.1-1~deb13u1\n"
+                  "Architecture: arm64\nSHA256: " + "c" * 64 + "\n"
+                  "Size: 144\nFilename: " + pool + "\n")
+        with patch.object(m251.m245, "run", side_effect=[policy, record]):
+            self.assertEqual(m251.signed_dependency_record(
+                self.root / "apt", "arm64", "libselinux1")["Filename"], pool)
+
+    def test_reject_encoded_traversal_from_authentic_package_record(self):
+        policy = "libselinux1:\n  Candidate: 3.8.1-1~deb13u1\n"
+        for bad in ("pool/main/s/selinux/%2fetc/libselinux1_3.8.1-1_arm64.deb",
+                    "pool/main/s/selinux/../libselinux1_3.8.1-1_arm64.deb",
+                    "pool/main/s/selinux/libselinux1_3.8.1-1_arm64.deb?unsigned=1"):
+            record = ("Package: libselinux1\nVersion: 3.8.1-1~deb13u1\n"
+                      "Architecture: arm64\nSHA256: " + "c" * 64 + "\n"
+                      "Size: 144\nFilename: " + bad + "\n")
+            with (self.subTest(path=bad),
+                  patch.object(m251.m245, "run", side_effect=[policy, record])):
+                with self.assertRaisesRegex(ValueError, "unsafe|traversal"):
+                    m251.signed_dependency_record(self.root / "apt", "arm64", "libselinux1")
+
     def test_unavailable_candidate_rejected(self):
         with patch.object(m251.m245, "run", return_value="libselinux1:\n Candidate: (none)\n"):
             with self.assertRaisesRegex(ValueError, "no authenticated"):

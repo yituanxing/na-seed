@@ -135,7 +135,44 @@ def signed_dependency_record(apt: Path, port: str, package: str) -> dict[str, st
     require(re.fullmatch(r"[0-9][A-Za-z0-9.+:~\-]*", version) is not None,
             f"invalid package version: {package}:{port}={version}")
     listing = m245.run("apt-cache", *opts, "show", package, capture=True)
-    return m245.parse_apt_show(listing, package=package, version=version, arch=port)
+    try:
+        return m245.parse_apt_show(listing, package=package, version=version, arch=port)
+    except ValueError as exc:
+        # M245's older filename grammar was intentionally scoped to simple
+        # coreutils/libc6 .debs. Official Debian dependency archives may use
+        # '~' in a version or percent-encode an epoch colon in a pool filename.
+        # Keep its exact package/version/arch/SHA/size policy, but explicitly
+        # review the expanded Debian pool grammar here, without changing M245.
+        if str(exc) != "unsafe or non-Debian pool path in Packages":
+            raise
+    matches = []
+    for block in re.split(r"\n\s*\n", listing.strip()):
+        record = {}
+        for line in block.splitlines():
+            if not line or line[0].isspace() or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            require(key not in record, f"duplicate signed Packages field: {key}")
+            record[key] = value.strip()
+        if (record.get("Package"), record.get("Version"),
+                record.get("Architecture")) == (package, version, port):
+            matches.append(record)
+    require(len(matches) == 1,
+            f"wanted exactly one signed dependency package record for {package}:{port}={version}")
+    record = matches[0]
+    pool = record.get("Filename", "")
+    # Allow only fixed deb.debian.org pool/main path segments. Encoded colons
+    # (%3A) are the sole percent escape; no encoded /, .., query or fragment.
+    safe_piece = r"(?:[A-Za-z0-9+_.~:\-]|%3[aA])+"
+    require(re.fullmatch(rf"pool/main/(?:{safe_piece}/){{1,4}}{safe_piece}\.deb", pool)
+            is not None and ".." not in pool and "//" not in pool and
+            pool.rsplit("/", 1)[-1].startswith(package + "_"),
+            f"unsafe authenticated dependency pool path for {package}: {pool!r}")
+    require(re.fullmatch(r"[0-9a-f]{64}", record.get("SHA256", "")) is not None,
+            f"missing signed SHA256 for dependency {package}")
+    require(record.get("Size", "").isdigit() and int(record["Size"]) > 0,
+            f"missing signed Size for dependency {package}")
+    return record
 
 
 def locate_original_library(extract: Path, triplet: str, soname: str) -> Path:
