@@ -83,6 +83,14 @@ chmod 755 "$root/etc/m249-init.sh"
 # actual writable partition is a second physical virtio-blk drive, NOT a
 # Limine-delivered rootfs.cpio and NOT a host-mode qemu-user emulation.
 sudo python3 scripts/m249-debian-ext4-disk.py prepare "$port" "$root" "$disk" "$manifest"
+# mke2fs and the physical-disk verifier run as root, but the native QEMU
+# process intentionally runs unprivileged. Preserve the fully verified disk
+# bytes and hand ONLY this disposable disk file back to the CI runner.
+sudo chown "$(id -u):$(id -g)" "$disk"
+test -r "$disk" && test -w "$disk" || {
+    echo '[M249 FAIL] verified ext4 root is not accessible to unprivileged QEMU' >&2
+    exit 1
+}
 
 # The M191 rescue CPIO is separate and contains no Debian glibc/dash files.
 rescue="$work/rescue"

@@ -110,6 +110,18 @@ class AuthenticatedSourceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing guest directory"):
             self.valid()
 
+    def test_verified_root_disk_must_be_openable_by_unprivileged_qemu(self):
+        """Root-run mkfs must not strand the real block image as root-only."""
+        probe = (FILE.parent / "m249-probe-debian-ext4.sh").read_text()
+        prepare = 'sudo python3 scripts/m249-debian-ext4-disk.py prepare'
+        handoff = 'sudo chown "$(id -u):$(id -g)" "$disk"'
+        qemu = 'sh "$runner"'
+        self.assertIn(prepare, probe)
+        self.assertIn(handoff, probe)
+        self.assertLess(probe.index(prepare), probe.index(handoff))
+        self.assertLess(probe.index(handoff), probe.index(qemu))
+        self.assertIn('test -r "$disk" && test -w "$disk"', probe)
+
 
 if __name__ == "__main__":
     unittest.main()
