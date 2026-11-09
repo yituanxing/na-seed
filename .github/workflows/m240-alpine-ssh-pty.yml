@@ -1,7 +1,7 @@
 name: NaSeed M240 original Alpine Dropbear genuine host SSH PTY two-native-boot
 
-# First new-feature pilot runs amd64 only on push; dispatch can select other
-# ISAs or all three once the host/guest PTY owner is proven on real QEMU.
+# Original amd64 M240 true 9x2 SSH-PTY PASS: run #42551821112.
+# As with M230, promote the scoped push regression to all three native QEMUs.
 on:
   push:
     branches: [naseed-app-batch2]
@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: ${{ fromJSON(github.event_name == 'push' && '["amd64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
     steps:
       - uses: actions/checkout@v4
         with:
