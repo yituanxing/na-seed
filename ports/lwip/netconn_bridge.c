@@ -72,6 +72,10 @@ struct bridge_slot {
     struct nas_lwip_bridge_datagram close_udp[CLOSE_UDP_CAPACITY];
     enum nas_lwip_bridge_type type;
     struct netconn *connection;
+    /* TCP has already left the upstream acceptmbox, but a signal may have
+     * invalidated the requesting Task's FD lease. The listener retains one
+     * such connection until a new accept lease can claim it. */
+    struct netconn *deferred_accepted;
     struct netbuf *held_tcp;
     uint16_t held_offset;
     struct nas_lwip_bridge_request request;
@@ -81,7 +85,7 @@ struct bridge_slot {
 static struct {
     struct bridge_slot slots[NAS_LWIP_BRIDGE_SLOTS];
     uint16_t queue[NAS_LWIP_BRIDGE_QUEUE];
-    unsigned first,count,active;
+    unsigned first,count,active,deferred_count;
     struct nas_ksem wake;
     struct nas_kthread_handle worker;
     void (*completion_hook)(struct nas_lwip_bridge_id);
@@ -154,7 +158,8 @@ static void trace_bridge_exhaustion(unsigned requested) {
 static struct nas_lwip_bridge_id reserve(unsigned slot,
                                          enum nas_lwip_bridge_type type) {
     struct nas_lwip_bridge_id none={0};
-    if(slot>=NAS_LWIP_BRIDGE_SLOTS || bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT ||
+    if(slot>=NAS_LWIP_BRIDGE_SLOTS ||
+       bridge.active+bridge.deferred_count>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT ||
        bridge.slots[slot].owned) {
 #ifdef NASEED_SYSCALL_TRACE
         trace_bridge_exhaustion(slot);
@@ -191,11 +196,45 @@ static void free_native(unsigned slot) {
         }
     }
     if(s->held_tcp)netbuf_delete(s->held_tcp);
+    if(s->deferred_accepted) {
+        (void)netconn_delete(s->deferred_accepted);
+        if(!bridge.deferred_count)__builtin_trap();
+        bridge.deferred_count--;
+    }
     if(s->connection)(void)netconn_delete(s->connection);
     uint32_t generation=s->generation;
     memset(s,0,sizeof(*s));
     s->generation=generation; /* invalidated old ID, never revive it */
     bridge.active--;
+}
+
+/* A cancelled Task loses its OpenFile ticket, NOT an already established
+ * TCP connection. Keep the native child attached to the listener until the
+ * next independently leased accept; its MEMP_NETCONN allocation remains
+ * accounted for even though no child File is published. */
+static bool defer_accepted(struct bridge_slot *listener,
+                           struct netconn *accepted) {
+    if(!listener || !accepted || listener->deferred_accepted)return false;
+    listener->deferred_accepted=accepted;
+    bridge.deferred_count++;
+    nas_print("[LWIP ACCEPT PARKED] cancelled FD lease; native TCP peer retained\n");
+    return true;
+}
+
+/* A completed ACCEPT might have reserved a bridge child before its Task
+ * observed SIGCHLD/EINTR. Repatriate that unclaimed child to the listener;
+ * do not resurrect the old File lease or let its slot block new leases. */
+static int defer_child(struct bridge_slot *listener,
+                       struct nas_lwip_bridge_id accepted) {
+    struct bridge_slot *child=lookup(accepted);
+    if(!listener || !listener->listening || !child || child==listener ||
+       child->type!=NAS_LWIP_BRIDGE_TCP || !child->connection ||
+       listener->deferred_accepted)return -EINVAL;
+    struct netconn *connection=child->connection;
+    child->connection=NULL;
+    free_native(accepted.slot);
+    if(!defer_accepted(listener,connection))__builtin_trap();
+    return 0;
 }
 
 static uint64_t add_deadline(uint64_t now,uint64_t duration) {
@@ -525,17 +564,21 @@ static void execute(unsigned slot) {
          * accepted connection is never allocated in an unrelated FD map. */
         if(!accept_lease_valid(r->accept_slot,r->accept_lease_token) ||
            bridge.slots[r->accept_slot].owned ||
-           bridge.active>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT) {
+           (bridge.active+bridge.deferred_count>=
+                NAS_LWIP_BRIDGE_ACTIVE_LIMIT && !s->deferred_accepted)) {
             trace_accept_error("lease-or-pool",ENFILE,s->accept_pending,
                                bridge.active);
             out->status=-ENFILE;return;
         }
-        struct netconn *accepted=NULL;
-        err=netconn_accept(s->connection,&accepted);
-        if(err!=ERR_OK) {
-            trace_accept_error("netconn_accept",err_to_errno(err),
-                               s->accept_pending,bridge.active);
-            break;
+        const bool deferred=s->deferred_accepted!=NULL;
+        struct netconn *accepted=s->deferred_accepted;
+        if(!deferred) {
+            err=netconn_accept(s->connection,&accepted);
+            if(err!=ERR_OK) {
+                trace_accept_error("netconn_accept",err_to_errno(err),
+                                   s->accept_pending,bridge.active);
+                break;
+            }
         }
         if(!accepted){
             trace_accept_error("null-netconn",EIO,s->accept_pending,
@@ -551,6 +594,10 @@ static void execute(unsigned slot) {
         if(err!=ERR_OK || !IP_IS_V4(&peer_ip)) {
             trace_accept_error("peer-addr",err!=ERR_OK ? err_to_errno(err):
                                EAFNOSUPPORT,s->accept_pending,bridge.active);
+            if(deferred) {
+                s->deferred_accepted=NULL;
+                bridge.deferred_count--;
+            }
             (void)netconn_delete(accepted);
             out->status=err!=ERR_OK ? -err_to_errno(err):-EAFNOSUPPORT;
             return;
@@ -564,19 +611,28 @@ static void execute(unsigned slot) {
            !accept_lease_valid(r->accept_slot,r->accept_lease_token)) {
             trace_accept_error("cancelled-lease",ECANCELED,s->accept_pending,
                                bridge.active);
-            (void)netconn_delete(accepted);
+            if(!deferred && !defer_accepted(s,accepted))
+                (void)netconn_delete(accepted);
             out->status=-ECANCELED;
             return;
         }
+        /* Moving a deferred Netconn into a reserved child is a transfer of
+         * one existing native allocation, not a second pool admission. */
+        if(deferred)bridge.deferred_count--;
         struct nas_lwip_bridge_id id=reserve(r->accept_slot,NAS_LWIP_BRIDGE_TCP);
         if(!id.generation) {
             trace_accept_error("reserve-child",ENFILE,s->accept_pending,
                                bridge.active);
-            (void)netconn_delete(accepted);
+            if(deferred)bridge.deferred_count++;
+            else if(!defer_accepted(s,accepted))
+                (void)netconn_delete(accepted);
             out->status=-ENFILE;return;
         }
+        if(deferred)s->deferred_accepted=NULL;
         bridge.slots[id.slot].connection=accepted;
         netconn_set_nonblocking(accepted,1);
+        if(deferred)
+            nas_print("[LWIP ACCEPT REPLAYED] saved TCP peer claimed by fresh FD lease\n");
         out->accepted=id;
         break;
     }
@@ -852,8 +908,10 @@ static void worker(void *unused) {
                 if(s->accept_cancelled &&
                    s->request.op==NAS_LWIP_BRIDGE_ACCEPT){
                     if(s->result.accepted.generation) {
-                        struct bridge_slot *child=lookup(s->result.accepted);
-                        if(child){child->closing=true;(void)nas_ksem_post(&bridge.wake);}
+                        if(defer_child(s,s->result.accepted)) {
+                            struct bridge_slot *child=lookup(s->result.accepted);
+                            if(child){child->closing=true;(void)nas_ksem_post(&bridge.wake);}
+                        }
                     }
                     memset(&s->result,0,sizeof(s->result));
                     s->result.status=-ECANCELED;
@@ -1021,7 +1079,13 @@ int nas_lwip_bridge_release(struct nas_lwip_bridge_id id) {
 bool nas_lwip_bridge_alive(struct nas_lwip_bridge_id id){return lookup(id)!=NULL;}
 bool nas_lwip_bridge_listener_readable(struct nas_lwip_bridge_id id) {
     struct bridge_slot *s=lookup(id);
-    return s && s->listening && s->accept_pending!=0;
+    return s && s->listening &&
+           (s->accept_pending!=0 || s->deferred_accepted!=NULL);
+}
+
+int nas_lwip_bridge_park_accepted(struct nas_lwip_bridge_id listener,
+                                  struct nas_lwip_bridge_id accepted) {
+    return defer_child(lookup(listener),accepted);
 }
 
 int nas_lwip_bridge_cancel_accept(struct nas_lwip_bridge_id id,
@@ -1038,10 +1102,10 @@ int nas_lwip_bridge_cancel_accept(struct nas_lwip_bridge_id id,
     if(s->finished) {
         /* If completion raced with interruption, the native worker's
          * unclaimed child still belongs to the listener, not the Task. */
-        struct bridge_slot *child=lookup(s->result.accepted);
-        if(child) {
-            child->closing=true;
-            (void)nas_ksem_post(&bridge.wake);
+        if(s->result.accepted.generation &&
+           defer_child(s,s->result.accepted)) {
+            struct bridge_slot *child=lookup(s->result.accepted);
+            if(child){child->closing=true;(void)nas_ksem_post(&bridge.wake);}
         }
         memset(&s->result,0,sizeof(s->result));
         s->result.status=-ECANCELED;

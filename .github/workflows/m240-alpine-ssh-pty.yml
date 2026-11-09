@@ -15,6 +15,10 @@ on:
       - 'scripts/acceptance/profile.sh'
       - 'kernel/drivers/pty.c'
       - 'kernel/task/signal.c'
+      - 'ports/lwip/netconn_bridge.c'
+      - 'ports/lwip/netconn_bridge.h'
+      - 'ports/lwip/socket_port.c'
+      - 'scripts/test-lwip-socket-port.c'
   workflow_dispatch:
     inputs:
       port:

@@ -315,7 +315,9 @@ static int check(struct port_socket *s) {
         /* The native worker has observed cancellation and published its
          * terminal result. Drain it even if the interrupted Task will never
          * call accept_complete again; the next accept can reuse this File. */
-        if(s->control_result.accepted.generation)
+        if(s->control_result.accepted.generation &&
+           nas_lwip_bridge_park_accepted(s->id,
+                                        s->control_result.accepted))
             (void)nas_lwip_bridge_release(s->control_result.accepted);
         s->control_result=(struct nas_lwip_bridge_result){0};
         s->control_request=(struct nas_lwip_bridge_request){0};
@@ -1240,7 +1242,9 @@ static int nas_lwip_socket_accept_cancel_internal(
     }
     if(s->command==PORT_CONTROL_DONE &&
        s->control_request.op==NAS_LWIP_BRIDGE_ACCEPT) {
-        if(s->control_result.accepted.generation)
+        if(s->control_result.accepted.generation &&
+           nas_lwip_bridge_park_accepted(s->id,
+                                        s->control_result.accepted))
             (void)nas_lwip_bridge_release(s->control_result.accepted);
         s->control_result=(struct nas_lwip_bridge_result){0};
         s->control_request=(struct nas_lwip_bridge_request){0};

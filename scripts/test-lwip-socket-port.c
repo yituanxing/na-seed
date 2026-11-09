@@ -892,9 +892,9 @@ int main(void) {
     close_slot(35);
     close_slot(33);
 
-    /* Cancellation after the native worker accepted a child, but before
-     * userspace claimed it, must explicitly close that orphan child: the
-     * bridge result has already been taken into SocketPort's cache. */
+    /* A caught SIGCHLD may cancel accept AFTER the native worker dequeued a
+     * real TCP peer but before userspace claimed it. The old File lease is
+     * invalidated; the connected peer must survive for the NEXT accept. */
     connect_slot(36,38017);
     struct nas_fd_slot_lease late=lease_slot(37,UINT64_C(0xAA02));
     listener_ready(30);
@@ -908,16 +908,31 @@ int main(void) {
     assert(completed);
     assert(nas_lwip_socket_accept_cancel(30,late)==0);
     nas_open_files[37]=(struct nas_open_file){0};
-    close_slot(36);
     for(unsigned tries=0;tries<40;tries++)(void)nas_kthread_run(1);
-    connect_slot(38,38017);
     struct nas_fd_slot_lease after_cancel=lease_slot(39,UINT64_C(0xAA03));
     accepted=accept_slot(30,after_cancel,&peer);
     assert(accepted.slot==39);
     assert(nas_lwip_socket_port_adopt(accepted,true)==0);
     nas_open_files[39].lease_token=0;
+    static const uint8_t preserved[]="SIGCHLD accept peer survives";
+    assert(ops->write(36,preserved,sizeof(preserved))==sizeof(preserved));
+    flush_tx(36);
+    uint8_t restored[sizeof(preserved)]={0};
+    assert(receive(39,restored,sizeof(restored))==sizeof(preserved));
+    assert(!memcmp(restored,preserved,sizeof(preserved)));
     close_slot(39);
+    close_slot(36);
+    for(unsigned tries=0;tries<40;tries++)(void)nas_kthread_run(1);
+    connect_slot(38,38017);
+    struct nas_fd_slot_lease later=lease_slot(42,UINT64_C(0xAA04));
+    accepted=accept_slot(30,later,&peer);
+    assert(accepted.slot==42);
+    assert(nas_lwip_socket_port_adopt(accepted,true)==0);
+    nas_open_files[42].lease_token=0;
+    close_slot(42);
     close_slot(38);
+    puts("[LWIP ACCEPT EINTR REPLAY PASS] cancelled lease, real TCP peer "
+         "survives and is adopted by a fresh OpenFile");
 
     /* Real nonblocking server path: select/poll owns a persistent lease,
      * and must not advertise POLLIN until native ACCEPT has completed.
