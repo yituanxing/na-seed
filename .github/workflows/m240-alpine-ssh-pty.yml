@@ -14,7 +14,16 @@ on:
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'scripts/acceptance/profile.sh'
       - 'kernel/drivers/pty.c'
+      - 'kernel/drivers/tty.c'
+      - 'kernel/drivers/tty_ldisc.c'
       - 'kernel/task/signal.c'
+      # Bounded worker scheduling and Netconn defaults directly affect
+      # interactive SSH readiness/latency; preserve the old 9x2 stress gate
+      # when these shared kernel owners change.
+      - 'kernel/task/scheduler_service.c'
+      - 'kernel/task/sched_core.c'
+      - 'kernel/task/kthread.c'
+      - 'ports/lwip/include/lwipopts.h'
       - 'ports/lwip/netconn_bridge.c'
       - 'ports/lwip/netconn_bridge.h'
       - 'ports/lwip/socket_port.c'
