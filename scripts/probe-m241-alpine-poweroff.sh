@@ -25,6 +25,39 @@ for program in sudo docker readelf cpio sha256sum python3 openssl; do
     }
 done
 
+if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+    [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ] || {
+        echo '[M244 SSH FAIL] M244 requires the M243 official Alpine CLI baseline' >&2
+        exit 2
+    }
+    for program in ssh ssh-keygen; do
+        command -v "$program" >/dev/null || {
+            echo "[M244 SSH FAIL] missing host-only $program" >&2
+            exit 1
+        }
+    done
+    m244_host_dir=
+    m244_host_pid=
+    m244_cleanup() {
+        if [ -n "$m244_host_pid" ]; then
+            kill "$m244_host_pid" 2>/dev/null || :
+            wait "$m244_host_pid" 2>/dev/null || :
+            m244_host_pid=
+        fi
+        if [ -n "$m244_host_dir" ]; then
+            # Never stage or upload the ephemeral SSH client private key.
+            rm -f -- "$m244_host_dir/id_ed25519" \
+                "$m244_host_dir/id_ed25519.pub" "$m244_host_dir/known_hosts"
+            rmdir -- "$m244_host_dir" 2>/dev/null || :
+            m244_host_dir=
+        fi
+    }
+    trap 'm244_cleanup' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
 work="build/external/m191-alpine-rootfs/$port"
 root="$PWD/$work/rootfs"
 baseline="$PWD/$work/alpine-root.img"
@@ -76,6 +109,22 @@ if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
         exit 1
       }
 fi
+if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+    # The guest configures its own original Dropbear and generates its own
+    # host key; only a disposable host PUBLIC client identity is staged.
+    sudo test ! -e "$overlay/root/.ssh/authorized_keys" &&
+      sudo test ! -e "$overlay/etc/runlevels/default/dropbear" || {
+        echo '[M244 STAGE FAIL] original Alpine SSH state was preseeded' >&2
+        exit 1
+      }
+    m244_host_dir=$(mktemp -d "$PWD/$work/m244-client.XXXXXXXX")
+    chmod 0700 "$m244_host_dir"
+    ssh-keygen -q -t ed25519 -a 16 -N '' \
+        -f "$m244_host_dir/id_ed25519" >/dev/null
+    test -s "$m244_host_dir/id_ed25519.pub"
+    sudo install -m 0644 -o 0 -g 0 "$m244_host_dir/id_ed25519.pub" \
+        "$overlay/root/m244-authorized-pubkey"
+fi
 disk="$PWD/$work/m241-poweroff-disposable.img"
 sudo python3 scripts/m191-alpine-root-disk.py prepare "$port" "$overlay" "$disk"
 sudo chown "$(id -u):$(id -g)" "$disk"
@@ -95,7 +144,15 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m193-login-cases.tsv
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_APP_BATCH_QEMU_TIMEOUT="${NAS_M241_QEMU_TIMEOUT:-180}"
 if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
-    export NAS_VIRTIO_NET_PCAP="$PWD/$work/m243-original-apk-wire.pcap"
+    if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+        # Exactly one NIC; QEMU slirp forwards HOST 127.0.0.1:12222 to
+        # original Alpine Dropbear on GUEST :15446, as in M230/M240.
+        export NAS_VIRTIO_NET_HOSTFWD_PORT=12222
+        export NAS_VIRTIO_NET_GUESTFWD_PORT=15446
+        export NAS_VIRTIO_NET_PCAP="$PWD/$work/m244-original-ssh-wire.pcap"
+    else
+        export NAS_VIRTIO_NET_PCAP="$PWD/$work/m243-original-apk-wire.pcap"
+    fi
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M243 STAGE FAIL] refusing existing PCAP proof' >&2
         exit 1
@@ -123,7 +180,43 @@ fifo="$PWD/$work/m241-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 runner_log="$PWD/$work/m241-poweroff-runner.log"
 log="$PWD/$logs/m193-batch.serial.log"
-if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+    m244_first="$PWD/$work/m244-first-host-ssh.json"
+    m244_second="$PWD/$work/m244-second-host-ssh.json"
+    m244_host_log="$PWD/$work/m244-host-ssh.log"
+    for proof in "$m244_first" "$m244_second" "$m244_host_log"; do
+        test ! -e "$proof" || {
+            echo "[M244 HOST FAIL] refusing stale SSH receipt: $proof" >&2
+            exit 1
+        }
+    done
+    # Host watcher and original Alpine UART runner synchronize via two REAL
+    # SSH-authenticated ext4 ACKs: no ACK means no reboot or final poweroff.
+    python3 -u scripts/m244-host-ssh-two-epoch.py "$log" 12222 \
+        "$m244_first" "$m244_second" \
+        --client-key "$m244_host_dir/id_ed25519" \
+        --known-hosts "$m244_host_dir/known_hosts" \
+        --ready-timeout "${NAS_M244_HOST_READY_TIMEOUT:-700}" \
+        --ssh-timeout "${NAS_M244_HOST_SSH_TIMEOUT:-180}" \
+        > "$m244_host_log" 2>&1 &
+    m244_host_pid=$!
+    python3 scripts/m244-alpine-ssh-uart.py "$runner" "$log" "$runner_log" "$fifo" || {
+        tail -90 "$m244_host_log" >&2 || :
+        exit 1
+    }
+    if wait "$m244_host_pid"; then
+        m244_host_pid=
+    else
+        m244_host_pid=
+        echo '[M244 HOST FAIL] original Alpine two-phase authenticated SSH PTY' >&2
+        tail -100 "$m244_host_log" >&2 || :
+        exit 1
+    fi
+    test -s "$m244_first" && test -s "$m244_second" || {
+        echo '[M244 HOST FAIL] missing genuine SSH PTY phase receipt' >&2
+        exit 1
+    }
+elif [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     python3 scripts/m243-alpine-cli-uart.py "$runner" "$log" "$runner_log" "$fifo"
 elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
     # M242 adds a real in-process firmware reset and SECOND Alpine boot;
@@ -143,7 +236,13 @@ if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     # M191's pristine Alpine /root remains mode 0700 and UID 0. The
     # independent read-only oracle needs root to inspect that source; this
     # is a host permission fix, not a guest privilege escalation or bypass.
-    sudo python3 scripts/m243-verify-cli-disk.py "$port" "$root" "$disk"
+    if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+        sudo python3 scripts/m244-verify-ssh-disk.py "$port" "$root" \
+            "$disk" "$m244_first" "$m244_second" \
+            "$NAS_VIRTIO_NET_PCAP"
+    else
+        sudo python3 scripts/m243-verify-cli-disk.py "$port" "$root" "$disk"
+    fi
     test -s "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M243 NETWORK FAIL] no real QEMU VirtIO packet capture' >&2
         exit 1
@@ -151,7 +250,11 @@ if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
 else
     sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$overlay" "$disk"
 fi
-if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
+if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
+    cp "$log" "$PWD/$work/m244-ssh.serial.log"
+    cp "$runner_log" "$PWD/$work/m244-ssh-runner.log"
+    echo "[M244 ORIGINAL ALPINE SSH PTY SAME QEMU NATIVE PASS] $port original signed APK tree+jq+dropbear, two real host OpenSSH interactive PTYs across SAME-QEMU platform reboot, pinned persistent server identity, original OpenRC service recovery, physical ext4 and natural poweroff; isolated root test, not production DAC"
+elif [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     :
 elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
     python3 scripts/m242-verify-reboot-disk.py "$disk"
