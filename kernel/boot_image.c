@@ -195,8 +195,16 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
         out->interpreter=out->loader.data;
         out->interpreter_size=out->loader.size;
     }
-    nas_print("[M191 ROOT] original Alpine PID1 from mounted ext4: ");
+    /* The physical-root path is shared by original Alpine and Debian ELF
+     * files. Retain M191's exact Alpine acceptance marker for its two
+     * historical init entrypoints; do not label a Debian dash as Alpine. */
+    nas_print("[ROOTFS] executable PID1 from mounted ext4: ");
     nas_print(selected);nas_print("\n");
+    if(strcmp(selected,"/bin/busybox")==0 ||
+       strcmp(selected,"/sbin/init")==0) {
+        nas_print("[M191 ROOT] original Alpine PID1 from mounted ext4: ");
+        nas_print(selected);nas_print("\n");
+    }
     return NULL;
 }
 void nas_boot_image_elf(const struct nas_boot_image *source,

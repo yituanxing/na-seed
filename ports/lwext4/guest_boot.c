@@ -212,6 +212,10 @@ bool nas_lwext4_guest_boot_mount(void) {
             return false;
         }
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        /* The M191 build switch now also hosts signed Debian/glibc root
+         * programs. Keep its old acceptance marker for Alpine regressions,
+         * and provide a distribution-neutral physical root observation. */
+        nas_print("[ROOTFS] physical ext4 root registered at /\n");
         nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
 #endif
         nas_print(chosen_partition_index ?
