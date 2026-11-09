@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import Callable
 
 
 def sibling(filename: str, modulename: str):
@@ -118,11 +119,34 @@ def image_qemu_pid(image: str, *, expected: int | None = None) -> int:
     return owners[0]
 
 
+def send_paced_uart(fd: int, command: str, *, seconds_per_byte: float) -> None:
+    """Opt-in bounded UART byte pacing; the old M242/M243 sender is unchanged.
+
+    Keep one ASCII byte per FIFO write, preserving physical TTY delivery
+    order. A bounded interval and command size avoid unthrottled UART bursts
+    and oversized canonical ash input lines. Reject invalid input *before*
+    emitting any bytes; a short write must fail the real guest acceptance.
+    """
+    if not 0.004 <= seconds_per_byte <= 0.018:
+        raise ValueError("UART pacing must remain within tested safety bounds")
+    raw = command.encode("ascii")
+    if (not raw or len(raw) > 2048 or b"\x00" in raw or b"\n" in raw or
+            raw.count(b"\r") > 1 or (b"\r" in raw and not raw.endswith(b"\r"))):
+        raise ValueError("UART paced input must be a bounded single physical line")
+    for byte in raw:
+        if os.write(fd, bytes((byte,))) != 1:
+            raise OSError("short UART FIFO byte write")
+        time.sleep(seconds_per_byte)
+
+
 def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
-        deadline: int) -> None:
+        deadline: int, *, uart_send: Callable[[int, str], None] | None = None) -> None:
     image = os.environ.get("NAS_VIRTIO_BLK_IMAGE")
     if not image or not Path(image).is_file():
         raise RuntimeError("M242 requires one already-existing real physical ext4 image")
+    # M242/M243 callers retain the original 18ms/byte sender by default;
+    # only M244's explicit caller may opt into a separately bounded sender.
+    send = m193.sent if uart_send is None else uart_send
     reset = reboot_marker()
     fifo.parent.mkdir(parents=True, exist_ok=True)
     if fifo.exists():
@@ -166,7 +190,7 @@ def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
                     raise RuntimeError("real Alpine guest reported failure")
 
                 while dsr_replies < text.count("\x1b[6n"):
-                    m193.sent(hold, "\x1b[1;1R")
+                    send(hold, "\x1b[1;1R")
                     dsr_replies += 1
 
                 segment = text[epoch:]
@@ -183,10 +207,10 @@ def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
                     # On boot 2, the old epoch ends at the genuine reset
                     # marker, so a boot-1 getty can never satisfy this.
                     print(f"[M242 UART] physical Alpine getty login boot={boot}", flush=True)
-                    m193.sent(hold, "root\r")
+                    send(hold, "root\r")
                     state = "password"
                 elif state == "password" and "Password:" in segment:
-                    m193.sent(hold, m193.PASSWORD + "\r")
+                    send(hold, m193.PASSWORD + "\r")
                     password_sent_at = len(text)
                     state = "shell"
                 elif state == "shell" and m194.shell_prompt_after_step(text[password_sent_at:]):
@@ -198,7 +222,7 @@ def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
                         print(f"[M242 UART] original authenticated shell boot={boot}; QEMU PID={qemu_pid}", flush=True)
                         commands = FIRST_COMMANDS if boot == 1 else SECOND_COMMANDS
                         step_start = len(text)
-                        m193.sent(hold, commands[0][0])
+                        send(hold, commands[0][0])
                         state = "commands"
                 elif state == "commands":
                     commands = FIRST_COMMANDS if boot == 1 else SECOND_COMMANDS
@@ -216,15 +240,15 @@ def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
                     commands = FIRST_COMMANDS if boot == 1 else SECOND_COMMANDS
                     if step < len(commands):
                         step_start = len(text)
-                        m193.sent(hold, commands[step][0])
+                        send(hold, commands[step][0])
                         state = "commands"
                     elif boot == 1:
                         print("[M242 UART] issuing original /sbin/reboot in first QEMU guest", flush=True)
-                        m193.sent(hold, "/sbin/reboot\r")
+                        send(hold, "/sbin/reboot\r")
                         state = "wait_reset"
                     else:
                         print("[M242 UART] issuing original /sbin/poweroff after second-boot persisted nonce", flush=True)
-                        m193.sent(hold, "/sbin/poweroff\r")
+                        send(hold, "/sbin/poweroff\r")
                         state = "wait_final_poweroff"
                 elif state == "wait_reset":
                     # Reboot must complete the old PID1 deferred filesystem

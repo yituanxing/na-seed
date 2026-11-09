@@ -38,6 +38,16 @@ POLICY = ('DROPBEAR_OPTS="-s -g -j -k -m -p 0.0.0.0:15446 '
           '-r /etc/dropbear/dropbear_ed25519_host_key"')
 KEY_POLICY = "no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
 
+# The historical M193/M242/M243 UART writer deliberately waits 18ms after
+# EACH byte. M244 has 40 original shell commands across its two boot epochs;
+# use a still-throttled 5ms/byte sender only for this M244 acceptance path.
+# Do not accelerate other UART users or change any guest command/oracle.
+UART_SECONDS_PER_BYTE = 0.005
+
+
+def send_uart_m244(fd: int, command: str) -> None:
+    m242.send_paced_uart(fd, command, seconds_per_byte=UART_SECONDS_PER_BYTE)
+
 
 # Keep M243's standalone CLI acceptance unchanged. In the M244 combined
 # workload, both sets of original signed Alpine APKs are installed in ONE
@@ -212,7 +222,7 @@ def run(runner: str, serial: Path, runner_log: Path, fifo: Path,
     m242.FIRST_COMMANDS = FIRST_COMMANDS
     m242.SECOND_COMMANDS = SECOND_COMMANDS
     m242.verify_two_boots = verify_two_boots
-    m242.run(runner, serial, runner_log, fifo, deadline)
+    m242.run(runner, serial, runner_log, fifo, deadline, uart_send=send_uart_m244)
     print("[M244 ORIGINAL ALPINE TWO-EPOCH HOST SSH PASS] real original signed "
           "public Alpine APK + OpenRC/dropbear, independent host OpenSSH PTY "
           "receipt before and after SAME QEMU firmware reset, unchanged SSH "

@@ -2,7 +2,10 @@
 """Strict host-only failure injections for headless two-boot Alpine SSH."""
 
 import importlib.util
+import inspect
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -190,6 +193,72 @@ class OriginalAlpineM244HostSSHTests(unittest.TestCase):
             self.assertEqual(uart.m242.image_qemu_pid("/disk", expected=1101), 1101)
             with self.assertRaisesRegex(RuntimeError, "PID changed"):
                 uart.m242.image_qemu_pid("/disk", expected=1100)
+
+    def test_fast_uart_applies_only_to_m244_no_global_sender_patch(self):
+        self.assertEqual(uart.UART_SECONDS_PER_BYTE, 0.005)
+        self.assertIsNone(inspect.signature(uart.m242.run).parameters["uart_send"].default)
+        with mock.patch.object(uart.m242, "run") as run:
+            uart.run("runner.sh", Path("serial"), Path("runner.log"), Path("fifo"), 12)
+        run.assert_called_once_with("runner.sh", Path("serial"), Path("runner.log"),
+                                    Path("fifo"), 12, uart_send=uart.send_uart_m244)
+        self.assertIsNot(uart.send_uart_m244, uart.m242.m193.sent)
+
+    def test_m243_standalone_never_opts_into_fast_sender(self):
+        with mock.patch.object(uart.m242, "run") as run:
+            uart.m243.run("runner.sh", Path("serial"), Path("runner.log"),
+                          Path("fifo"), 12)
+        run.assert_called_once_with("runner.sh", Path("serial"), Path("runner.log"),
+                                    Path("fifo"), 12)
+
+    def test_m244_fast_sender_is_single_byte_paced_ascii(self):
+        value = "echo M244_FIRST_HOST_SSH_READY\r"
+        with mock.patch.object(uart.m242.os, "write", return_value=1) as write, \
+             mock.patch.object(uart.m242.time, "sleep") as sleep:
+            uart.send_uart_m244(51, value)
+        self.assertEqual(write.call_args_list,
+                         [mock.call(51, bytes((byte,))) for byte in value.encode("ascii")])
+        self.assertEqual(sleep.call_args_list,
+                         [mock.call(uart.UART_SECONDS_PER_BYTE)] * len(value))
+
+    def test_fast_sender_roundtrips_all_original_commands_via_real_fifo(self):
+        # Host simulation of the QEMU UART input FIFO, with pacing sleeps
+        # mocked only to avoid making this host unit test last 35 seconds.
+        with tempfile.TemporaryDirectory(prefix="m244-uart-fifo-") as directory:
+            path = Path(directory) / "uart.input"
+            os.mkfifo(path, 0o600)
+            fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+            try:
+                with mock.patch.object(uart.m242.time, "sleep"):
+                    for command, _marker, _label in uart.FIRST_COMMANDS + uart.SECOND_COMMANDS:
+                        uart.send_uart_m244(fd, command)
+                        self.assertEqual(os.read(fd, len(command) + 1),
+                                         command.encode("ascii"))
+            finally:
+                os.close(fd)
+
+    def test_all_forty_original_guest_commands_remain_separate_and_bounded(self):
+        self.assertEqual((len(uart.FIRST_COMMANDS), len(uart.SECOND_COMMANDS)), (27, 13))
+        self.assertEqual((len(uart.FIRST_MARKERS), len(uart.SECOND_MARKERS)), (27, 13))
+        for command, expected, _label in uart.FIRST_COMMANDS + uart.SECOND_COMMANDS:
+            self.assertTrue(command.endswith("\r"))
+            self.assertEqual(command.count("\r"), 1)
+            self.assertNotIn("\n", command)
+            self.assertLessEqual(len(command.encode("ascii")), 2048)
+            self.assertIn(expected.split("=")[0], command)
+
+    def test_every_individual_guest_result_still_required_after_pacing(self):
+        for marker in uart.FIRST_MARKERS + uart.SECOND_MARKERS:
+            with self.subTest(marker=marker):
+                with self.assertRaises(RuntimeError):
+                    uart.verify_two_boots(self.complete.replace(marker, "BROKEN_" + marker))
+
+    def test_ssh_and_reboot_barriers_remain_original_separate_steps(self):
+        self.assertEqual(uart.FIRST_MARKERS[-3:],
+                         ("M244_FIRST_HOST_SSH_READY", "M244_FIRST_HOST_PTY_RC=0",
+                          "M244_FIRST_PTY_SYNC_RC=0"))
+        self.assertEqual(uart.SECOND_MARKERS[-3:],
+                         ("M244_SECOND_HOST_SSH_READY", "M244_SECOND_HOST_PTY_RC=0",
+                          "M244_SECOND_PTY_SYNC_RC=0"))
 
 
 if __name__ == "__main__":

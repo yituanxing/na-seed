@@ -2,6 +2,7 @@
 """Host-only strict parsing guards; never substitute for a native reset."""
 
 import importlib.util
+import inspect
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -95,6 +96,53 @@ class TwoBootUARTGuardTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"NAS_M242_RESET_MARKER": "A\nB"}):
             with self.assertRaisesRegex(ValueError, "one nonempty"):
                 uart.reboot_marker()
+
+    def test_standalone_m242_sender_remains_original_by_default(self):
+        self.assertIsNone(inspect.signature(uart.run).parameters["uart_send"].default)
+        self.assertIsNot(uart.send_paced_uart, uart.m193.sent)
+
+    def test_opt_in_uart_sender_preserves_every_ascii_byte_and_pace(self):
+        value = "echo M244_REAL_RC=0\r"
+        with mock.patch.object(uart.os, "write", return_value=1) as write, \
+             mock.patch.object(uart.time, "sleep") as sleep:
+            uart.send_paced_uart(42, value, seconds_per_byte=0.005)
+        self.assertEqual(write.call_args_list,
+                         [mock.call(42, bytes((byte,))) for byte in value.encode("ascii")])
+        self.assertEqual(sleep.call_args_list,
+                         [mock.call(0.005)] * len(value.encode("ascii")))
+
+    def test_paced_sender_accepts_terminal_dsr_reply(self):
+        reply = "\x1b[1;1R"
+        with mock.patch.object(uart.os, "write", return_value=1) as write, \
+             mock.patch.object(uart.time, "sleep"):
+            uart.send_paced_uart(42, reply, seconds_per_byte=0.005)
+        self.assertEqual(write.call_count, len(reply))
+
+    def test_paced_sender_rejects_unsafe_pacing_without_writing(self):
+        for interval in (0, 0.003, 0.0181, -1, float("inf"), float("nan")):
+            with self.subTest(interval=interval), \
+                 mock.patch.object(uart.os, "write") as write:
+                with self.assertRaisesRegex(ValueError, "safety bounds"):
+                    uart.send_paced_uart(42, "ok\r", seconds_per_byte=interval)
+                write.assert_not_called()
+
+    def test_paced_sender_rejects_non_ascii_or_noncanonical_line(self):
+        for value in ("", "\u4e2d\r", "hello\nworld\r", "hello\x00world\r",
+                      "first\rsecond\r", "first\rsecond",
+                      "x" * 2049 + "\r"):
+            with self.subTest(value=value[:32]), \
+                 mock.patch.object(uart.os, "write") as write:
+                with self.assertRaises((ValueError, UnicodeEncodeError)):
+                    uart.send_paced_uart(42, value, seconds_per_byte=0.005)
+                write.assert_not_called()
+
+    def test_paced_sender_short_fifo_write_fails_closed(self):
+        with mock.patch.object(uart.os, "write", return_value=0) as write, \
+             mock.patch.object(uart.time, "sleep") as sleep:
+            with self.assertRaisesRegex(OSError, "short UART"):
+                uart.send_paced_uart(42, "safe\r", seconds_per_byte=0.005)
+        write.assert_called_once_with(42, b"s")
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
