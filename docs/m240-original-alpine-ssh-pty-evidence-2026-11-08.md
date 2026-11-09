@@ -6,6 +6,50 @@ OpenSSH `-tt` PTYs per boot, full terminal interaction, separate NIC PCAPs,
 and the original signed Alpine physical ext4/OpenRC chain**. Neither a green
 workflow nor an SSH TCP connection alone is a substitute for this proof.
 
+## 2026-11-09: full genuine x86-64 M240 9x2 PASS
+
+- [GitHub Actions run #42551821112](https://github.com/yituanxing/na-seed/actions/runs/42551821112),
+  job `128948861670`, head
+  [`1b75132`](https://github.com/yituanxing/na-seed/commit/1b7513226eb64cfbe150be0cfa8e275ce6a2a12d):
+  **completed/success**. Native QEMU step 6 and evidence-upload step 7 each
+  succeeded. The actual Job log explicitly reports
+  `[M240 ORIGINAL ALPINE SSH PTY TWO BOOT PASS]` and
+  `[M240 ORIGINAL ALPINE DROPBEAR HOST SSH PTY TWO BOOT PASS]`.
+- [Original artifact #13645824939](https://github.com/yituanxing/na-seed/actions/runs/42551821112/artifacts/13645824939),
+  ZIP SHA-256
+  `690ffa338e6e56f2541ae34e9f7637dfc4e3e356a36d427d023ed3b1188667dd`.
+  The two independent native guest boot receipts are preserved as:
+  - `m240-first-host-ssh-pty.json` SHA-256
+    `35749f0d280b6cf32b9f51fa2e126e01e5d3e6261043c3f362935e87677e1d1f`;
+  - `m240-reopen-host-ssh-pty.json` SHA-256
+    `4e563f17a7b888142dc930809916642c8da1cb7c0b73279a7fbba72c974af749`.
+- **Each** of these original host OpenSSH `-tt` receipts has
+  `session_count=9`, independent nonce challenges, and nine successful
+  `tty_allocated`, `canonical_backspace`, `foreground_sigint` and
+  `winsize_33x101` assertions. Across the eighteen sessions, all nonce
+  digests are distinct, and each real BusyBox ash answered one received
+  VT100 CSI 6n cursor query through the repaired headless host terminal.
+  The pinned Dropbear Ed25519 host key fingerprint is identical across
+  actual QEMU boots:
+  `SHA256:+eAhFXi4zYrAOqeB8fq698/WnQbFSMJZ6d4wNrlIMHM`.
+- The independent *guest eth0* NIC capture pair in the final-oracle JSON
+  records **nine actual encrypted SSH TCP connections per boot**:
+  - first `m197-public-wire.pcap` SHA-256
+    `97e05b60abe4ac4e2fee73f29fd84dc0527c75b39edc90d2e3cc5a190749709d`;
+  - reopen `m240-reopen-wire.pcap` SHA-256
+    `f119aaf7d5e1d8a633c6dfcbde046ac6cf7e6534d19bedc0031790c07274ea3b`.
+  Both SHA-256 hashes were independently checked against the captured PCAP
+  bytes. Both UARTs include genuine original Alpine PID1/OpenRC, original
+  `/usr/sbin/dropbear`, successful host SSH challenge windows, script RC=0,
+  and successful physical ext4 sync/reopen checks. The immutable original
+  signed Alpine package database, persisted Ed25519 host key, and read-only
+  host ext4 fsck are verified independently.
+- The artifact expires at `2026-11-10T02:55:43Z` according to GitHub's
+  metadata; this section retains hashes and the acceptance result even
+  when the downloadable ZIP expires. Credential-bearing guest disk images
+  and private keys were **not** uploaded. This is a disposable,
+  root-only *functional* validation, **not production security/DAC approval**.
+
 ## 2026-11-09: genuine 9/9 first boot and 7/9 second boot; still FAIL
 
 - [Real M240 x86-64 QEMU run #42549065918](https://github.com/yituanxing/na-seed/actions/runs/42549065918),
