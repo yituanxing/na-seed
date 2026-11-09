@@ -169,8 +169,8 @@ static void nas_init_finish_success(void) {
 #endif
 #endif
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
-    /* A failed/unsupported final reboot(2) may still make original PID1
-     * exit after its shutdown actions. Always finish the real ext4
+    /* A failed/unsupported final reboot(2) may still leave original PID1
+     * in its shutdown sleep. Always finish the real ext4
      * teardown BEFORE reporting this failure: panic-on-exit would otherwise
      * strand dirty filesystem buffers and invalidate subsequent boots. */
     if(pid1_shutdown_signals && !pid1_power_command)
@@ -206,7 +206,7 @@ uint64_t nas_init_alpine_power_request(const struct nas_task *caller,
                                        uint32_t command) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
     /* Original BusyBox PID1 runs shutdown actions, then vforks a child
-     * for reboot(2) and waits for it. A direct `poweroff -f` from a
+     * for reboot(2) and enters an endless sleep. A direct `poweroff -f` from a
      * random shell cannot silently succeed while init stays alive. */
     const struct nas_task *init=nas_task_by_pid(1);
     if(!caller || caller->ppid!=1 || caller->tgid==1 ||
@@ -284,6 +284,17 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 #if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
 void nas_init_process_deferred_exit_service(void) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    if(pid1_power_command && !pid1_exit_waiting) {
+        /* The real BusyBox shutdown parent never calls exit(2). Its legal
+         * reboot vfork child must have fully exited and released the shared
+         * VM before this scheduler-stack transition can finalize PID1. */
+        const struct nas_task *init=nas_task_by_pid(1);
+        if(!init)nas_fail("original Alpine PID1 missing at shutdown");
+        if(init->state!=NAS_TASK_ZOMBIE && !init->vfork_child_pid) {
+            if(nas_signal_shutdown_init())
+                nas_fail("original Alpine scheduler PID1 exit failed");
+        }
+    }
     if(!pid1_exit_waiting)return;
     if(!pid1_shutdown_quiesced) {
         /* Bound to one Task-table scan and the normal SIGKILL exit_group

@@ -578,6 +578,29 @@ int nas_signal_shutdown_users(void) {
     return 0;
 }
 
+/* Original BusyBox init does NOT return from its final shutdown routine:
+ * after its vfork child calls reboot(2), PID1 sleeps forever. The syscall
+ * records only the authorized command. Once the child is fully gone and
+ * releases vfork, the normal scheduler stack owns this last process exit.
+ * No foreign syscall stack, live vfork VM, or mounted ext4 is torn down here.
+ * Leave the CPU and Task identity on zombie PID1 for the established
+ * non-init Task shutdown and deferred durable unmount service. */
+int nas_signal_shutdown_init(void) {
+    struct nas_task *init=nas_task_by_pid(1);
+    if(!init || init->pid!=1 || init->tgid!=1 || init->is_thread ||
+       init->state==NAS_TASK_ZOMBIE || init->state==NAS_TASK_FREE ||
+       init->vfork_child_pid || init->group_exit_pending)
+        return -EPERM;
+    struct nas_task *previous=nas_current_task;
+    if(previous && previous!=init)nas_arch_save_fpu(previous);
+    nas_current_task=init;
+    nas_arch_restore_cpu(init);
+    nas_sched_thread_group_exit(0,0);
+    if(init->state!=NAS_TASK_ZOMBIE || init->group_exit_pending)
+        return -EIO;
+    return 0;
+}
+
 /* TTY ISIG acts on the foreground group, not on the running kernel Task.
  * Caught or masked signals are queued and delivered on that member's own
  * user-return boundary with its MMU context; default termination and stop

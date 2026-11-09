@@ -21,3 +21,5 @@ timeout 30s build/m191-pid1-quiesce/deferred-order --armed
 timeout 30s build/m191-pid1-quiesce/deferred-order --unarmed
 timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff
 timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff-armed
+timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff-live
+timeout 30s build/m191-pid1-quiesce/deferred-order --poweroff-live-armed

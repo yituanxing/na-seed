@@ -21,7 +21,7 @@ struct nas_task *nas_current_task=&init_task;
 static jmp_buf successful_debug_exit;
 static bool armed, completed;
 static unsigned quiesced, requested, unmounted, exited;
-static bool printed_poweroff, poweroff_request;
+static bool printed_poweroff, poweroff_request, running_busybox_init;
 
 void nas_print(const char *s) {
     if(strstr(s,"[ALPINE POWER_OFF]"))printed_poweroff=true;
@@ -40,6 +40,17 @@ int nas_signal_shutdown_users(void) {
     assert(init_task.pid==1 && init_task.tgid==1);
     assert(!quiesced && !requested && !unmounted);
     quiesced++;
+    return 0;
+}
+int nas_signal_shutdown_init(void) {
+    /* Production does this on the scheduler stack AFTER reboot's vfork
+     * child has been released. The original BusyBox parent never exits. */
+    assert(running_busybox_init && poweroff_request);
+    assert(init_task.state==NAS_TASK_BLOCKED);
+    assert(init_task.vfork_child_pid==0);
+    assert(!quiesced && !requested && !unmounted);
+    init_task.state=NAS_TASK_ZOMBIE;
+    nas_init_process_terminated(0,0);
     return 0;
 }
 bool nas_lwext4_guest_boot_shutdown(void) {
@@ -63,10 +74,14 @@ int main(int argc,char **argv) {
     assert(strcmp(argv[1],"--armed")==0 ||
            strcmp(argv[1],"--unarmed")==0 ||
            strcmp(argv[1],"--poweroff")==0 ||
-           strcmp(argv[1],"--poweroff-armed")==0);
+           strcmp(argv[1],"--poweroff-armed")==0 ||
+           strcmp(argv[1],"--poweroff-live")==0 ||
+           strcmp(argv[1],"--poweroff-live-armed")==0);
     armed=strcmp(argv[1],"--armed")==0 ||
-          strcmp(argv[1],"--poweroff-armed")==0;
+          strcmp(argv[1],"--poweroff-armed")==0 ||
+          strcmp(argv[1],"--poweroff-live-armed")==0;
     poweroff_request=strncmp(argv[1],"--poweroff",10)==0;
+    running_busybox_init=strncmp(argv[1],"--poweroff-live",15)==0;
     init_task.pid=init_task.tgid=1;
     busybox_vfork_child.pid=3;
     busybox_vfork_child.tgid=3;
@@ -100,8 +115,14 @@ int main(int argc,char **argv) {
                ==0);
         assert(!quiesced && !unmounted && !exited);
     }
-    init_task.state=NAS_TASK_ZOMBIE;
-    nas_init_process_terminated(0,0);
+    if(running_busybox_init) {
+        /* No synthetic PID1 exit: its BusyBox shutdown wait is indefinite,
+         * and only the legitimate child reboot(2) has been acknowledged. */
+        init_task.state=NAS_TASK_BLOCKED;
+    } else {
+        init_task.state=NAS_TASK_ZOMBIE;
+        nas_init_process_terminated(0,0);
+    }
     /* Returning from PID1 exit without any unmount is the central guard. */
     assert(!quiesced && !requested && !unmounted && !exited);
     if(!setjmp(successful_debug_exit)) {

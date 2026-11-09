@@ -81,6 +81,11 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame);
  * established exit_group path releases their real OpenFiles and cwd pins.
  * Returns zero only when no non-init user Task remains live. */
 int nas_signal_shutdown_users(void);
+/* After the original BusyBox vfork reboot child has exited, retire its
+ * permanently sleeping PID1 on the independent scheduler stack through the
+ * normal exit_group/FD-close path. Leaves current Task pointing to zombie
+ * PID1 so the existing post-exit user quiescence may run safely. */
+int nas_signal_shutdown_init(void);
 uint64_t nas_signal_tkill(uint64_t raw_tid,uint64_t signum,uint64_t *frame);
 uint64_t nas_signal_tgkill(uint64_t raw_tgid,uint64_t raw_tid,
                            uint64_t signum,uint64_t *frame);

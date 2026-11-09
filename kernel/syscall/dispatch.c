@@ -1067,11 +1067,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         uint64_t result=nas_linux_reboot_validate(args[1],args[2],args[3],
                                                   &command);
         if(result)return result;
-        /* BusyBox PID1 invokes reboot from its *vfork child*, not PID1.
-         * A return of zero only records a valid request; on the parent
-         * PID1's later exit the deferred service closes all live FDs,
-         * drains the worker and durably unmounts ext4 before host exit. */
-        return nas_init_alpine_power_request(&TASK,command);
+        /* Original BusyBox PID1 invokes reboot from a vfork child and then
+         * sleeps forever; a successful Linux reboot(2) never returns to
+         * userspace. Only AFTER validation, retire this child through its
+         * normal exit_group/vfork-release path. The independent scheduler
+         * stack then retires PID1 and durably unmounts ext4. */
+        result=nas_init_alpine_power_request(&TASK,command);
+        if(result)return result;
+        nas_sched_thread_group_exit(0,0);
+        return nas_task_schedule((uint64_t *)(uintptr_t)args);
     }
     if (nr == NAS_SC_tkill) return nas_signal_tkill(args[1],args[2],(uint64_t *)(uintptr_t)args);
     if (nr == NAS_SC_tgkill) return nas_signal_tgkill(args[1],args[2],args[3],(uint64_t *)(uintptr_t)args);
