@@ -16,6 +16,9 @@ on:
       - 'scripts/m247-*'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/native-source-qemu.sh'
+      - 'scripts/run.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'kernel/boot_image.c'
@@ -43,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        port: [riscv64, arm64]
+        port: [amd64, riscv64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,6 +88,11 @@ jobs:
           test -s /usr/share/keyrings/debian-archive-keyring.gpg || \
             missing="$missing debian-archive-keyring"
           case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -s /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -s /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf"
+              ;;
             riscv64)
               command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
               test -s /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
@@ -123,3 +131,5 @@ jobs:
             build/m249-debian-ext4/${{ matrix.port }}/*.log
             build/port-*/full/matrix-source/m249-batch.clean.log
             build/port-*/full/matrix-source/m249-batch.serial.log
+            build/busybox-source-parity-x86/m249-batch.clean.log
+            build/busybox-source-parity-x86/m249-batch.serial.log
