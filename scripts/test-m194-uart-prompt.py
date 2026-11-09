@@ -73,6 +73,20 @@ arm64_m199 = (
 assert m194.shell_prompt_after_step(
     result_boundary(arm64_m199, "M199_FIRST_SERVICE_START_RC=0"))
 
+# Exact M244 RV64/ARM64 first-epoch UART after the independent host SSH PTY
+# passed: the kernel's pipe-creation trace raced against ash's prompt. The
+# previous parser rejected this legitimate line, so the UART owner never sent
+# its next command and never asked the same QEMU process to reboot.
+m244_ssh_pipe = (
+    "M244_FIRST_HOST_SSH_READY\n"
+    "localhost:~# \x1b[6n[PIPE] created read=6 write=7\n"
+    "[PROC] fork parent=615 child=645\n"
+)
+assert m194.shell_prompt_after_step(
+    result_boundary(m244_ssh_pipe, "M244_FIRST_HOST_SSH_READY"))
+assert not m194.shell_prompt_after_step(
+    "localhost:~# [PIPE-FAKE] arbitrary command output\n")
+
 # A prompt from BEFORE the command's completed marker cannot advance the
 # current step. A command echo and kernel message containing prompt text
 # cannot masquerade as fresh proof after step_end.
@@ -99,4 +113,5 @@ assert m194.step_match("naseed:~# printf 'M196_TRUST_DNS_RC=0\\n'\n",
                        "M196_TRUST_DNS_RC=0") is None
 
 print("[M194 UART PROMPT CONTRACT PASS] actual ARM64 DSR+printk race, "
-      "x86/RV prompts, step boundary, echoed commands and spoofed logs")
+      "M244 real SSH pipe/ash collision, x86/RV prompts, "
+      "step boundary, echoed commands and spoofed logs")

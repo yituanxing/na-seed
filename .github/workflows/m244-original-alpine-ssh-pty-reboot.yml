@@ -11,6 +11,8 @@ on:
       - 'tests/m244-alpine-network-ready.sh'
       - 'scripts/probe-m241-alpine-poweroff.sh'
       - 'scripts/m244-alpine-ssh-uart.py'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/test-m194-uart-prompt.py'
       - 'scripts/m244-host-ssh-two-epoch.py'
       - 'scripts/m244-verify-ssh-disk.py'
       - 'scripts/test-m244-alpine-ssh-uart.py'
@@ -50,6 +52,7 @@ jobs:
           python3 -m py_compile scripts/m244-alpine-ssh-uart.py \
             scripts/m244-host-ssh-two-epoch.py scripts/m244-verify-ssh-disk.py
           python3 scripts/test-m244-alpine-ssh-uart.py
+          python3 scripts/test-m194-uart-prompt.py
           python3 scripts/test-m244-host-ssh-two-epoch.py
           python3 scripts/test-m244-verify-ssh-disk.py
           python3 scripts/test-m243-alpine-cli-uart.py
