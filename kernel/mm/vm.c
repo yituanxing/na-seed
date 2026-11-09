@@ -358,10 +358,14 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
             live_shared=true;
         }
     }
-    /* Eager file snapshots are intentionally bounded. A private VFS mapping
-     * can exceed this threshold without a full copy: pin the real inode
-     * (even for mutable ext4) and materialize each private page on fault. */
-    if(!live_shared && length>(64ULL<<20)) {
+    /* Eager file snapshots are intentionally bounded. The genuine glibc
+     * loader also maps its DSO with MAP_DENYWRITE, then sets PROT_NONE on
+     * untouched holes between PT_LOAD segments. Pin those private source
+     * inodes and fault in pages lazily, so mprotect can protect an absent
+     * hole without dropping an eager snapshot's live data frames. This
+     * preserves private COW and future fault-time file contents. */
+    bool loader_private=private_map && (flags & MAP_DENYWRITE);
+    if(!live_shared && (length>(64ULL<<20) || loader_private)) {
         if(private_map) {
             int pinned=nas_fs_mmap_pin_private(fd,&backing);
             if(!pinned)lazy_private=true;

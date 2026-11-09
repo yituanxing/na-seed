@@ -316,10 +316,10 @@ int main(void){
     assert(slot(BASE,false)->pa==original_pa0 &&
            slot(BASE+P,false)->pa==original_pa1 &&
            living()==baseline && ram[original_pa0]==0xa0);
-    /* Genuine glibc dl-map-segments uses MAP_COPY, which includes the
-     * obsolete-but-ignored Linux MAP_DENYWRITE bit (0x800). */
+    /* Ordinary small private snapshots remain eager. A glibc DSO mapping
+     * with MAP_DENYWRITE is tested separately below as private lazy. */
     assert((int64_t)nas_vm_file_mmap(BASE,2*P,1,0x1012,4,0)==-38);
-    assert(nas_vm_file_mmap(BASE,2*P,1,0x812,4,0)==BASE);
+    assert(nas_vm_file_mmap(BASE,2*P,1,0x12,4,0)==BASE);
     const struct nas_anon_region *v=nas_vma_find(&space.mmap_vmas,BASE);
     assert(v && v->prot==1 && v->kind==NAS_VMA_FILE_PRIVATE_SNAPSHOT);
     assert(slot(BASE,false)->pa!=original_pa0 &&
@@ -333,9 +333,28 @@ int main(void){
     assert(!nas_mmu_user_byte(BASE) && !nas_mmu_user_byte(BASE+P));
     assert(nas_vma_find(&space.mmap_vmas,BASE)->prot==0);
     assert(living()==0);
-    uint64_t glibc_dso=nas_vm_file_mmap(0,P,1,0x802,4,0);
+    /* Original Debian glibc maps a DSO's full reserved span as
+     * MAP_PRIVATE|MAP_DENYWRITE, then mprotects the untouched PT_LOAD gap
+     * to PROT_NONE. Pin the file instead of materializing unused gap pages;
+     * a later permission restoration must still refault exact file bytes. */
+    unsigned dso_refs_before=immutable_file.refs;
+    unsigned dso_reads_before=immutable_reads;
+    uint64_t glibc_dso=nas_vm_file_mmap(0,2*P,5,0x802,4,0);
     assert((int64_t)glibc_dso>0);
-    assert(nas_vm_munmap(glibc_dso,P)==0);
+    const struct nas_anon_region *dso=nas_vma_find(&space.mmap_vmas,glibc_dso);
+    assert(dso && dso->kind==NAS_VMA_FILE_PRIVATE_LAZY &&
+           dso->backing==&immutable_file && immutable_file.refs==dso_refs_before+1 &&
+           !nas_mmu_user_byte(glibc_dso) && !nas_mmu_user_byte(glibc_dso+P));
+    assert(nas_vm_mprotect(glibc_dso+P,P,0)==0);
+    assert(nas_mm_handle_fault(&space,glibc_dso+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_ACCERR);
+    assert(nas_vm_mprotect(glibc_dso+P,P,5)==0);
+    assert(nas_mm_handle_fault(&space,glibc_dso+P,NAS_UP_READ,false)==
+           NAS_MM_FAULT_RESOLVED);
+    assert(immutable_reads==dso_reads_before+1 &&
+           *nas_mmu_user_byte(glibc_dso+P)==7);
+    assert(nas_vm_munmap(glibc_dso,2*P)==0);
+    assert(immutable_file.refs==dso_refs_before);
     assert(living()==0);
     /* A mixed resident + reserved range must change only VMA policy and
      * existing PTE permissions. A protection change must NOT fault in an
