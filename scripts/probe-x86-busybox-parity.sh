@@ -112,8 +112,20 @@ run_case() {
         timeout "${budget}s" sh scripts/run.sh "$iso" > "$log" 2>&1 < "$serial_input" || rc=$?
     fi
     tr -d '\r' < "$log" > "$clean"
+    # The original Alpine /sbin/init manifests use one literal space as
+    # their empty argv-tail sentinel. Limine and the kernel correctly trim
+    # it, so the real serial line has NO trailing blank after /sbin/init.
+    # For *only* that empty-tail case require the complete exact line;
+    # retain the historical nonempty argv oracle unchanged.
+    missing_cmdline=0
+    case "$args" in
+        ''|' ')
+            grep -Fxq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry" "$clean" || missing_cmdline=1 ;;
+        *)
+            grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" || missing_cmdline=1 ;;
+    esac
     if [ "$rc" -ne 1 ] ||
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" ||
+       [ "$missing_cmdline" -ne 0 ] ||
        ! grep -Fq '[EXIT] user status=0' "$clean" ||
        ! grep -Fq '[PASS] cmdline userspace exit 0' "$clean" ||
        grep -Fq '[FAIL]' "$clean"; then
