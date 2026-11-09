@@ -47,6 +47,12 @@ def as_user(shell):
 def deny_as_user(operation):
     return as_user("if " + operation + " >/dev/null 2>&1; then exit 97; else exit 0; fi")
 
+def pid1_eperm():
+    # Require actual EPERM, not ESRCH / unsupported kill / any other failure.
+    return as_user("result=$(LC_ALL=C kill -0 1 2>&1); status=$?; "
+                   "test \"$status\" -ne 0 && "
+                   "printf \"%s\\n\" \"$result\" | grep -qi \"Operation not permitted\"")
+
 FIRST_COMMANDS = m244.FIRST_COMMANDS + (
     step("missing=0; for app in addgroup adduser chpasswd su id chmod chown stat; do "
          "/bin/busybox --list | /bin/busybox grep -qx \"$app\" || missing=1; "
@@ -75,6 +81,7 @@ FIRST_COMMANDS = m244.FIRST_COMMANDS + (
          " && test \"$(/bin/busybox stat -c %u:%g " + DATA + ")\" = " + UID + ":" + UID,
          "M253_NONROOT_WRITE_RC=0", "unprivileged process creates persistent ext4 inode"),
     step(deny_as_user("cat " + ROOT_SECRET) + " && " +
+         pid1_eperm() + " && " +
          deny_as_user("touch /root/m253-forbidden") + " && " +
          deny_as_user("chmod 0777 " + ROOT_SECRET) + " && " +
          deny_as_user("chown root:root " + DATA) + " && " +
@@ -117,6 +124,7 @@ SECOND_COMMANDS = m244.SECOND_COMMANDS + (
                  "test \"$(id -g)\" = " + UID + " && "
                  "test \"$(cat " + DATA + ")\" = '" + DATA_VALUE + "'") + " && " +
          deny_as_user("cat " + ROOT_SECRET) + " && " +
+         pid1_eperm() + " && " +
          deny_as_user("touch /root/m253-forbidden-reboot") + " && "
          "test ! -e /root/m253-forbidden-reboot && "
          "test \"$(/bin/busybox stat -c %u:%g " + DATA + ")\" = " + UID + ":" + UID,

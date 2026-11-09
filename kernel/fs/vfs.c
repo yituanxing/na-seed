@@ -1977,7 +1977,10 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
        !nas_vfs_can_write(&node))rc=-EROFS;
     if(!rc && options->truncate && !options->access && !options->path_only)
         rc=-EINVAL;
-    if(!rc && !options->path_only) {
+    /* POSIX open(O_CREAT) grants the freshly created file description even
+     * when requested mode (after umask) is 0000. DAC applies to reopening
+     * existing inodes, not to the just-created inode in this transaction. */
+    if(!rc && !created && !options->path_only) {
         unsigned need=options->access==0 ? NAS_DAC_READ :
                       options->access==1 ? NAS_DAC_WRITE :
                                            NAS_DAC_READ|NAS_DAC_WRITE;

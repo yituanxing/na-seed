@@ -34,9 +34,13 @@ guest=" ".join(item[0] for item in uart.FIRST_COMMANDS+uart.SECOND_COMMANDS)
 for token in ("su - m253user -c","test \"$(id -u)\" = 1101",
               "chpasswd","chmod 0700 /home/m253user",
               "chmod 0600 /home/m253user/m253-nonroot-data.txt",
-              "if cat /root/m253-private/secret","chown root:root",
+              "if cat /root/m253-private/secret","kill -0 1","chown root:root",
               "M253_FIRST_HOST_NONROOT_RC","M253_SECOND_HOST_NONROOT_RC"):
     assert token in guest,token
+assert guest.count("kill -0 1")>=2, "both epochs must probe nonroot PID1 signal permission"
+assert "Operation not permitted" in guest, "must distinguish true EPERM from ESRCH/other errors"
+assert any("kill -0 1" in command for command,*_ in uart.FIRST_COMMANDS)
+assert any("kill -0 1" in command for command,*_ in uart.SECOND_COMMANDS)
 assert host.TARGET=="m253user@127.0.0.1"
 try:
     host.user_target(["ssh","root@127.0.0.1"])

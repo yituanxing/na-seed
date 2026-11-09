@@ -69,7 +69,13 @@ static struct exec_snapshot {
  * exec-time file capabilities are implemented, never silently ignore
  * setuid/setgid mode bits.  Reject before image replacement begins. */
 static int exec_check_dac(const struct nas_fs_node *node) {
-    if(node->mode&06000U)return -EPERM;
+    /* Node snapshots can predate chmod: inspect authoritative metadata.
+     * A nonroot image must never silently ignore a set-ID transition. */
+    struct nas_fs_node fresh={0};
+    int rc=nas_vfs_getattr(node,&fresh);
+    if(rc)return rc;
+    if((TASK.credentials.euid!=0 || TASK.credentials.fsuid!=0) &&
+       (fresh.mode&06000U))return -EPERM;
     return nas_dac_mode(node,NAS_DAC_SEARCH);
 }
 #endif
