@@ -63,6 +63,17 @@ def output_line(segment: bytes, value: bytes) -> bool:
                      segment) is not None
 
 
+def prompt_boundary(serial: bytes, cursor: int) -> int:
+    """Find only the shell's line-leading prompt, not `PS1=M250> ` from env.
+
+    Real guest UART may print this literal anywhere in a program's stdout;
+    accepting an embedded substring would make a complete, correct command
+    look like it terminated before its output was produced.
+    """
+    match = re.search(rb"(?m)^" + re.escape(PROMPT), serial[cursor:])
+    return -1 if match is None else cursor + match.start()
+
+
 def send(fd: int, command: bytes) -> None:
     # Match M250's actual hardware RX FIFO pacing, not an unbounded pipe.
     for byte in command:
@@ -110,7 +121,7 @@ def run(port: str, runner: str, serial: Path, runner_log: Path,
                 if b"[FAIL]" in normalized or b"[M250 LAUNCH FAIL]" in normalized:
                     raise RuntimeError("native guest reported an explicit failure")
                 if sent < len(COMMANDS):
-                    boundary = normalized.find(PROMPT, cursor)
+                    boundary = prompt_boundary(normalized, cursor)
                     if boundary >= 0:
                         segment = normalized[cursor:boundary]
                         expected = None if sent == 0 else COMMANDS[sent - 1][1]

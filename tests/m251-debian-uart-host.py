@@ -71,6 +71,18 @@ class OriginalDebianInteractiveUARTContract(unittest.TestCase):
         self.assertIn((b"/usr/bin/sleep 0 && /usr/bin/printf '%s\\n' M251-SLEEP-OK\r",
                        b"M251-SLEEP-OK"), commands)
 
+    def test_shell_prompt_not_confused_with_original_env_ps1_value(self):
+        serial = (b"M250> /usr/bin/env M251_TOKEN=M251-ENV-OK /usr/bin/env\n"
+                  b"HOME=/\nPS1=M250> \nTERM=dumb\n"
+                  b"M251_TOKEN=M251-ENV-OK\n"
+                  b"[PROC] wait4 reaped pid=8 status=0\n"
+                  b"M250> [SCHED] blocked pid=1 syscall=154\n")
+        start = len(uart.PROMPT)
+        boundary = uart.prompt_boundary(serial, start)
+        self.assertEqual(boundary, serial.rfind(b"M250> "))
+        self.assertTrue(uart.output_line(serial[start:boundary], b"M251_TOKEN=M251-ENV-OK"))
+        self.assertEqual(uart.prompt_boundary(serial[:boundary], start), -1)
+
     def test_guest_durable_write_then_rm_then_independent_test(self):
         commands = [command for command, _, _ in uart.COMMANDS]
         write = b"/usr/bin/printf '%s\\n' M251-DURABLE > /var/tmp/m251-dir/result\r"
