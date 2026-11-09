@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../kernel/fs/inotify.h"
+#include "../kernel/task.h"
 void nas_inotify_emit_child(const struct nas_fs_node *p,const char *name,
                            uint32_t mask,uint32_t cookie,bool isdir) {
     (void)p;(void)name;(void)mask;(void)cookie;(void)isdir;
@@ -24,3 +25,9 @@ uint32_t nas_inotify_rename_cookie(void) {return 1;}
 /* Some host tests also link the real provider file: its strong definition
  * must win instead of causing a duplicate-symbol link failure. */
 __attribute__((weak)) int nas_vfs_register_pseudo_mounts(void) {return 0;}
+
+/* M253 DAC looks up the active Task for every path. Legacy host VFS-only
+ * fixtures intentionally have no scheduler and exercise the bootstrap/root
+ * path; expose a WEAK null current-task pointer only in this host stub.
+ * Production kernel task.c provides the real strong pointer. */
+__attribute__((weak)) struct nas_task *nas_current_task;
