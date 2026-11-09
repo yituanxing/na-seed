@@ -90,6 +90,8 @@ jobs:
                 missing="$missing qemu-efi-riscv64"
               command -v riscv64-linux-gnu-gcc >/dev/null || \
                 missing="$missing gcc-riscv64-linux-gnu"
+              test -s /usr/riscv64-linux-gnu/include/bits/wordsize.h || \
+                missing="$missing libc6-dev-riscv64-cross"
               ;;
             arm64)
               command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
@@ -97,6 +99,8 @@ jobs:
                 missing="$missing qemu-efi-aarch64"
               command -v aarch64-linux-gnu-gcc >/dev/null || \
                 missing="$missing gcc-aarch64-linux-gnu"
+              test -s /usr/aarch64-linux-gnu/include/bits/wordsize.h || \
+                missing="$missing libc6-dev-arm64-cross"
               ;;
             *) echo 'Unreviewed M250 native QEMU port' >&2; exit 2 ;;
           esac
