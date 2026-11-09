@@ -40,9 +40,22 @@ service launcher participates in this gate.
 - The host-only permission issue was fixed by invoking the independent
   physical disk checker with `sudo`, as previous M241 baseline checks already
   did. No kernel, guest package, network or UART oracle semantics were changed.
-- [Retry on the fixed verifier, run 42572413373](https://github.com/yituanxing/na-seed/actions/runs/42572413373): this is the authoritative full gate; only
-  mark M243 complete if **all three** jobs pass the post-QEMU fsck/APK/OpenRC
-  disk checks as well as the native guest.
+- [Retry on the fixed verifier, run 42572413373](https://github.com/yituanxing/na-seed/actions/runs/42572413373): **3/3 native jobs SUCCESS**.
+  Each emitted `[M243 ORIGINAL ALPINE APK OPENRC SAME QEMU PASS]`,
+  `[M243 ALPINE PACKAGE PERSISTENCE HOST PASS]`,
+  `[M243 ORIGINAL ALPINE CLI DISK PASS]`, and
+  `[M243 ORIGINAL ALPINE CLI NATIVE PASS]` after the original guest poweroff.
+
+| ISA | Native QEMU + same-process reset | Host APK/world/ELF/ext4/OpenRC | Retained Actions artifact |
+| --- | --- | --- | --- |
+| x86-64 (`amd64`) | PASS | PASS | `13653139211` |
+| RV64 (`riscv64`) | PASS | PASS | `13654295853` |
+| AArch64 (`arm64`) | PASS | PASS | `13654021386` |
+
+The run's three artifacts contain the independent runner log, real UART and
+QEMU NIC PCAP; the run record and artifact metadata are the reproducible
+source of truth. M243 is **fully accepted** on the three designated native
+ports, without a synthesized terminal/login or guest service shortcut.
 
 Host fast tests: `scripts/test-m243-alpine-cli-uart.py` (16 cases), and the
 existing M242 two-epoch contract (11 cases). End-to-end entrypoint:
