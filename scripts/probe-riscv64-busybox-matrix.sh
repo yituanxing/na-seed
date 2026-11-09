@@ -183,23 +183,38 @@ boot_case() {
         -drive if=none,id=esp,format=raw,file="$disk" \
         -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < "$serial_input" &
     pid=$!
-    if [ "$name" = timer-preempt ]; then
+    if [ "${NAS_M241_EXPECT_NATURAL_POWEROFF:-0}" = 1 ]; then
+        # Dedicated M241 poweroff-only image: the guest must request SBI
+        # shutdown itself. Never turn a host SIGTERM into a passing result.
+        set +e
+        wait "$pid"
+        monitor=$?
+        set -e
+    elif [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
           '[INIT] creating common task/VM and architecture user entry' \
           '[M28] timer-preempt from=' 'cpu-hog-did-not-starve-ash'
+        monitor=$?
     else
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
           '[INIT] creating common task/VM and architecture user entry' \
           '[PASS] cmdline userspace exit 0' \
           '[RV64] userspace debug-exit status=0'
+        monitor=$?
     fi
-    monitor=$?
-    kill "$pid" 2>/dev/null || :
-    wait "$pid" 2>/dev/null || :
+    if [ "${NAS_M241_EXPECT_NATURAL_POWEROFF:-0}" != 1 ]; then
+        kill "$pid" 2>/dev/null || :
+        wait "$pid" 2>/dev/null || :
+    fi
     set -e
     tr -d '\r' < "$log" > "$clean"
+    missing_cmdline=0
+    case "$args" in
+        ''|' ') grep -Fxq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry" "$clean" || missing_cmdline=1 ;;
+        *) grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" || missing_cmdline=1 ;;
+    esac
     if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$clean" || \
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean"; then
+       [ "$missing_cmdline" -ne 0 ]; then
         echo "[RV64 BUSYBOX FAIL] real $mode BusyBox $args did not cleanly exit" >&2
         tail -110 "$clean" >&2
         return 1

@@ -1,15 +1,21 @@
 #!/bin/sh
-# M241: one native x86-64 QEMU boot of the original signed Alpine root, then
+# M241: one native QEMU boot of the original signed Alpine root per ISA, then
 # request a real /sbin/poweroff through the authenticated guest serial shell.
 # Unlike M193 this must leave QEMU through the kernel's deferred PID1/ext4
 # completion.  No host-killed QEMU, parity timeout or clean host-only test can
 # count as success.
 set -eu
-[ "$#" -eq 1 ] && [ "$1" = amd64 ] || {
-    echo 'usage: sh scripts/probe-m241-alpine-poweroff.sh amd64' >&2
+[ "$#" -eq 1 ] || {
+    echo 'usage: sh scripts/probe-m241-alpine-poweroff.sh amd64|riscv64|arm64' >&2
     exit 2
 }
 port=$1
+case "$port" in
+    amd64) alpine_arch=x86_64; machine='Advanced Micro Devices X86-64' ;;
+    riscv64) alpine_arch=riscv64; machine='RISC-V' ;;
+    arm64) alpine_arch=aarch64; machine='AArch64' ;;
+    *) echo "[M241 POWER OFF FAIL] unsupported ISA: $port" >&2; exit 2 ;;
+esac
 . scripts/native-qemu-target.sh
 
 for program in sudo docker readelf cpio sha256sum python3 openssl; do
@@ -24,7 +30,7 @@ root="$PWD/$work/rootfs"
 baseline="$PWD/$work/alpine-root.img"
 rescue="$PWD/$work/smoke/rescue/rootfs.cpio"
 busybox="$PWD/$work/smoke/elf/busybox"
-loader="$PWD/$work/smoke/elf/ld-musl-x86_64.so.1"
+loader="$PWD/$work/smoke/elf/ld-musl-$alpine_arch.so.1"
 
 # The signed M191 staging path already verifies upstream Alpine's tarball,
 # APK signatures, original ELF, MBR and physical ext4 readback.  Reuse it when
@@ -42,10 +48,10 @@ fi
 mkdir -p "$PWD/$work/smoke/elf"
 sudo python3 scripts/m191-export-alpine-elf.py "$port" "$root" "$PWD/$work/smoke/elf"
 test -s "$busybox" && test -s "$loader"
-readelf -h "$busybox" | grep -Fq 'Advanced Micro Devices X86-64'
+readelf -h "$busybox" | grep -Fq "$machine"
 readelf -h "$busybox" | grep -Eq 'Type:[[:space:]]+DYN'
-readelf -l "$busybox" | grep -Fq '[Requesting program interpreter: /lib/ld-musl-x86_64.so.1]'
-readelf -h "$loader" | grep -Fq 'Advanced Micro Devices X86-64'
+readelf -l "$busybox" | grep -Fq "[Requesting program interpreter: /lib/ld-musl-$alpine_arch.so.1]"
+readelf -h "$loader" | grep -Fq "$machine"
 sha256sum "$busybox" "$loader" > "$PWD/$work/smoke/original-alpine-elfs.sha256"
 sh scripts/stage-alpine-native-rootfs.sh "$busybox" "$loader" "$PWD/$work/smoke/rescue"
 test -s "$rescue"
@@ -71,7 +77,7 @@ unset NAS_ENABLE_VIRTIO_BLK_ASYNC NAS_QEMU_ASYNC_BLK NAS_QEMU_ASYNC_BLK_IMAGE
 export NAS_VIRTIO_BLK_IMAGE="$disk"
 export NAS_ACCEPTANCE_CPIO="$rescue"
 export BUSYBOX_PARITY_BINARY="$busybox"
-# The original x86 QEMU runner already owns the m193-batch /sbin/init Limine
+# The native QEMU runners already own the m193-batch /sbin/init Limine
 # manifest, startup budget and exit-0 debug port. Reuse that one case only;
 # do not run the independent M191 baseline or the old M193 host-kill proof.
 export BUSYBOX_PARITY_CASE=m193-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
@@ -81,9 +87,20 @@ export NAS_APP_BATCH_QEMU_TIMEOUT="${NAS_M241_QEMU_TIMEOUT:-180}"
 
 # Always compile the changed kernel. A cached M191 .elf would test OLD PID1
 # semantics and produce a misleading guest result.
-. scripts/native-source-qemu.sh
-nas_source_build_kernel "${NAS_M241_BUILD_TAG:-m241-poweroff}"
-test -s "$NAS_ACCEPTANCE_KERNEL"
+case "$port" in
+    amd64)
+        . scripts/native-source-qemu.sh
+        nas_source_build_kernel "${NAS_M241_BUILD_TAG:-m241-poweroff}"
+        test -s "$NAS_ACCEPTANCE_KERNEL" ;;
+    riscv64)
+        export NAS_M241_PLATFORM_POWERDOWN=1 NAS_M241_EXPECT_NATURAL_POWEROFF=1
+        sh scripts/build-riscv64-full.sh
+        test -s build/port-riscv64/full/kernel.elf ;;
+    arm64)
+        export NAS_M241_PLATFORM_POWERDOWN=1 NAS_M241_EXPECT_NATURAL_POWEROFF=1
+        sh scripts/build-aarch64-full.sh
+        test -s build/port-aarch64/full/kernel.elf ;;
+esac
 
 fifo="$PWD/$work/m241-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
@@ -102,4 +119,4 @@ sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
     sha256sum -c "$work/smoke/original-alpine-elfs.sha256"
 )
 cp "$log" "$PWD/$work/m241-poweroff.serial.log"
-echo '[M241 ORIGINAL ALPINE POWER OFF NATIVE PASS] x86-64 original /sbin/init + authenticated /sbin/poweroff -> true PID1 shutdown, ext4 durable clean unmount, natural QEMU exit and physical disk readback'
+echo "[M241 ORIGINAL ALPINE POWER OFF NATIVE PASS] $port original /sbin/init + authenticated /sbin/poweroff -> true PID1 shutdown, ext4 durable clean unmount, natural QEMU exit and physical disk readback"

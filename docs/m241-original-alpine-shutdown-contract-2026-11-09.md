@@ -84,8 +84,30 @@ Limine boot profile but never running the prior M191 baseline QEMU first.
 First native run `42564799325` did execute genuine OpenRC poweroff and
 reach PID1 quiescence. It correctly **failed** at ext4 root unmount with
 `open_refs=2 child_refs=1`, identifying the one remaining OpenRC-created
-runtime tmpfs attachment. This is a failure receipt, not a native PASS;
-the runtime mount teardown fix requires a fresh native run.
+runtime tmpfs attachment. This was a failure receipt, not a native PASS.
+
+The fixed **fourth** native run `42566040745` (`863b3131`) now **passes**:
+real original x86-64 Alpine getty/password and OpenRC, guest ext4 write,
+guest readback and sync, original `/sbin/poweroff`, PID1 quiescence, final
+upstream ext4 unmount/flush, QEMU natural process exit, disk lock release,
+read-only host e2fsck and independent physical `debugfs` nonce readback.
+Native CI emitted `[M241 ORIGINAL ALPINE POWER OFF NATIVE PASS]`. Its
+raw serial/runner artifact is `13651178821` (retained seven days).
+
+The two other ISA runners previously stopped QEMU **from the host** after
+observing a debug marker, whereas x86 used an actual exit device. M241
+has a separate opt-in machine-power path instead of modifying the generic
+parity completion semantics: on RV64 it requests OpenSBI SBI SRST
+shutdown, and on AArch64 the QEMU `virt` HVC conduit requests PSCI
+SYSTEM_OFF. Only a fully validated original BusyBox POWER_OFF state can
+reach that platform action, after ext4 teardown. The M241-only runner
+awaits a genuine QEMU process exit; it must not host-kill QEMU for PASS.
+These changes require independent remote native acceptance on both ISAs.
+
+The automatically push-triggered `m241-original-alpine-poweroff-ports.yml`
+executes one QEMU boot per RV64/AArch64 ISA and does not replay the prior
+M191 QEMU baseline or M240 SSH matrix. A green host preflight is not proof
+of either native platform shutdown.
 
 ## Native acceptance still required
 

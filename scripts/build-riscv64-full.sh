@@ -42,6 +42,7 @@ if [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; then
       { echo '[M191] physical lwext4 root requires VirtIO block' >&2; exit 1; }
     flags="$flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
 fi
+[ "${NAS_M241_PLATFORM_POWERDOWN:-0}" = 1 ] && flags="$flags -DNAS_M241_PLATFORM_POWERDOWN=1"
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.

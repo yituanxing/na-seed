@@ -175,6 +175,13 @@ static void nas_init_finish_success(void) {
      * strand dirty filesystem buffers and invalidate subsequent boots. */
     if(pid1_shutdown_signals && !pid1_power_command)
         nas_fail("Alpine PID1 shutdown lacked a supported final reboot(2)");
+#ifdef NAS_M241_PLATFORM_POWERDOWN
+    /* Native platform powerdown is reserved for the completed original
+     * BusyBox poweroff(2) contract; a successful generic PID1 exit is not
+     * sufficient authority to request SBI SRST / PSCI SYSTEM_OFF. */
+    if(pid1_power_command!=NAS_LINUX_REBOOT_POWER_OFF)
+        nas_fail("M241 platform powerdown without original Alpine POWER_OFF");
+#endif
     /* Printed only AFTER final Files close, the async worker drains, and
      * the actual ext4 filesystem is durably unmounted. A QEMU test exit
      * is NOT a physical FPGA board's power controller. */
