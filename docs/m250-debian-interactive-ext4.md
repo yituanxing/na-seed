@@ -61,9 +61,10 @@ job without serial and disk proof do not count.
 `sh scripts/m250-probe-debian-interactive.sh riscv64` and
 `sh scripts/m250-probe-debian-interactive.sh arm64`, under the same native-QEMU,
 cross-GCC, Limine seed, signed Debian package, and e2fsprogs dependencies as
-the M249 CI. `.github/workflows/m250-debian-interactive-ext4.yml` runs both
-architecture cases and publishes the real serial, runner, and source manifest.
+the M249 CI. `.github/workflows/m250-debian-interactive-ext4.yml` runs all
+three native architecture cases, including amd64, and publishes the real
+serial, runner, and source manifest per architecture.
 
-The x86 native runner has the same explicit M250 300-second watchdog; x86 is
-available for a separate target profile and is not claimed as passing in the
-initial RV64/ARM64 M250 matrix.
+The x86 native runner has the same explicit M250 300-second watchdog. Each
+architecture must independently pass the entire native-QEMU serial and
+post-boot ext4 oracle; adding it to the matrix is not by itself a PASS.
