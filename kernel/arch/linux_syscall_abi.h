@@ -158,6 +158,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case __NR_mprotect: return NAS_SC_mprotect;
     case __NR_munmap: return NAS_SC_munmap;
     case __NR_newfstatat: return NAS_SC_newfstatat;
+    case __NR_statx: return NAS_SC_statx;
     case __NR_open: return NAS_SC_open;
     case __NR_openat: return NAS_SC_openat;
     case __NR_pipe: return NAS_SC_pipe;
@@ -290,6 +291,7 @@ static inline enum nas_syscall_op nas_linux_decode_syscall(uint64_t number) {
     case 62U: return NAS_SC_lseek;
     case 80U: return NAS_SC_fstat;
     case 79U: return NAS_SC_newfstatat;
+    case 291U: return NAS_SC_statx; /* Linux asm-generic statx: RV64 and AArch64 */
     case 61U: return NAS_SC_getdents64;
     case 78U: return NAS_SC_readlinkat;
     case 36U: return NAS_SC_symlinkat;

@@ -37,42 +37,54 @@ static void end_mounted_lookup(struct nas_fs_path_request *request,
 /* Linux-visible bootstrap metadata is a read-only namespace projection.
  * It must not acquire an OpenFile, allocate a PTY or depend on spare FDs.
  * Both stat(path) and fstat(open(path)) use the SAME device identity. */
+static void fill_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
+                                struct nas_linux_stat *st) {
+    *st=(struct nas_linux_stat){0};
+    st->dev=info->dev;st->ino=info->ino;st->rdev=info->rdev;
+    st->mode=(uint32_t)info->mode;st->nlink=1;st->blksize=PAGE;
+    st->size=(int64_t)info->size;
+    st->blocks=(int64_t)((info->size+511U)/512U);
+}
 static uint64_t write_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
                                      uint64_t address) {
-    struct nas_linux_stat st={0};
-    st.dev=info->dev;st.ino=info->ino;st.rdev=info->rdev;
-    st.mode=(uint32_t)info->mode;st.nlink=1;st.blksize=PAGE;
-    st.size=(int64_t)info->size;
-    st.blocks=(int64_t)((info->size+511U)/512U);
+    struct nas_linux_stat st;
+    fill_bootstrap_stat(info,&st);
     return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st)) ?
            0:(uint64_t)-EFAULT;
 }
 
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
-static uint64_t write_mounted_stat(const struct nas_fs_node *node,
-                                   uint64_t destination) {
-    if(!node || !node->filesystem || !node->ino)return (uint64_t)-EINVAL;
+static int fill_mounted_stat(const struct nas_fs_node *node,
+                             struct nas_linux_stat *st) {
+    if(!node || !node->filesystem || !node->ino)return -EINVAL;
     struct nas_fs_node fresh;
     int rc=nas_vfs_getattr(node,&fresh);
-    if(rc)return (uint64_t)(int64_t)rc;
-    struct nas_linux_stat st={0};
-    st.dev=nas_vfs_node_device(&fresh);
-    if(!st.dev)return (uint64_t)-ENODEV;
-    st.ino=fresh.ino;st.mode=fresh.mode;
-    st.rdev=fresh.rdev;
-    st.nlink=fresh.nlink; /* An unlinked but open inode has zero links. */
-    st.uid=fresh.uid;st.gid=fresh.gid;
+    if(rc)return rc;
+    *st=(struct nas_linux_stat){0};
+    st->dev=nas_vfs_node_device(&fresh);
+    if(!st->dev)return -ENODEV;
+    st->ino=fresh.ino;st->mode=fresh.mode;
+    st->rdev=fresh.rdev;
+    st->nlink=fresh.nlink; /* An unlinked but open inode has zero links. */
+    st->uid=fresh.uid;st->gid=fresh.gid;
     uint64_t live_size=fresh.size;
-    st.size=(int64_t)live_size;
-    st.blocks=(int64_t)((live_size+511)/512);
-    st.blksize=PAGE;
-    st.atime_sec=(int64_t)fresh.atime_sec;
-    st.mtime_sec=(int64_t)fresh.mtime_sec;
-    st.ctime_sec=(int64_t)fresh.ctime_sec;
-    st.atime_nsec=fresh.atime_nsec;
-    st.mtime_nsec=fresh.mtime_nsec;
-    st.ctime_nsec=fresh.ctime_nsec;
+    st->size=(int64_t)live_size;
+    st->blocks=(int64_t)((live_size+511)/512);
+    st->blksize=PAGE;
+    st->atime_sec=(int64_t)fresh.atime_sec;
+    st->mtime_sec=(int64_t)fresh.mtime_sec;
+    st->ctime_sec=(int64_t)fresh.ctime_sec;
+    st->atime_nsec=fresh.atime_nsec;
+    st->mtime_nsec=fresh.mtime_nsec;
+    st->ctime_nsec=fresh.ctime_nsec;
+    return 0;
+}
+static uint64_t write_mounted_stat(const struct nas_fs_node *node,
+                                   uint64_t destination) {
+    struct nas_linux_stat st;
+    int rc=fill_mounted_stat(node,&st);
+    if(rc)return (uint64_t)(int64_t)rc;
     return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
         ? 0:(uint64_t)-EFAULT;
 }
@@ -605,6 +617,122 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                        write_bootstrap_stat(&bootstrap,statbuf);
 }
 
+/* Linux statx(2) first 0xa0 bytes plus reserved tail. A real metadata
+ * conversion, not an ENOSYS or zeroed success stub: returned inode/type,
+ * links, size, timestamps and mount-device match fstat/newfstatat exactly.
+ * Birth time is not advertised because VFS providers do not expose it. */
+static uint32_t linux_dev_major(uint64_t dev) {
+    return (uint32_t)(((dev>>8)&0xfffU)|((dev>>32)&~0xfffULL));
+}
+static uint32_t linux_dev_minor(uint64_t dev) {
+    return (uint32_t)((dev&0xffU)|((dev>>12)&~0xffULL));
+}
+static uint64_t write_linux_statx(const struct nas_linux_stat *st,
+                                  uint64_t destination) {
+    struct nas_linux_statx sx={0};
+    sx.mask=0x7ffU; /* STATX_BASIC_STATS, BTime deliberately unavailable. */
+    sx.blksize=(uint32_t)st->blksize;
+    sx.nlink=(uint32_t)st->nlink;
+    sx.uid=st->uid;sx.gid=st->gid;
+    sx.mode=(uint16_t)st->mode;
+    sx.ino=st->ino;sx.size=(uint64_t)st->size;
+    sx.blocks=(uint64_t)st->blocks;
+    sx.atime.sec=st->atime_sec;sx.atime.nsec=(uint32_t)st->atime_nsec;
+    sx.mtime.sec=st->mtime_sec;sx.mtime.nsec=(uint32_t)st->mtime_nsec;
+    sx.ctime.sec=st->ctime_sec;sx.ctime.nsec=(uint32_t)st->ctime_nsec;
+    sx.dev_major=linux_dev_major(st->dev);
+    sx.dev_minor=linux_dev_minor(st->dev);
+    sx.rdev_major=linux_dev_major(st->rdev);
+    sx.rdev_minor=linux_dev_minor(st->rdev);
+    return nas_user_write_bytes(destination,(const uint8_t *)&sx,sizeof(sx))
+        ? 0:(uint64_t)-EFAULT;
+}
+static uint64_t write_mounted_statx(const struct nas_fs_node *node,
+                                    uint64_t destination) {
+    struct nas_linux_stat st;
+    int rc=fill_mounted_stat(node,&st);
+    return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,destination);
+}
+static uint64_t write_bootstrap_statx(const struct nas_fs_bootstrap_info *info,
+                                      uint64_t destination) {
+    struct nas_linux_stat st;
+    fill_bootstrap_stat(info,&st);
+    return write_linux_statx(&st,destination);
+}
+/* statx extends fstatat with a uniform 256-byte ABI and a separate mask.
+ * The root/dirfd lookup and symlink policy are the existing VFS path API.
+ * AT_STATX_SYNC_FORCE/DONT_SYNC are coherent no-ops: NaSeed has no delayed
+ * metadata cache. Conflicting sync flags are invalid per Linux ABI. */
+static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
+                                uint64_t flags, uint64_t mask,
+                                uint64_t statbuf) {
+    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
+    const uint64_t AT_NO_AUTOMOUNT=0x800ULL;
+    const uint64_t AT_EMPTY_PATH=0x1000ULL;
+    const uint64_t AT_STATX_SYNC_TYPE=0x6000ULL;
+    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_NO_AUTOMOUNT|
+                 AT_EMPTY_PATH|AT_STATX_SYNC_TYPE))return (uint64_t)-EINVAL;
+    if((flags&AT_STATX_SYNC_TYPE)==AT_STATX_SYNC_TYPE ||
+       (mask&0x80000000ULL))return (uint64_t)-EINVAL;
+    uint8_t first;
+    if(!nas_user_read_bytes(pathname,&first,1))return (uint64_t)-EFAULT;
+    if(first==0 && (flags&AT_EMPTY_PATH)) {
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100) {
+            if(TASK.fs->cwd_pinned)
+                return write_mounted_statx(&TASK.fs->cwd_node,statbuf);
+            struct nas_fs_node cwd;
+            char canonical[256];
+            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
+            return rc ? (uint64_t)(int64_t)rc :
+                        write_mounted_statx(&cwd,statbuf);
+        }
+        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
+           TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
+        const struct nas_open_file *opened=
+            &nas_open_files[TASK.fds->entries[fd].slot];
+        if(opened->vnode_pinned)return write_mounted_statx(&opened->vnode,statbuf);
+        if(opened->boot_identity.valid) {
+            const struct nas_fs_bootstrap_info info={
+                .dev=opened->boot_identity.dev,.ino=opened->boot_identity.ino,
+                .rdev=opened->boot_identity.rdev,.mode=opened->boot_identity.mode,
+                .size=opened->boot_identity.size
+            };
+            return write_bootstrap_statx(&info,statbuf);
+        }
+        return (uint64_t)-EOPNOTSUPP;
+    }
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(rc)return (uint64_t)(int64_t)rc;
+    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                              request.root.dentry?&request.root:NULL,
+                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
+                              &path);
+    if(!rc)rc=nas_vfs_path_node(&path,&node);
+    if(!rc) {
+        uint64_t result=write_mounted_statx(&node,statbuf);
+        end_mounted_lookup(&request,&path);
+        return result;
+    }
+    if(rc!=-ENOENT) {
+        end_mounted_lookup(&request,&path);
+        return (uint64_t)(int64_t)rc;
+    }
+    char bootstrap_path[256];
+    bool allowed=nas_fs_bootstrap_candidate(&request,bootstrap_path);
+    bool missing=allowed &&
+        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
+    end_mounted_lookup(&request,&path);
+    if(!missing)return (uint64_t)-ENOENT;
+    struct nas_fs_bootstrap_info info;
+    int described=nas_fs_bootstrap_describe(bootstrap_path,&info);
+    return described ? (uint64_t)(int64_t)described :
+                       write_bootstrap_statx(&info,statbuf);
+}
+
 /* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].
  * The offset cookie indexes '.', '..', then direct children of a directory.
  */
@@ -707,6 +835,7 @@ struct nas_fs_result nas_fs_metadata_syscall(enum nas_syscall_op op,
     case NAS_SC_fstat: METADATA_RESULT(sys_fstat_boot(args[1], args[2]));
     case NAS_SC_fstatfs: METADATA_RESULT(sys_fstatfs_boot(args[1],args[2]));
     case NAS_SC_newfstatat: METADATA_RESULT(sys_fstatat_boot(args[1], args[2], args[3], args[4]));
+    case NAS_SC_statx: METADATA_RESULT(sys_statx_boot(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_stat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0));
     case NAS_SC_statfs: METADATA_RESULT(sys_statfs_boot(args[1],args[2]));
     case NAS_SC_lstat: METADATA_RESULT(sys_fstatat_boot((uint64_t)-100, args[1], args[2], 0x100ULL));

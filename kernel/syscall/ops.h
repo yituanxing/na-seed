@@ -135,6 +135,7 @@ enum nas_syscall_op {
     NAS_SC_mprotect,
     NAS_SC_munmap,
     NAS_SC_newfstatat,
+    NAS_SC_statx,
     NAS_SC_open,
     NAS_SC_openat,
     NAS_SC_pipe,

@@ -25,6 +25,9 @@ on:
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'kernel/boot_image.c'
+      - 'kernel/arch/linux_stat_abi.h'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/syscall/ops.h'
       - 'kernel/init/main.c'
       - 'kernel/fs/**'
       - 'kernel/task/**'
@@ -71,6 +74,10 @@ jobs:
           python3 -B tests/m250-debian-interactive-host.py
           python3 -B tests/m249-debian-ext4-host.py
           python3 -B tests/m248-debian-multiarch-host.py
+          mkdir -p build/m251-host
+          gcc -std=c11 -Wall -Wextra -Werror tests/m251-statx-abi-host.c \
+            -o build/m251-host/statx-abi
+          build/m251-host/statx-abi
           sh scripts/check-m191-pid1-quiesce.sh
       - name: Install Debian signature and native QEMU/cross GCC dependencies
         timeout-minutes: 16

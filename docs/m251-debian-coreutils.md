@@ -50,6 +50,14 @@ host runs real `e2fsck` and reopens the disk using `debugfs`, checks the
 original executable bytes and signed manifests, and reads back the new
 persisted file content. It fails closed on any discrepancy.
 
+The first RV64 native run of original Debian `ls` revealed a genuine Linux
+`statx(291)` ABI gap (`Function not implemented`), rather than a packaging
+or UART problem. The M251 repair connects `statx` to existing VFS inode
+metadata and shares the 256-byte Linux wire ABI across RV64, ARM64 and
+x86-64 (`332`). The new C host test compares NaSeed's layout against the
+Linux UAPI. Final acceptance still requires native RV64 QEMU to execute
+the original `ls`, not merely compile a syscall handler.
+
 ## Reproduce
 
 In a suitable Linux host with native QEMU, the proper cross-GCC and Debian
