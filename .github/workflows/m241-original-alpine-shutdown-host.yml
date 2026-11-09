@@ -18,6 +18,7 @@ on:
       - 'scripts/check-m241-original-alpine-shutdown.sh'
       - 'scripts/check-m191-pid1-quiesce.sh'
       - 'scripts/check-m191-root-provider.sh'
+      - 'scripts/build-lwext4-guest.sh'
       - 'scripts/test-m191-root-provider.c'
       - 'scripts/check-m105-signal-group.sh'
       - 'scripts/test-m241-reboot-dispatch.c'

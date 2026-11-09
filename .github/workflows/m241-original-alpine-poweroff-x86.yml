@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/m241-original-alpine-poweroff-x86.yml'
       - 'scripts/probe-m241-alpine-poweroff.sh'
+      - 'scripts/build-lwext4-guest.sh'
       - 'scripts/m241-alpine-poweroff-uart.py'
       - 'scripts/m241-verify-poweroff-disk.py'
       - 'kernel/init/main.c'
