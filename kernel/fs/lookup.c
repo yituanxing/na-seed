@@ -1,4 +1,5 @@
 #include "lookup.h"
+#include "dac.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -113,6 +114,19 @@ static int walk_path_at(const struct nas_vfs_path *start,
         size_t tail=pos;
         while(pending[tail]=='/')++tail;
         bool final=!pending[tail];
+        /* Every path component, including . and .., requires search on its
+         * current directory BEFORE revealing presence/absence of children. */
+        if(!current.dentry && nas_dac_nonroot()) {
+            rc=-EACCES;goto done; /* rootless bootstrap is kernel-only */
+        }
+        if(current.dentry) {
+            struct nas_fs_node directory={0};
+            rc=nas_vfs_path_node(&current,&directory);
+            if(rc)goto done;
+            if(!directory.is_dir) {rc=-ENOTDIR;goto done;}
+            rc=nas_dac_mode(&directory,NAS_DAC_SEARCH);
+            if(rc)goto done;
+        }
         if(!strcmp(name,".") || !strcmp(name,"..")) {
             struct nas_fs_node node;
             if(!current.dentry) {rc=-ENOENT;goto done;}

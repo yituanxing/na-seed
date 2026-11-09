@@ -5,6 +5,9 @@
 #include "../fs/lookup.h"
 #include "../fs/path_request.h"
 #include "../fs/vfs.h"
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+#include "../fs/dac.h"
+#endif
 #include "../tmpfs.h"
 #include "../task.h"
 #include "../fd.h"
@@ -59,6 +62,17 @@ static struct exec_snapshot {
      * replacement; never retain pointers into a CPIO line buffer. */
     char shebang_path[256], shebang_arg[256];
 } pending_exec;
+
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+/* On M253, each staged executable/loader/script must be executable to
+ * the invoking fsuid/groups.  Until kernel-owned set-ID transitions and
+ * exec-time file capabilities are implemented, never silently ignore
+ * setuid/setgid mode bits.  Reject before image replacement begins. */
+static int exec_check_dac(const struct nas_fs_node *node) {
+    if(node->mode&06000U)return -EPERM;
+    return nas_dac_mode(node,NAS_DAC_SEARCH);
+}
+#endif
 
 /* Exec's pathname is resolved against an independently pinned cwd/dirfd
  * Dentry, never against a transient canonical string or an old directory
@@ -282,6 +296,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     if((app.mode&0170000U)!=0100000U || !(app.mode&0111U)) {
         result=(uint64_t)-EACCES;goto exec_fail;
     }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    err=exec_check_dac(&app);
+    if(err) {result=(uint64_t)(int64_t)err;goto exec_fail;}
+#endif
     struct elf_image main_img=elf_from_fs_node(&app);
 #ifdef NASEED_SYSCALL_TRACE
     static unsigned exec_images_logged;
@@ -316,6 +334,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             exec_drop_image_sources(&bin,NULL);
             result=(uint64_t)-EACCES;goto exec_fail;
         }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        err=exec_check_dac(&bin);
+        if(err) {
+            exec_drop_image_sources(&bin,NULL);
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
+#endif
         /* Interpreter has its OWN inode lease; retire the script source
          * only AFTER acquiring it, never stage borrowed binfmt data. */
         exec_drop_image_sources(&app,NULL);
@@ -368,6 +393,10 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
             !(loader.mode&0111U)) {
             result=(uint64_t)-EACCES;goto exec_fail;
         }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        err=exec_check_dac(&loader);
+        if(err) {result=(uint64_t)(int64_t)err;goto exec_fail;}
+#endif
         interp_img=elf_from_fs_node(&loader);
         interp=&interp_img;
     }

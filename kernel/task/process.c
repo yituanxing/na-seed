@@ -167,6 +167,12 @@ uint64_t nas_process_prlimit(uint64_t pid,uint64_t resource,
      * not in per-program syscall special cases. */
     if (pid && (pid>UINT32_MAX || !nas_task_by_pid(pid)))
         return (uint64_t)-ESRCH;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* Until a complete ptrace-based process-access check is available,
+     * nonroot can only inspect its own resource limits. */
+    if(pid && pid!=nas_current_task->pid &&
+       nas_current_task->credentials.euid!=0)return (uint64_t)-EPERM;
+#endif
     if (resource > 15) return (uint64_t)-EINVAL;
     uint64_t soft=UINT64_MAX, hard=UINT64_MAX;
     switch (resource) {
@@ -587,7 +593,11 @@ uint64_t nas_process_waitid(uint64_t idtype,uint64_t id,uint64_t infop,
         struct nas_linux_child_siginfo info={0};
         info.signo=NAS_SIGCHLD;
         info.pid=(int32_t)child->pid;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        info.uid=(int32_t)child->credentials.ruid;
+#else
         info.uid=0; /* The current kernel credential model is root-only. */
+#endif
         if(zombie) {
             info.code=child->termination_signal ? 2 : 1; /* CLD_KILLED/EXITED */
             info.status=(int32_t)(child->termination_signal ?

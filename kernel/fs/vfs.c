@@ -1,5 +1,6 @@
 #include "vfs.h"
 #include "lookup.h"
+#include "dac.h"
 #include "posix_locks.h"
 #include "inotify.h"
 #include "../errno.h"
@@ -550,6 +551,18 @@ int nas_vfs_create_anonymous(const struct nas_vfs_type *type,uint64_t mode,
         node.mount=&slot->superblock;
         node.mount_id=slot->device_id;
         node.filesystem=type;
+        if(nas_dac_nonroot()) {
+            if(!type->chown)rc=-EOPNOTSUPP;
+            else rc=type->chown(&node,
+                 nas_current_task->credentials.fsuid,
+                 nas_current_task->credentials.fsgid);
+            if(rc) {
+                type->abort_anonymous(&node);
+                return rc;
+            }
+            node.uid=nas_current_task->credentials.fsuid;
+            node.gid=nas_current_task->credentials.fsgid;
+        }
         rc=nas_vfs_node_pin(&node);
         if(rc) {
             type->abort_anonymous(&node);
@@ -690,7 +703,9 @@ static int lookup_step_core(const struct nas_fs_node *parent,
         int status=vfs_node_status(parent);
         if(status)return status;
         if(!parent->is_dir)return -ENOTDIR;
-    }
+        status=nas_dac_mode(parent,NAS_DAC_SEARCH);
+        if(status)return status;
+    } else if(nas_dac_nonroot())return -EACCES;
     /* Cross a mount only at the EXACT component-aligned mountpoint.
      * An open parent need not belong to the target mount. */
     for(unsigned i=0;i<mount_slots;i++) {
@@ -721,6 +736,8 @@ static int lookup_step_core(const struct nas_fs_node *parent,
     if(!parent || !parent->mount || !parent->filesystem)
         return -ENOENT;
     if(!parent->is_dir)return -ENOTDIR;
+    int dac=nas_dac_mode(parent,NAS_DAC_SEARCH);
+    if(dac)return dac;
     if(worker_mount_denied(parent->mount))return -EBUSY;
     *out=(struct nas_fs_node){0};
     int rc=parent->filesystem->lookup_child(parent,name,out);
@@ -1213,6 +1230,8 @@ int nas_vfs_path_lookup_child(const struct nas_vfs_path *parent,
         rc=nas_vfs_path_node(parent,&parent_node);
         if(rc)return rc;
         if(!parent_node.is_dir)return -ENOTDIR;
+        rc=nas_dac_mode(&parent_node,NAS_DAC_SEARCH);
+        if(rc)return rc;
         parent_dentry=parent->dentry;
         /* Path-first namei has no fake absolute input. Mount crossings are
          * selected by the exact parent inode; the rare legacy overlay miss
@@ -1221,6 +1240,7 @@ int nas_vfs_path_lookup_child(const struct nas_vfs_path *parent,
         if(rc==-ENOENT && parent_node.mount->fallback_on_miss)
             rc=lookup_covered_from_path(parent,name,&next);
     } else {
+        if(nas_dac_nonroot())return -EACCES;
         /* The only legal NULL-parent walk is a direct-ELF rootless first
          * component, such as '/mnt' with no CPIO '/' inode. */
         char absolute[256];
@@ -1331,8 +1351,9 @@ static bool ancestor_of_mounted_child(const struct nas_vfs_path *path) {
     }
     return false;
 }
-static int child_parent_node(const struct nas_vfs_path *parent,
-                             const char *name,struct nas_fs_node *node) {
+static int child_parent_node_access(const struct nas_vfs_path *parent,
+                                    const char *name,struct nas_fs_node *node,
+                                    bool mutate) {
     if(!parent || !name || !name[0] || strchr(name,'/') ||
        !strcmp(name,".") || !strcmp(name,".."))return -EINVAL;
     if(strlen(name)>=256)return -ENAMETOOLONG;
@@ -1342,7 +1363,39 @@ static int child_parent_node(const struct nas_vfs_path *parent,
         if(d->detached)return -ENOENT;
     int rc=nas_vfs_path_node(parent,node);
     if(rc)return rc;
-    return node->is_dir ? 0 : -ENOTDIR;
+    if(!node->is_dir)return -ENOTDIR;
+    return nas_dac_mode(node,mutate ? (NAS_DAC_WRITE|NAS_DAC_SEARCH) :
+                                      NAS_DAC_SEARCH);
+}
+static int child_parent_node(const struct nas_vfs_path *parent,
+                             const char *name,struct nas_fs_node *node) {
+    return child_parent_node_access(parent,name,node,true);
+}
+/* Nonroot files must not stay root-owned in ext4/tmpfs. Inode metadata
+ * publication follows successful persistent owner assignment only. */
+static int assign_new_child_owner(const struct nas_fs_node *parent,
+                                  const char *name,bool is_dir) {
+    if(!nas_dac_nonroot())return 0;
+    if(!parent->filesystem->chown || !parent->filesystem->lookup_child)
+        return -EOPNOTSUPP;
+    struct nas_fs_node inode={0},parent_attr={0};
+    int rc=nas_vfs_getattr(parent,&parent_attr);
+    if(rc)return rc;
+    rc=parent->filesystem->lookup_child(parent,name,&inode);
+    if(rc)return rc;
+    inode.mount=parent->mount;
+    inode.mount_id=parent->mount_id;
+    inode.filesystem=parent->filesystem;
+    uint32_t gid=(parent_attr.mode&02000U) ? parent_attr.gid :
+                 nas_current_task->credentials.fsgid;
+    rc=parent->filesystem->chown(&inode,
+        nas_current_task->credentials.fsuid,gid);
+    if(rc)return rc;
+    if(is_dir && (parent_attr.mode&02000U)) {
+        if(!parent->filesystem->chmod)return -EOPNOTSUPP;
+        rc=parent->filesystem->chmod(&inode,inode.mode|02000U);
+    }
+    return rc;
 }
 static int child_exists(const struct nas_vfs_path *parent,
                         const char *name,struct nas_vfs_path *found) {
@@ -1361,6 +1414,11 @@ int nas_vfs_create_child(const struct nas_vfs_path *parent,
     if(!nas_vfs_can_write(&owner))return -EROFS;
     rc=owner.filesystem->create ?
        owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
+    if(!rc) {
+        rc=assign_new_child_owner(&owner,leaf,false);
+        if(rc && (!owner.filesystem->unlink ||
+                  owner.filesystem->unlink(&owner,leaf,0)))rc=-EIO;
+    }
     if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,false);
     return rc;
 }
@@ -1401,7 +1459,22 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
     if(!inode.inode || !inode.ino || inode.is_dir || inode.is_symlink ||
        (inode.mode&0170000ULL)!=0140000ULL)
         rc=-EIO;
-    else {
+    if(!rc && nas_dac_nonroot()) {
+        struct nas_fs_node p={0};
+        rc=nas_vfs_getattr(&owner,&p);
+        if(!rc && !owner.filesystem->chown)rc=-EOPNOTSUPP;
+        if(!rc) {
+            uint32_t gid=(p.mode&02000U) ? p.gid :
+                         nas_current_task->credentials.fsgid;
+            rc=owner.filesystem->chown(&inode,
+                nas_current_task->credentials.fsuid,gid);
+            if(!rc) {
+                inode.uid=nas_current_task->credentials.fsuid;
+                inode.gid=gid;
+            }
+        }
+    }
+    if(!rc) {
         struct nas_vfs_dentry *entry=NULL;
         rc=dentry_acquire_ready(parent->dentry,leaf,&inode,reserved,&entry);
         if(!rc) {
@@ -1431,6 +1504,11 @@ int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
     if(!nas_vfs_can_write(&owner))return -EROFS;
     rc=owner.filesystem->mkdir ?
        owner.filesystem->mkdir(&owner,leaf,mode) : -EOPNOTSUPP;
+    if(!rc) {
+        rc=assign_new_child_owner(&owner,leaf,true);
+        if(rc && (!owner.filesystem->unlink ||
+                  owner.filesystem->unlink(&owner,leaf,0x200ULL)))rc=-EIO;
+    }
     if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,true);
     return rc;
 }
@@ -1450,6 +1528,8 @@ int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
     }
     struct nas_fs_node target;
     rc=nas_vfs_path_node(&victim,&target);
+    if(rc) {(void)nas_vfs_path_put(&victim);return rc;}
+    rc=nas_dac_sticky(&owner,&target);
     if(rc) {(void)nas_vfs_path_put(&victim);return rc;}
     if(!nas_vfs_can_write(&owner))rc=-EROFS;
     else if(!owner.filesystem->unlink_open_safe && target.mount==owner.mount &&
@@ -1492,6 +1572,8 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
     struct nas_fs_node source_node;
     rc=nas_vfs_path_node(&source,&source_node);
     if(rc)goto finish;
+    rc=nas_dac_sticky(&before,&source_node);
+    if(rc)goto finish;
     /* `rename(regular, existing_dir/)` is ENOTDIR, not the provider's
      * EISDIR. The source-kind decision belongs to VFS, while namei owns
      * validation of the final target component and mount crossing. */
@@ -1513,6 +1595,7 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
     if(!rc) {
         struct nas_fs_node victim;
         rc=nas_vfs_path_node(&target,&victim);
+        if(!rc)rc=nas_dac_sticky(&after,&victim);
         if(!rc && ancestor_of_mounted_child(&target))rc=-EBUSY;
         if(!rc && flags==2ULL && victim.is_dir &&
            dentry_contains(target.dentry,old_parent->dentry))rc=-EINVAL;
@@ -1611,7 +1694,7 @@ int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
                        const struct nas_vfs_path *new_parent,
                        const char *new_name) {
     struct nas_fs_node before,after;
-    int rc=child_parent_node(old_parent,old_name,&before);
+    int rc=child_parent_node_access(old_parent,old_name,&before,false);
     if(rc)return rc;
     rc=child_parent_node(new_parent,new_name,&after);
     if(rc)return rc;
@@ -1620,6 +1703,7 @@ int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
     if(rc)return rc;
     struct nas_fs_node node;
     rc=nas_vfs_path_node(&source,&node);
+    if(!rc)rc=nas_dac_owner(&node); /* conservative protected_hardlinks */
     /* Linux rejects hardlinks to directories before the cross-mount
      * restriction; an already-mounted directory remains EPERM. */
     if(!rc && node.is_dir)rc=-EPERM;
@@ -1665,6 +1749,11 @@ int nas_vfs_symlink_child(const char *target,
     if(!nas_vfs_can_write(&owner))return -EROFS;
     rc=owner.filesystem->symlink ?
        owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
+    if(!rc) {
+        rc=assign_new_child_owner(&owner,name,false);
+        if(rc && (!owner.filesystem->unlink ||
+                  owner.filesystem->unlink(&owner,name,0)))rc=-EIO;
+    }
     if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,false);
     return rc;
 }
@@ -1888,6 +1977,12 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
        !nas_vfs_can_write(&node))rc=-EROFS;
     if(!rc && options->truncate && !options->access && !options->path_only)
         rc=-EINVAL;
+    if(!rc && !options->path_only) {
+        unsigned need=options->access==0 ? NAS_DAC_READ :
+                      options->access==1 ? NAS_DAC_WRITE :
+                                           NAS_DAC_READ|NAS_DAC_WRITE;
+        rc=nas_dac_mode(&node,need);
+    }
     if(!rc)rc=nas_vfs_node_pin(&node);
     if(!rc && options->truncate && !options->path_only && !character) {
         rc=nas_vfs_resize(&node,0);
@@ -2133,6 +2228,9 @@ int nas_vfs_symlink(const char *target,const char *path) {
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     int status=vfs_node_status(node);
     if(status)return status;
+    status=nas_dac_owner(node);
+    if(status)return status;
+    if(nas_dac_nonroot() && (mode&06000U))return -EPERM;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->chmod)return -EOPNOTSUPP;
     int rc=node->filesystem->chmod(node,mode);
@@ -2144,6 +2242,7 @@ int nas_vfs_setxattr(const struct nas_fs_node *node,const char *name,
     int rc=vfs_node_status(node);
     if(rc)return rc;
     if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(nas_dac_nonroot())return -EPERM; /* xattr namespace rules pending */
     if(!node->filesystem->setxattr)return -EOPNOTSUPP;
     rc=node->filesystem->setxattr(node,name,value,size,flags);
     if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
@@ -2153,6 +2252,7 @@ int64_t nas_vfs_getxattr(const struct nas_fs_node *node,const char *name,
                          uint8_t *value,uint64_t capacity) {
     int rc=vfs_node_status(node);
     if(rc)return rc;
+    if(nas_dac_nonroot())return -EACCES; /* xattr read policy pending */
     if(!node->filesystem->getxattr)return -EOPNOTSUPP;
     return node->filesystem->getxattr(node,name,value,capacity);
 }
@@ -2160,6 +2260,7 @@ int64_t nas_vfs_listxattr(const struct nas_fs_node *node,
                           uint8_t *names,uint64_t capacity) {
     int rc=vfs_node_status(node);
     if(rc)return rc;
+    if(nas_dac_nonroot())return -EACCES;
     if(!node->filesystem->listxattr)return -EOPNOTSUPP;
     return node->filesystem->listxattr(node,names,capacity);
 }
@@ -2167,6 +2268,7 @@ int nas_vfs_removexattr(const struct nas_fs_node *node,const char *name) {
     int rc=vfs_node_status(node);
     if(rc)return rc;
     if(node->filesystem->read_only || node->mount->read_only)return -EROFS;
+    if(nas_dac_nonroot())return -EPERM;
     if(!node->filesystem->removexattr)return -EOPNOTSUPP;
     rc=node->filesystem->removexattr(node,name);
     if(!rc)inotify_emit_inode_and_parents(node,NAS_IN_ATTRIB);
@@ -2183,6 +2285,7 @@ int nas_vfs_fiemap_next(const struct nas_fs_node *node,uint64_t start,
 int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     int status=vfs_node_status(node);
     if(status)return status;
+    if(nas_dac_nonroot())return -EPERM; /* chgrp rules pending */
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))
         return -EROFS;
     if(!node->filesystem->chown)return -EOPNOTSUPP;
@@ -2193,6 +2296,8 @@ int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
 int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
                     uint64_t mtime,bool set_atime,bool set_mtime) {
     int status=vfs_node_status(node);
+    if(status)return status;
+    status=nas_dac_owner(node);
     if(status)return status;
     if(node->filesystem->read_only || (node->mount && node->mount->read_only))return -EROFS;
     if(!node->filesystem->utimens)return -EOPNOTSUPP;

@@ -490,6 +490,12 @@ static uint64_t ptrace_set_gprs(struct nas_task *task,
 uint64_t nas_ptrace_request(uint64_t request,uint64_t raw_pid,
                              uint64_t addr,uint64_t data) {
     struct nas_task *self=nas_current_task;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* With no dumpability or CAP_SYS_PTRACE model, nonroot tracing may
+     * never inspect a foreign task; fail closed for every ptrace request. */
+    if(!self || !nas_cred_can_ptrace(&self->credentials))
+        return (uint64_t)-EPERM;
+#endif
     /* Unlike a supported operation on a tracee we do not own, these
      * commands are entirely unimplemented. Linux before PTRACE_SEIZE
      * existed returned EIO: crucially NOT EPERM (which strace uses as

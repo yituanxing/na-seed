@@ -306,6 +306,13 @@ static uint64_t signal_send_thread(uint64_t raw_tgid,uint64_t raw_tid,
     if(!target || target->state==NAS_TASK_ZOMBIE ||
        (verify_tgid && target->tgid!=(uint64_t)tgid))
         return (uint64_t)-ESRCH;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* signal 0 also checks permission and must not leak a false success. */
+    if(!nas_cred_can_signal(&nas_current_task->credentials,
+                            &target->credentials,
+                            signo==NAS_SIGCONT && nas_current_task->sid==target->sid))
+        return (uint64_t)-EPERM;
+#endif
     if(!signo)return 0;
     /* BusyBox PID 1 blocks SIGTERM/SIGUSR1/SIGUSR2 and consumes them via
      * sigtimedwait() to run its original shutdown actions. Preserve PID 1's
@@ -408,11 +415,22 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
     struct nas_task *matches[NAS_TASK_LIMIT];
     unsigned count = 0;
     bool protected_init = false, self = false;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    bool permission_denied = false;
+#endif
     bool self_terminate = false;
     const bool per_thread_transition=signal==NAS_SIGSTOP || signal==NAS_SIGCONT;
     for (unsigned i=0;i<NAS_TASK_LIMIT;i++) {
         struct nas_task *target = nas_task_at(i);
         if (!signal_target_matches(target,pid,sender))continue;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        if(!nas_cred_can_signal(&sender->credentials,
+                                &target->credentials,
+                                signal==NAS_SIGCONT && sender->sid==target->sid)) {
+            permission_denied=true;
+            continue;
+        }
+#endif
         if (signal && target->tgid==1) {
             /* Only a live PID 1 recipient that explicitly catches or
              * blocks this signal may receive it. In particular SIGKILL,
@@ -443,7 +461,11 @@ uint64_t nas_signal_kill(uint64_t raw_pid, uint64_t signal, uint64_t *frame) {
         }
         matches[count++]=target;
     }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    if (!count) return (uint64_t)((protected_init || permission_denied) ? -EPERM : -ESRCH);
+#else
     if (!count) return (uint64_t)(protected_init ? -EPERM : -ESRCH);
+#endif
     if (!signal) return 0;
     /* Preflight the entire process-group selection before any delivery:
      * an unknown uncaught default must not partially kill other groups. */

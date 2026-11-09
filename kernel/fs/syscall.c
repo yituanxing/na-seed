@@ -49,6 +49,7 @@
 #include "open_path.h"
 #include "path_request.h"
 #include "lookup.h"
+#include "dac.h"
 #include "vfs.h"
 #include "../time/clock.h"
 /* Linux x86-64 filesystem syscall adapter. Backend state is already
@@ -750,6 +751,9 @@ static uint64_t open_path_owned(const char *path,
             bootstrap_ready=true;
         } else return (uint64_t)(int64_t)rc;
     }
+    /* No inode ownership/search authority exists for the rootless
+     * synthetic bootstrap bridge: never grant it to nonroot callers. */
+    if(bootstrap_ready && nas_dac_nonroot())return (uint64_t)-EACCES;
     if(bootstrap_ready) {
         kind=bootstrap.fd_kind;
         pty_number=bootstrap.pty_number;

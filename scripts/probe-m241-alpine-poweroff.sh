@@ -18,6 +18,11 @@ case "$port" in
 esac
 . scripts/native-qemu-target.sh
 
+if [ "${NAS_M253_MULTIUSER:-0}" = 1 ] && [ "${NAS_M244_SSH_REBOOT:-0}" != 1 ]; then
+    echo '[M253 MULTIUSER FAIL] authenticated M244 SSH/reboot baseline required' >&2
+    exit 2
+fi
+
 for program in sudo docker readelf cpio sha256sum python3 openssl; do
     command -v "$program" >/dev/null || {
         echo "[M241 POWER OFF FAIL] missing $program" >&2
@@ -196,7 +201,14 @@ if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
     done
     # Host watcher and original Alpine UART runner synchronize via two REAL
     # SSH-authenticated ext4 ACKs: no ACK means no reboot or final poweroff.
-    python3 -u scripts/m244-host-ssh-two-epoch.py "$log" 12222 \
+    if [ "${NAS_M253_MULTIUSER:-0}" = 1 ]; then
+        m244_host_driver=scripts/m253-host-ssh-two-epoch.py
+        m244_uart_driver=scripts/m253-alpine-multiuser-uart.py
+    else
+        m244_host_driver=scripts/m244-host-ssh-two-epoch.py
+        m244_uart_driver=scripts/m244-alpine-ssh-uart.py
+    fi
+    python3 -u "$m244_host_driver" "$log" 12222 \
         "$m244_first" "$m244_second" \
         --client-key "$m244_host_dir/id_ed25519" \
         --known-hosts "$m244_host_dir/known_hosts" \
@@ -204,7 +216,7 @@ if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
         --ssh-timeout "${NAS_M244_HOST_SSH_TIMEOUT:-180}" \
         > "$m244_host_log" 2>&1 &
     m244_host_pid=$!
-    python3 scripts/m244-alpine-ssh-uart.py "$runner" "$log" "$runner_log" "$fifo" || {
+    python3 "$m244_uart_driver" "$runner" "$log" "$runner_log" "$fifo" || {
         tail -90 "$m244_host_log" >&2 || :
         exit 1
     }
@@ -241,7 +253,12 @@ if [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     # independent read-only oracle needs root to inspect that source; this
     # is a host permission fix, not a guest privilege escalation or bypass.
     if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
-        sudo python3 scripts/m244-verify-ssh-disk.py "$port" "$root" \
+        if [ "${NAS_M253_MULTIUSER:-0}" = 1 ]; then
+            m244_disk_verifier=scripts/m253-verify-multiuser-disk.py
+        else
+            m244_disk_verifier=scripts/m244-verify-ssh-disk.py
+        fi
+        sudo python3 "$m244_disk_verifier" "$port" "$root" \
             "$disk" "$m244_first" "$m244_second" \
             "$NAS_VIRTIO_NET_PCAP"
     else
@@ -257,7 +274,11 @@ fi
 if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
     cp "$log" "$PWD/$work/m244-ssh.serial.log"
     cp "$runner_log" "$PWD/$work/m244-ssh-runner.log"
-    echo "[M244 ORIGINAL ALPINE SSH PTY SAME QEMU NATIVE PASS] $port original signed APK tree+jq+dropbear, two real host OpenSSH interactive PTYs across SAME-QEMU platform reboot, pinned persistent server identity, original OpenRC service recovery, physical ext4 and natural poweroff; isolated root test, not production DAC"
+    if [ "${NAS_M253_MULTIUSER:-0}" = 1 ]; then
+        echo "[M253 ORIGINAL ALPINE NONROOT DAC SSH NATIVE PASS] $port original user creation, two authenticated nonroot SSH PTYs, denied root access, persistent UID/GID ownership, same-QEMU reboot, physical ext4 and poweroff"
+    else
+        echo "[M244 ORIGINAL ALPINE SSH PTY SAME QEMU NATIVE PASS] $port original signed APK tree+jq+dropbear, two real host OpenSSH interactive PTYs across SAME-QEMU platform reboot, pinned persistent server identity, original OpenRC service recovery, physical ext4 and natural poweroff; isolated root test, not production DAC"
+    fi
 elif [ "${NAS_M243_CLI_PERSISTENCE:-0}" = 1 ]; then
     :
 elif [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then

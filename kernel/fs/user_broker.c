@@ -21,6 +21,7 @@
 #include "mode.h"
 #include "vfs.h"
 #include "lookup.h"
+#include "dac.h"
 #include "path_request.h"
 #include "syscall.h"
 #include "file_ops.h"
@@ -411,6 +412,15 @@ struct nas_fs_user_broker_answer nas_fs_user_broker_enter(
         if(!needed) {
             nas_fs_broker_request_detach(request);
             return not_handled();
+        }
+        /* Async worker runs outside requesting Task. The payload does not
+         * yet carry immutable fsuid/fsgid/groups, so letting it perform
+         * namei/open/stat would silently regain kernel/root identity.
+         * Fail closed for nonroot instead of attributing a worker lookup
+         * to the caller's credentials. FD I/O keeps its open-time rights. */
+        if(nas_dac_nonroot()) {
+            nas_fs_broker_request_detach(request);
+            return handled((uint64_t)-EACCES);
         }
         if(op==UBO_OPEN) {
             p->open=(struct nas_vfs_open_options){

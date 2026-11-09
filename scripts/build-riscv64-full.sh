@@ -44,6 +44,13 @@ if [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; then
 fi
 [ "${NAS_M241_PLATFORM_POWERDOWN:-0}" = 1 ] && flags="$flags -DNAS_M241_PLATFORM_POWERDOWN=1"
 [ "${NAS_M242_PLATFORM_REBOOT:-0}" = 1 ] && flags="$flags -DNAS_M242_PLATFORM_REBOOT=1"
+if [ "${NAS_ENABLE_M253_NONROOT_DAC:-0}" = 1 ]; then
+    [ "${NAS_M253_DAC_ENFORCEMENT_COMPLETE:-0}" = 1 ] || {
+        echo "M253 nonroot requires complete VFS DAC enforcement" >&2
+        exit 2
+    }
+    flags="$flags -DNAS_ENABLE_M253_NONROOT_DAC=1 -DNAS_M253_DAC_ENFORCEMENT_COMPLETE=1"
+fi
 flags="$flags -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include"
 # One authoritative full-kernel core TU list for every native ISA.
 # ISA-specific hardware providers remain below in the arch= selection.

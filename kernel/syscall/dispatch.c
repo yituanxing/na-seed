@@ -52,6 +52,9 @@
  * bounded user group list BEFORE changing Task credentials; EFAULT, EPERM
  * and EINVAL must leave the previous vector untouched. */
 static uint64_t nas_sys_setgroups(uint64_t count,uint64_t addr) {
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    if(TASK.credentials.euid!=0)return (uint64_t)-EPERM;
+#endif
     if(count>NAS_CREDENTIAL_GROUP_LIMIT)return (uint64_t)-EINVAL;
     uint32_t groups[NAS_CREDENTIAL_GROUP_LIMIT];
     if(count && !nas_user_read_bytes(addr,(uint8_t *)groups,
@@ -70,15 +73,14 @@ static uint64_t nas_sys_getgroups(uint64_t count,uint64_t addr) {
         return (uint64_t)-EFAULT;
     return actual;
 }
-/* Linux LP64 passes 32-bit uid_t/gid_t pointers.  The root-only credential
- * model has the same real/effective/saved value (zero), so expose all three
- * honestly and reject invalid user pointers instead of omitting the ABI. */
+/* Linux uid_t/gid_t pointers are 32-bit on every supported LP64 ABI.
+ * Copy all three genuine task IDs, preserving existing root-only behavior
+ * when M253 is disabled. */
 static uint64_t nas_sys_getresid(uint64_t real,uint64_t effective,
-                                 uint64_t saved) {
-    const uint32_t root=0;
-    if(!nas_user_write_bytes(real,(const uint8_t *)&root,sizeof(root)) ||
-       !nas_user_write_bytes(effective,(const uint8_t *)&root,sizeof(root)) ||
-       !nas_user_write_bytes(saved,(const uint8_t *)&root,sizeof(root)))
+                                 uint64_t saved,uint32_t r,uint32_t e,uint32_t s) {
+    if(!nas_user_write_bytes(real,(const uint8_t *)&r,sizeof(r)) ||
+       !nas_user_write_bytes(effective,(const uint8_t *)&e,sizeof(e)) ||
+       !nas_user_write_bytes(saved,(const uint8_t *)&s,sizeof(s)))
         return (uint64_t)-EFAULT;
     return 0;
 }
@@ -115,6 +117,10 @@ static uint64_t nas_sys_capabilities(bool set,uint64_t hdrp,uint64_t datap) {
     }
     struct nas_task *target=pid ? nas_task_by_pid((uint32_t)pid) : &TASK;
     if(!target || target->state==NAS_TASK_ZOMBIE)return (uint64_t)-ESRCH;
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* Cross-process capabilities are sensitive process credentials. */
+    if(target!=&TASK && TASK.credentials.euid!=0)return (uint64_t)-EPERM;
+#endif
     struct nas_cap_user_data observed[2];
     nas_cap_get(&target->credentials,observed);
     return nas_user_write_bytes(datap,(const uint8_t *)observed,
@@ -698,10 +704,31 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_time_gettimeofday(args[1],args[2]);
     if(nr==NAS_SC_nanosleep || nr==NAS_SC_clock_nanosleep)
         return nas_time_sleep_syscall((uint64_t *)(uintptr_t)args,nr,args);
-    if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* root credentials */
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    if (nr == NAS_SC_getuid) return TASK.credentials.ruid;
+    if (nr == NAS_SC_geteuid) return TASK.credentials.euid;
+    if (nr == NAS_SC_getgid) return TASK.credentials.rgid;
+    if (nr == NAS_SC_getegid) return TASK.credentials.egid;
+    if (nr == NAS_SC_getresuid)
+        return nas_sys_getresid(args[1],args[2],args[3],
+                               TASK.credentials.ruid,TASK.credentials.euid,TASK.credentials.suid);
+    if (nr == NAS_SC_getresgid)
+        return nas_sys_getresid(args[1],args[2],args[3],
+                               TASK.credentials.rgid,TASK.credentials.egid,TASK.credentials.sgid);
+    if (nr == NAS_SC_setuid) return nas_cred_setuid(&TASK.credentials,args[1]);
+    if (nr == NAS_SC_setgid) return nas_cred_setgid(&TASK.credentials,args[1]);
+    if (nr == NAS_SC_setreuid) return nas_cred_setreuid(&TASK.credentials,args[1],args[2]);
+    if (nr == NAS_SC_setregid) return nas_cred_setregid(&TASK.credentials,args[1],args[2]);
+    if (nr == NAS_SC_setresuid)
+        return nas_cred_setresuid(&TASK.credentials,args[1],args[2],args[3]);
+    if (nr == NAS_SC_setresgid)
+        return nas_cred_setresgid(&TASK.credentials,args[1],args[2],args[3]);
+    if (nr == NAS_SC_setfsuid) return nas_cred_setfsuid(&TASK.credentials,args[1]);
+    if (nr == NAS_SC_setfsgid) return nas_cred_setfsgid(&TASK.credentials,args[1]);
+#else
+    if (nr == NAS_SC_getuid || nr == NAS_SC_getgid || nr == NAS_SC_geteuid || nr == NAS_SC_getegid) return 0; /* legacy root */
     if (nr == NAS_SC_getresuid || nr == NAS_SC_getresgid)
-        return nas_sys_getresid(args[1],args[2],args[3]);
-    if (nr == NAS_SC_getgroups) return nas_sys_getgroups(args[1],args[2]);
+        return nas_sys_getresid(args[1],args[2],args[3],0,0,0);
     if (nr == NAS_SC_setuid || nr == NAS_SC_setgid)
         return nas_credentials_set_id(args[1]);
     if (nr == NAS_SC_setreuid || nr == NAS_SC_setregid)
@@ -710,6 +737,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return nas_credentials_set_root_ids(args[1],args[2],args[3]);
     if (nr == NAS_SC_setfsuid || nr == NAS_SC_setfsgid)
         return nas_credentials_set_fs_id(args[1]);
+#endif
+    if (nr == NAS_SC_getgroups) return nas_sys_getgroups(args[1],args[2]);
     if (nr == NAS_SC_setgroups)
         return nas_sys_setgroups(args[1],args[2]);
     if (nr == NAS_SC_mincore)

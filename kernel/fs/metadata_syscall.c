@@ -19,6 +19,7 @@
 #include "../drivers/pty.h"
 #include "../time/clock.h"
 #include "lookup.h"
+#include "dac.h"
 #include "vfs.h"
 #include "procfs.h"
 #include "syscall.h"
@@ -278,7 +279,8 @@ static uint64_t sys_resize_path(uint64_t pathname,uint64_t length) {
     int rc=nas_fs_user_lookup_begin((uint64_t)-100,pathname,true,
                                     &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
-    rc=nas_vfs_resize(&node,length);
+    rc=nas_dac_mode(&node,NAS_DAC_WRITE);
+    if(!rc)rc=nas_vfs_resize(&node,length);
     end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
@@ -351,6 +353,26 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
                               request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
                               &located);
     if(!err)err=nas_vfs_path_node(&located,&node);
+    if(!err && nas_current_task) {
+        /* access(2) uses REAL ids; faccessat2(AT_EACCESS) uses EFFECTIVE
+         * ids, unlike open(2) which uses fsuid/fsgid. Preserve root
+         * shortcut and supplementary groups independently. */
+        uint32_t uid=(flags&AT_EACCESS) ? TASK.credentials.euid :
+                                             TASK.credentials.ruid;
+        uint32_t gid=(flags&AT_EACCESS) ? TASK.credentials.egid :
+                                             TASK.credentials.rgid;
+        struct nas_fs_node fresh={0};
+        err=nas_vfs_getattr(&node,&fresh);
+        if(!err)node=fresh;
+        if(!err && uid) {
+            bool group=(gid==node.gid);
+            for(uint32_t i=0;i<TASK.credentials.group_count;i++)
+                if(TASK.credentials.groups[i]==node.gid)group=true;
+            unsigned perm=(uid==node.uid) ? (node.mode>>6)&7U :
+                          group ? (node.mode>>3)&7U : node.mode&7U;
+            if((perm&mode)!=mode)err=-EACCES;
+        }
+    }
     if(!err) {
         bits=node.mode;
         is_dir=node.is_dir;
@@ -376,6 +398,9 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
         if(!genuinely_missing)return (uint64_t)-ENOENT;
         struct nas_fs_bootstrap_info bootstrap;
         if(nas_fs_bootstrap_describe(path,&bootstrap))return (uint64_t)-ENOENT;
+        /* Synthetic bootstrap path has no pinned inode or auditable
+         * owner. Do not give nonroot an unprotected fallback. */
+        if(nas_dac_nonroot())return (uint64_t)-EACCES;
         bits=(uint32_t)bootstrap.mode;
         writable=bootstrap.fd_kind!=FD_BOOTFS;
     }
@@ -609,6 +634,7 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
     end_mounted_lookup(&request,&path_ref);
     if(!genuinely_missing)return (uint64_t)-ENOENT;
+    if(nas_dac_nonroot())return (uint64_t)-EACCES;
     /* stat is a metadata operation. It must not consume a descriptor,
      * initialize a driver, or fail EMFILE simply because FDs are full. */
     struct nas_fs_bootstrap_info bootstrap;
@@ -727,6 +753,7 @@ static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
         nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
     end_mounted_lookup(&request,&path);
     if(!missing)return (uint64_t)-ENOENT;
+    if(nas_dac_nonroot())return (uint64_t)-EACCES;
     struct nas_fs_bootstrap_info info;
     int described=nas_fs_bootstrap_describe(bootstrap_path,&info);
     return described ? (uint64_t)(int64_t)described :

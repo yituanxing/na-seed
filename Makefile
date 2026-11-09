@@ -88,6 +88,12 @@ endif
 ifeq ($(NAS_M242_PLATFORM_REBOOT),1)
 CFLAGS += -DNAS_M242_PLATFORM_REBOOT=1
 endif
+ifeq ($(NAS_ENABLE_M253_NONROOT_DAC),1)
+ifneq ($(NAS_M253_DAC_ENFORCEMENT_COMPLETE),1)
+$(error M253 nonroot credentials require explicit complete VFS DAC enforcement)
+endif
+CFLAGS += -DNAS_ENABLE_M253_NONROOT_DAC=1 -DNAS_M253_DAC_ENFORCEMENT_COMPLETE=1
+endif
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld

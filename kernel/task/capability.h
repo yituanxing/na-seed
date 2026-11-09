@@ -48,9 +48,17 @@ static inline uint64_t nas_cap_validate_target(bool set,int32_t pid,
  * Unsupported network administration stays explicitly rejected. The mask
  * is task-owned and may be dropped irreversibly from P. */
 static inline uint64_t nas_cap_permitted(const struct nas_credentials *cred) {
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* A nonroot task must never inherit implicit root capabilities from
+     * a zero-initialized credential state. */
+    if(cred->euid!=0 && !cred->cap_initialized)return 0;
+#endif
     return cred->cap_initialized ? cred->cap_permitted : NAS_CAP_SUPPORTED;
 }
 static inline uint64_t nas_cap_effective(const struct nas_credentials *cred) {
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    if(cred->euid!=0 && !cred->cap_initialized)return 0;
+#endif
     return cred->cap_initialized ? cred->cap_effective : NAS_CAP_SUPPORTED;
 }
 static inline bool nas_credentials_can_net_raw(const struct nas_credentials *cred) {
@@ -74,6 +82,16 @@ static inline uint64_t nas_cap_set_keepcaps(struct nas_credentials *cred,
     return 0;
 }
 static inline void nas_cap_exec_reset(struct nas_credentials *cred) {
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    /* No executable file capabilities are parsed or authorized. POSIX exec
+     * must NOT carry a nonroot task's retained permitted privileges past
+     * the old image, even if PR_SET_KEEPCAPS was previously enabled. */
+    if(cred->euid!=0) {
+        cred->cap_effective=0;
+        cred->cap_permitted=0;
+        cred->cap_initialized=true;
+    }
+#endif
     cred->cap_keep_on_setuid=false;
 }
 

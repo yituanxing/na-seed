@@ -16,6 +16,7 @@
 #include "mode.h"
 #include "syscall.h"
 #include "lookup.h"
+#include "dac.h"
 #include "vfs.h"
 #include "procfs.h"
 #include "namespace_syscall.h"
@@ -347,6 +348,8 @@ static uint64_t sys_chdir(uint64_t pathname) {
                              path.pathname,true,&next);
     struct nas_fs_node node={0};char live[256];
     if(!rc)rc=nas_vfs_path_node(&next,&node);
+    if(!rc && !node.is_dir)rc=-ENOTDIR;
+    if(!rc)rc=nas_dac_mode(&node,NAS_DAC_SEARCH);
     if(!rc) {
         int text_rc=nas_vfs_path_string(&next,live);
         if(text_rc && text_rc!=-ENOENT && text_rc!=-ENAMETOOLONG)rc=text_rc;
@@ -370,6 +373,8 @@ static uint64_t sys_fchdir(uint64_t fd) {
         &nas_open_files[TASK.fds->entries[fd].slot];
     if(!opened->vnode_pinned || !opened->vnode.is_dir)
         return (uint64_t)-ENOTDIR;
+    int search=nas_dac_mode(&opened->vnode,NAS_DAC_SEARCH);
+    if(search)return (uint64_t)(int64_t)search;
     /* fchdir must acquire the ALREADY OPEN File's Dentry, not rebuild its
      * Path by spelling and traversing a possibly renamed parent. This
      * succeeds without a second provider lookup and preserves identity. */
@@ -479,6 +484,7 @@ static int parse_tmpfs_options(const char *data,uint32_t *mode,
 static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
                           uint64_t type_ptr,uint64_t flags,
                           uint64_t data_ptr) {
+    if(nas_dac_nonroot())return (uint64_t)-EPERM;
     /* MS_RDONLY=1, MS_NOSUID=2, MS_NODEV=4, MS_NOEXEC=8 and
      * MS_STRICTATIME=1<<24. MS_SILENT=1<<15 affects only kernel
      * diagnostic verbosity, not mount state; there is nothing to emit.
@@ -523,6 +529,7 @@ static uint64_t sys_mount(uint64_t source_ptr,uint64_t target_ptr,
     return (uint64_t)(int64_t)rc;
 }
 static uint64_t sys_umount2(uint64_t target_ptr,uint64_t flags) {
+    if(nas_dac_nonroot())return (uint64_t)-EPERM;
     if(flags)return (uint64_t)-EOPNOTSUPP;
     char target[256];
     int rc=mount_target(target_ptr,target);
