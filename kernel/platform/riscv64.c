@@ -27,3 +27,18 @@ void nas_platform_debug_exit(unsigned code) {
 #endif
     nas_arch_halt();
 }
+
+void nas_platform_restart(void) {
+#ifdef NAS_M242_PLATFORM_REBOOT
+    /* SBI SRST: type 1 is a cold reboot of the same machine instance. */
+    register unsigned long a0 __asm__("a0")=1;
+    register unsigned long a1 __asm__("a1")=0;
+    register unsigned long a6 __asm__("a6")=0;
+    register unsigned long a7 __asm__("a7")=0x53525354UL;
+    __asm__ volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
+    nas_print("[RV64 SBI SRST FAIL] cold reboot returned SBI error=");
+    nas_hex(a0);
+    nas_print("\n");
+#endif
+    nas_arch_halt();
+}

@@ -61,7 +61,10 @@ fi
 if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
     set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
 fi
+if [ "${NAS_M242_GUEST_REBOOT:-0}" != 1 ]; then
+    set -- "$@" -no-reboot -no-shutdown
+fi
 exec qemu-system-x86_64 -M q35 -m "${NAS_ACCEPTANCE_QEMU_RAM:-256M}" -cpu qemu64 \
-    -display none -monitor none -serial stdio -no-reboot -no-shutdown \
+    -display none -monitor none -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive "if=pflash,unit=0,format=raw,file=$ovmf,readonly=on" -cdrom "$iso" "$@"

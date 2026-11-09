@@ -23,3 +23,16 @@ void nas_platform_debug_exit(unsigned code) {
 #endif
     nas_arch_halt();
 }
+
+
+void nas_platform_restart(void) {
+#ifdef NAS_M242_PLATFORM_REBOOT
+    /* PSCI SYSTEM_RESET over the tested QEMU virt HVC conduit. */
+    register unsigned long x0 __asm__("x0")=0x84000009UL;
+    __asm__ volatile("hvc #0" : "+r"(x0) : : "memory");
+    nas_print("[ARM64 PSCI FAIL] SYSTEM_RESET returned status=");
+    nas_hex(x0);
+    nas_print("\n");
+#endif
+    nas_arch_halt();
+}

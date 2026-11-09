@@ -106,17 +106,33 @@ fifo="$PWD/$work/m241-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 runner_log="$PWD/$work/m241-poweroff-runner.log"
 log="$PWD/$logs/m193-batch.serial.log"
-python3 scripts/m241-alpine-poweroff-uart.py "$runner" "$log" "$runner_log" "$fifo"
+if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+    # M242 adds a real in-process firmware reset and SECOND Alpine boot;
+    # staging, ELF identity, native QEMU and durable-disk checks stay shared.
+    python3 scripts/m242-alpine-reboot-uart.py "$runner" "$log" "$runner_log" "$fifo"
+else
+    python3 scripts/m241-alpine-poweroff-uart.py "$runner" "$log" "$runner_log" "$fifo"
+fi
 
 # Only reached when original PID1 signal + final poweroff(2), actual deferred
 # upstream ext4 unmount, and native QEMU exit all succeeded. Recheck the same
 # mutable guest disk after QEMU exit; no synthetic fsck or external kill PASS.
 sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$overlay" "$disk"
-python3 scripts/m241-verify-poweroff-disk.py "$disk"
+if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+    python3 scripts/m242-verify-reboot-disk.py "$disk"
+else
+    python3 scripts/m241-verify-poweroff-disk.py "$disk"
+fi
 sudo python3 scripts/m191-alpine-root-disk.py verify "$port" "$root" "$baseline"
 (
     cd "$PWD"
     sha256sum -c "$work/smoke/original-alpine-elfs.sha256"
 )
-cp "$log" "$PWD/$work/m241-poweroff.serial.log"
-echo "[M241 ORIGINAL ALPINE POWER OFF NATIVE PASS] $port original /sbin/init + authenticated /sbin/poweroff -> true PID1 shutdown, ext4 durable clean unmount, natural QEMU exit and physical disk readback"
+if [ "${NAS_M242_REBOOT_ROUNDTRIP:-0}" = 1 ]; then
+    cp "$log" "$PWD/$work/m242-reboot.serial.log"
+    cp "$runner_log" "$PWD/$work/m242-reboot-runner.log"
+    echo "[M242 ORIGINAL ALPINE REBOOT NATIVE PASS] $port SAME QEMU original Alpine reboot -> SECOND OpenRC/login/readback -> poweroff; durable ext4 host fsck verified"
+else
+    cp "$log" "$PWD/$work/m241-poweroff.serial.log"
+    echo "[M241 ORIGINAL ALPINE POWER OFF NATIVE PASS] $port original /sbin/init + authenticated /sbin/poweroff -> true PID1 shutdown, ext4 durable clean unmount, natural QEMU exit and physical disk readback"
+fi

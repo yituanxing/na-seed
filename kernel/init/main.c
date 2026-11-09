@@ -179,8 +179,22 @@ static void nas_init_finish_success(void) {
     /* Native platform powerdown is reserved for the completed original
      * BusyBox poweroff(2) contract; a successful generic PID1 exit is not
      * sufficient authority to request SBI SRST / PSCI SYSTEM_OFF. */
-    if(pid1_power_command!=NAS_LINUX_REBOOT_POWER_OFF)
+    if(pid1_power_command!=NAS_LINUX_REBOOT_POWER_OFF
+#ifdef NAS_M242_PLATFORM_REBOOT
+       && pid1_power_command!=NAS_LINUX_REBOOT_RESTART
+#endif
+       )
         nas_fail("M241 platform powerdown without original Alpine POWER_OFF");
+#endif
+#ifdef NAS_M242_PLATFORM_REBOOT
+    if(pid1_power_command==NAS_LINUX_REBOOT_RESTART) {
+        /* This is the real post-PID1, post-ext4-shutdown firmware reset.
+         * The previous boot must not produce a generic test PASS marker. */
+        nas_print("[ALPINE REBOOT] original BusyBox; durable ext4 unmount\n");
+        nas_print("[M242 RESET] real platform reset\n");
+        nas_platform_restart();
+        nas_fail("M242 platform reset returned unexpectedly");
+    }
 #endif
     /* Printed only AFTER final Files close, the async worker drains, and
      * the actual ext4 filesystem is durably unmounted. A QEMU test exit
@@ -227,9 +241,11 @@ uint64_t nas_init_alpine_power_request(const struct nas_task *caller,
     else return (uint64_t)-EOPNOTSUPP;
     if(!(pid1_shutdown_signals&(UINT64_C(1)<<(required_signal-1))))
         return (uint64_t)-EPERM;
-    /* A reset is not yet implemented across all actual board backends;
-     * never claim a QEMU debug exit is a true physical reboot. */
+#ifndef NAS_M242_PLATFORM_REBOOT
+    /* Outside the dedicated M242 profile there is no firmware reset path;
+     * never claim that test debug-exit is a real physical reboot. */
     if(command==NAS_LINUX_REBOOT_RESTART)return (uint64_t)-EOPNOTSUPP;
+#endif
     if(pid1_power_command && pid1_power_command!=command)
         return (uint64_t)-EBUSY;
     pid1_power_command=command;
