@@ -43,15 +43,18 @@ static void run_services(enum nas_sched_service_phase phase) {
     in_services=false;
 }
 
-/* Exactly one native kernel C-frame slice per user scheduling boundary.
- * Every additional user Task remains eligible on the same boundary.
- * A yielding, always-ready worker cannot monopolize a user process. */
+/* Experimental bounded worker batch: several dependent native continuations
+ * (NIC RX -> lwIP core -> Netconn) may advance in the same kernel turn.
+ * The domain-fairness gate still alternates with ready user Tasks, and the
+ * next user Task is selected after this finite batch. This is a slice-count
+ * bound, NOT a wall-time bound: measure user/PTY tail latency on real QEMU. */
+#define NAS_SCHED_WORKER_BATCH 4U
 void nas_sched_service_kernel(void) {
     run_services(NAS_SCHED_BEFORE_WORKERS);
     (void)nas_kthread_timers_tick(nas_arch_monotonic_ns());
     if(nas_sched_allow_kernel_slice(nas_sched_has_ready_users(),
                                     nas_kthread_runnable()))
-        (void)nas_kthread_run(1);
+        (void)nas_kthread_run(NAS_SCHED_WORKER_BATCH);
     run_services(NAS_SCHED_AFTER_WORKERS);
     /* Driver reclamation must never run inside an IRQ or a lwIP callback.
      * One bounded retry per ordinary scheduling boundary is enough to

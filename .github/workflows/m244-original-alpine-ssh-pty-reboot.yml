@@ -27,7 +27,15 @@ on:
       - 'scripts/test-m244-verify-ssh-disk.py'
       - 'kernel/init/main.c'
       - 'kernel/platform/platform.h'
+      - 'kernel/task/scheduler_service.c'
+      - 'kernel/task/sched_core.c'
+      - 'kernel/task/kthread.c'
+      - 'scripts/check-m97-k-timeouts.sh'
+      - 'scripts/test-sched-worker-burst.c'
       - 'ports/lwip/include/lwipopts.h'
+      - 'ports/lwip/netconn_bridge.c'
+      - 'ports/lwip/socket_port.c'
+      - 'ports/lwip/network_boot.c'
       - 'scripts/test-lwip-netconn-bridge.c'
       - 'scripts/acceptance/qemu-netdev.sh'
 
@@ -104,6 +112,8 @@ jobs:
               -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
           fi
           command -v docker
+      - name: Validate native scheduler worker budget and ISA contracts
+        run: sh scripts/check-m97-k-timeouts.sh
       - name: Restore official proven three-ISA Limine firmware seed
         uses: ./.github/actions/naseed-limine-seed
         with:
