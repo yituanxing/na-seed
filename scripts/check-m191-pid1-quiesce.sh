@@ -8,7 +8,7 @@ TMPDIR="$PWD/build/m191-pid1-quiesce"
 export TMPDIR
 ${CC:-cc} -O2 -std=c11 -Wall -Wextra -Werror \
     -ffunction-sections -fdata-sections -I kernel \
-    scripts/test-m191-pid1-quiesce.c kernel/task/signal.c \
+    scripts/test-m191-pid1-quiesce.c kernel/task/signal.c kernel/mm/anon_regions.c \
     -Wl,--gc-sections -o build/m191-pid1-quiesce/host
 timeout 30s build/m191-pid1-quiesce/host
 ${CC:-cc} -O2 -std=c11 -Wall -Wextra -Werror \

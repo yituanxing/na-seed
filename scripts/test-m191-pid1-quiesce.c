@@ -12,16 +12,22 @@
 #include "../kernel/errno.h"
 
 static struct nas_task tasks[NAS_TASK_LIMIT];
+static struct nas_mm mms[NAS_TASK_LIMIT];
 static struct nas_sighand sighands[NAS_TASK_LIMIT];
 static struct nas_signal_group groups[NAS_TASK_LIMIT];
 static unsigned dev_refs[NAS_TASK_LIMIT];
-static unsigned open_dev_refs, killed_groups, cpu_restores;
+static unsigned open_dev_refs, open_mmap_refs, killed_groups, cpu_restores;
 struct nas_task *nas_current_task;
 void nas_print(const char *message) { fputs(message,stderr); }
 void nas_dec(uint64_t value) {(void)value;}
 void nas_hex(uint64_t value) {(void)value;}
 void nas_x86_debug_recent_syscalls(uint64_t pid) {(void)pid;}
 _Noreturn void nas_arch_halt(void) { abort(); }
+bool nas_heap_free(void *memory) { free(memory); return true; }
+void nas_fs_mmap_put(struct nas_mapped_file *file) {
+    assert(file && open_mmap_refs);
+    --open_mmap_refs;
+}
 
 struct nas_task *nas_task_at(unsigned slot) {
     return slot<NAS_TASK_LIMIT ? &tasks[slot] : NULL;
@@ -62,7 +68,7 @@ static struct nas_task *task(unsigned slot,uint64_t pid,uint64_t tgid,
     t->pid=pid;t->tgid=tgid;t->ppid=1;
     t->pgid=tgid;t->sid=1;
     t->state=state;t->is_thread=thread;
-    t->mm=(struct nas_mm *)(uintptr_t)(0x1000+slot*0x1000);
+    t->mm=&mms[slot];
     t->sighand=&sighands[slot];
     if(!thread) {
         t->group_leader=t;
@@ -83,11 +89,29 @@ static struct nas_task *task(unsigned slot,uint64_t pid,uint64_t tgid,
 }
 static void reset(void) {
     memset(tasks,0,sizeof(tasks));
+    memset(mms,0,sizeof(mms));
     memset(sighands,0,sizeof(sighands));
     memset(groups,0,sizeof(groups));
     memset(dev_refs,0,sizeof(dev_refs));
-    open_dev_refs=killed_groups=cpu_restores=0;
+    open_dev_refs=open_mmap_refs=killed_groups=cpu_restores=0;
     nas_current_task=task(0,1,1,NAS_TASK_RUNNING,false);
+}
+
+/* The real VMA release logic owns a file lease for every lazy private
+ * mmap slot; a zombie still retains its MM root until wait4. */
+static void pin_zombie_mmaps(struct nas_task *owner,unsigned count) {
+    struct nas_anon_regions *vmas=&owner->mm->mmap_vmas;
+    assert(!vmas->slots && count);
+    vmas->slots=calloc(count,sizeof(*vmas->slots));
+    assert(vmas->slots);
+    vmas->capacity=count;
+    for(unsigned i=0;i<count;i++) {
+        vmas->slots[i].start=0x20000000ULL+i*4096U;
+        vmas->slots[i].end=vmas->slots[i].start+4096U;
+        vmas->slots[i].kind=NAS_VMA_FILE_PRIVATE_LAZY;
+        vmas->slots[i].backing=(struct nas_mapped_file *)(uintptr_t)(i+1U);
+        ++open_mmap_refs;
+    }
 }
 
 int main(void) {
@@ -133,5 +157,24 @@ int main(void) {
     assert(nas_signal_shutdown_users()==0);
     assert(!killed_groups && !cpu_restores);
     puts("M191_PID1_EMPTY_QUIESCE_PASS");
+
+    reset();
+    /* Original Debian glibc PID1 leaves loader/libc private file VMAs;
+     * unreaped subprocesses can leave their own VMA pins as well. */
+    pin_zombie_mmaps(nas_current_task,2);
+    struct nas_task *child=task(1,2,2,NAS_TASK_ZOMBIE,false);
+    pin_zombie_mmaps(child,1);
+    /* CLONE_VM zombies may point at the same ledger; release once. */
+    struct nas_task *shared=task(2,3,3,NAS_TASK_ZOMBIE,false);
+    shared->mm=nas_current_task->mm;
+    assert(nas_signal_shutdown_users()==-EPERM);
+    assert(open_mmap_refs==3);
+    nas_current_task->state=NAS_TASK_ZOMBIE;
+    assert(nas_signal_shutdown_users()==0);
+    assert(open_mmap_refs==0);
+    assert(!nas_current_task->mm->mmap_vmas.slots);
+    assert(!child->mm->mmap_vmas.slots);
+    assert(nas_signal_shutdown_users()==0 && open_mmap_refs==0);
+    puts("M249_GLIBC_ZOMBIE_MMAP_UNMOUNT_PASS");
     return 0;
 }

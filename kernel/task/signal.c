@@ -572,8 +572,34 @@ int nas_signal_shutdown_users(void) {
         return -EIO;
     for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         const struct nas_task *task=nas_task_at(slot);
-        if(signal_live_member(task) && task->tgid!=1)
+        if(signal_live_member(task))
             return -EBUSY;
+    }
+    /* This runs on the independent scheduler stack, AFTER PID1's final
+     * thread-group teardown and after every other user Task is quiesced.
+     * A zombie is intentionally wait4-visible and can retain its MM root:
+     * nas_mm_put() cannot reclaim the currently selected CPU page tables.
+     * Its VMAs, however, will never fault again. Drop their inode/device
+     * leases now, so a dynamically linked glibc PID1 (and unreaped zombie
+     * children) cannot keep the real ext4 root busy through file-backed
+     * MAP_PRIVATE mappings. Final nas_mm_put() sees an empty ledger and
+     * cannot release these leases twice. Shared CLONE_VM address spaces
+     * are safe here only because NO user Task is still runnable. */
+    unsigned released_vmas=0;
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        struct nas_task *task=nas_task_at(slot);
+        if(!task || task->state!=NAS_TASK_ZOMBIE || !task->mm)continue;
+        struct nas_anon_regions *vmas=&task->mm->mmap_vmas;
+        for(unsigned i=0;i<vmas->capacity;i++)
+            if(vmas->slots[i].end &&
+               (vmas->slots[i].backing || vmas->slots[i].device))
+                released_vmas++;
+        nas_anon_reset(vmas);
+    }
+    if(released_vmas) {
+        nas_print("[M191 ZOMBIE VMA RELEASE] backed_vmas=");
+        nas_dec(released_vmas);
+        nas_print("\n");
     }
     return 0;
 }
