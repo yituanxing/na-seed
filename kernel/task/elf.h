@@ -29,5 +29,6 @@ bool nas_elf_image_open(const struct elf_image *image, uint16_t machine,
                         bool allow_dyn, unsigned max_phnum,
                         struct elf_hdr *header);
 bool nas_elf_load(const struct elf_image *image,
-                  const struct elf_image *interpreter, uint64_t *entry);
+                  const struct elf_image *interpreter,
+                  const char *interpreter_path, uint64_t *entry);
 #endif

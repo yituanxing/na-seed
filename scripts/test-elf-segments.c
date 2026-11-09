@@ -31,6 +31,63 @@ static bool paged_read(const void *context, uint64_t offset,
     memcpy(dst, image + offset, (size_t)len);
     return true;
 }
+static void interpreter_contract(void) {
+    union { uint64_t align; uint8_t b[4096]; } bytes={0};
+    struct elf_hdr *h=(struct elf_hdr *)(void *)bytes.b;
+    struct elf_phdr *p=(struct elf_phdr *)(void *)(bytes.b+sizeof(*h));
+    static const char glibc[]="/lib64/ld-linux-x86-64.so.2";
+    memcpy(h->ident,"\177ELF",4);
+    h->ident[4]=2;h->ident[5]=1;h->ident[6]=1;
+    h->type=2;h->machine=62;h->version=1;h->entry=0x10000;
+    h->phoff=sizeof(*h);h->phnum=2;h->phentsize=sizeof(*p);
+    p[0].type=1;p[0].flags=5;p[0].vaddr=0x10000;
+    p[0].filesz=0x100;p[0].memsz=0x100;
+    p[1].type=3;p[1].offset=0x300;p[1].filesz=sizeof(glibc);
+    memcpy(bytes.b+p[1].offset,glibc,sizeof(glibc));
+    struct elf_image contiguous={.data=bytes.b,.size=sizeof(bytes.b)};
+    struct elf_image sparse={.size=sizeof(bytes.b),
+                             .read_at=paged_read,.context=bytes.b};
+    char path[256]={0};
+    bool has=false;
+    assert(nas_elf_interpreter_path(&contiguous,62,path,sizeof(path),&has));
+    assert(has && strcmp(path,glibc)==0);
+    memset(path,0,sizeof(path));
+    assert(nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    assert(has && strcmp(path,glibc)==0);
+    struct nas_elf_segment_policy opt={
+        .machine=62,.max_phnum=64,.min_va=0x10000,.max_va=0x14000,
+        .max_segment=0x4000,.interpreter=path,
+        .require_page_congruence=true
+    };
+    struct nas_elf_segment_ops ops={.map_page=map,.copy_bytes=copy};
+    struct nas_elf_segment_result out={0};
+    memset(mapped,0,sizeof(mapped));calls=0;
+    assert(nas_elf_segments_load(&sparse,&opt,&ops,&out));
+    assert(out.has_interp && calls==1);
+    memset(mapped,0,sizeof(mapped));calls=0;
+    opt.interpreter="/lib/ld-musl-x86_64.so.1";
+    assert(!nas_elf_segments_load(&sparse,&opt,&ops,&out) && calls==0);
+    opt.interpreter=path;
+    p[2]=p[1];h->phnum=3;
+    assert(!nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    assert(!nas_elf_segments_load(&sparse,&opt,&ops,&out) && calls==0);
+    h->phnum=2;
+    bytes.b[p[1].offset+2]=0;
+    assert(!nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    memcpy(bytes.b+p[1].offset,glibc,sizeof(glibc));
+    bytes.b[p[1].offset]='.';
+    assert(!nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    memcpy(bytes.b+p[1].offset,glibc,sizeof(glibc));
+    p[1].filesz=sizeof(glibc)-1;
+    assert(!nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    p[1].filesz=sizeof(glibc);
+    p[1].offset=4090;
+    assert(!nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    p[1].type=0;
+    assert(nas_elf_interpreter_path(&sparse,62,path,sizeof(path),&has));
+    assert(!has && path[0]==0);
+    assert(!nas_elf_interpreter_path(&sparse,243,path,sizeof(path),&has));
+}
 int main(void) {
     union { uint64_t align; uint8_t b[4096]; } image={0};
     struct elf_hdr *h=(struct elf_hdr *)(void *)image.b;
@@ -75,5 +132,6 @@ int main(void) {
     p->filesz=4;
     p->offset=UINT64_MAX-2;
     assert(!nas_elf_segments_load(&elf,&opt,&ops,&out) && calls==0);
+    interpreter_contract();
     return 0;
 }

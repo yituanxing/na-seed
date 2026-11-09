@@ -15,6 +15,7 @@ struct nas_boot_image {
     uint64_t size;
     const uint8_t *interpreter;
     uint64_t interpreter_size;
+    char interpreter_path[256]; /* exact validated PT_INTERP, if present */
     bool has_interpreter;
     bool bash, busybox, alpine;
     /* When an explicit block-backed root is selected, both executable

@@ -26,6 +26,17 @@ on:
       - 'scripts/test-m244-host-ssh-two-epoch.py'
       - 'scripts/test-m244-verify-ssh-disk.py'
       - 'kernel/init/main.c'
+      # Native root-PID1 and execve must share the actual ELF PT_INTERP
+      # policy. No loader change may bypass the original Alpine native gate.
+      - 'kernel/boot_image.c'
+      - 'kernel/boot_image.h'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf.h'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/elf_segments.h'
+      - 'kernel/task/exec.c'
+      - 'kernel/arch/abi.h'
+      - 'scripts/test-elf-segments.c'
       - 'kernel/platform/platform.h'
       - 'kernel/task/scheduler_service.c'
       - 'kernel/task/sched_core.c'
@@ -64,6 +75,10 @@ jobs:
       - name: Validate inherited original Alpine and new host SSH phase contracts
         run: |
           set -eu
+          cc -std=c11 -Wall -Wextra -Werror \
+            scripts/test-elf-segments.c kernel/task/elf_segments.c \
+            -o /tmp/naseed-m244-elf-interp
+          /tmp/naseed-m244-elf-interp
           sh -n scripts/probe-m244-alpine-ssh-reboot.sh \
             scripts/probe-m241-alpine-poweroff.sh tests/m244-alpine-network-ready.sh
           python3 -m py_compile scripts/m244-alpine-ssh-uart.py \

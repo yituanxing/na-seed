@@ -450,7 +450,9 @@ void nas_init_userspace(void) {
     const struct elf_image *interpreter =
         selected_image.has_interpreter ? &interp_image : 0;
     uint64_t entry = 0;
-    if (!nas_elf_load(&main_image, interpreter, &entry))
+    if (!nas_elf_load(&main_image, interpreter,
+                      selected_image.interpreter_path[0] ?
+                      selected_image.interpreter_path : NULL, &entry))
         nas_fail("invalid or unmappable userspace ELF");
     nas_boot_image_release(&selected_image);
     if (!nas_user_stack_map_initial()) nas_fail("cannot map user stack");

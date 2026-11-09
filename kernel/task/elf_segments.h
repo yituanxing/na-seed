@@ -39,4 +39,8 @@ bool nas_elf_segments_load(const struct elf_image *image,
     const struct nas_elf_segment_policy *policy,
     const struct nas_elf_segment_ops *ops,
     struct nas_elf_segment_result *result);
+/* Read an executable's actual bounded PT_INTERP before resolving its loader.
+ * The source may be contiguous CPIO or a pinned sparse VFS inode. */
+bool nas_elf_interpreter_path(const struct elf_image *image,
+    uint16_t machine, char *path, unsigned capacity, bool *has_interpreter);
 #endif

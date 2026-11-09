@@ -9,6 +9,7 @@
 #include "user_stack.h"
 #include "elf_format.h"
 #include "elf_segments.h"
+#include "../lib/string.h"
 extern void nas_print(const char *);
 extern void nas_hex(uint64_t);
 #define TASK (*nas_current_task)
@@ -44,7 +45,8 @@ static bool elf_kernel_region(void *ignored,uint64_t first,uint64_t length,
                             NAS_VMA_ELF_PRIVATE_SNAPSHOT,file_offset);
 }
 static bool elf_map_image(const struct elf_image *image,uint64_t bias,
-                          bool main_image,uint64_t *entry,bool *has_interp) {
+                          bool main_image,const char *interpreter_path,
+                          uint64_t *entry,bool *has_interp) {
     struct nas_elf_segment_policy options={
         .machine=NAS_ELF_MACHINE,
         .allow_dynamic_elf=true,
@@ -61,7 +63,7 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
          * Accept bounded 128-MiB segments; the reserved virtual-address
          * interval and actual mapped physical pages are still validated. */
         .max_segment=128ULL<<20,
-        .interpreter=main_image?NAS_ELF_INTERP:0
+        .interpreter=main_image?interpreter_path:0
     };
     struct nas_elf_segment_ops op={
         .ctx=0,.map_page=elf_kernel_map,.copy_bytes=elf_kernel_copy,
@@ -118,14 +120,22 @@ static bool elf_map_image(const struct elf_image *image,uint64_t bias,
 }
 
 bool nas_elf_load(const struct elf_image *image,
-                     const struct elf_image *interpreter, uint64_t *entry) {
+                     const struct elf_image *interpreter,
+                     const char *interpreter_path, uint64_t *entry) {
     struct elf_hdr header;
     if (!nas_elf_image_open(image, NAS_ELF_MACHINE, true, 64, &header))
         return false;
     const struct elf_hdr *e = &header;
     uint64_t bias = e->type == 3 ? ALPINE_APP_BASE : 0;
     bool has_interp = false;
-    if (!elf_map_image(image, bias, true, &loaded_main_entry, &has_interp))
+    char requested[256];
+    if (!nas_elf_interpreter_path(image,NAS_ELF_MACHINE,requested,
+                                  sizeof(requested),&has_interp) ||
+        (has_interp && (!interpreter_path ||
+                        strcmp(requested,interpreter_path)!=0)))
+        return false;
+    if (!elf_map_image(image, bias, true, interpreter_path,
+                       &loaded_main_entry, &has_interp))
         return false;
     *entry = loaded_main_entry;
     if (!has_interp) return true;
@@ -133,9 +143,12 @@ bool nas_elf_load(const struct elf_image *image,
         return false;
     loaded_interp_base = ALPINE_LDSO_BASE;
     bool nested_interp = false;
-    if (!elf_map_image(interpreter, loaded_interp_base, false, entry, &nested_interp))
+    if (!elf_map_image(interpreter, loaded_interp_base, false, 0,
+                       entry, &nested_interp) || nested_interp)
         return false;
-    nas_print("[DYN] real musl interpreter loaded, entry=");
+    nas_print(interpreter_path && strcmp(interpreter_path,NAS_ELF_INTERP)==0 ?
+        "[DYN] real musl interpreter loaded, entry=" :
+        "[DYN] real ELF interpreter loaded, entry=");
     nas_hex(*entry); nas_print("\n");
     return true;
 }

@@ -16,6 +16,7 @@
 #include "../drivers/serial.h"
 #include "../panic.h"
 #include "elf.h"
+#include "elf_segments.h"
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
@@ -348,15 +349,26 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("\n");
         result=(uint64_t)-ENOEXEC;goto exec_fail;
     }
-    char loader_path[256];
+    char loader_path[256], requested_loader[256];
     struct elf_image interp_img={0};
     const struct elf_image *interp=0;
-    if(!exec_lookup_kernel_absolute(NAS_ELF_INTERP,&loader,loader_path)) {
-        if(!loader.is_dir) {
-            interp_img=elf_from_fs_node(&loader);
-            interp=&interp_img;
-            interpreter_pinned=true;
-        } else exec_drop_image_sources(&loader,NULL);
+    bool has_loader=false;
+    if (!nas_elf_interpreter_path(&main_img,NAS_ELF_MACHINE,
+                                  requested_loader,sizeof(requested_loader),
+                                  &has_loader)) {
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
+    }
+    if (has_loader) {
+        err=exec_lookup_kernel_absolute(requested_loader,&loader,loader_path);
+        if (err) {
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
+        interpreter_pinned=true;
+        if (loader.is_dir || !(loader.mode&0111U)) {
+            result=(uint64_t)-EACCES;goto exec_fail;
+        }
+        interp_img=elf_from_fs_node(&loader);
+        interp=&interp_img;
     }
     /* Reset the compact pool on EVERY new exec, including retry after
      * failed syscall; do not retain stale pointers from prior attempts. */
@@ -395,7 +407,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     nas_mmu_switch_root(new_root);
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
-    bool good = nas_elf_load(&main_img, interp, &entry);
+    bool good = nas_elf_load(&main_img, interp,
+                             has_loader?requested_loader:NULL,&entry);
 #ifdef NASEED_SYSCALL_TRACE
     if (!good) { nas_print("[EXEC REJECT] failed ELF or interpreter load: "); nas_print(actual); nas_print("\n"); }
 #endif

@@ -3,6 +3,7 @@
 #include "lib/string.h"
 #include "arch/abi.h"
 #include "fs/lookup.h"
+#include "task/elf_segments.h"
 #include <limine.h>
 
 extern const struct limine_file *nas_user_module(void);
@@ -79,13 +80,19 @@ const char *nas_boot_prepare(const char *selected,
             return "CPIO selected path is not an executable regular file";
         out->image = app->data;
         out->size = app->size;
-        const struct bootfs_entry *ldso =
-            bootfs_find(NAS_ELF_INTERP);
-        if (ldso && !bootfs_is_dir(ldso)) {
+        bool wants_loader=false;
+        const struct elf_image main={.data=out->image,.size=out->size};
+        if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+                out->interpreter_path,sizeof(out->interpreter_path),
+                &wants_loader))
+            return "CPIO selected executable has invalid ELF interpreter";
+        const struct bootfs_entry *ldso = wants_loader ?
+            bootfs_find(out->interpreter_path) : NULL;
+        if (ldso && !bootfs_is_dir(ldso) && (ldso->mode&0111U)) {
             out->interpreter = ldso->data;
             out->interpreter_size = ldso->size;
             out->has_interpreter = true;
-        }
+        } else if (wants_loader) return "CPIO ELF interpreter not executable";
         out->busybox = strcmp(basename(path), "busybox") == 0;
         /* ELF64 little-endian e_type is at offset 16; an unmodified
          * Alpine ET_DYN is distinguished from a static Debian ET_EXEC.
@@ -102,12 +109,19 @@ const char *nas_boot_prepare(const char *selected,
     /* Legacy M1-M4: direct real ELF module; optional actual musl module. */
     out->image = (const uint8_t *)module->address;
     out->size = module->size;
+    const struct elf_image main={.data=out->image,.size=out->size};
+    bool wants_loader=false;
+    if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+            out->interpreter_path,sizeof(out->interpreter_path),
+            &wants_loader))
+        return "invalid direct ELF interpreter";
     out->bash = bash_module(module);
     out->busybox = busybox_module(module);
     out->alpine = out->busybox && nas_module(1) != 0;
     if (archive && !out->alpine)
         return "archive file requires real Alpine BusyBox runtime";
-    if (out->alpine) {
+    if (out->alpine && wants_loader &&
+        strcmp(out->interpreter_path,NAS_ELF_INTERP)==0) {
         const struct limine_file *ldso = nas_module(1);
         out->interpreter = (const uint8_t *)ldso->address;
         out->interpreter_size = ldso->size;
@@ -148,10 +162,27 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
     out->source_pinned=true;
     out->image=out->source.data;
     out->size=out->source.size;
-    if(!nas_fs_lookup_node(NAS_ELF_INTERP,true,&out->loader,canonical) &&
-       !out->loader.is_dir && !nas_vfs_node_pin(&out->loader)) {
-        out->loader_pinned=true;
-        out->has_interpreter=true;
+    struct elf_image main={.data=out->image,.size=out->size};
+    if (!main.data) {
+        main.read_at=root_image_read;
+        main.context=&out->source;
+    }
+    bool wants_loader=false;
+    if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+            out->interpreter_path,sizeof(out->interpreter_path),
+            &wants_loader)) {
+        nas_boot_image_release(out);
+        return "M191 root PID1 has invalid ELF interpreter";
+    }
+    if (wants_loader) {
+        if (nas_fs_lookup_node(out->interpreter_path,true,
+                               &out->loader,canonical) ||
+            out->loader.is_dir || !(out->loader.mode&0111U) ||
+            nas_vfs_node_pin(&out->loader)) {
+            nas_boot_image_release(out);
+            return "M191 original PID1 ELF interpreter not executable";
+        }
+        out->loader_pinned=out->has_interpreter=true;
         out->interpreter=out->loader.data;
         out->interpreter_size=out->loader.size;
     }
