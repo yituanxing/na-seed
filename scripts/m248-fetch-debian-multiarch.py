@@ -78,7 +78,8 @@ def original_regular_file(root: Path, relative: Path) -> Path:
     return path
 
 
-def inspect_elf(path: Path, machine: str, *, executable: bool) -> dict[str, object]:
+def inspect_elf(path: Path, machine: str, *, executable: bool,
+                loader_needed: str | None = None) -> dict[str, object]:
     header = m245.run("readelf", "-h", str(path), capture=True)
     if "ELF64" not in header or machine not in header:
         raise ValueError(f"wrong original Debian ELF machine/class: {path}")
@@ -89,7 +90,13 @@ def inspect_elf(path: Path, machine: str, *, executable: bool) -> dict[str, obje
     interpreter = m245.elf_interpreter(path)
     dynamic = m245.run("readelf", "-d", str(path), capture=True)
     needed = re.findall(r"\(NEEDED\).*\[([^\]]+)\]", dynamic)
-    if needed != ["libc.so.6"]:
+    # Official Debian arm64/riscv64 dash also lists the ABI-specific glibc
+    # loader itself as DT_NEEDED. Its presence is allowed only when it
+    # exactly matches this architecture's authenticated libc6 loader.
+    allowed = [["libc.so.6"]]
+    if loader_needed is not None:
+        allowed.append(["libc.so.6", loader_needed])
+    if needed not in allowed:
         raise ValueError(f"unreviewed Debian DT_NEEDED dependencies: {path}: {needed}")
     return {"interpreter": interpreter, "dt_needed": needed}
 
@@ -106,7 +113,8 @@ def validate_sysroot(root: Path, arch: str) -> dict[str, object]:
         root, Path("usr/lib") / triplet / Path(interp).name)
     binary_props = {}
     for name, path in selected.items():
-        props = inspect_elf(path, machine, executable=name in PROGRAMS)
+        props = inspect_elf(path, machine, executable=name in PROGRAMS,
+                            loader_needed=Path(interp).name if arch != "amd64" else None)
         if name in PROGRAMS:
             if props["interpreter"] != interp:
                 raise ValueError(f"wrong {arch} original Debian PT_INTERP for {name}: {props['interpreter']}")

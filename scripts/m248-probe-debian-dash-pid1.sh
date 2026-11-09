@@ -82,7 +82,10 @@ for name in dash true cat wc printf; do
         "[Requesting program interpreter: $interp]"
     needed=$(readelf -d "$binary" | \
         sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
-    if [ "$needed" != libc.so.6 ]; then
+    # Debian's authentic ARM64/RV64 glibc ELF may additionally depend on
+    # its architecture-specific loader. Reject every other dependency.
+    expected_with_loader=$(printf 'libc.so.6\n%s' "$loader")
+    if [ "$needed" != libc.so.6 ] && [ "$needed" != "$expected_with_loader" ]; then
         echo "[M248 FAIL] unreviewed DT_NEEDED for $name: $needed" >&2
         exit 1
     fi

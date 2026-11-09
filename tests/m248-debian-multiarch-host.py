@@ -52,7 +52,9 @@ class SignedDebianMultiarchTests(unittest.TestCase):
             if args[1] == "-h":
                 return f"Class: ELF64\nType: DYN (Position-Independent Executable file)\nMachine: {machine}\n"
             if args[1] == "-d":
-                return f"Dynamic section at offset ...\n 0x1 (NEEDED) Shared library: [{needed}]\n"
+                return "Dynamic section at offset ...\n" + "".join(
+                    f" 0x1 (NEEDED) Shared library: [{item}]\n"
+                    for item in needed.split("|"))
             raise AssertionError(args)
 
         with (patch.object(m248.m245, "run", side_effect=fake_readelf),
@@ -150,6 +152,19 @@ class SignedDebianMultiarchTests(unittest.TestCase):
         self.make_sysroot("amd64")
         with self.assertRaisesRegex(ValueError, "DT_NEEDED"):
             self.verify_with_readelf("amd64", needed="libselinux.so.1")
+
+    def test_actual_foreign_glibc_loader_needed_is_strictly_allowed(self):
+        for arch in ("arm64", "riscv64"):
+            with self.subTest(arch=arch):
+                self.make_sysroot(arch)
+                loader = Path(m248.PORTS[arch][2]).name
+                info = self.verify_with_readelf(
+                    arch, needed=f"libc.so.6|{loader}")
+                self.assertEqual(info["program_dt_needed"]["dash"]["dt_needed"],
+                                 ["libc.so.6", loader])
+                with self.assertRaisesRegex(ValueError, "DT_NEEDED"):
+                    self.verify_with_readelf(
+                        arch, needed=f"libc.so.6|{loader}|libselinux.so.1")
 
     def test_missing_loader_rejected(self):
         self.make_sysroot("arm64")
