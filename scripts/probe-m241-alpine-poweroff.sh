@@ -112,6 +112,10 @@ fi
 if [ "${NAS_M244_SSH_REBOOT:-0}" = 1 ]; then
     # The guest configures its own original Dropbear and generates its own
     # host key; only a disposable host PUBLIC client identity is staged.
+    # The original ifupdown-ng networking unit has a documented pre-up hook
+    # to observe kernel-owned live DHCP eth0, identical to accepted M227.
+    sudo install -m 0755 -o 0 -g 0 tests/m244-alpine-network-ready.sh \
+        "$overlay/root/m244-network-ready.sh"
     sudo test ! -e "$overlay/root/.ssh/authorized_keys" &&
       sudo test ! -e "$overlay/etc/runlevels/default/dropbear" || {
         echo '[M244 STAGE FAIL] original Alpine SSH state was preseeded' >&2

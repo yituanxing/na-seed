@@ -64,6 +64,25 @@ class OriginalAlpineM244HostSSHTests(unittest.TestCase):
         self.assertNotIn("rc-service dropbear start", second)
         self.assertNotIn("rc-update add dropbear", second)
 
+    def test_original_ifupdown_networking_dependency_before_dropbear(self):
+        first = "\n".join(item[0] for item in uart.FIRST_COMMANDS)
+        self.assertIn("/sbin/ifquery -i /etc/network/interfaces --list -a", first)
+        self.assertIn("pre-up /bin/sh /root/m244-network-ready.sh", first)
+        self.assertIn("rc-update add networking boot", first)
+        self.assertIn("rc-service networking start", first)
+        self.assertLess(first.index("rc-service networking start"),
+                        first.index("rc-service dropbear start"))
+
+    def test_networking_auto_recovers_on_second_openrc_boot(self):
+        second = "\n".join(item[0] for item in uart.SECOND_COMMANDS)
+        self.assertIn("rc-service networking status", second)
+        self.assertIn("/proc/net/naseed-resolv.conf", second)
+        self.assertNotIn("rc-service networking start", second)
+
+    def test_missing_first_original_networking_start_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "M244_FIRST_NETWORKING_RC"):
+            uart.verify_two_boots(self.complete.replace("M244_FIRST_NETWORKING_RC=0", ""))
+
     def test_only_one_guest_signed_ed25519_pubkey_and_no_pty_ban(self):
         self.assertIn("ssh-ed25519", "\n".join(item[0] for item in uart.FIRST_COMMANDS))
         self.assertEqual(uart.KEY_POLICY,

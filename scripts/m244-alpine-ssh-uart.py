@@ -40,6 +40,18 @@ KEY_POLICY = "no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
 
 
 FIRST_COMMANDS = m243.FIRST_COMMANDS + (
+    ("test -x /root/m244-network-ready.sh && mkdir -p /etc/network && "
+     "printf '%s\\n' 'auto eth0' 'iface eth0' "
+     "'    pre-up /bin/sh /root/m244-network-ready.sh' > /etc/network/interfaces && "
+     "/sbin/ifquery -i /etc/network/interfaces --list -a | "
+     "/bin/busybox grep -qx eth0; "
+     "printf 'M244_REAL_IFQUERY_RC=%d\\n' \"$?\"\r",
+     "M244_REAL_IFQUERY_RC=0", "original Alpine ifupdown-ng reads real lwIP eth0"),
+    ("rc-update add networking boot && "
+     "rc-service networking start && rc-service networking status >/dev/null && "
+     "test -L /etc/runlevels/boot/networking; "
+     "printf 'M244_FIRST_NETWORKING_RC=%d\\n' \"$?\"\r",
+     "M244_FIRST_NETWORKING_RC=0", "original OpenRC networking dependency started"),
     ("if apk info -e dropbear >/dev/null 2>&1 || "
      "apk info -e dropbear-openrc >/dev/null 2>&1; "
      "then echo M244_DROPBEAR_PREEXISTS; else echo M244_DROPBEAR_ABSENT; fi\r",
@@ -97,6 +109,13 @@ FIRST_COMMANDS = m243.FIRST_COMMANDS + (
 
 
 SECOND_COMMANDS = m243.SECOND_COMMANDS + (
+    ("test -L /etc/runlevels/boot/networking && "
+     "/sbin/ifquery -i /etc/network/interfaces --list -a | "
+     "/bin/busybox grep -qx eth0 && "
+     "rc-service networking status >/dev/null && "
+     "grep -q '^nameserver 10[.]0[.]2[.]3$' /proc/net/naseed-resolv.conf; "
+     "printf 'M244_SECOND_NETWORKING_AUTO_RC=%d\\n' \"$?\"\r",
+     "M244_SECOND_NETWORKING_AUTO_RC=0", "original OpenRC networking auto-restored after reboot"),
     ("apk info -e dropbear >/dev/null && apk info -e dropbear-openrc >/dev/null && "
      "test -x /usr/sbin/dropbear && test -x /usr/bin/dropbearkey; "
      "printf 'M244_SECOND_DROPBEAR_APK_RC=%d\\n' \"$?\"\r",

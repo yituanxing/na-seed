@@ -131,6 +131,11 @@ def verify(port: str, signed_root: Path, disk: Path, first: Path,
                 raise ValueError("[M244 HOST FAIL] original Dropbear native ELF changed: " + executable)
         if not read("/etc/init.d/dropbear").startswith(b"#!"):
             raise ValueError("[M244 HOST FAIL] original signed OpenRC dropbear script absent")
+        if read("/etc/network/interfaces") != (
+            b"auto eth0\niface eth0\n"
+            b"    pre-up /bin/sh /root/m244-network-ready.sh\n"
+        ) or "Type: symlink" not in stat("/etc/runlevels/boot/networking"):
+            raise ValueError("[M244 HOST FAIL] original ifupdown-ng networking configuration not persistent")
         if "Type: symlink" not in stat("/etc/runlevels/default/dropbear"):
             raise ValueError("[M244 HOST FAIL] original OpenRC default dropbear not persisted")
         authorized = read("/root/.ssh/authorized_keys").decode("ascii").strip().splitlines()
