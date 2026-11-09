@@ -23,7 +23,10 @@ SPEC.loader.exec_module(m251)
 m248, m245 = m251.m248, m251.m245
 
 PROGRAM_PACKAGES = {"grep": "grep", "sed": "sed", "find": "findutils"}
-LIBRARY_PACKAGES = dict(m251.LIBRARY_PACKAGES)
+# The real Debian 13 findutils ELF also links libm, shipped by the same
+# signed libc6 package that supplied the M248 glibc loader/libc.  Keep the
+# new SONAME explicitly bounded instead of widening M251's dependency policy.
+LIBRARY_PACKAGES = {**m251.LIBRARY_PACKAGES, "libm.so.6": "libc6"}
 SCHEMA = "m252-signed-debian-trixie-grep-sed-find-v1"
 
 

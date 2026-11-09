@@ -124,7 +124,8 @@ class M252SignedHostTests(unittest.TestCase):
         self.assertEqual(provenance.PROGRAM_PACKAGES,
                          {"grep": "grep", "sed": "sed", "find": "findutils"})
         self.assertEqual(provenance.LIBRARY_PACKAGES,
-                         provenance.m251.LIBRARY_PACKAGES)
+                         {**provenance.m251.LIBRARY_PACKAGES,
+                          "libm.so.6": "libc6"})
         self.assertEqual(set(self.verify()["programs"]),
                          {"usr/bin/grep", "usr/bin/sed", "usr/bin/find"})
 
