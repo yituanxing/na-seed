@@ -173,7 +173,7 @@ int nas_nvme_identify_controller(const struct nas_nvme_io *io,
     if (rc) goto quiesce;
     const uint8_t *id = (const uint8_t *)identify.cpu;
     out->vendor_id = from_le16(id);
-    out->namespace_count = from_le32(id + 516U);
+    out->controller_nn = from_le32(id + 516U);
     out->version = version;
     copy_identify_string(out->serial, sizeof(out->serial), id + 4U, 20U);
     copy_identify_string(out->model, sizeof(out->model), id + 24U, 40U);

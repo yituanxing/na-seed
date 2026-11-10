@@ -127,7 +127,7 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     }
     nas_print("[H3 NVME IDENTIFY VERIFIED] VS=");nas_hex(id.version);
     nas_print(" VID=");nas_hex(id.vendor_id);
-    nas_print(" namespaces=");nas_dec(id.namespace_count);
+    nas_print(" ControllerNN(raw)=");nas_dec(id.controller_nn);
     nas_print(" SN=");nas_print(id.serial);
     nas_print(" MN=");nas_print(id.model);
     nas_print("\n");

@@ -68,6 +68,9 @@ sh scripts/check-h3-nvme-identify-qemu.sh \
 
 The runner adds only `-device nvme,id=naseed_h2_nvme,serial=naseedh2`
 through `NAS_QEMU_H2_NVME=1`. It does **not** attach a `-drive` or `nvme-ns`.
+The Identify Controller `NN` field is printed as `ControllerNN(raw)`;
+it is **not proof of active/attached namespace IDs**. The QEMU fixture
+is namespace-free by construction and H3 performs no active-namespace scan.
 The dedicated GitHub Action uploads the actual serial log and ISO. Never
 flash the H3 ISO onto a physical computer.
 

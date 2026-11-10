@@ -19,7 +19,9 @@ struct nas_nvme_io {
 struct nas_nvme_identity {
     uint32_t version;
     uint16_t vendor_id;
-    uint32_t namespace_count;
+    /* Raw Identify Controller NN field, NOT a count of currently attached
+     * namespaces. Enumerating active NSIDs needs a separate admin command. */
+    uint32_t controller_nn;
     char serial[21];
     char model[41];
 };

@@ -168,12 +168,20 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
     nas_dec(h1.verified);
     nas_print(" mapped RO/UC pages=");
     nas_dec(h1.mapped);
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    nas_print(" (H1 config snapshot; H3 QEMU admin BAR MMIO separate)\n");
+#else
     nas_print(" no BAR MMIO/DMA/IRQ access\n");
+#endif
 #ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
     nas_print("[H2 PCI RESOURCE VERIFIED] NVMe=");nas_dec(h1.h2_nvme);
     nas_print(" AHCI=");nas_dec(h1.h2_ahci);
     nas_print(" xHCI=");nas_dec(h1.h2_xhci);
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    nas_print(" (H2 discovery snapshot; H3 QEMU admin writes separate)\n");
+#else
     nas_print(" PCI register writes=0 driver registrations=0\n");
+#endif
 #endif
     return 0;
 }

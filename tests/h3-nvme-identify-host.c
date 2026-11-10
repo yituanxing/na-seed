@@ -136,7 +136,7 @@ int main(void) {
     CHECK(f.command_valid && f.sq_doorbell == 1U && f.cq_doorbell == 1U);
     CHECK(f.regs[0x1cU / 4U] == 0U);
     CHECK(id.version == 0x00010400U && id.vendor_id == 0x8086U);
-    CHECK(id.namespace_count == 0U);
+    CHECK(id.controller_nn == 0U);
     CHECK(strcmp(id.serial, "H3-FAKE-SERIAL") == 0);
     CHECK(strcmp(id.model, "QEMU FIXTURE NVME") == 0);
     CHECK(allocated == 3U && released == 3U);
