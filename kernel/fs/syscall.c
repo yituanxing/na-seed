@@ -26,7 +26,8 @@
 #include "../drivers/core/chrdev.h"
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
-    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND)
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
 #include "../drivers/input/core.h"
 #include "input_chrdev.h"
 #endif
@@ -1481,7 +1482,8 @@ static const struct nas_file_ops ops_pidfd={
 };
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
-    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND)
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
 static const struct nas_file_ops ops_evdev={
     .read_plan=nas_input_chrdev_read_plan,
     .read_record_bytes=sizeof(struct nas_input_event),
@@ -1501,7 +1503,8 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_FRAMEBUFFER]=&ops_fbdev,
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
-    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND)
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
     [FD_EVDEV]=&ops_evdev,
 #endif
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,

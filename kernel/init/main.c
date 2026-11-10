@@ -31,6 +31,9 @@
 #ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
 #include "../platform/x86_h13_mouse.h"
 #endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+#include "../platform/x86_h14_dual_hid.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -152,6 +155,14 @@ static void deferred_h13_usb_mouse(void *context) {
         nas_fail("H13 xHCI USB mouse poll failed");
 }
 #endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+static void deferred_h14_usb_dual(void *context) {
+    (void)context;
+    /* One shared xHC polls two independent physical USB root-port slots. */
+    if(nas_x86_h14_dual_hid_poll(8U)<0)
+        nas_fail("H14 xHCI dual HID poll failed");
+}
+#endif
 static void init_deferred_services(void) {
     int rc=0;
 #ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
@@ -183,6 +194,11 @@ static void init_deferred_services(void) {
     rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
                                    deferred_h13_usb_mouse,NULL);
     if(rc)nas_fail("deferred USB HID mouse service registration failed");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_h14_usb_dual,NULL);
+    if(rc)nas_fail("deferred dual USB HID service registration failed");
 #endif
 #if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
@@ -243,6 +259,11 @@ static void nas_init_finish_success(void) {
     if(nas_x86_h13_mouse_shutdown())
         nas_fail("H13 USB Mouse/evdev or xHCI DMA/BAR shutdown failed");
     nas_print("[H13 MOUSE USERLAND SHUTDOWN] evdev closed, xHCI halted\n");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    if(nas_x86_h14_dual_hid_shutdown())
+        nas_fail("H14 USB Keyboard+Mouse/evdev or xHCI DMA/BAR shutdown failed");
+    nas_print("[H14 DUAL USERLAND SHUTDOWN] event0/event1 closed, xHCI halted\n");
 #endif
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
     if(nas_x86_h11_usb_shutdown())
@@ -513,7 +534,8 @@ void nas_init_userspace(void) {
         nas_fail("base character-device publication failed");
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
-    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND)
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
     /* Publish the event character-device handler before the shared bus
      * can discover a VirtIO input device (through lwIP or block boot). */
     extern int nas_input_chrdev_init(void);
@@ -529,6 +551,10 @@ void nas_init_userspace(void) {
 #ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
     if(nas_x86_h13_mouse_publish_input())
         nas_fail("H13 USB mouse evdev publication after class init failed");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    if(nas_x86_h14_dual_hid_publish_input())
+        nas_fail("H14 two USB HID evdev publications after class init failed");
 #endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts
      * before user syscalls begin using the same continuation mechanism. */

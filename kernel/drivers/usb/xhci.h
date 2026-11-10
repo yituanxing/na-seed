@@ -56,11 +56,32 @@ enum nas_xhci_ro_debug_stage {
     NAS_XHCI_STAGE_HID_READY,
     NAS_XHCI_STAGE_HID_POLL
 };
+/* H14: two independent root-port HID endpoints share one xHC, command/event
+ * ring and slot-owner lifetime. A second bounded H6 lease pins three pages:
+ * device output context, endpoint rings, and HID report storage. Input
+ * context/control setup are re-used sequentially before either is armed.
+ */
+#define NAS_XHCI_DUAL_EXTRA_PAGES 3U
+struct nas_xhci_dual_hid_channel {
+    uint32_t portsc_offset;
+    uint16_t max_packet0, hid_packet;
+    uint16_t ep_pos[3];
+    uint8_t ep_cycle[3];
+    uint8_t slot_id, port, port_speed;
+    uint8_t interface_number, hid_in_dci, hid_interval;
+    uint8_t hid_protocol, hid_report_bytes;
+    uint64_t hid_trb_bus;
+    bool hid_pending, complete_pending;
+    uint8_t complete_report[8];
+};
 struct nas_xhci_ro_session {
     const struct nas_xhci_io *io;
     const struct nas_dma_provider *dma;
     struct nas_dma_lease lease;
     struct nas_dma_page pages[NAS_XHCI_RO_DMA_PAGES];
+    struct nas_dma_lease dual_extra_lease;
+    struct nas_dma_page dual_extra_pages[NAS_XHCI_DUAL_EXTRA_PAGES];
+    struct nas_xhci_dual_hid_channel dual_channels[2];
     uint32_t op_base, rt_base, db_base;
     uint32_t portsc_offset;
     uint32_t debug_stage;
@@ -90,6 +111,10 @@ struct nas_xhci_ro_session {
     bool io_active;
     bool hid_mode;
     bool hid_pending;
+    bool dual_mode;
+    uint8_t dual_current;
+    uint8_t dual_max_ports;
+    uint8_t dual_missing_protocol; /* 1 keyboard or 2 mouse if dual open fails */
 };
 
 /* Opens one xHCI root-port USB Mass Storage Bulk-Only Transport device
@@ -152,5 +177,21 @@ int nas_xhci_hid_mouse_open(const struct nas_xhci_io *,
                              struct nas_xhci_ro_session *);
 int nas_xhci_hid_mouse_poll(struct nas_xhci_ro_session *, uint8_t report[4]);
 int nas_xhci_hid_mouse_close(struct nas_xhci_ro_session *);
+
+/* H14: QEMU-qualified *one* xHC with two directly attached root-port HID
+ * devices, standard Boot Keyboard (03/01/01, 8-byte) and Boot Mouse
+ * (03/01/02, 4-byte). No hub, hotplug, IRQ, generic HID descriptors, or
+ * second controller reset. The two independent nonblocking polls dispatch
+ * only exact matching slot+DCI+TRB completions through one event ring.
+ * Open failure must be finalized with dual_hid_close() before BAR unmap.
+ */
+int nas_xhci_dual_hid_open(const struct nas_xhci_io *,
+                            const struct nas_dma_provider *,
+                            struct nas_xhci_ro_session *);
+int nas_xhci_dual_hid_poll_keyboard(struct nas_xhci_ro_session *,
+                                    uint8_t report[8]);
+int nas_xhci_dual_hid_poll_mouse(struct nas_xhci_ro_session *,
+                                 uint8_t report[4]);
+int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *);
 
 #endif

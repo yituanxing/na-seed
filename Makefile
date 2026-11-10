@@ -150,6 +150,17 @@ $(error H13 isolated USB Mouse cannot share H9-H12 or VirtIO Input profiles)
 endif
 CFLAGS += -DNAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND=1
 endif
+# H14: ONE Q35 xHCI with simultaneous root-port Boot Keyboard + Mouse.
+# Original signed Alpine evtest from H8 immutable NVMe ext4 only.
+ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H14 dual HID requires H8 original signed Alpine ext4 root, H2 discovery, lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H14 dual HID cannot share H9-H13 or VirtIO Input hardware profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -421,6 +432,18 @@ hw-h13-iso: hw-h13-kernel
 	sh scripts/stage-h13-usb-mouse-alpine.sh
 	sh scripts/build-h13-usb-mouse-iso.sh
 
+# H14: real single-controller/two-root-port xHCI HID and original evtest.
+hw-h14-host-check: hw-h13-host-check
+	sh scripts/check-h14-dual-hid-host.sh
+
+hw-h14-kernel:
+	$(MAKE) OUT=build/h14-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1 kernel
+
+hw-h14-iso: hw-h14-kernel
+	$(MAKE) OUT=build/h14-qemu-only build/h14-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h14-dual-hid-alpine.sh
+	sh scripts/build-h14-dual-hid-iso.sh
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -459,6 +482,11 @@ endif
 ifeq ($(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h13_mouse.c \
  kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot_mouse.c
+endif
+ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h14_dual_hid.c \
+  kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c \
+  kernel/drivers/usb/hid_boot_mouse.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw
@@ -507,7 +535,7 @@ endif
 # Shared Linux input-core/evdev plus provider-based character endpoints.
 # No input stack is linked into the old serial-only hardware profile.
 NAS_INPUT_COMMON_OBJS :=
-ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_INPUT) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND)),)
+ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_INPUT) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)),)
 NAS_INPUT_COMMON_SRCS := kernel/drivers/input/core.c \
  kernel/drivers/input/evdev.c kernel/fs/input_chrdev.c
 NAS_INPUT_COMMON_OBJS += $(patsubst %.c,$(OUT)/nasinput_%.o,$(notdir $(NAS_INPUT_COMMON_SRCS)))

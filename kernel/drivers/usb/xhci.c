@@ -3,15 +3,11 @@
 #include <stddef.h>
 
 /*
- * QEMU-only xHCI USB mass-storage controller transport.
- *
- * The Intel xHCI 1.2 specification defines the MMIO and TRB structures.
- * QEMU hw/usb/hcd-xhci.c is used only as the test-device implementation:
- * no operating-system USB stack, IRQ handler, hub topology or hotplug is
- * emulated by this driver.
- *
- * We intentionally support one root-port BOT interface and one outstanding
- * command/transfer. Every ring/payload DMA address belongs to a H6 lease.
+ * QEMU-only xHCI transport, with separate H11 MSC, H12 keyboard and H13
+ * mouse single-session profiles and H14 two-HID-root-port ownership.
+ * The Intel xHCI 1.2 specification defines MMIO and TRB structures; QEMU
+ * hw/usb/hcd-xhci.c supplies the test fixture. No hub/IRQ/hotplug or
+ * physical-host claim. Every live DMA page belongs to a bounded H6 lease.
  */
 #define XHCI_CAP_CAPLENGTH 0x00U
 #define XHCI_CAP_HCSPARAMS1 0x04U
@@ -136,18 +132,41 @@ static int op_write64(struct nas_xhci_ro_session *s, uint32_t off,
                       uint64_t value) {
     return io_write64(s, s->op_base + off, value);
 }
+/* Dual mode uses exactly three supplementary leased pages, with no alias
+ * between the two independent output contexts/endpoint rings/HID payloads.
+ * The input context is reused only while both slots are being enumerated.
+ */
+static unsigned physical_page(struct nas_xhci_ro_session *s, unsigned logical) {
+    if (s->dual_mode && s->dual_current == 1U &&
+        logical >= XHCI_P_OUTPUT && logical <= XHCI_P_PAYLOAD)
+        return logical + (NAS_XHCI_RO_DMA_PAGES - XHCI_P_OUTPUT);
+    return logical;
+}
+static struct nas_dma_page *leased_page(struct nas_xhci_ro_session *s,
+                                        unsigned index) {
+    if (index < NAS_XHCI_RO_DMA_PAGES) return &s->pages[index];
+    index -= NAS_XHCI_RO_DMA_PAGES;
+    if (index >= NAS_XHCI_DUAL_EXTRA_PAGES || !s->dual_mode)
+        return NULL;
+    return &s->dual_extra_pages[index];
+}
 static int dma_sync(struct nas_xhci_ro_session *s, unsigned page,
                     uint32_t off, uint32_t length,
                     enum nas_dma_direction direction) {
-    if (page >= NAS_XHCI_RO_DMA_PAGES) return -EINVAL;
-    return nas_dma_lease_sync(&s->lease, &s->pages[page], off,
-                              length, direction);
+    unsigned index = physical_page(s,page);
+    struct nas_dma_page *p = leased_page(s,index);
+    if (!p) return -EINVAL;
+    struct nas_dma_lease *l = index < NAS_XHCI_RO_DMA_PAGES ?
+                             &s->lease : &s->dual_extra_lease;
+    return nas_dma_lease_sync(l,p,off,length,direction);
 }
 static uint8_t *page_cpu(struct nas_xhci_ro_session *s, unsigned page) {
-    return (uint8_t *)s->pages[page].cpu;
+    struct nas_dma_page *p = leased_page(s,physical_page(s,page));
+    return p ? (uint8_t *)p->cpu : NULL;
 }
 static uint64_t page_bus(struct nas_xhci_ro_session *s, unsigned page) {
-    return s->pages[page].bus_address;
+    struct nas_dma_page *p = leased_page(s,physical_page(s,page));
+    return p ? p->bus_address : 0;
 }
 static int poll_bits(struct nas_xhci_ro_session *s, uint32_t off,
                      uint32_t mask, uint32_t wanted) {
@@ -295,9 +314,14 @@ static int command(struct nas_xhci_ro_session *s, uint64_t parameter,
     trb.control = XHCI_TRB_TYPE(type) | ((uint32_t)slot << 24);
     int rc = ring_enqueue(s, 0, &trb, &trb_bus);
     if (!rc) rc = ring_doorbell(s, 0, 0);
+    uint8_t completed_slot=0;
     if (!rc) rc = await_event(s, XHCI_EVENT_COMMAND,
-                              trb_bus, 0, slot_out, NULL);
-    return rc;
+                              trb_bus, 0, &completed_slot, NULL);
+    if (rc) return rc;
+    if (type != XHCI_CMD_ENABLE_SLOT && completed_slot != slot)
+        return -EIO; /* command target must match the returned xHC slot */
+    if (slot_out) *slot_out=completed_slot;
+    return 0;
 }
 static void context_dword(struct nas_xhci_ro_session *s,
                           uint32_t context_index, uint32_t dword,
@@ -309,10 +333,12 @@ static int sync_input(struct nas_xhci_ro_session *s) {
     return dma_sync(s, XHCI_P_INPUT, 0, NAS_DMA_PAGE_BYTES,
                     NAS_DMA_TO_DEVICE);
 }
-static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
+static int enable_next_port(struct nas_xhci_ro_session *s, uint32_t max_ports,
+                            uint8_t excluded_port) {
     s->debug_stage = NAS_XHCI_STAGE_PORT;
     if (!max_ports || max_ports > 15U) return -ENODEV;
     for (uint32_t p = 1; p <= max_ports; ++p) {
+        if (p == excluded_port) continue;
         uint32_t off = s->op_base + XHCI_OP_PORTSC +
                        (p - 1U) * XHCI_PORT_STRIDE;
         uint32_t v;
@@ -344,6 +370,68 @@ static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
         return 0;
     }
     return -ENODEV;
+}
+static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
+    return enable_next_port(s,max_ports,0);
+}
+/* Snapshot only the per-slot state. Command/event producer/consumer positions
+ * remain controller-global and cannot be rewound when switching devices.
+ */
+static void dual_capture(struct nas_xhci_ro_session *s) {
+    struct nas_xhci_dual_hid_channel *c =
+        &s->dual_channels[s->dual_current];
+    c->portsc_offset=s->portsc_offset;
+    c->max_packet0=s->max_packet0;
+    c->hid_packet=s->hid_packet;
+    for (unsigned i=0;i<3U;++i) {
+        c->ep_pos[i]=s->ep_pos[i];
+        c->ep_cycle[i]=s->ep_cycle[i];
+    }
+    c->slot_id=s->slot_id;
+    c->port=s->port;
+    c->port_speed=s->port_speed;
+    c->interface_number=s->interface_number;
+    c->hid_in_dci=s->hid_in_dci;
+    c->hid_interval=s->hid_interval;
+    c->hid_protocol=s->hid_protocol;
+    c->hid_report_bytes=s->hid_report_bytes;
+    c->hid_trb_bus=s->hid_trb_bus;
+    c->hid_pending=s->hid_pending;
+}
+static void dual_select(struct nas_xhci_ro_session *s,unsigned which) {
+    if (s->dual_current==which) return;
+    dual_capture(s);
+    s->dual_current=(uint8_t)which;
+    const struct nas_xhci_dual_hid_channel *c=&s->dual_channels[which];
+    s->portsc_offset=c->portsc_offset;
+    s->max_packet0=c->max_packet0;
+    s->hid_packet=c->hid_packet;
+    for (unsigned i=0;i<3U;++i) {
+        s->ep_pos[i]=c->ep_pos[i];
+        s->ep_cycle[i]=c->ep_cycle[i];
+    }
+    s->slot_id=c->slot_id;
+    s->port=c->port;
+    s->port_speed=c->port_speed;
+    s->interface_number=c->interface_number;
+    s->hid_in_dci=c->hid_in_dci;
+    s->hid_interval=c->hid_interval;
+    s->hid_protocol=c->hid_protocol;
+    s->hid_report_bytes=c->hid_report_bytes;
+    s->hid_trb_bus=c->hid_trb_bus;
+    s->hid_pending=c->hid_pending;
+}
+static void dual_clear_active(struct nas_xhci_ro_session *s,
+                              uint8_t protocol,uint8_t bytes) {
+    s->port=0; s->port_speed=0; s->portsc_offset=0;
+    s->slot_id=0; s->max_packet0=0;
+    s->interface_number=0; s->hid_in_dci=0;
+    s->hid_packet=0; s->hid_interval=0; s->hid_trb_bus=0;
+    s->hid_pending=false; s->hid_protocol=protocol;
+    s->hid_report_bytes=bytes;
+    for (unsigned i=0;i<3U;++i) {
+        s->ep_pos[i]=0; s->ep_cycle[i]=1U;
+    }
 }
 static int setup_context(struct nas_xhci_ro_session *s) {
     s->debug_stage = NAS_XHCI_STAGE_ENABLE_SLOT;
@@ -688,9 +776,11 @@ static int run_controller(struct nas_xhci_ro_session *s) {
         s->rt_base < s->op_base || s->db_base < s->op_base ||
         s->rt_base >= s->io->mmio_bytes ||
         s->db_base >= s->io->mmio_bytes ||
-        max_slots < 1U || max_ports < 1U || max_ports > 15U ||
+        max_slots < (s->dual_mode ? 2U : 1U) ||
+        max_ports < (s->dual_mode ? 2U : 1U) || max_ports > 15U ||
         scratchpad != 0U || !(hcc & 1U))
         return -ENODEV;
+    s->dual_max_ports=(uint8_t)max_ports;
     s->debug_stage = NAS_XHCI_STAGE_HALT;
     if (quiesce(s)) return -EIO;
     s->debug_stage = NAS_XHCI_STAGE_RESET;
@@ -721,6 +811,14 @@ static int run_controller(struct nas_xhci_ro_session *s) {
         if (dma_sync(s, i, 0, NAS_DMA_PAGE_BYTES,
                      NAS_DMA_TO_DEVICE)) return -EIO;
     }
+    if (s->dual_mode) {
+        for (unsigned i = 0; i < NAS_XHCI_DUAL_EXTRA_PAGES; ++i) {
+            struct nas_dma_page *p = &s->dual_extra_pages[i];
+            zero_bytes(p->cpu,NAS_DMA_PAGE_BYTES);
+            if (nas_dma_lease_sync(&s->dual_extra_lease,p,0,
+                NAS_DMA_PAGE_BYTES,NAS_DMA_TO_DEVICE)) return -EIO;
+        }
+    }
     /* Runtime interrupter 0: masked, event ring segment count exactly 1. */
     if (io_write(s, s->rt_base + XHCI_RT_IR0 + XHCI_RT_IMAN, 0) ||
         io_write(s, s->rt_base + XHCI_RT_IR0 + XHCI_RT_ERSTSZ, 1) ||
@@ -731,9 +829,13 @@ static int run_controller(struct nas_xhci_ro_session *s) {
         op_write64(s, XHCI_OP_DCBAAP, page_bus(s, XHCI_P_DCBAA)) ||
         op_write64(s, XHCI_OP_CRCR,
                    page_bus(s, XHCI_P_COMMAND) | 1ULL) ||
-        op_write(s, XHCI_OP_CONFIG, 1U))
+        op_write(s, XHCI_OP_CONFIG, s->dual_mode ? 2U : 1U))
         return -EIO;
-    /* Arm H6 lease BEFORE RUN enables controller fetches and bus DMA. */
+    /* Both independent page leases must be armed BEFORE RUN can DMA. If
+     * either fails, dual_close() quiesces any previously armed lease.
+     */
+    if (s->dual_mode &&
+        nas_dma_lease_arm(&s->dual_extra_lease)) return -EIO;
     if (nas_dma_lease_arm(&s->lease)) return -EIO;
     s->may_dma = true;
     s->debug_stage = NAS_XHCI_STAGE_RUN;
@@ -819,7 +921,7 @@ int nas_xhci_hid_mouse_open(const struct nas_xhci_io *io,
 static int hid_poll_mode(struct nas_xhci_ro_session *s, uint8_t *report,
                          uint8_t protocol, uint8_t bytes) {
     if (!s || !report || !s->ready || !s->hid_mode ||
-        !s->hid_pending || s->io_active) return -EINVAL;
+        s->dual_mode || !s->hid_pending || s->io_active) return -EINVAL;
     /* The zero defaults preserve the isolated H12 host fixture's legacy
      * directly constructed session; real open() always sets both fields. */
     const uint8_t actual_protocol = s->hid_protocol ? s->hid_protocol : 1U;
@@ -873,9 +975,215 @@ int nas_xhci_hid_poll(struct nas_xhci_ro_session *s, uint8_t report[8]) {
 int nas_xhci_hid_mouse_poll(struct nas_xhci_ro_session *s, uint8_t report[4]) {
     return hid_poll_mode(s,report,2U,4U);
 }
+/* H14 enumerates two directly connected USB2 HID devices on one physical
+ * QEMU xHC and only resets/starts the controller ONCE. Port order is a strict
+ * fixture contract (Boot Keyboard then Boot Mouse), never a fallback.
+ * All three extra DMA pages belong to a separate lease armed before RUN.
+ */
+int nas_xhci_dual_hid_open(const struct nas_xhci_io *io,
+                            const struct nas_dma_provider *dma,
+                            struct nas_xhci_ro_session *s) {
+    if (!io || !dma || !s || !io->read32 || !io->write32 ||
+        io->mmio_bytes < 0x1000U || s->io || s->lease.held ||
+        s->dual_extra_lease.held || s->dual_mode)
+        return -EINVAL;
+    s->io=io;
+    s->dma=dma;
+    s->hid_mode=true;
+    s->dual_mode=true;
+    s->dual_missing_protocol=1U;
+    dual_clear_active(s,1U,8U);
+    s->debug_stage=NAS_XHCI_STAGE_DMA;
+    int rc=nas_dma_lease_begin(&s->lease,dma);
+    if (rc) return rc;
+    for (unsigned i=0;i<NAS_XHCI_RO_DMA_PAGES;++i) {
+        rc=nas_dma_lease_alloc_page(&s->lease,&s->pages[i]);
+        if (rc) return rc;
+    }
+    rc=nas_dma_lease_begin(&s->dual_extra_lease,dma);
+    if (rc) return rc;
+    for (unsigned i=0;i<NAS_XHCI_DUAL_EXTRA_PAGES;++i) {
+        rc=nas_dma_lease_alloc_page(&s->dual_extra_lease,
+                                     &s->dual_extra_pages[i]);
+        if (rc) return rc;
+    }
+    rc=run_controller(s);
+    if (rc) return rc;
+    rc=setup_context(s);
+    if (rc) return rc;
+    rc=read_hid_boot_descriptors(s);
+    if (rc) return rc;
+    rc=configure_hid_interrupt_endpoint(s);
+    if (rc) return rc;
+    const uint8_t keyboard_port=s->port;
+    const uint8_t keyboard_slot=s->slot_id;
+    dual_capture(s);
+    s->dual_current=1U;
+    dual_clear_active(s,2U,4U);
+    s->dual_missing_protocol=2U;
+    rc=enable_next_port(s,s->dual_max_ports,keyboard_port);
+    if (rc) return rc;
+    rc=setup_context(s);
+    if (rc) return rc;
+    if (s->port == keyboard_port || s->slot_id == keyboard_slot)
+        return -EIO;
+    rc=read_hid_boot_descriptors(s);
+    if (rc) return rc;
+    rc=configure_hid_interrupt_endpoint(s);
+    if (rc) return rc;
+    dual_capture(s);
+    /* Arm asynchronous reports only AFTER both EP0 enumerations finish,
+     * since the shared input context/control payload is overwritten there.
+     */
+    dual_select(s,0U);
+    rc=hid_arm_interrupt_in(s);
+    if (rc) return rc;
+    dual_select(s,1U);
+    rc=hid_arm_interrupt_in(s);
+    if (rc) return rc;
+    dual_select(s,0U);
+    s->ready=true;
+    s->dual_missing_protocol=0U;
+    return 0;
+}
+static int dual_hid_poll(struct nas_xhci_ro_session *s,unsigned wanted,
+                          uint8_t *report,uint8_t bytes) {
+    if (!s || !report || !s->ready || !s->dual_mode ||
+        !s->hid_mode || s->io_active || wanted >= 2U ||
+        bytes != (wanted ? 4U : 8U))
+        return -EINVAL;
+    struct nas_xhci_dual_hid_channel *channels=s->dual_channels;
+    if (channels[wanted].complete_pending) {
+        /* An off-target completion stays unarmed until its own consumer
+         * actually reads it. This bounds its queue to one report and
+         * prevents a valid A,A,B burst from overflowing while B polls.
+         */
+        dual_select(s,wanted);
+        int rc=hid_arm_interrupt_in(s);
+        if (rc) return rc;
+        dual_capture(s);
+        copy_bytes(report,channels[wanted].complete_report,bytes);
+        channels[wanted].complete_pending=false;
+        return 0;
+    }
+    s->debug_stage=NAS_XHCI_STAGE_HID_POLL;
+    /* Shared event-ring completion may belong to either device: never
+     * drop the other slot's report. Each channel has an independent
+     * one-report ready queue, and a separate armed TRB at any one time.
+     */
+    for (unsigned skip=0;skip<8U;++skip) {
+        struct xhci_trb event;
+        int rc=event_next(s,&event);
+        if (rc) return rc;
+        const uint32_t kind=(event.control>>10)&63U;
+        if (kind == XHCI_EVENT_PORT_STATUS) {
+            for (unsigned k=0;k<2U;++k) {
+                uint32_t v;
+                if (io_read(s,channels[k].portsc_offset,&v)) return -EIO;
+                if (!(v & XHCI_PORT_CCS) || !(v & XHCI_PORT_PED))
+                    return -ENODEV;
+            }
+            continue;
+        }
+        if (kind != XHCI_EVENT_TRANSFER) return -EIO;
+        unsigned matched=2U;
+        for (unsigned k=0;k<2U;++k) {
+            if ((event.parameter & ~0xFULL)==channels[k].hid_trb_bus &&
+                ((event.control>>16)&31U)==channels[k].hid_in_dci &&
+                ((event.control>>24)&255U)==channels[k].slot_id &&
+                channels[k].hid_pending) {
+                matched=k;
+                break;
+            }
+        }
+        if (matched==2U || channels[matched].complete_pending)
+            return -EIO; /* foreign or overflowing transfer: fail closed */
+        dual_select(s,matched);
+        uint32_t completion=(event.status>>24)&255U;
+        uint32_t residual=event.status&0xffffffU;
+        s->debug_completion_code=completion;
+        s->debug_event_type=kind;
+        s->hid_pending=false;
+        if (completion==XHCI_CC_SHORT_PACKET || residual)
+            return -EMSGSIZE;
+        if (completion!=XHCI_CC_SUCCESS) return -EIO;
+        uint8_t actual_bytes=s->hid_report_bytes;
+        if (actual_bytes != (matched ? 4U : 8U)) return -EIO;
+        rc=dma_sync(s,XHCI_P_PAYLOAD,0,actual_bytes,NAS_DMA_FROM_DEVICE);
+        if (rc) return -EIO;
+        uint8_t received[8];
+        copy_bytes(received,page_cpu(s,XHCI_P_PAYLOAD),actual_bytes);
+        dual_capture(s);
+        channels[matched].complete_pending=true;
+        copy_bytes(channels[matched].complete_report,received,actual_bytes);
+        if (matched==wanted) {
+            /* The requested consumer takes this report immediately;
+             * only then may its own next TRB be armed.
+             */
+            rc=hid_arm_interrupt_in(s);
+            if (rc) return rc;
+            dual_capture(s);
+            copy_bytes(report,received,actual_bytes);
+            channels[matched].complete_pending=false;
+            return 0;
+        }
+        /* Foreign slot is buffered but deliberately NOT rearmed until its
+         * caller consumes the cached event, avoiding queue overflow. */
+    }
+    return -EAGAIN;
+}
+int nas_xhci_dual_hid_poll_keyboard(struct nas_xhci_ro_session *s,
+                                    uint8_t report[8]) {
+    return dual_hid_poll(s,0U,report,8U);
+}
+int nas_xhci_dual_hid_poll_mouse(struct nas_xhci_ro_session *s,
+                                 uint8_t report[4]) {
+    return dual_hid_poll(s,1U,report,4U);
+}
+int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *s) {
+    if (!s || !s->io || !s->dma || !s->dual_mode || s->io_active)
+        return -EINVAL;
+    /* HCHalted FIRST: on failure not even a supplementary lease is
+     * disarmed, freed or made safe for external BAR unmapping.
+     */
+    if (s->may_dma || s->lease.may_dma ||
+        s->dual_extra_lease.may_dma) {
+        int rc=quiesce(s);
+        if (rc) return rc;
+        if (s->lease.may_dma) {
+            rc=nas_dma_lease_disarm_after_quiesce(&s->lease);
+            if (rc) return rc;
+        }
+        if (s->dual_extra_lease.may_dma) {
+            rc=nas_dma_lease_disarm_after_quiesce(&s->dual_extra_lease);
+            if (rc) return rc;
+        }
+        s->may_dma=false;
+    }
+    for (unsigned i=0;i<NAS_XHCI_DUAL_EXTRA_PAGES;++i) {
+        if (s->dual_extra_pages[i].cpu) {
+            int rc=nas_dma_lease_free_page(&s->dual_extra_lease,
+                                           &s->dual_extra_pages[i]);
+            if (rc) return rc;
+        }
+    }
+    for (unsigned i=0;i<NAS_XHCI_RO_DMA_PAGES;++i) {
+        if (s->pages[i].cpu) {
+            int rc=nas_dma_lease_free_page(&s->lease,&s->pages[i]);
+            if (rc) return rc;
+        }
+    }
+    if (s->dual_extra_lease.provider &&
+        nas_dma_lease_end(&s->dual_extra_lease)) return -EIO;
+    if (s->lease.provider && nas_dma_lease_end(&s->lease)) return -EIO;
+    zero_bytes(s,sizeof(*s));
+    return 0;
+}
+
 static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
                          void *buffer, uint32_t bytes) {
-    if (!s || !s->ready || s->hid_mode || s->io_active || !buffer ||
+    if (!s || !s->ready || s->hid_mode || s->dual_mode ||
+        s->io_active || !buffer ||
         !bytes || bytes > XHCI_PAYLOAD_MAX) return -EINVAL;
     uint8_t dci = in ? s->bulk_in_dci : s->bulk_out_dci;
     unsigned which = in ? 3U : 2U; /* EP ring IDs 2/3 */
@@ -918,7 +1226,8 @@ int nas_xhci_ro_bulk_in(struct nas_xhci_ro_session *s,
     return bulk_transfer(s, true, dst, bytes);
 }
 int nas_xhci_ro_close(struct nas_xhci_ro_session *s) {
-    if (!s || !s->io || !s->dma || s->io_active) return -EINVAL;
+    if (!s || !s->io || !s->dma || s->io_active || s->dual_mode)
+        return -EINVAL;
     if (s->may_dma) {
         /* Failure must NOT release any DMA or allow BAR unmap. */
         int rc = quiesce(s);

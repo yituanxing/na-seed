@@ -327,6 +327,10 @@ void kmain(void) {
         nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable; no evtest userland\n");
         nas_arch_halt();
 #endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+        nas_print("[H14 DUAL FAIL] H1 PCI/xHCI or two physical HID devices unavailable; no evtest userland\n");
+        nas_arch_halt();
+#endif
     }
 #endif
 #else
@@ -345,6 +349,9 @@ void kmain(void) {
 #endif
 #ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
     nas_print("[H13 MOUSE BOOT CONTINUE] original Alpine NVMe root with real PCI xHCI Boot Mouse\n");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    nas_print("[H14 DUAL HID BOOT CONTINUE] original signed Alpine NVMe root with one PCI xHCI and two physical USB HID root-port devices\n");
 #endif
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");
