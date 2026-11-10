@@ -31,8 +31,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Require pinned freestanding build tools
+      - name: Prepare freestanding build tools
         run: |
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq lld
+          fi
           command -v clang
           command -v ld.lld
           command -v cc
@@ -43,6 +47,7 @@ jobs:
       - name: Check x86-64 ELF and H0 symbols
         run: |
           readelf -h build/h0-hardware/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
-          nm build/h0-hardware/kernel.elf | grep -q ' nas_acpi_probe$'
-          nm build/h0-hardware/kernel.elf | grep -q ' nas_pci_scan_root$'
-          nm build/h0-hardware/kernel.elf | grep -q ' nas_x86_h0_pci_inventory$'
+          nm build/h0-hardware/kernel.elf > build/h0-hardware/h0-symbols.txt
+          grep -q ' nas_acpi_probe$' build/h0-hardware/h0-symbols.txt
+          grep -q ' nas_pci_scan_root$' build/h0-hardware/h0-symbols.txt
+          grep -q ' nas_x86_h0_pci_inventory$' build/h0-hardware/h0-symbols.txt
