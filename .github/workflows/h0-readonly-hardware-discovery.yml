@@ -53,3 +53,39 @@ jobs:
           grep -q ' nas_acpi_probe$' build/h0-hardware/h0-symbols.txt
           grep -q ' nas_pci_scan_root$' build/h0-hardware/h0-symbols.txt
           grep -q ' nas_x86_h0_pci_inventory$' build/h0-hardware/h0-symbols.txt
+      - name: Prepare UEFI ISO and virtual firmware test tools
+        run: |
+          missing=''
+          command -v xorriso >/dev/null || missing="$missing xorriso"
+          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: Boot isolated H0 UEFI image in QEMU without any writable disk
+        timeout-minutes: 5
+        run: |
+          make hw-h0-iso
+          set +e
+          timeout 50s sh scripts/run.sh build/h0-hardware/naseed.iso > build/h0-hardware/h0-qemu-uefi-serial.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            tail -80 build/h0-hardware/h0-qemu-uefi-serial.log
+            exit "$rc"
+          fi
+          tail -80 build/h0-hardware/h0-qemu-uefi-serial.log
+          grep -Fq '[H0 ACPI] XSDT=' build/h0-hardware/h0-qemu-uefi-serial.log
+          grep -Fq '[H0 PCI]' build/h0-hardware/h0-qemu-uefi-serial.log
+          grep -Fq '[H0 COMPLETE] firmware inventory only; no physical disk I/O' build/h0-hardware/h0-qemu-uefi-serial.log
+      - name: Preserve firmware discovery serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h0-x86-qemu-uefi-serial
+          path: build/h0-hardware/h0-qemu-uefi-serial.log
+          if-no-files-found: ignore
