@@ -34,11 +34,13 @@ def run(port: str, runner: str, serial: Path, runner_log: Path,
     m252.COMMANDS = COMMANDS
     m252.run(port, runner, serial, runner_log, fifo, deadline_seconds)
     raw = serial.read_bytes().replace(b"\r", b"")
-    # One original Debian dash is PID1; a *second* dynamic dash must start to
-    # execute the script, rather than host-precomputed synthetic output.
-    dash_marker = b"[EXEC] replaced process with lwext4 ELF: /usr/bin/dash"
-    if raw.count(dash_marker) < 2:
-        raise RuntimeError("original dynamic Debian dash child did not execute")
+    # A script exec logs its *requested pathname*, not its resolved ELF
+    # interpreter: kernel/task/exec.c preserves pending_exec.filename for
+    # Linux AT_EXECFN. Require the real binfmt_script + exec markers instead
+    # of incorrectly counting two '/usr/bin/dash' exec-path lines.
+    if b"[EXEC] CPIO #! interpreter: /usr/bin/dash" not in raw or \
+       b"[EXEC] replaced process with lwext4 ELF: /etc/m254-guest-workload.sh" not in raw:
+        raise RuntimeError("original Debian dash shebang interpreter did not execute")
     if raw.count(b"[DYN] real ELF interpreter loaded, entry=") < 15:
         raise RuntimeError("missing dynamic interpreter evidence for shell workload")
     print(f"[M254 ORIGINAL DEBIAN SHELL LIFECYCLE GUEST PASS] {port}: "

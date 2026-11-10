@@ -49,7 +49,8 @@ class DebianShellLifecycleHost(unittest.TestCase):
         self.assertEqual(uart.ADDITIONAL[1][1], b"M254-EXIT-0")
         self.assertEqual(uart.ADDITIONAL[2][1], b"M254-DURABLE")
         source = (ROOT / "scripts/m254-debian-uart.py").read_text()
-        self.assertIn("raw.count(dash_marker) < 2", source)
+        self.assertIn("[EXEC] CPIO #! interpreter: /usr/bin/dash", source)
+        self.assertIn("[EXEC] replaced process with lwext4 ELF: /etc/m254-guest-workload.sh", source)
         self.assertIn("m252.run(port, runner, serial", source)
         self.assertIn("missing dynamic interpreter evidence", source)
 
