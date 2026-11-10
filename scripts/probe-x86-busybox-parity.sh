@@ -79,6 +79,7 @@ run_case() {
         m250-batch) budget=${NAS_M250_QEMU_TIMEOUT:-300} ;;
         m251-batch) budget=${NAS_M251_QEMU_TIMEOUT:-300} ;;
         m252-batch) budget=${NAS_M252_QEMU_TIMEOUT:-300} ;;
+        m254-shell) budget=${NAS_M254_QEMU_TIMEOUT:-420} ;;
         m200-fbdev) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
         m201-fbi) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
         m202-fbi) budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-260} ;;

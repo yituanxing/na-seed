@@ -23,6 +23,18 @@ disk = imported("m254-debian-ext4-disk.py", "m254_original_debian_shell_disk_hos
 
 
 class DebianShellLifecycleHost(unittest.TestCase):
+    def test_native_wrappers_do_not_fall_back_to_short_smoke_timeout(self):
+        # Every architecture selects an explicit timeout for the new case.
+        # The default x86 15-second cap previously killed genuine QEMU after
+        # the eleventh inherited M252 UART command.
+        for wrapper in ("probe-x86-busybox-parity.sh",
+                        "probe-riscv64-busybox-matrix.sh",
+                        "probe-aarch64-busybox-matrix.sh"):
+            with self.subTest(wrapper=wrapper):
+                content = (ROOT / "scripts" / wrapper).read_text()
+                self.assertIn("m254-shell)", content)
+                self.assertIn("NAS_M254_QEMU_TIMEOUT:-420", content)
+
     def test_real_three_isa_m252_baseline_is_preserved_in_one_boot(self):
         self.assertEqual(set(uart.m252.NATIVE_EXIT), {"amd64", "arm64", "riscv64"})
         self.assertEqual(uart.COMMANDS[:11], uart.m252.COMMANDS[:-1])
