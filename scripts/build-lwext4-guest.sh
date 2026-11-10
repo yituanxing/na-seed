@@ -65,10 +65,18 @@ for source in $sources; do
         }
         virt_flags="$virt_flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
     fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H7_QEMU_NVME_USERLAND:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || {
+            echo '[H7 LWEXT4 BUILD FAIL] NVMe userland requires lwext4' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H7_QEMU_NVME_USERLAND=1"
+    fi
     clang --target="$triple" $archflags $virt_flags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
-        -I "$port/include" -I "$vendor/include" -I kernel -I build/deps \
+        -I "$port/include" -I "$vendor/include" -I kernel \
+        -I "$out/deps" -I build/deps \
         -include "$port/platform.h" -c "$source" -o "$obj"
     objects="$objects $obj"
 done

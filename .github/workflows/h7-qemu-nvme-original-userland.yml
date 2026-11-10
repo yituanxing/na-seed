@@ -20,6 +20,7 @@ on:
       - 'scripts/h7-guest-workload.sh'
       - 'scripts/stage-h7-nvme-userland.sh'
       - 'scripts/build-h7-nvme-iso.sh'
+      - 'scripts/build-lwext4-guest.sh'
       - 'limine-h7-nvme.conf'
       - 'scripts/run.sh'
       - 'Makefile'
