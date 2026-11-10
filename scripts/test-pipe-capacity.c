@@ -111,9 +111,60 @@ static void check_socketpair_stream(void) {
     nas_pipe_release_description(30);
     nas_pipe_release_description(31);
 }
+static void check_named_fifo(void) {
+    /* One physical inode, three independently opened File descriptions.
+     * Opening the FIFO writer without readers must not fake a connection. */
+    assert(nas_pipe_named_attach(7,101,41,1,true)==-ENXIO);
+    assert(nas_pipe_named_attach(7,101,41,1,false)==-EOPNOTSUPP);
+    assert(nas_pipe_named_attach(7,101,40,0,false)==-EOPNOTSUPP);
+    assert(nas_pipe_capacity(41)==-EBADF);
+    assert(nas_pipe_named_attach(7,101,40,0,true)==0);
+    nas_open_files[40].refcount=2; /* dup() shared OpenFile reference */
+    assert(nas_pipe_read_amount(40,1,true)==0); /* no writer: EOF */
+    assert(nas_pipe_named_attach(7,101,41,1,true)==0);
+    nas_open_files[41].refcount=1;
+    assert(nas_pipe_read_amount(40,1,true)==-EAGAIN);
+    write_pattern(41,257,71);
+    assert(nas_pipe_poll_readable(40));
+    read_pattern(40,257,71);
+    assert(nas_pipe_named_attach(7,101,42,2,true)==0);
+    nas_open_files[42].refcount=1;
+    write_pattern(42,16,113);
+    read_pattern(40,16,113);
+    /* A separate FIFO inode must never receive old FIFO data. */
+    assert(nas_pipe_named_attach(7,102,43,2,true)==0);
+    nas_open_files[43].refcount=1;
+    write_pattern(43,9,222);
+    assert(nas_pipe_read_amount(40,1,true)==-EAGAIN);
+    read_pattern(43,9,222);
+    /* Closing just one reader/writer does not destroy the named byte ring. */
+    nas_open_files[41].refcount=0;
+    nas_pipe_release_description(41);
+    write_pattern(42,8,23);
+    read_pattern(40,8,23);
+    nas_open_files[40].refcount=1;
+    assert(nas_pipe_poll_writable(42));
+    nas_open_files[40].refcount=0;
+    nas_pipe_release_description(40);
+    /* RDWR keeps its own reader alive, per Linux O_RDWR FIFO semantics. */
+    write_pattern(42,8,41);
+    read_pattern(42,8,41);
+    nas_open_files[42].refcount=0;
+    nas_pipe_release_description(42);
+    nas_open_files[43].refcount=0;
+    nas_pipe_release_description(43);
+    assert(nas_pipe_capacity(42)==-EBADF);
+    /* Same inode can be reopened after final close without stale bytes. */
+    assert(nas_pipe_named_attach(7,101,44,2,true)==0);
+    nas_open_files[44].refcount=1;
+    assert(nas_pipe_read_amount(44,1,true)==-EAGAIN);
+    nas_open_files[44].refcount=0;
+    nas_pipe_release_description(44);
+}
 int main(void) {
     check_pipe_capacity();
     check_socketpair_stream();
-    puts("[PIPE CAPACITY HOST PASS] ring grow/shrink, wrapped FIFO, pipe atomicity, socket stream, OpenFile lifetime");
+    check_named_fifo();
+    puts("[PIPE CAPACITY HOST PASS] ring grow/shrink, wrapped FIFO, pipe atomicity, socket stream, named FIFO, OpenFile lifetime");
     return 0;
 }

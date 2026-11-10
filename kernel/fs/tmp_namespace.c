@@ -217,16 +217,17 @@ struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,
     return inode;
 }
 /* Special filesystem nodes use the same inode/dentry lifetime as regular
- * files. Publish S_IFSOCK identity atomically: neither namei nor stat may
- * observe an intermediate S_IFREG inode at the destination. */
+ * files. Publish S_IFSOCK/S_IFIFO identity atomically: neither namei nor
+ * stat may observe an intermediate S_IFREG inode at the destination. */
 struct nas_tmp_file *tmp_mknod_at(const void *parent,const char *name,
                                  uint32_t mode) {
-    if((mode&0170000U)!=0140000U || !parent_valid(parent) ||
+    uint32_t type=mode&0170000U;
+    if((type!=0140000U && type!=0010000U) || !parent_valid(parent) ||
        !leaf_valid(name) || find_child(parent,name))return 0;
     struct nas_tmp_file *inode=tmp_inode_alloc_quota(false,mode,
                                                      parent_quota(parent));
     if(!inode)return 0;
-    inode->mode=0140000U|(mode&07777U);
+    inode->mode=type|(mode&07777U);
     if(!tmp_insert(parent,name,inode)) {
         tmp_inode_discard(inode);
         return 0;

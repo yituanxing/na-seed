@@ -13,6 +13,8 @@ extern void nas_dec(uint64_t);
 struct nas_pipe {
     bool used;
     bool socket_channel;
+    bool named;
+    uint64_t named_mount_id,named_ino;
     uint8_t bytes[NAS_PIPE_CAP];
     uint8_t *data;
     unsigned capacity;
@@ -68,6 +70,13 @@ int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested) {
     return (int64_t)target;
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
+    if(pipe->named) {
+        unsigned owner=(unsigned)(pipe-pipe_table)+1U;
+        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+            if(pipe_read_owner[slot]==owner &&
+               nas_open_files[slot].refcount)return true;
+        return false;
+    }
     return pipe->read_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->read_slot].refcount != 0;
 }
@@ -77,6 +86,13 @@ int nas_pipe_peer_slot(unsigned writing_slot) {
     return (int)pipe->read_slot;
 }
 static bool pipe_has_writer(const struct nas_pipe *pipe) {
+    if(pipe->named) {
+        unsigned owner=(unsigned)(pipe-pipe_table)+1U;
+        for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++)
+            if(pipe_write_owner[slot]==owner &&
+               nas_open_files[slot].refcount)return true;
+        return false;
+    }
     return pipe->write_slot < NAS_OPEN_FILE_LIMIT &&
            nas_open_files[pipe->write_slot].refcount != 0;
 }
@@ -95,6 +111,8 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
     struct nas_pipe *pipe = &pipe_table[index];
     pipe->used = true;
     pipe->socket_channel = false;
+    pipe->named = false;
+    pipe->named_mount_id=pipe->named_ino=0;
     pipe->data = pipe->bytes;
     pipe->capacity = NAS_PIPE_CAP;
     pipe->head = pipe->count = 0;
@@ -102,6 +120,46 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
     pipe->write_slot = write_slot;
     pipe_read_owner[read_slot] = (uint8_t)(index + 1);
     pipe_write_owner[write_slot] = (uint8_t)(index + 1);
+    return 0;
+}
+int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
+                          unsigned slot,unsigned access,bool nonblock) {
+    if(!mount_id || !ino || slot>=NAS_OPEN_FILE_LIMIT || access>2U ||
+       pipe_read_owner[slot] || pipe_write_owner[slot])return -EINVAL;
+    unsigned index=NAS_PIPE_COUNT;
+    for(unsigned i=0;i<NAS_PIPE_COUNT;i++)
+        if(pipe_table[i].used && pipe_table[i].named &&
+           pipe_table[i].named_mount_id==mount_id &&
+           pipe_table[i].named_ino==ino) {index=i;break;}
+    if(index==NAS_PIPE_COUNT) {
+        for(unsigned i=0;i<NAS_PIPE_COUNT;i++)
+            if(!pipe_table[i].used) {index=i;break;}
+        if(index==NAS_PIPE_COUNT)return -ENFILE;
+    }
+    struct nas_pipe *pipe=&pipe_table[index];
+    const bool has_readers=pipe->used && pipe_has_reader(pipe);
+    const bool has_writers=pipe->used && pipe_has_writer(pipe);
+    if(access==1U && !has_readers)
+        return nonblock ? -ENXIO : -EOPNOTSUPP;
+    /* Blocking open(2) must park for a peer before publishing its FD. The
+     * existing pending-open path has no FIFO-specific waiter yet. Reject
+     * this exact unsupported state rather than falsely succeeding as if
+     * this were O_NONBLOCK. Linux O_RDWR does not wait for a peer. */
+    if(access==0U && !nonblock && !has_writers)
+        return -EOPNOTSUPP;
+    if(!pipe->used) {
+        pipe->used=true;
+        pipe->socket_channel=false;
+        pipe->named=true;
+        pipe->named_mount_id=mount_id;
+        pipe->named_ino=ino;
+        pipe->data=pipe->bytes;
+        pipe->capacity=NAS_PIPE_CAP;
+        pipe->head=pipe->count=0;
+        pipe->read_slot=pipe->write_slot=NAS_OPEN_FILE_LIMIT;
+    }
+    if(access!=1U)pipe_read_owner[slot]=(uint8_t)(index+1U);
+    if(access!=0U)pipe_write_owner[slot]=(uint8_t)(index+1U);
     return 0;
 }
 int nas_pipe_create_socketpair(unsigned first_slot,unsigned second_slot) {
@@ -127,17 +185,27 @@ static void pipe_release_direction(unsigned slot,bool writing) {
     if(!owner || owner>NAS_PIPE_COUNT)return;
     struct nas_pipe *pipe=&pipe_table[owner-1];
     if(writing) {
-        pipe->write_slot=NAS_OPEN_FILE_LIMIT;
+        if(!pipe->named)pipe->write_slot=NAS_OPEN_FILE_LIMIT;
         pipe_write_owner[slot]=0;
     } else {
-        pipe->read_slot=NAS_OPEN_FILE_LIMIT;
+        if(!pipe->named)pipe->read_slot=NAS_OPEN_FILE_LIMIT;
         pipe_read_owner[slot]=0;
     }
-    if (pipe->used && !pipe_has_reader(pipe) && !pipe_has_writer(pipe)) {
+    bool has_attached=false;
+    if(pipe->named) {
+        unsigned tag=owner;
+        for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+            if(pipe_read_owner[i]==tag || pipe_write_owner[i]==tag) {
+                has_attached=true;break;
+            }
+    } else has_attached=pipe_has_reader(pipe)||pipe_has_writer(pipe);
+    if(pipe->used && !has_attached) {
         if (pipe->data != pipe->bytes) (void)nas_heap_free(pipe->data);
         pipe->data=pipe->bytes;
         pipe->capacity=NAS_PIPE_CAP;
         pipe->used=false;
+        pipe->named=false;
+        pipe->named_mount_id=pipe->named_ino=0;
         pipe->count=pipe->head=0;
     }
 }

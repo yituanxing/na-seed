@@ -28,8 +28,17 @@ case "${NAS_ENABLE_M255_DEBIAN_INIT:-0}" in
     1) m255_init=1 ;;
     *) echo '[M255 FAIL] invalid original sysvinit toggle' >&2; exit 2 ;;
 esac
-[ "$m255_init" = 0 ] || [ "$m254_shell" = 0 ] || {
-    echo '[M255 FAIL] original sysvinit PID1 and M254 interactive dash PID1 are exclusive' >&2
+case "${NAS_ENABLE_M256_DEBIAN_INITCTL:-0}" in
+    0) m256_initctl=0 ;;
+    1) m256_initctl=1 ;;
+    *) echo '[M256 FAIL] invalid signed initctl toggle' >&2; exit 2 ;;
+esac
+[ "$m254_shell" = 0 ] || { [ "$m255_init" = 0 ] && [ "$m256_initctl" = 0 ]; } || {
+    echo '[M255/M256 FAIL] interactive dash and original init are exclusive' >&2
+    exit 2
+}
+[ "$m255_init" = 0 ] || [ "$m256_initctl" = 0 ] || {
+    echo '[M256 FAIL] original init lifecycle and initctl control profiles are exclusive' >&2
     exit 2
 }
 
@@ -38,7 +47,10 @@ for tool in python3 apt-get apt-cache dpkg-deb readelf cpio cmp sha256sum \
     command -v "$tool" >/dev/null || { echo "[M252 FAIL] missing $tool" >&2; exit 1; }
 done
 
-if [ "$m255_init" = 1 ]; then
+if [ "$m256_initctl" = 1 ]; then
+    work="build/m256-debian-initctl/$port"
+    case_id=m256-initctl
+elif [ "$m255_init" = 1 ]; then
     work="build/m255-debian-init/$port"
     case_id=m255-init
 elif [ "$m254_shell" = 1 ]; then
@@ -54,6 +66,7 @@ manifest="$work/source/manifest.json"
 m251extra="$work/m251-extra.json"
 extra="$work/m252-extra.json"
 m255extra="$work/m255-extra.json"
+m256extra="$work/m256-extra.json"
 mkdir -p "$work"
 python3 scripts/m248-fetch-debian-multiarch.py --arch "$port" --out "$work/source"
 source=$(cd "$work/source/sysroot" && pwd -P)
@@ -104,8 +117,18 @@ if [ "$m254_shell" = 1 ]; then
     cp scripts/m254-guest-workload.sh "$root/etc/m254-guest-workload.sh"
     chmod 755 "$root/etc/m254-guest-workload.sh"
 fi
-if [ "$m255_init" = 1 ]; then
+if [ "$m255_init" = 1 ] || [ "$m256_initctl" = 1 ]; then
     python3 scripts/m255-debian-ext4-disk.py stage "$root"
+fi
+if [ "$m256_initctl" = 1 ]; then
+    python3 scripts/m256-debian-ext4-disk.py stage "$root"
+    mkdir -p "$root/usr/sbin"
+    "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+        tests/m256-mount-run.c -o "$root/sbin/m256-mount-run"
+    chmod 755 "$root/sbin/m256-mount-run"
+    if readelf -lW "$root/sbin/m256-mount-run" | grep -q INTERP; then
+        echo '[M256 FAIL] test-only mount helper unexpectedly dynamic' >&2; exit 1
+    fi
 fi
 
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
@@ -117,14 +140,22 @@ fi
 
 python3 scripts/m251-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra"
 python3 scripts/m252-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra" "$extra"
-if [ "$m255_init" = 1 ]; then
+if [ "$m255_init" = 1 ] || [ "$m256_initctl" = 1 ]; then
     python3 scripts/m255-debian-provenance.py prepare \
         "$port" "$root" "$manifest" "$m251extra" "$extra" "$m255extra"
+fi
+if [ "$m256_initctl" = 1 ]; then
+    python3 scripts/m256-debian-provenance.py prepare \
+        "$port" "$root" "$manifest" "$m251extra" "$extra" "$m255extra" "$m256extra"
 fi
 sudo python3 scripts/m252-debian-ext4-disk.py prepare "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
 if [ "$m255_init" = 1 ]; then
     sudo python3 scripts/m255-debian-ext4-disk.py "$port" "$root" "$disk" \
         "$manifest" "$m251extra" "$extra" "$m255extra"
+fi
+if [ "$m256_initctl" = 1 ]; then
+    sudo python3 scripts/m256-debian-ext4-disk.py before "$port" "$root" "$disk" \
+        "$manifest" "$m251extra" "$extra" "$m255extra" "$m256extra"
 fi
 if [ "$m254_shell" = 1 ]; then
     sudo python3 scripts/m254-debian-ext4-disk.py before "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
@@ -141,13 +172,13 @@ sh scripts/fetch-busybox-fixture.sh "$port" "$work/rescue-busybox"
 sh scripts/stage-busybox-rootfs.sh "$work/rescue-busybox" "$rescue"
 test -s "$rescue/rootfs.cpio"
 if cpio -it --quiet < "$rescue/rootfs.cpio" | grep -Eq \
-    '(^|/)(sbin/m250-tty-launch|usr/bin/(dash|true|cat|wc|printf|ls|head|sort|mkdir|rm|env|sleep|grep|sed|find))$'; then
+    '(^|/)(sbin/(m250-tty-launch|m256-mount-run)|usr/sbin/telinit|usr/bin/(dash|true|cat|wc|printf|ls|head|sort|mkdir|rm|env|sleep|grep|sed|find))$'; then
     echo '[M252 FAIL] original Debian ELF leaked into rescue CPIO' >&2
     exit 1
 fi
 
 case_file="$work/m252-cases.tsv"
-if [ "$m255_init" = 1 ]; then
+if [ "$m255_init" = 1 ] || [ "$m256_initctl" = 1 ]; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$case_id" cpio ' ' - - /sbin/init > "$case_file"
 else
@@ -169,6 +200,8 @@ if [ "$m254_shell" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M254_QEMU_TIMEOUT:-420}
 elif [ "$m255_init" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M255_QEMU_TIMEOUT:-420}
+elif [ "$m256_initctl" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M256_QEMU_TIMEOUT:-480}
 fi
 export NAS_SYSCALL_TRACE=1
 
@@ -186,7 +219,12 @@ fifo="$PWD/$work/m252-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/$case_id.serial.log"
 runner_log="$PWD/$work/m252-runner.log"
-if [ "$m255_init" = 1 ]; then
+if [ "$m256_initctl" = 1 ]; then
+    echo "[M256 NATIVE $label] original signed Debian sysvinit PID1 with tmpfs FIFO and native telinit 3"
+    python3 scripts/m256-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
+    echo "[M256 ORIGINAL DEBIAN INITCTL NATIVE DIAGNOSTIC] $port: real FIFO and runlevel3 observed; clean poweroff and durable ext4 NOT YET PASS"
+    exit 0
+elif [ "$m255_init" = 1 ]; then
     echo "[M255 NATIVE $label] signed ORIGINAL Debian sysvinit-core /sbin/init PID1, inittab sysinit/respawn"
     python3 scripts/m255-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
     # Diagnostic only: original sysvinit stays alive and final poweroff(2)

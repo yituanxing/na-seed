@@ -126,6 +126,17 @@ int main(void) {
     assert(!tmp_find_child(dir,"sock") && tmp_find_child(dir,"sock-renamed")==sock);
     assert(tmp_unlink_at(dir,"sock-renamed",0)==0);
     assert(!sock->used);
+    /* A named FIFO is a distinct special inode; its stream bytes belong
+     * to pipe.c, never to the tmpfs regular-file read/write backend. */
+    struct nas_tmp_file *fifo=tmp_mknod_at(dir,"initctl",0010600U);
+    assert(fifo && fifo->used && fifo->nlink==1 && !fifo->is_dir);
+    assert((fifo->mode&0170000U)==0010000U && (fifo->mode&07777U)==0600U);
+    assert(tmp_find_child(dir,"initctl")==fifo);
+    assert(tmp_mknod_at(dir,"initctl",0010600U)==NULL);
+    assert(tmp_rename_at(dir,"initctl",dir,"initctl-moved",0)==0);
+    assert(tmp_find_child(dir,"initctl-moved")==fifo);
+    assert(tmp_unlink_at(dir,"initctl-moved",0)==0);
+    assert(!fifo->used);
     assert(tmp_child_entry_inode(dir,32)==0);
 
     /* Files survive unlink and even final nlink==0 until all aliased open

@@ -150,6 +150,37 @@ static uint64_t sys_mkdirat_tmp(uint64_t dirfd, uint64_t pathname,
     nas_fs_path_end(&path);
     return (uint64_t)(int64_t)rc;
 }
+static uint64_t sys_mknodat_special(uint64_t dirfd,uint64_t pathname,
+                                    uint64_t mode,uint64_t dev) {
+    /* Character/block devices remain class-registry owned. Linux ignores
+     * dev for FIFOs and UNIX socket pathnames; all other types are not
+     * implemented instead of publishing fake regular filesystem nodes. */
+    (void)dev;
+    uint64_t type=mode&0170000ULL;
+    if(type!=0010000ULL && type!=0140000ULL)
+        return (uint64_t)-EOPNOTSUPP;
+    struct nas_fs_path_request path;
+    int rc=nas_fs_user_path_begin(dirfd,pathname,&path);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(nas_fs_root_only(path.pathname)) {
+        nas_fs_path_end(&path);
+        return (uint64_t)-EEXIST;
+    }
+    struct nas_vfs_path parent={0},created={0};
+    char leaf[256];
+    rc=nas_fs_lookup_parent_at_policy(
+        path.start.dentry?&path.start:NULL,
+        path.root.dentry?&path.root:NULL,
+        path.pathname,NAS_FS_TRAILING_CREATE_DEST,&parent,leaf);
+    if(!rc)rc=nas_vfs_mknod_child(&parent,leaf,
+               type|nas_fs_create_mode(mode,TASK.fs->umask),&created);
+    if(created.dentry && nas_vfs_path_put(&created))
+        nas_fail("mknodat child ref");
+    if(parent.dentry && nas_vfs_path_put(&parent))
+        nas_fail("mknodat parent ref");
+    nas_fs_path_end(&path);
+    return (uint64_t)(int64_t)rc;
+}
 static uint64_t sys_unlinkat_tmp(uint64_t dirfd, uint64_t pathname,
                                  uint64_t flags) {
     if(flags&~0x200ULL)return (uint64_t)-EINVAL;
@@ -556,6 +587,8 @@ struct nas_fs_result nas_fs_namespace_syscall(enum nas_syscall_op op,
     case NAS_SC_symlinkat: NAMESPACE_RESULT(sys_symlinkat_tmp(args[1], args[2], args[3]));
     case NAS_SC_mkdir: NAMESPACE_RESULT(sys_mkdirat_tmp((uint64_t)-100, args[1], args[2]));
     case NAS_SC_mkdirat: NAMESPACE_RESULT(sys_mkdirat_tmp(args[1], args[2], args[3]));
+    case NAS_SC_mknod: NAMESPACE_RESULT(sys_mknodat_special((uint64_t)-100, args[1], args[2], args[3]));
+    case NAS_SC_mknodat: NAMESPACE_RESULT(sys_mknodat_special(args[1], args[2], args[3], args[4]));
     case NAS_SC_unlink: NAMESPACE_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0));
     case NAS_SC_rmdir: NAMESPACE_RESULT(sys_unlinkat_tmp((uint64_t)-100, args[1], 0x200ULL));
     case NAS_SC_unlinkat: NAMESPACE_RESULT(sys_unlinkat_tmp(args[1], args[2], args[3]));

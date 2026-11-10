@@ -327,7 +327,7 @@ static uint64_t sys_fcntl(uint64_t fd, uint64_t command, uint64_t arg) {
     case 1031: /* F_SETPIPE_SZ: Linux int arg, capacity shared by aliases. */
     case 1032: { /* F_GETPIPE_SZ */
         uint8_t kind=TASK.fds->entries[fd].kind;
-        if (kind!=FD_PIPE_R && kind!=FD_PIPE_W)
+        if (kind!=FD_PIPE_R && kind!=FD_PIPE_W && kind!=FD_FIFO_RDWR)
             return (uint64_t)-EBADF;
         return (uint64_t)(command==1031 ?
             nas_pipe_set_capacity(slot,(int32_t)arg) :
@@ -728,6 +728,9 @@ static uint64_t open_path_owned(const char *path,
                 chrdev_unit=info.unit;
                 if(kind==FD_PTY_SLAVE)pty_number=(int)info.unit;
             }
+            if(!path_only && (opened_node.mode&0170000U)==0010000U)
+                kind=access==0U ? FD_PIPE_R :
+                     access==1U ? FD_PIPE_W : FD_FIFO_RDWR;
             /* origin_path is a diagnostic hint, never a second namei or
              * part of the successful O_CREAT/O_TRUNC transaction. A long
              * Path must not turn a committed open into an error because
@@ -788,6 +791,13 @@ static uint64_t open_path_owned(const char *path,
      * back on failure, before a process FD becomes visible. */
     int open_error=chrdev_node ? nas_chrdev_node_pin(chrdev_node) : 0;
     if(open_error)goto open_rollback;
+    if(!path_only && have_node &&
+       (opened_node.mode&0170000U)==0010000U) {
+        open_error=nas_pipe_named_attach(opened_node.mount_id,
+                      opened_node.ino,slot,(unsigned)access,
+                      (flags&0x800ULL)!=0);
+        if(open_error)goto open_rollback;
+    }
     if(!path_only && kind==FD_PTY_MASTER) {
         open_error=nas_pty_new(slot);
     } else if(!path_only && kind==FD_PTY_SLAVE) {
@@ -1166,6 +1176,12 @@ static uint16_t dpoll_pipe_write(unsigned slot,uint16_t events) {
 static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
     return dpoll_pipe_write(TASK.fds->entries[fd].slot,events);
 }
+static uint16_t dpoll_fifo_rw(unsigned slot,uint16_t events) {
+    return dpoll_pipe_read(slot,events)|dpoll_pipe_write(slot,events);
+}
+static uint16_t vpoll_fifo_rw(uint64_t fd,uint16_t events) {
+    return dpoll_fifo_rw(TASK.fds->entries[fd].slot,events);
+}
 static uint64_t vioctl_tty(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
     return nas_tty_ioctl(cmd,arg);
@@ -1279,6 +1295,16 @@ static const struct nas_file_ops ops_pipe_write={
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
     .poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
+    .release=vrelease_pipe
+};
+static const struct nas_file_ops ops_fifo_rw={
+    .read_plan=pipe_read_plan,.read=pipe_fd_read,
+    .write_plan=pipe_write_plan,.write=pipe_fd_write,
+    .atomic_write_limit=NAS_PIPE_CAP,
+    .aggregate_readv=true,.aggregate_writev=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
+    .sends_sigpipe=true,
+    .poll=vpoll_fifo_rw,.poll_description=dpoll_fifo_rw,
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
@@ -1474,6 +1500,7 @@ static const struct nas_file_ops *const ops_by_kind[]={
 #endif
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,
+    [FD_FIFO_RDWR]=&ops_fifo_rw,
     [FD_EPOLL]=&ops_epoll,
     [FD_EVENTFD]=&ops_eventfd,[FD_SIGNALFD]=&ops_signalfd,
     [FD_TIMERFD]=&ops_timerfd,

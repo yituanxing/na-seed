@@ -1427,10 +1427,11 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
                         struct nas_vfs_path *created) {
     if(!created || created==parent)return -EINVAL;
     *created=(struct nas_vfs_path){0};
-    /* Only socket inodes have a currently implemented cross-provider
-     * semantic contract. Never let the provider silently create a regular
-     * file when an unsupported device type was requested. */
-    if((mode&0170000ULL)!=0140000ULL)return -EOPNOTSUPP;
+    /* Only sockets and FIFOs have implemented special inode contracts;
+     * never silently create regular files for unsupported device types. */
+    const uint64_t special_type=mode&0170000ULL;
+    if(special_type!=0140000ULL && special_type!=0010000ULL)
+        return -EOPNOTSUPP;
     struct nas_fs_node owner;
     int rc=child_parent_node(parent,leaf,&owner);
     if(rc)return rc;
@@ -1457,7 +1458,7 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
     inode.mount_id=owner.mount_id;
     inode.filesystem=owner.filesystem;
     if(!inode.inode || !inode.ino || inode.is_dir || inode.is_symlink ||
-       (inode.mode&0170000ULL)!=0140000ULL)
+       (inode.mode&0170000ULL)!=special_type)
         rc=-EIO;
     if(!rc && nas_dac_nonroot()) {
         struct nas_fs_node p={0};
@@ -1972,7 +1973,8 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
      * device. Neither opening it O_RDWR nor O_TRUNC mutates devfs inode
      * bytes; the underlying FileOps owns its data plane. */
     bool character=(node.mode&0170000U)==0020000U;
-    if(!rc && !options->path_only && !node.is_dir && !character &&
+    bool fifo=(node.mode&0170000U)==0010000U;
+    if(!rc && !options->path_only && !node.is_dir && !character && !fifo &&
        (options->access || options->truncate) &&
        !nas_vfs_can_write(&node))rc=-EROFS;
     if(!rc && options->truncate && !options->access && !options->path_only)
@@ -1987,7 +1989,8 @@ int nas_vfs_open_path_at(const struct nas_vfs_path *start,
         rc=nas_dac_mode(&node,need);
     }
     if(!rc)rc=nas_vfs_node_pin(&node);
-    if(!rc && options->truncate && !options->path_only && !character) {
+    if(!rc && options->truncate && !options->path_only &&
+       !character && !fifo) {
         rc=nas_vfs_resize(&node,0);
         if(rc)(void)nas_vfs_node_unpin(&node);
         else node.size=0;

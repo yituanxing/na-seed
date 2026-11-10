@@ -52,6 +52,11 @@ on:
         required: false
         type: boolean
         default: false
+      m256_initctl:
+        description: 'Use signed original Debian telinit via real tmpfs initctl FIFO to switch runlevel 3 (diagnostic only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,6 +97,7 @@ jobs:
           python3 -B tests/m252-debian-uart-host.py
           python3 -B tests/m254-debian-shell-host.py
           python3 -B tests/m255-debian-init-host.py
+          python3 -B tests/m256-debian-initctl-host.py
           python3 -B tests/m251-debian-provenance-host.py
           python3 -B tests/m251-debian-uart-host.py
           python3 -B tests/m250-debian-interactive-host.py
@@ -162,6 +168,7 @@ jobs:
         env:
           NAS_ENABLE_M254_DEBIAN_SHELL: ${{ inputs.m254_shell && '1' || '0' }}
           NAS_ENABLE_M255_DEBIAN_INIT: ${{ inputs.m255_init && '1' || '0' }}
+          NAS_ENABLE_M256_DEBIAN_INITCTL: ${{ inputs.m256_initctl && '1' || '0' }}
         run: sh scripts/m252-probe-debian-text-tools.sh ${{ matrix.port }}
       - name: Retain signed provenance, UART evidence, unmount and disk readback
         if: always()
@@ -187,15 +194,26 @@ jobs:
             build/m255-debian-init/${{ matrix.port }}/m255-extra.json
             build/m255-debian-init/${{ matrix.port }}/*.tsv
             build/m255-debian-init/${{ matrix.port }}/*.log
+            build/m256-debian-initctl/${{ matrix.port }}/source/manifest.json
+            build/m256-debian-initctl/${{ matrix.port }}/m251-extra.json
+            build/m256-debian-initctl/${{ matrix.port }}/m252-extra.json
+            build/m256-debian-initctl/${{ matrix.port }}/m255-extra.json
+            build/m256-debian-initctl/${{ matrix.port }}/m256-extra.json
+            build/m256-debian-initctl/${{ matrix.port }}/*.tsv
+            build/m256-debian-initctl/${{ matrix.port }}/*.log
             build/port-*/full/matrix-source/m252-batch.clean.log
             build/port-*/full/matrix-source/m252-batch.serial.log
             build/port-*/full/matrix-source/m254-shell.clean.log
             build/port-*/full/matrix-source/m254-shell.serial.log
             build/port-*/full/matrix-source/m255-init.clean.log
             build/port-*/full/matrix-source/m255-init.serial.log
+            build/port-*/full/matrix-source/m256-initctl.clean.log
+            build/port-*/full/matrix-source/m256-initctl.serial.log
             build/busybox-source-parity-x86/m252-batch.clean.log
             build/busybox-source-parity-x86/m252-batch.serial.log
             build/busybox-source-parity-x86/m254-shell.clean.log
             build/busybox-source-parity-x86/m254-shell.serial.log
             build/busybox-source-parity-x86/m255-init.clean.log
             build/busybox-source-parity-x86/m255-init.serial.log
+            build/busybox-source-parity-x86/m256-initctl.clean.log
+            build/busybox-source-parity-x86/m256-initctl.serial.log

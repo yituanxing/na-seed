@@ -15,6 +15,12 @@
 
 /* Bind two already-reserved open-description slots; no user addresses. */
 int nas_pipe_create(unsigned read_slot, unsigned write_slot);
+/* A named FIFO has one byte ring per live mount+inode incarnation. Different
+ * open descriptions attach independent reader/writer ends; dup/fork remain
+ * accounted once through their shared File slot. access=0/R,1/W,2/RW.
+ * Nonblocking writers without readers fail ENXIO before publication. */
+int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
+                          unsigned slot,unsigned access,bool nonblock);
 /* A Unix stream socketpair is two opposing pipe channels with the same two
  * refcounted open descriptions. Both endpoints support read and write. */
 int nas_pipe_create_socketpair(unsigned first_slot, unsigned second_slot);
