@@ -3,6 +3,7 @@
  * Enable Slot command completion. No fake event can qualify real USB I/O.
  */
 #include "../kernel/drivers/usb/xhci.h"
+#include "../kernel/platform/x86_h11_bar.h"
 #include "../kernel/errno.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -122,6 +123,49 @@ static void prepare_io(struct fake_xhc *f,struct nas_xhci_io *io) {
         .read32=read32,.write32=write32
     };
 }
+static int check_q35_high_mem64_bar(void) {
+    struct nas_pci_bar_desc bar={
+        .kind=NAS_PCI_BAR_MEM64,.index=0,
+        .base=NAS_H11_QEMU_MMIO_BASE,.prefetchable=false
+    };
+    CHECK(nas_h11_qemu_xhci_bar_qualified(&bar));
+    struct nas_pci_resources resources={0};
+    resources.bar_count=1U;
+    resources.bars[0]=bar;
+    struct nas_pci_mmio_owner owner={
+        .window_base=NAS_H11_QEMU_MMIO_BASE,
+        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
+    };
+    struct nas_pci_mmio_claim claim={0};
+    CHECK(nas_pci_mmio_claim_bar(&owner,&resources,0U,
+             NAS_H11_XHCI_MMIO_BYTES,&claim)==0);
+    CHECK(claim.base==NAS_H11_QEMU_MMIO_BASE &&
+          claim.bytes==NAS_H11_XHCI_MMIO_BYTES);
+    CHECK(nas_pci_mmio_release(&owner,&claim)==0);
+    CHECK(owner.held==0U);
+    bar.base=NAS_H11_QEMU_MMIO_END-NAS_H11_XHCI_MMIO_BYTES;
+    CHECK(nas_h11_qemu_xhci_bar_qualified(&bar));
+    bar.base+=4096U;
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    bar.base=UINT64_C(0x81000000); /* Q35 low MMIO != this 64-bit BAR. */
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    resources.bars[0]=bar;
+    CHECK(nas_pci_mmio_claim_bar(&owner,&resources,0U,
+          NAS_H11_XHCI_MMIO_BYTES,&claim)==-ENODEV);
+    bar.base=NAS_H11_QEMU_MMIO_BASE+1U;
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    bar.base=NAS_H11_QEMU_MMIO_BASE;
+    bar.kind=NAS_PCI_BAR_MEM32;
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    bar.kind=NAS_PCI_BAR_MEM64;
+    bar.prefetchable=true;
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    bar.prefetchable=false;
+    bar.index=2U; /* Fake value in different BAR register. */
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(&bar));
+    CHECK(!nas_h11_qemu_xhci_bar_qualified(NULL));
+    return 0;
+}
 static int check_timeout_cleanup(void) {
     struct fake_xhc f;
     struct nas_xhci_io io;
@@ -176,6 +220,7 @@ static int check_no_media_and_bad_caps(void) {
     return 0;
 }
 int main(void) {
+    CHECK(check_q35_high_mem64_bar()==0);
     CHECK(check_timeout_cleanup()==0);
     CHECK(check_unproven_stop_pins()==0);
     CHECK(check_no_media_and_bad_caps()==0);

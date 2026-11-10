@@ -239,6 +239,6 @@ int main(void) {
     CHECK(test_reads()==0);
     CHECK(test_rejections()==0);
     CHECK(test_post_open_transport_failure()==0);
-    puts("[H11 USB MSC HOST PASS] actual BOT CBW/data/CSW, signed SCSI inquiry/TUR/capacity/READ10, 8-sector chunk, BE LBA, safe bounds, no write, malformed tag/signature/residue/status/timeouts; real QEMU still required");
+    puts("[H11 USB MSC HOST PASS] actual BOT CBW/data/CSW, SCSI INQUIRY/TUR/CAPACITY10/READ10, 8-sector chunk, BE LBA, safe bounds, no write, malformed tag/signature/residue/status/timeouts; real QEMU still required");
     return 0;
 }

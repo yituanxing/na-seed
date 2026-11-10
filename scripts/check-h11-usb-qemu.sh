@@ -36,9 +36,40 @@ done
 sha256sum -c "$out/h11-original-alpine-elfs.sha256"
 
 rc=0
-NAS_QEMU_H11_USB_POSITIVE=1 timeout 420s sh scripts/run.sh "$image" \
-    > "$serial_log" 2>&1 || rc=$?
+qemu_pid=''
+watchdog_pid=''
+trap 'if [ -n "$qemu_pid" ]; then kill -TERM "$qemu_pid" 2>/dev/null || :; fi; if [ -n "$watchdog_pid" ]; then kill -TERM "$watchdog_pid" 2>/dev/null || :; fi' EXIT
+NAS_QEMU_H11_USB_POSITIVE=1 timeout --signal=TERM --kill-after=3s 420s \
+    sh scripts/run.sh "$image" > "$serial_log" 2>&1 &
+qemu_pid=$!
+# A failed xHCI initialization / USB root / ELF loader normally halts the
+# kernel forever. Stop this single QEMU subprocess as soon as its real serial
+# stream reports a fatal marker, keeping that stream intact for diagnosis.
+# Never infer a PASS from this observer: success still requires the genuine
+# isa-debug-exit rc=1, all original ELF markers and media SHA below.
+# Monitor separately so the foreground wait *reaps* QEMU even if it became a
+# zombie; a kill -0 polling loop alone might otherwise wait forever.
+(
+    while :; do
+        if grep -Eq '^\[(H11 XHCI FAIL|H11 USB FAIL|H11 USB ROOT FAIL|FAIL|FAULT|EXEC REJECT|ELF REJECT)' "$serial_log"; then
+            kill -TERM "$qemu_pid" 2>/dev/null || :
+            exit 0
+        fi
+        sleep 1
+    done
+) &
+watchdog_pid=$!
+wait "$qemu_pid" || rc=$?
+kill -TERM "$watchdog_pid" 2>/dev/null || :
+wait "$watchdog_pid" 2>/dev/null || :
+watchdog_pid=''
+qemu_pid=''
 tr -d '\r' < "$serial_log" > "$clean"
+if grep -Eq '^\[(H11 XHCI FAIL|H11 USB FAIL|H11 USB ROOT FAIL|FAIL|FAULT|EXEC REJECT|ELF REJECT)' "$clean"; then
+    echo '[H11 QEMU FAIL-FAST] genuine guest serial reported fatal xHCI/USB/root/ELF failure; stopped only the H11 QEMU process' >&2
+    tail -220 "$clean" >&2
+    exit 1
+fi
 if [ "$rc" -ne 1 ]; then
     echo "[H11 QEMU FAIL] original Alpine PID1 did not exit 0 via isa-debug-exit rc=1; observed rc=$rc" >&2
     tail -220 "$clean" >&2

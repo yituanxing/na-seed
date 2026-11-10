@@ -14,5 +14,6 @@ trap 'rm -f "$binary" "$controller_binary"' EXIT HUP INT TERM
     -I kernel -I kernel/drivers -I kernel/drivers/usb \
     tests/h11-xhci-host.c \
     kernel/drivers/usb/xhci.c kernel/drivers/port/dma.c \
+    kernel/drivers/core/pci_resources.c \
     -o "$controller_binary"
 "$controller_binary"

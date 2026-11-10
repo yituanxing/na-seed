@@ -25,6 +25,28 @@ struct nas_xhci_io {
  * This is NOT a generic physical USB driver or an IOMMU security proof.
  */
 #define NAS_XHCI_RO_DMA_PAGES 7U
+/* Last attempted controller phase, retained after a failed open for a
+ * QEMU-serial fail-only diagnostic. This is NOT a success milestone.
+ */
+enum nas_xhci_ro_debug_stage {
+    NAS_XHCI_STAGE_IDLE,
+    NAS_XHCI_STAGE_DMA,
+    NAS_XHCI_STAGE_CAPS,
+    NAS_XHCI_STAGE_HALT,
+    NAS_XHCI_STAGE_RESET,
+    NAS_XHCI_STAGE_RING_CONFIG,
+    NAS_XHCI_STAGE_RUN,
+    NAS_XHCI_STAGE_PORT,
+    NAS_XHCI_STAGE_ENABLE_SLOT,
+    NAS_XHCI_STAGE_ADDRESS_DEVICE,
+    NAS_XHCI_STAGE_GET_DEVICE_DESC,
+    NAS_XHCI_STAGE_GET_CONFIG_HEADER,
+    NAS_XHCI_STAGE_GET_CONFIG_FULL,
+    NAS_XHCI_STAGE_SET_CONFIG,
+    NAS_XHCI_STAGE_CONFIGURE_EP,
+    NAS_XHCI_STAGE_USB_MSC_READY,
+    NAS_XHCI_STAGE_BULK
+};
 struct nas_xhci_ro_session {
     const struct nas_xhci_io *io;
     const struct nas_dma_provider *dma;
@@ -32,6 +54,10 @@ struct nas_xhci_ro_session {
     struct nas_dma_page pages[NAS_XHCI_RO_DMA_PAGES];
     uint32_t op_base, rt_base, db_base;
     uint32_t portsc_offset;
+    uint32_t debug_stage;
+    uint32_t debug_completion_code;
+    uint32_t debug_event_type;
+    uint32_t debug_portsc;
     uint16_t context_bytes;
     uint16_t max_packet0;
     uint16_t max_packet_out;

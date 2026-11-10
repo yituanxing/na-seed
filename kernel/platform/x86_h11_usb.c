@@ -1,4 +1,5 @@
 #include "x86_h11_usb.h"
+#include "x86_h11_bar.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/usb/xhci.h"
 #include "../drivers/usb/msc.h"
@@ -12,14 +13,13 @@
  * not an arbitrary USB controller with the matching xHCI class code.
  * QEMU registers BAR0+BAR1 as a 64-bit, nonprefetchable MEM aperture;
  * this is the fixed 16 KiB QEMU implementation, NOT a PCI size probe.
- * The host's 16MiB Q35 acceptance aperture is independent of the BAR
- * register, witnessed in prior H9/H10 QEMU firmware inventory. */
+ * The host's Q35 64-bit PCI memory hole begins at 0xC000000000,
+ * independently observed in the H11 genuine QEMU/OVMF PCI inventory.
+ * The narrow fixed 16MiB high acceptance window is independent of the BAR.
+ */
 #define H11_XHCI_MMIO_BYTES UINT32_C(0x4000)
 #define H11_XHCI_MMIO_PAGES (H11_XHCI_MMIO_BYTES/4096U)
 #define H11_XHCI_VIRT_BASE UINT64_C(0xfffffe8001600000)
-#define H11_QEMU_MMIO_BASE UINT64_C(0x81000000)
-#define H11_QEMU_MMIO_BYTES UINT64_C(0x01000000)
-#define H11_QEMU_MMIO_END (H11_QEMU_MMIO_BASE+H11_QEMU_MMIO_BYTES)
 
 struct h11_mmio_mapping { uint64_t base; };
 static struct h11_mmio_mapping h11_mmio={H11_XHCI_VIRT_BASE};
@@ -109,16 +109,13 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
         if(resources->bars[i].index==0U) {
             bar=&resources->bars[i];break;
         }
-    if(!bar || bar->kind!=NAS_PCI_BAR_MEM64 || bar->prefetchable ||
-       (bar->base&4095U) || bar->base<H11_QEMU_MMIO_BASE ||
-       bar->base>H11_QEMU_MMIO_END-H11_XHCI_MMIO_BYTES ||
-       (bar->base>>32)!=0U) {
+    if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H11 XHCI FAIL] unqualified 64-bit BAR0 (fixed 16KiB QEMU aperture)\n");
         return -ENODEV;
     }
     h11_owner=(struct nas_pci_mmio_owner){
-        .window_base=H11_QEMU_MMIO_BASE,
-        .window_bytes=H11_QEMU_MMIO_BYTES
+        .window_base=NAS_H11_QEMU_MMIO_BASE,
+        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
     };
     struct nas_pci_mmio_claim claim={0};
     int rc=nas_pci_mmio_claim_bar(&h11_owner,resources,0U,
@@ -167,6 +164,17 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
                                    8U,true,NAS_PORT_BLOCK_SECTORS,
                                    &h11_block_ops);
     if(rc) {
+        nas_print("[H11 XHCI FAIL DIAG] stage=");
+        nas_dec((unsigned)h11_xhci.debug_stage);
+        nas_print(" rc=");
+        nas_dec((unsigned)(rc < 0 ? -rc : rc));
+        nas_print(" cc=");
+        nas_dec((unsigned)h11_xhci.debug_completion_code);
+        nas_print(" event=");
+        nas_dec((unsigned)h11_xhci.debug_event_type);
+        nas_print(" portsc=");
+        nas_hex(h11_xhci.debug_portsc);
+        nas_print("\n");
         /* Open can fail after xHCI has armed DMA. Refuse to release BAR
          * unless the controller confirms HCHalted and frees all 7 leases.
          * The block backend never performs SCSI WRITE / media flush. */

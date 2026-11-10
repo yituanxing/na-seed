@@ -270,6 +270,8 @@ static int await_event(struct nas_xhci_ro_session *s, uint32_t kind,
         if (type != kind || (event.parameter & ~0xFULL) != trb_ptr)
             return -EIO;
         uint32_t code = (event.status >> 24) & 255U;
+        s->debug_completion_code = code;
+        s->debug_event_type = type;
         if (kind == XHCI_EVENT_TRANSFER) {
             if (((event.control >> 16) & 31U) != endpoint ||
                 ((event.control >> 24) & 255U) != s->slot_id)
@@ -308,12 +310,14 @@ static int sync_input(struct nas_xhci_ro_session *s) {
                     NAS_DMA_TO_DEVICE);
 }
 static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
+    s->debug_stage = NAS_XHCI_STAGE_PORT;
     if (!max_ports || max_ports > 15U) return -ENODEV;
     for (uint32_t p = 1; p <= max_ports; ++p) {
         uint32_t off = s->op_base + XHCI_OP_PORTSC +
                        (p - 1U) * XHCI_PORT_STRIDE;
         uint32_t v;
         if (io_read(s, off, &v)) return -EIO;
+        s->debug_portsc = v;
         if (!(v & XHCI_PORT_CCS)) continue;
         /* USB2 High Speed begins Connected but *not* Enabled in QEMU.
          * Reset port before handing its speed and root-port ID to slot ctx.
@@ -329,6 +333,7 @@ static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
             if (poll_bits(s, off, XHCI_PORT_PR, 0)) return -ETIMEDOUT;
         }
         if (io_read(s, off, &v)) return -EIO;
+        s->debug_portsc = v;
         uint8_t speed = (uint8_t)((v & XHCI_PORT_SPEED_MASK) >>
                                     XHCI_PORT_SPEED_SHIFT);
         if (!(v & XHCI_PORT_PED) || !(v & XHCI_PORT_CCS) ||
@@ -341,6 +346,7 @@ static int enable_port(struct nas_xhci_ro_session *s, uint32_t max_ports) {
     return -ENODEV;
 }
 static int setup_context(struct nas_xhci_ro_session *s) {
+    s->debug_stage = NAS_XHCI_STAGE_ENABLE_SLOT;
     uint8_t slot;
     int rc = command(s, 0, XHCI_CMD_ENABLE_SLOT, 0, &slot);
     if (rc || !slot || slot > 8U) return -ENODEV;
@@ -367,6 +373,7 @@ static int setup_context(struct nas_xhci_ro_session *s) {
     context_dword(s, 2, 3, (uint32_t)(ring >> 32));
     context_dword(s, 2, 4, 8U);
     if (sync_input(s)) return -EIO;
+    s->debug_stage = NAS_XHCI_STAGE_ADDRESS_DEVICE;
     return command(s, page_bus(s, XHCI_P_INPUT),
                    XHCI_CMD_ADDRESS_DEVICE, slot, NULL);
 }
@@ -420,10 +427,12 @@ static int control_request(struct nas_xhci_ro_session *s,
     return 0;
 }
 static int read_usb_descriptors(struct nas_xhci_ro_session *s) {
+    s->debug_stage = NAS_XHCI_STAGE_GET_DEVICE_DESC;
     uint8_t device[18];
     int rc = control_request(s, 0x80, 6, 0x100, 0, sizeof(device), device);
     if (rc || device[0] < 18U || device[1] != 1U) return -ENODEV;
     uint8_t first_config[9];
+    s->debug_stage = NAS_XHCI_STAGE_GET_CONFIG_HEADER;
     rc = control_request(s, 0x80, 6, 0x200, 0,
                          sizeof(first_config), first_config);
     if (rc || first_config[0] < 9U || first_config[1] != 2U)
@@ -431,6 +440,7 @@ static int read_usb_descriptors(struct nas_xhci_ro_session *s) {
     uint16_t total = le16(&first_config[2]);
     if (total < 18U || total > 512U) return -E2BIG;
     uint8_t config[512];
+    s->debug_stage = NAS_XHCI_STAGE_GET_CONFIG_FULL;
     zero_bytes(config, sizeof(config));
     rc = control_request(s, 0x80, 6, 0x200, 0, total, config);
     if (rc) return rc;
@@ -479,6 +489,7 @@ static int read_usb_descriptors(struct nas_xhci_ro_session *s) {
     s->max_packet_out = out_packet;
     s->max_packet_in = in_packet;
     /* Standard USB SET_CONFIGURATION uses a zero data stage. */
+    s->debug_stage = NAS_XHCI_STAGE_SET_CONFIG;
     rc = control_request(s, 0, 9, configured, 0, 0, NULL);
     if (rc) return rc;
     return 0;
@@ -496,6 +507,7 @@ static void make_bulk_ctx(struct nas_xhci_ro_session *s, uint8_t dci,
     context_dword(s, ctx, 4, 1024U);
 }
 static int configure_bulk_endpoints(struct nas_xhci_ro_session *s) {
+    s->debug_stage = NAS_XHCI_STAGE_CONFIGURE_EP;
     if (s->bulk_out_dci == s->bulk_in_dci ||
         s->bulk_out_dci >= 31U || s->bulk_in_dci >= 31U)
         return -EINVAL;
@@ -516,6 +528,7 @@ static int configure_bulk_endpoints(struct nas_xhci_ro_session *s) {
                    XHCI_CMD_CONFIGURE_EP, s->slot_id, NULL);
 }
 static int run_controller(struct nas_xhci_ro_session *s) {
+    s->debug_stage = NAS_XHCI_STAGE_CAPS;
     uint32_t cap0, slots, hcs2, hcc, dboff, rtsoff, pagesize;
     if (io_read(s, XHCI_CAP_CAPLENGTH, &cap0) ||
         io_read(s, XHCI_CAP_HCSPARAMS1, &slots) ||
@@ -539,7 +552,9 @@ static int run_controller(struct nas_xhci_ro_session *s) {
         max_slots < 1U || max_ports < 1U || max_ports > 15U ||
         scratchpad != 0U || !(hcc & 1U))
         return -ENODEV;
+    s->debug_stage = NAS_XHCI_STAGE_HALT;
     if (quiesce(s)) return -EIO;
+    s->debug_stage = NAS_XHCI_STAGE_RESET;
     if (op_write(s, XHCI_OP_USBCMD, XHCI_CMD_HCRST)) return -EIO;
     if (poll_bits(s, s->op_base + XHCI_OP_USBCMD,
                   XHCI_CMD_HCRST, 0) ||
@@ -547,6 +562,7 @@ static int run_controller(struct nas_xhci_ro_session *s) {
                   XHCI_STS_CNR, 0)) return -ETIMEDOUT;
     if (op_read(s, XHCI_OP_PAGESIZE, &pagesize) ||
         !(pagesize & 1U)) return -ENODEV;
+    s->debug_stage = NAS_XHCI_STAGE_RING_CONFIG;
     /* Initialize command and event rings before exposing DMA to xHC. */
     zero_bytes(page_cpu(s, XHCI_P_DCBAA), NAS_DMA_PAGE_BYTES);
     zero_bytes(page_cpu(s, XHCI_P_COMMAND), NAS_DMA_PAGE_BYTES);
@@ -581,6 +597,7 @@ static int run_controller(struct nas_xhci_ro_session *s) {
     /* Arm H6 lease BEFORE RUN enables controller fetches and bus DMA. */
     if (nas_dma_lease_arm(&s->lease)) return -EIO;
     s->may_dma = true;
+    s->debug_stage = NAS_XHCI_STAGE_RUN;
     if (op_write(s, XHCI_OP_USBCMD, XHCI_CMD_RUN)) return -EIO;
     if (poll_bits(s, s->op_base + XHCI_OP_USBSTS, XHCI_STS_HCH, 0))
         return -ETIMEDOUT;
@@ -594,6 +611,7 @@ int nas_xhci_ro_open(const struct nas_xhci_io *io,
         return -EINVAL;
     s->io = io;
     s->dma = dma;
+    s->debug_stage = NAS_XHCI_STAGE_DMA;
     int rc = nas_dma_lease_begin(&s->lease, dma);
     if (rc) return rc;
     for (unsigned i = 0; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
@@ -608,6 +626,7 @@ int nas_xhci_ro_open(const struct nas_xhci_io *io,
     if (rc) return rc;
     rc = configure_bulk_endpoints(s);
     if (rc) return rc;
+    s->debug_stage = NAS_XHCI_STAGE_USB_MSC_READY;
     s->ready = true;
     return 0;
 }
@@ -617,6 +636,7 @@ static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
         !bytes || bytes > XHCI_PAYLOAD_MAX) return -EINVAL;
     uint8_t dci = in ? s->bulk_in_dci : s->bulk_out_dci;
     unsigned which = in ? 3U : 2U; /* EP ring IDs 2/3 */
+    s->debug_stage = NAS_XHCI_STAGE_BULK;
     s->io_active = true;
     int rc = 0;
     if (!in) {
@@ -635,8 +655,10 @@ static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
     trb.control = XHCI_TRB_TYPE(XHCI_TRB_NORMAL) | XHCI_TRB_IOC;
     rc = ring_enqueue(s, which, &trb, &trb_bus);
     if (!rc) rc = ring_doorbell(s, s->slot_id, dci);
+    uint32_t residual = 0;
     if (!rc) rc = await_event(s, XHCI_EVENT_TRANSFER, trb_bus,
-                              dci, NULL, NULL);
+                              dci, NULL, &residual);
+    if (!rc && residual != 0U) rc = -EMSGSIZE;
     if (!rc && in) {
         rc = dma_sync(s, XHCI_P_PAYLOAD, 0, bytes, NAS_DMA_FROM_DEVICE);
         if (!rc) copy_bytes(buffer, page_cpu(s, XHCI_P_PAYLOAD), bytes);
