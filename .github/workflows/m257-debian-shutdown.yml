@@ -1,0 +1,48 @@
+name: NaSeed M257 original signed Debian SysVinit natural poweroff / durable ext4
+
+# Unlike M255/M256 diagnostics, a passing job requires a *guest-initiated*
+# original Debian telinit 0 + halt -p -f, the real post-PID1 ext4_umount/flush,
+# naturally stopped native QEMU and an independent post-QEMU fsck+nonce oracle.
+# No host SIGTERM on the passing path, no synthetic serial token and no
+# unsigned/recompiled userspace replacement for Debian sysvinit-core.
+on:
+  push:
+    branches:
+      - feat/m257-original-debian-shutdown-20261110
+    paths:
+      - '.github/workflows/m257-debian-shutdown.yml'
+      - '.github/workflows/m252-debian-text-tools-ext4.yml'
+      - 'scripts/m257-*'
+      - 'tests/m257-*'
+      - 'scripts/m256-*'
+      - 'tests/m256-*'
+      - 'scripts/m255-*'
+      - 'tests/m255-*'
+      - 'scripts/m252-*'
+      - 'scripts/native-*'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'Makefile'
+      - 'kernel/**'
+      - 'ports/lwext4/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-debian-natural-shutdown:
+    uses: ./.github/workflows/m252-debian-text-tools-ext4.yml
+    with:
+      m254_shell: false
+      m255_init: false
+      m256_initctl: false
+      m257_shutdown: true
