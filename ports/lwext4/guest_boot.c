@@ -14,7 +14,8 @@
 #include <stdbool.h>
 #if defined(NAS_ENABLE_M191_ALPINE_ROOT) || \
     defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
 #define NAS_EXTERNAL_EXT4_BOOT_ROOT 1
 #endif
 #ifdef NAS_ENABLE_M179_FS_IRQ
@@ -25,7 +26,8 @@
 #endif
 #if defined(NAS_ENABLE_VIRTIO_BLK) || \
     defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
 #include "../../kernel/block/device.h"
 #include "../../kernel/block/partition.h"
 #ifdef NAS_ENABLE_VIRTIO_BLK
@@ -69,6 +71,8 @@ static void m191_boot_fail(const char *phase,int code) {
     nas_print("[H8 NVME ROOT FAIL] ");
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_print("[H9 AHCI ROOT FAIL] ");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    nas_print("[H11 USB ROOT FAIL] ");
 #else
     nas_print("[M191 ROOT FAIL] ");
 #endif
@@ -137,7 +141,8 @@ bool nas_lwext4_guest_boot_mount(void) {
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
 #if defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
         /* H7 is a separate, QEMU-qualified, permanently owned NVMe session.
          * Its readonly BlockDevice was attached in H1/H3 discovery, before
          * the full boot moves into VFS. A real PC must never use this path. */
@@ -161,6 +166,8 @@ bool nas_lwext4_guest_boot_mount(void) {
             const char block_name[]="nvme0";
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
             const char block_name[]="ahci0";
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            const char block_name[]="usb0";
 #else
             char block_name[]="virtio0";
             block_name[6]=(char)('0'+i);
@@ -208,6 +215,9 @@ bool nas_lwext4_guest_boot_mount(void) {
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
             nas_print("[H9 AHCI ROOT FAIL] no genuine ext4 superblock on ahci0\n");
             return false;
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            nas_print("[H11 USB ROOT FAIL] no genuine ext4 superblock on usb0\n");
+            return false;
 #endif
 #ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
             m191_boot_fail("ext4-superblock-not-found",disks);
@@ -239,10 +249,13 @@ bool nas_lwext4_guest_boot_mount(void) {
             "/mnt";
 #endif
 #if defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
         if(chosen_writable) {
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
             nas_print("[H9 AHCI ROOT FAIL] SATA BlockDevice unexpectedly writable\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            nas_print("[H11 USB ROOT FAIL] USB BlockDevice unexpectedly writable\n");
 #else
             nas_print("[H7 NVME EXT4 FAIL] QEMU NVMe BlockDevice unexpectedly writable\n");
 #endif
@@ -254,6 +267,8 @@ bool nas_lwext4_guest_boot_mount(void) {
                                            "h7-nvme-ext4",
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
                                            "h9-ahci-ext4",
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+                                           "h11-usb-ext4",
 #else
                                            "virtio-ext4",
 #endif
@@ -293,6 +308,12 @@ bool nas_lwext4_guest_boot_mount(void) {
             return false;
         }
         nas_print("[H9 AHCI ROOT MOUNTED] / read-only source=ahci0\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+        if(!boot_mount.mount.read_only) {
+            nas_print("[H11 USB ROOT FAIL] mounted filesystem must be read-only\n");
+            return false;
+        }
+        nas_print("[H11 USB ROOT MOUNTED] / read-only source=usb0\n");
 #else
         nas_print(chosen_partition_index ?
             "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :

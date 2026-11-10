@@ -116,6 +116,17 @@ $(error H10 E1000 cannot share the H9 AHCI/VirtIO network profile)
 endif
 CFLAGS += -DNAS_ENABLE_H10_QEMU_E1000_USERLAND=1
 endif
+# H11 isolates one explicit QEMU xHCI PCI controller and USB Mass Storage
+# read-only Alpine root. It must never inherit another block-controller path.
+ifeq ($(NAS_ENABLE_H11_QEMU_XHCI_USERLAND),1)
+ifneq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY)$(NAS_ENABLE_H1_ECAM_DISCOVERY)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),1111)
+$(error H11 USB original Alpine requires H0/H1/H2 discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY) $(NAS_ENABLE_H4_QEMU_NVME_READONLY) $(NAS_ENABLE_H5_QEMU_PCI_RESOURCE) $(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME) $(NAS_ENABLE_H7_QEMU_NVME_USERLAND) $(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) $(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_VIRTIO_BLK)),)
+$(error H11 QEMU xHCI USB root is exclusive of NVMe/AHCI/VirtIO block profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H11_QEMU_XHCI_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -345,6 +356,19 @@ hw-h10-iso: hw-h10-kernel
 	sh scripts/stage-h10-e1000-alpine.sh
 	sh scripts/build-h10-e1000-iso.sh
 
+# H11: real QEMU PCI xHCI -> USB Mass Storage BOT/SCSI -> readonly ext4 `/`
+# -> signed original dynamic Alpine ELF; no NVMe, AHCI or VirtIO substitution.
+hw-h11-host-check: hw-h2-host-check
+	sh scripts/check-h11-usb-host.sh
+
+hw-h11-kernel:
+	$(MAKE) OUT=build/h11-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H11_QEMU_XHCI_USERLAND=1 kernel
+
+hw-h11-iso: hw-h11-kernel
+	$(MAKE) OUT=build/h11-qemu-only build/h11-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h11-usb-alpine.sh
+	sh scripts/build-h11-usb-iso.sh
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -370,6 +394,11 @@ endif
 ifeq ($(NAS_ENABLE_H10_QEMU_E1000_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h10_e1000.c \
  kernel/drivers/e1000/e1000_nic.c
+endif
+ifeq ($(NAS_ENABLE_H11_QEMU_XHCI_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h11_usb.c \
+ kernel/drivers/usb/xhci.c kernel/drivers/usb/msc.c \
+ kernel/drivers/port/dma.c kernel/drivers/port/block.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw

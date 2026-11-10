@@ -231,6 +231,56 @@ if [ "${NAS_QEMU_H10_E1000:-0}" = 1 ] ||
             -object filter-dump,id=naseed_h10_wire,netdev=naseed_h10_net,file=build/h10-qemu-only/h10-wire.pcap
     fi
 fi
+# H11: THREE hardware-distinct isolated real QEMU boots. A positive xHCI
+# controller plus one readonly USB Mass Storage disk, a controller with no
+# media, and a boot with no xHCI controller whatsoever. Q35's ambient SATA
+# ATAPI CD holds only Limine/kernel/metadata rescue; NEVER the Alpine ELFs.
+# No other block profile is permitted, and the Q35 default network NIC is
+# disabled so no non-USB data path can accidentally satisfy the workload.
+if [ "${NAS_QEMU_H11_USB_POSITIVE:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H11_NO_MEDIA:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H11_NO_XHCI:-0}" = 1 ]; then
+    h11_modes=0
+    for var in NAS_QEMU_H11_USB_POSITIVE NAS_QEMU_H11_NO_MEDIA NAS_QEMU_H11_NO_XHCI; do
+        eval 'value=${'"$var"'-0}'
+        [ "$value" = 0 ] || h11_modes=$((h11_modes + 1))
+    done
+    [ "$h11_modes" -eq 1 ] &&
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_NET_PCAP:-}" ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] &&
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H9_AHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_E1000:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_NO_E1000:-0}" = 0 ] || {
+        echo '[H11 QEMU FAIL] xHCI fixture must be the exclusive block and NIC device profile' >&2
+        exit 2
+    }
+    h11_image=build/h11-qemu-only/h11-alpine.ext4
+    test -s "$h11_image" && [ ! -L "$h11_image" ] &&
+    test -s build/h11-qemu-only/h11-media-before.sha256 &&
+    (cd build/h11-qemu-only && sha256sum -c h11-media-before.sha256 >/dev/null) &&
+    [ "$(stat -c '%a' "$h11_image")" = 444 ] || {
+        echo '[H11 QEMU FAIL] pinned signed Alpine USB backing media absent or modified' >&2
+        exit 2
+    }
+    set -- "$@" -nic none
+    if [ "${NAS_QEMU_H11_NO_XHCI:-0}" != 1 ]; then
+        set -- "$@" -device qemu-xhci,id=naseed_h11_xhci,bus=pcie.0,addr=0x4
+        if [ "${NAS_QEMU_H11_USB_POSITIVE:-0}" = 1 ]; then
+            set -- "$@" \
+                -drive "if=none,id=naseed_h11_disk,format=raw,file=$h11_image,snapshot=on,readonly=off" \
+                -device usb-storage,id=naseed_h11_msc,bus=naseed_h11_xhci.0,drive=naseed_h11_disk
+        fi
+    fi
+fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but
 # must refuse write-capable NVMe initialization before touching either BAR or

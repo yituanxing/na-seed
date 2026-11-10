@@ -68,13 +68,17 @@ const char *nas_boot_prepare(const char *selected,
         nas_print("[FS] CPIO newc read-only archive mounted\n");
     }
 #if defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     /* H8 boots from the real NVMe ext4 root. A minimal, immutable rescue
      * CPIO remains in Limine's first module slot, but MUST NOT supply an
      * alternate executable. The actual original Alpine BusyBox and musl
      * ELF interpreter are selected from the mounted disk afterwards. */
     if (!selected) {
-#if defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+#if defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+        if(!archive_only) return "H11 requires a non-executable rescue CPIO module";
+        nas_print("[H11 USB ROOT] rescue CPIO indexed; executable must come from USB ext4\n");
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
         if (!archive_only) return "H9 requires a non-executable rescue CPIO module";
         nas_print("[H9 ROOT] rescue CPIO indexed; executable must come from AHCI ext4\n");
 #else
@@ -200,7 +204,8 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
         return "M191 root PID1 has invalid ELF interpreter";
     }
 #if defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     /* H8 proves the original dynamically linked Alpine BusyBox enters
      * through its original musl interpreter, never a static rescue stub. */
     if (strcmp(selected,"/bin/busybox") != 0 || !wants_loader ||
@@ -229,6 +234,11 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
 #endif
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
     nas_print("[H9 AHCI PT_INTERP] ");
+    nas_print(out->interpreter_path);
+    nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
+    nas_print("[H11 USB PT_INTERP] ");
     nas_print(out->interpreter_path);
     nas_print("\n");
 #endif

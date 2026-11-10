@@ -314,6 +314,11 @@ void kmain(void) {
         nas_print("[H9 AHCI FAIL] required QEMU SATA disk unavailable\n");
         nas_arch_halt();
 #endif
+#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
+        nas_print("[H11 XHCI FAIL] required QEMU USB Mass Storage absent; no Alpine USB userland\n");
+        nas_print("[H11 USB FAIL] required QEMU USB Mass Storage unavailable\n");
+        nas_arch_halt();
+#endif
     }
 #endif
 #else
@@ -329,6 +334,8 @@ void kmain(void) {
 #endif
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    nas_print("[H11 USB BOOT CONTINUE] qualified QEMU xHCI USB Mass Storage; original Alpine userland\n");
 #elif defined(NAS_ENABLE_H4_QEMU_NVME_READONLY)
     nas_print("[H4 COMPLETE] QEMU-only disposable namespace read; no LBA writes\n");
 #elif defined(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY)
@@ -337,7 +344,8 @@ void kmain(void) {
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
 #endif
 #if !defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) && \
-    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) && \
+    !defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     nas_arch_halt();
 #endif
 #endif
