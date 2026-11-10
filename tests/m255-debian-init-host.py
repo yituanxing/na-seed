@@ -38,6 +38,9 @@ class DebianSysvinitProvenanceHost(unittest.TestCase):
     def test_signed_original_init_not_build_artifact(self):
         self.assertEqual(prov.PACKAGE, "sysvinit-core")
         self.assertEqual(prov.PROGRAM, "sbin/init")
+        # Debian 13's merged-usr package installs the source ELF here on all
+        # three ISAs, even though Limine requests /sbin/init as guest PID1.
+        self.assertEqual(prov.SOURCE_PROGRAM, "usr/sbin/init")
         self.assertEqual(prov.SCHEMA, "m255-signed-original-debian-sysvinit-pid1-v1")
         self.assertIn("libselinux.so.1", prov.LIBRARY_PACKAGES)
         source = (ROOT / "scripts/m255-debian-provenance.py").read_text()

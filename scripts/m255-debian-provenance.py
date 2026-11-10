@@ -22,6 +22,10 @@ m251, m245, m248 = m252.m251, m252.m245, m252.m248
 
 SCHEMA = "m255-signed-original-debian-sysvinit-pid1-v1"
 PROGRAM = "sbin/init"
+# Debian 13 uses merged-/usr: the signed .deb installs this exact ELF at
+# /usr/sbin/init, while our native boot manifest requests /sbin/init.  Copy
+# the verified bytes without modification into that boot-visible pathname.
+SOURCE_PROGRAM = "usr/sbin/init"
 PACKAGE = "sysvinit-core"
 # M252's shared SONAME allowlist already owns libselinux1/libpcre2/libc6.
 # Never silently pull arbitrary DSOs from the host or unrelated repositories.
@@ -88,7 +92,7 @@ def prepare(port: str, root: Path, base: Path, m251_path: Path,
     with tempfile.TemporaryDirectory(prefix="m255-signed-sysvinit-") as tmp:
         stage = Path(tmp)
         extracted = m252.fetch_and_extract(record, base, stage / PACKAGE)
-        original = m248.original_regular_file(extracted, Path(PROGRAM))
+        original = m248.original_regular_file(extracted, Path(SOURCE_PROGRAM))
         props = init_elf(original, port, executable=True)
         digest = m251.copy_signed_bytes(original, root / PROGRAM)
         info["programs"][PROGRAM] = {"source_package": PACKAGE,
@@ -183,7 +187,7 @@ def verify_root(port: str, root: Path, base: Path, m251_path: Path,
                     "tampered inherited signed DSO: " + relative)
         for relative, details in {**programs, **libraries}.items():
             package = details["source_package"]
-            signed = (m248.original_regular_file(extracted[package], Path(relative))
+            signed = (m248.original_regular_file(extracted[package], Path(SOURCE_PROGRAM))
                       if relative == PROGRAM else
                       m251.locate_original_library(extracted[package],
                                                     m248.PORTS[port][0], Path(relative).name))
