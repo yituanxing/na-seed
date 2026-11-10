@@ -127,6 +127,18 @@ $(error H11 QEMU xHCI USB root is exclusive of NVMe/AHCI/VirtIO block profiles)
 endif
 CFLAGS += -DNAS_ENABLE_H11_QEMU_XHCI_USERLAND=1
 endif
+# H12 reuses the H8 signed Alpine/NVMe root with one isolated QEMU xHCI
+# USB Boot Keyboard. The Linux input core/evdev is provider-neutral: its
+# H12 object linkage must NOT implicitly compile a VirtIO input backend.
+ifeq ($(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H12 USB HID requires H8 original Alpine ext4 root, H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H12 isolated USB HID cannot share H9/H10/H11 or VirtIO Input profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H12_QEMU_USB_HID_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -369,6 +381,21 @@ hw-h11-iso: hw-h11-kernel
 	sh scripts/stage-h11-usb-alpine.sh
 	sh scripts/build-h11-usb-iso.sh
 
+# H12 changes only the input provider to USB HID over xHCI; keep the
+# independently signed H8 NVMe ext4 Alpine root and the common evdev ABI.
+# Native evtest 24-byte input_event readings, QMP key injection and real
+# no-keyboard/no-xHCI negatives are mandatory before declaring H12 PASS.
+hw-h12-host-check: hw-h8-host-check
+	sh scripts/check-h12-hid-host.sh
+
+hw-h12-kernel:
+	$(MAKE) OUT=build/h12-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H12_QEMU_USB_HID_USERLAND=1 kernel
+
+hw-h12-iso: hw-h12-kernel
+	$(MAKE) OUT=build/h12-qemu-only build/h12-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h12-usb-hid-alpine.sh
+	sh scripts/build-h12-usb-hid-iso.sh
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -399,6 +426,10 @@ ifeq ($(NAS_ENABLE_H11_QEMU_XHCI_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h11_usb.c \
  kernel/drivers/usb/xhci.c kernel/drivers/usb/msc.c \
  kernel/drivers/port/dma.c kernel/drivers/port/block.c
+endif
+ifeq ($(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h12_hid.c \
+ kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw
@@ -447,7 +478,7 @@ endif
 # Shared Linux input-core/evdev plus provider-based character endpoints.
 # No input stack is linked into the old serial-only hardware profile.
 NAS_INPUT_COMMON_OBJS :=
-ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
+ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_INPUT) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND)),)
 NAS_INPUT_COMMON_SRCS := kernel/drivers/input/core.c \
  kernel/drivers/input/evdev.c kernel/fs/input_chrdev.c
 NAS_INPUT_COMMON_OBJS += $(patsubst %.c,$(OUT)/nasinput_%.o,$(notdir $(NAS_INPUT_COMMON_SRCS)))

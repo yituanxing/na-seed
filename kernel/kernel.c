@@ -319,6 +319,10 @@ void kmain(void) {
         nas_print("[H11 USB FAIL] required QEMU USB Mass Storage unavailable\n");
         nas_arch_halt();
 #endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+        nas_print("[H12 HID FAIL] required QEMU USB Boot Keyboard unavailable; no evtest userland\n");
+        nas_arch_halt();
+#endif
     }
 #endif
 #else
@@ -331,6 +335,9 @@ void kmain(void) {
     nas_print("[H7 NVME BOOT CONTINUE] qualified QEMU-only NVMe; normal userspace path\n");
 #ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
     nas_print("[H10 E1000 BOOT CONTINUE] original Alpine NVMe root with real PCI Ethernet\n");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    nas_print("[H12 HID BOOT CONTINUE] original Alpine NVMe root with real PCI xHCI Boot Keyboard\n");
 #endif
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");

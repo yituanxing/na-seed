@@ -25,6 +25,9 @@
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
 #include "../platform/x86_h11_usb.h"
 #endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+#include "../platform/x86_h12_hid.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -128,6 +131,15 @@ static void deferred_input_events(void *context) {
     nas_virtio_input_irq_report();
 }
 #endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+static void deferred_h12_usb_keyboard(void *context) {
+    (void)context;
+    /* Genuine interrupt-IN completion is polled at most eight times in
+     * this existing bounded scheduler service; no IRQ/task switch. */
+    if(nas_x86_h12_hid_poll(8U)<0)
+        nas_fail("H12 xHCI USB keyboard poll failed");
+}
+#endif
 static void init_deferred_services(void) {
     int rc=0;
 #ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
@@ -149,6 +161,11 @@ static void init_deferred_services(void) {
     rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
                                    deferred_input_events,NULL);
     if(rc)nas_fail("deferred input service registration failed");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_h12_usb_keyboard,NULL);
+    if(rc)nas_fail("deferred USB HID input service registration failed");
 #endif
 #if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
@@ -199,6 +216,11 @@ static void nas_init_finish_success(void) {
     if(nas_x86_h9_ahci_shutdown())
         nas_fail("H9 SATA port/DMA/BAR shutdown failed");
     nas_print("[H9 AHCI USERLAND SHUTDOWN] ext4 unmounted; SATA port quiesced\n");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    if(nas_x86_h12_hid_shutdown())
+        nas_fail("H12 USB HID device/evdev or xHCI DMA/BAR shutdown failed");
+    nas_print("[H12 HID USERLAND SHUTDOWN] evdev closed, xHCI halted\n");
 #endif
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
     if(nas_x86_h11_usb_shutdown())
@@ -467,12 +489,19 @@ void nas_init_userspace(void) {
     if(nas_misc_chrdev_init() || nas_tty_chrdev_init() ||
        nas_pty_chrdev_init() || nas_fbdev_chrdev_init())
         nas_fail("base character-device publication failed");
-#ifdef NAS_ENABLE_VIRTIO_INPUT
+#if defined(NAS_ENABLE_VIRTIO_INPUT) || \
+    defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND)
     /* Publish the event character-device handler before the shared bus
      * can discover a VirtIO input device (through lwIP or block boot). */
     extern int nas_input_chrdev_init(void);
     if(nas_input_chrdev_init())
         nas_fail("evdev character-device registration failed");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    /* PCI discovery happened before the input class was published.
+     * Publish /dev/input/event0 only after this one-time class init. */
+    if(nas_x86_h12_hid_publish_input())
+        nas_fail("H12 USB HID evdev publication after class init failed");
 #endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts
      * before user syscalls begin using the same continuation mechanism. */

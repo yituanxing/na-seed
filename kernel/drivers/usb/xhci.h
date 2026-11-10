@@ -45,7 +45,16 @@ enum nas_xhci_ro_debug_stage {
     NAS_XHCI_STAGE_SET_CONFIG,
     NAS_XHCI_STAGE_CONFIGURE_EP,
     NAS_XHCI_STAGE_USB_MSC_READY,
-    NAS_XHCI_STAGE_BULK
+    NAS_XHCI_STAGE_BULK,
+    NAS_XHCI_STAGE_HID_GET_DEVICE_DESC,
+    NAS_XHCI_STAGE_HID_GET_CONFIG_HEADER,
+    NAS_XHCI_STAGE_HID_GET_CONFIG_FULL,
+    NAS_XHCI_STAGE_HID_SET_CONFIG,
+    NAS_XHCI_STAGE_HID_SET_PROTOCOL,
+    NAS_XHCI_STAGE_HID_CONFIGURE_EP,
+    NAS_XHCI_STAGE_HID_ARM,
+    NAS_XHCI_STAGE_HID_READY,
+    NAS_XHCI_STAGE_HID_POLL
 };
 struct nas_xhci_ro_session {
     const struct nas_xhci_io *io;
@@ -70,9 +79,15 @@ struct nas_xhci_ro_session {
     uint8_t port_speed;
     uint8_t interface_number;
     uint8_t bulk_out_dci, bulk_in_dci;
+    uint8_t hid_in_dci;
+    uint8_t hid_interval;
+    uint16_t hid_packet;
+    uint64_t hid_trb_bus;
     bool may_dma;
     bool ready;
     bool io_active;
+    bool hid_mode;
+    bool hid_pending;
 };
 
 /* Opens one xHCI root-port USB Mass Storage Bulk-Only Transport device
@@ -99,5 +114,30 @@ int nas_xhci_ro_bulk_in(struct nas_xhci_ro_session *,
  * as safe PCI BAR release). Calling close again retries quiescence.
  */
 int nas_xhci_ro_close(struct nas_xhci_ro_session *);
+
+/* H12 QEMU-only HID Boot Keyboard mode. This is a separate, HID-only
+ * controller lifetime, never concurrent with the H11 mass-storage mode.
+ * The caller must zero-initialize the same leased session structure and use
+ * the same independently qualified xHCI MMIO and QEMU-coherent DMA provider.
+ * Requires interface class/subclass/protocol 03/01/01, one Interrupt-IN
+ * endpoint and the standard eight-byte USB Boot Keyboard input report.
+ * Open arms exactly one Interrupt-IN TRB before returning.
+ */
+int nas_xhci_hid_open(const struct nas_xhci_io *,
+                      const struct nas_dma_provider *,
+                      struct nas_xhci_ro_session *);
+
+/* Nonblocking, polling-only completion. 0 means one real complete eight-byte
+ * report was copied and the next Interrupt-IN TRB rearmed. -EAGAIN means no
+ * report is ready: output is unmodified and NO additional TRB is enqueued.
+ * Other negative errno means an actual error, no fabricated report or
+ * hidden reset/retry. Caller must close even after a failed open/poll.
+ */
+int nas_xhci_hid_poll(struct nas_xhci_ro_session *, uint8_t report[8]);
+
+/* Alias of the same bounded HCHalted-first DMA release as H11.
+ * On failure, PCI BAR and all DMA memory remain pinned for retry.
+ */
+int nas_xhci_hid_close(struct nas_xhci_ro_session *);
 
 #endif
