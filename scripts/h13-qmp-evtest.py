@@ -152,9 +152,14 @@ def main():
         mice = qmp['qmp_command'](sock, reader, 'query-mice')
         if not isinstance(mice, list):
             raise RuntimeError(f'query-mice unexpected return {mice!r}')
+        # QEMU's `usb-mouse` registers the QMP pointer as "QEMU HID Mouse",
+        # while the guest evtest identifies the actual device as BUS_USB.
+        # Require that this (not the separately listed PS/2 mouse) is the
+        # currently selected relative pointer before injecting any events.
         usb_mice = [m for m in mice if isinstance(m, dict) and
-                    'USB Mouse' in m.get('name', '') and
-                    not m.get('absolute', True)]
+                    m.get('name') == 'QEMU HID Mouse' and
+                    m.get('current') is True and
+                    m.get('absolute') is False]
         if len(usb_mice) != 1:
             raise RuntimeError(f'QMP did not enumerate unique relative USB mouse {mice!r}')
 
