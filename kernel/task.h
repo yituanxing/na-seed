@@ -137,6 +137,12 @@ struct nas_task {
     uint16_t ioprio;
     char comm[16]; /* Linux per-thread PR_SET_NAME, inherited at fork. */
     bool execed; /* parent may not setpgid(child) after successful exec */
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+    /* Kernel-owned successful exec provenance, never derived from prctl
+     * task comm or user-supplied argv. Fork inherits the same ELF image;
+     * a later exec replaces this flag transactionally at commit. */
+    bool m257_original_debian_halt;
+#endif
     /* Immutable executable argv snapshot; incomplete overlong vectors
      * are not exposed as fabricated procfs command lines. */
     char commandline[1024];

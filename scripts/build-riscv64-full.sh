@@ -43,6 +43,15 @@ if [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; then
     flags="$flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
 fi
 [ "${NAS_M241_PLATFORM_POWERDOWN:-0}" = 1 ] && flags="$flags -DNAS_M241_PLATFORM_POWERDOWN=1"
+[ "${NAS_ENABLE_M257_DEBIAN_SHUTDOWN:-0}" != 1 ] || {
+    [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] &&
+      [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] &&
+      [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ] &&
+      [ "${NAS_M241_PLATFORM_POWERDOWN:-0}" = 1 ] || {
+        echo '[M257] signed Debian halt requires ext4 root and physical poweroff' >&2; exit 1;
+      }
+    flags="$flags -DNAS_ENABLE_M257_DEBIAN_SHUTDOWN=1"
+}
 [ "${NAS_M242_PLATFORM_REBOOT:-0}" = 1 ] && flags="$flags -DNAS_M242_PLATFORM_REBOOT=1"
 if [ "${NAS_ENABLE_M253_NONROOT_DAC:-0}" = 1 ]; then
     [ "${NAS_M253_DAC_ENFORCEMENT_COMPLETE:-0}" = 1 ] || {

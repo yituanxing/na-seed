@@ -118,6 +118,7 @@ boot_case() {
         m254-shell) time_budget=${NAS_M254_QEMU_TIMEOUT:-420} ;;
         m255-init) time_budget=${NAS_M255_QEMU_TIMEOUT:-420} ;;
         m256-initctl) time_budget=${NAS_M256_QEMU_TIMEOUT:-480} ;;
+        m257-shutdown) time_budget=${NAS_M257_QEMU_TIMEOUT:-700} ;;
         m200-fbdev) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
         m201-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
         m202-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-260} ;;

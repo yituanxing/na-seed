@@ -547,6 +547,16 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * released by nas_mm_put(previous_mm) after the root switch. */
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+    /* This is the committed VFS-resolved, upstream ext4 ELF identity, not
+     * PR_SET_NAME, argv[0], an untrusted path string or a script wrapper.
+     * Keep the original Debian halt command reachable ONLY from the signed
+     * physical-root profile. Reset provenance on every successful exec. */
+    TASK.m257_original_debian_halt =
+        app.filesystem && app.filesystem->exec_source_label &&
+        strcmp(app.filesystem->exec_source_label,"lwext4")==0 &&
+        strcmp(actual,"/usr/sbin/halt")==0;
+#endif
     /* Linux execve preserves credentials, including Task-owned supplementary
      * groups, but explicitly clears PR_SET_KEEPCAPS. No non-root identity
      * or file-capability transition is silently enabled by this reset. */

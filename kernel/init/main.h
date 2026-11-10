@@ -12,4 +12,8 @@ void nas_init_process_terminated(uint32_t status,uint32_t signal);
 void nas_init_note_pid1_shutdown_consumed(unsigned signal);
 uint64_t nas_init_alpine_power_request(const struct nas_task *caller,
                                        uint32_t command);
+/* Dedicated original Debian SysVinit runlevel-0 profile. This deliberately
+ * does NOT relax the Alpine BusyBox/vfork reboot(2) policy. */
+uint64_t nas_init_debian_power_request(const struct nas_task *caller,
+                                       uint32_t command);
 #endif

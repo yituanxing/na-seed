@@ -1101,7 +1101,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
          * userspace. Only AFTER validation, retire this child through its
          * normal exit_group/vfork-release path. The independent scheduler
          * stack then retires PID1 and durably unmounts ext4. */
+        /* Separate original signed Debian runlevel-0 authorization from
+         * BusyBox's vfork/signal shutdown contract. This does not grant
+         * generic root shells a working reboot(2) syscall. */
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+        result=nas_init_debian_power_request(&TASK,command);
+#else
         result=nas_init_alpine_power_request(&TASK,command);
+#endif
         if(result)return result;
         nas_sched_thread_group_exit(0,0);
         return nas_task_schedule((uint64_t *)(uintptr_t)args);

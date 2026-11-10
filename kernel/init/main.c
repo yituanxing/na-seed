@@ -6,6 +6,7 @@
 #include "../boot_image.h"
 #include "../syscall/reboot_policy.h"
 #include "../errno.h"
+#include "../lib/string.h"
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -23,6 +24,9 @@ static bool pid1_exit_waiting;
 static bool pid1_shutdown_quiesced;
 static uint64_t pid1_shutdown_signals;
 static uint32_t pid1_power_command;
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+static bool pid1_debian_power;
+#endif
 #endif
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
 extern void nas_lwext4_m180_shutdown_request(void);
@@ -174,17 +178,17 @@ static void nas_init_finish_success(void) {
      * teardown BEFORE reporting this failure: panic-on-exit would otherwise
      * strand dirty filesystem buffers and invalidate subsequent boots. */
     if(pid1_shutdown_signals && !pid1_power_command)
-        nas_fail("Alpine PID1 shutdown lacked a supported final reboot(2)");
+        nas_fail("PID1 shutdown lacked a supported final reboot(2)");
 #ifdef NAS_M241_PLATFORM_POWERDOWN
-    /* Native platform powerdown is reserved for the completed original
-     * BusyBox poweroff(2) contract; a successful generic PID1 exit is not
-     * sufficient authority to request SBI SRST / PSCI SYSTEM_OFF. */
+    /* Native platform powerdown requires the completed original BusyBox
+     * or M257 signed Debian halt poweroff(2) contract. A generic PID1 exit
+     * is never sufficient authority for SBI SRST / PSCI SYSTEM_OFF. */
     if(pid1_power_command!=NAS_LINUX_REBOOT_POWER_OFF
 #ifdef NAS_M242_PLATFORM_REBOOT
        && pid1_power_command!=NAS_LINUX_REBOOT_RESTART
 #endif
        )
-        nas_fail("M241 platform powerdown without original Alpine POWER_OFF");
+        nas_fail("platform powerdown without authorized original POWER_OFF");
 #endif
 #ifdef NAS_M242_PLATFORM_REBOOT
     if(pid1_power_command==NAS_LINUX_REBOOT_RESTART) {
@@ -199,6 +203,13 @@ static void nas_init_finish_success(void) {
     /* Printed only AFTER final Files close, the async worker drains, and
      * the actual ext4 filesystem is durably unmounted. A QEMU test exit
      * is NOT a physical FPGA board's power controller. */
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+    if(pid1_debian_power) {
+        if(pid1_power_command!=NAS_LINUX_REBOOT_POWER_OFF)
+            nas_fail("M257 Debian shutdown did not authorize POWER_OFF");
+        nas_print("[M257 DEBIAN POWER_OFF] original SysVinit halt; durable ext4 unmount\n");
+    } else
+#endif
     if(pid1_power_command==NAS_LINUX_REBOOT_POWER_OFF)
         nas_print("[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount\n");
     else if(pid1_power_command==NAS_LINUX_REBOOT_HALT)
@@ -249,6 +260,42 @@ uint64_t nas_init_alpine_power_request(const struct nas_task *caller,
     if(pid1_power_command && pid1_power_command!=command)
         return (uint64_t)-EBUSY;
     pid1_power_command=command;
+    return 0;
+#else
+    (void)caller;(void)command;
+    return (uint64_t)-EOPNOTSUPP;
+#endif
+}
+
+uint64_t nas_init_debian_power_request(const struct nas_task *caller,
+                                       uint32_t command) {
+#if defined(NAS_ENABLE_M257_DEBIAN_SHUTDOWN) && defined(NAS_ENABLE_M191_ALPINE_ROOT)
+    /* The dedicated real-Debian physical-root image uses signed SysVinit
+     * PID1. Only a root-owned, committed original /usr/sbin/halt ELF that
+     * was executed directly by PID1 may request POWER_OFF. PR_SET_NAME,
+     * argv[0] and a random shell's reboot(2) have no authority. Host seed
+     * verification pins the exact signed Debian binary on physical ext4. */
+    const struct nas_task *init=nas_task_by_pid(1);
+    if(command!=NAS_LINUX_REBOOT_POWER_OFF) {
+        nas_print("[M257 HALT FAIL] original halt requested non-POWER_OFF command\n");
+        return (uint64_t)-EOPNOTSUPP;
+    }
+    if(!caller || !caller->m257_original_debian_halt ||
+       caller->pid==1 || caller->tgid==1 || caller->ppid!=1 ||
+       caller->credentials.ruid!=0 || caller->credentials.euid!=0 ||
+       caller->credentials.fsuid!=0 ||
+       !init || init->pid!=1 || init->tgid!=1 ||
+       init->state==NAS_TASK_ZOMBIE || init->group_exit_pending) {
+        nas_print("[M257 HALT FAIL] rejected caller without signed PID1 child ELF origin\n");
+        return (uint64_t)-EPERM;
+    }
+    if(pid1_power_command) {
+        nas_print("[M257 HALT FAIL] duplicate power request\n");
+        return (uint64_t)-EBUSY;
+    }
+    pid1_power_command=command;
+    pid1_debian_power=true;
+    nas_print("[M257 DEBIAN HALT AUTHORIZED] original signed ext4 halt requested POWER_OFF\n");
     return 0;
 #else
     (void)caller;(void)command;
@@ -312,7 +359,7 @@ void nas_init_process_deferred_exit_service(void) {
          * reboot vfork child must have fully exited and released the shared
          * VM before this scheduler-stack transition can finalize PID1. */
         const struct nas_task *init=nas_task_by_pid(1);
-        if(!init)nas_fail("original Alpine PID1 missing at shutdown");
+        if(!init)nas_fail("original PID1 missing at shutdown");
         if(init->state!=NAS_TASK_ZOMBIE && !init->vfork_child_pid) {
             if(nas_signal_shutdown_init())
                 nas_fail("original Alpine scheduler PID1 exit failed");
@@ -413,6 +460,10 @@ void nas_init_userspace(void) {
      * Select root ownership before any pseudo mount gets a parent Dentry. */
     if(!nas_boot_argv_first())
         nas_fail("M191 requires explicit naseed.argv=/sbin/init");
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+    if(strcmp(nas_boot_argv_first(),"/sbin/init")!=0)
+        nas_fail("M257 requires original Debian /sbin/init PID1 from physical ext4");
+#endif
     const char *boot_error=nas_boot_prepare(NULL,&selected_image);
     if(nas_vfs_prepare_external_boot_root())
         nas_fail("M191 root selection happened after VFS registration");
