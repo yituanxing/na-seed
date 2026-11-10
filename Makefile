@@ -64,6 +64,12 @@ $(error NAS_ENABLE_H4_QEMU_NVME_READONLY requires isolated H3 QEMU NVMe profile)
 endif
 CFLAGS += -DNAS_ENABLE_H4_QEMU_NVME_READONLY=1
 endif
+ifeq ($(NAS_ENABLE_H5_QEMU_PCI_RESOURCE),1)
+ifneq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+$(error NAS_ENABLE_H5_QEMU_PCI_RESOURCE requires the isolated H4 read-only namespace profile)
+endif
+CFLAGS += -DNAS_ENABLE_H5_QEMU_PCI_RESOURCE=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -145,6 +151,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 .PHONY: hw-h2-host-check hw-h2-kernel hw-h2-iso
 .PHONY: hw-h3-host-check hw-h3-kernel hw-h3-iso
 .PHONY: hw-h4-host-check hw-h4-kernel hw-h4-iso
+.PHONY: hw-h5-host-check hw-h5-kernel hw-h5-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -199,6 +206,17 @@ hw-h4-kernel:
 
 hw-h4-iso:
 	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 iso
+
+# H5 is deliberately a distinct, QEMU-only artifact. It accepts discovered
+# PCI resources only after the runtime QEMU and NVMe safety qualification;
+# it is NOT a physical-machine driver enablement image.
+hw-h5-host-check: hw-h4-host-check
+
+hw-h5-kernel:
+	$(MAKE) OUT=build/h5-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 kernel
+
+hw-h5-iso:
+	$(MAKE) OUT=build/h5-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 iso
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)

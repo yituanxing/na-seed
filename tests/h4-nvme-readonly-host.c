@@ -47,6 +47,8 @@ struct fake_nvme {
     uint8_t admin_phase,io_phase;
     unsigned identify_count,create_cq_count,create_sq_count,read_count;
     bool no_completion,bad_namespace,fail_disable,io_failure,bad_opcode;
+    bool read_cap_failure;
+    bool write_enable_applied_but_error;
     bool four_k,metadata,bad_capacity;
 };
 
@@ -55,6 +57,7 @@ static uint64_t cmd_prp(const uint8_t *sq) {
 }
 static int fake_read(void *context,uint32_t off,uint32_t *val) {
     struct fake_nvme *f=context;
+    if(f->read_cap_failure && off==0U)return -EIO;
     if(!val || (off&3U) || off>=sizeof(f->reg))return -EIO;
     *val=f->reg[off/4U];return 0;
 }
@@ -132,6 +135,9 @@ static int fake_write(void *context,uint32_t off,uint32_t val) {
         if(val&1U)f->reg[0x1cU/4U]=1U;
         else if(!f->fail_disable)f->reg[0x1cU/4U]=0U;
         active_dma=(f->reg[0x1cU/4U]&1U)!=0U;
+        /* A hardware-access callback may report an error *after* the
+         * controller has observed an enable. Teardown must still quiesce. */
+        if((val&1U) && f->write_enable_applied_but_error)return -EIO;
     }
     if(off==0x1000U && val>0U)admin_command(f);
     if(off==0x1008U)read_command(f);
@@ -185,6 +191,36 @@ int main(void) {
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 
     reset(&f);session=(struct nas_nvme_ro_session){0};
+    io=(struct nas_nvme_io){.context=&f,.mmio_bytes=sizeof(f.reg),
+                            .read32=fake_read,.write32=fake_write};
+    const struct nas_dma_provider missing_dma_callbacks={.coherent=true};
+    CHECK(nas_nvme_ro_open(&io,&missing_dma_callbacks,&session)==-EINVAL);
+    CHECK(!session.io && !session.may_dma);
+    CHECK(f.reg[0x14U/4U]==0U && alloc_count==0U);
+
+    /* A failure before DMA allocation must not poison the session. The
+     * qualified caller can retry the same static storage after fixing the
+     * controller. No registers or DMA resources are touched on bad CAP. */
+    reset(&f);session=(struct nas_nvme_ro_session){0};
+    f.reg[1]=0U; /* CAP.CSS.NVM unavailable. */
+    CHECK(open_session(&f,&session,&io)==-EOPNOTSUPP);
+    CHECK(!session.io && !session.dma && !session.may_dma);
+    CHECK(alloc_count==0U && free_count==0U);
+    f.reg[1]=1U<<5;
+    CHECK(open_session(&f,&session,&io)==0);
+    CHECK(nas_nvme_ro_close(&session)==0);
+    CHECK(alloc_count==5U && free_count==5U && !invalid_free);
+
+    reset(&f);session=(struct nas_nvme_ro_session){0};
+    f.read_cap_failure=true;
+    CHECK(open_session(&f,&session,&io)==-EIO);
+    CHECK(!session.io && !session.dma && !session.may_dma);
+    f.read_cap_failure=false;
+    CHECK(open_session(&f,&session,&io)==0);
+    CHECK(nas_nvme_ro_close(&session)==0);
+    CHECK(alloc_count==5U && free_count==5U && !invalid_free);
+
+    reset(&f);session=(struct nas_nvme_ro_session){0};
     f.four_k=true;
     CHECK(open_session(&f,&session,&io)==0);
     CHECK(session.sector_bytes==4096U);
@@ -214,9 +250,21 @@ int main(void) {
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 
     reset(&f);session=(struct nas_nvme_ro_session){0};
+    f.write_enable_applied_but_error=true;
+    CHECK(open_session(&f,&session,&io)==-EIO);
+    CHECK(alloc_count==5U && free_count==5U && !invalid_free);
+    CHECK(!session.io && !session.may_dma);
+
+    reset(&f);session=(struct nas_nvme_ro_session){0};
     f.fail_disable=true;f.bad_namespace=true;
     CHECK(open_session(&f,&session,&io)==-ENODEV);
     CHECK(alloc_count==5U && free_count==0U && !invalid_free);
+    CHECK(session.io && session.may_dma);
+    CHECK(nas_nvme_ro_close(&session)==-ETIMEDOUT);
+    CHECK(alloc_count==5U && free_count==0U && !invalid_free);
+    f.fail_disable=false;
+    CHECK(nas_nvme_ro_close(&session)==0);
+    CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 
     reset(&f);session=(struct nas_nvme_ro_session){0};
     CHECK(open_session(&f,&session,&io)==0);

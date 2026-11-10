@@ -18,6 +18,13 @@
 #define H3_NVME_VIRT_BASE UINT64_C(0xfffffe8001100000)
 #define H3_NVME_QEMU_BAR UINT64_C(0x000000c000000000)
 #define H3_NVME_MAPPED_BYTES 8192U
+#ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
+/* Isolated Q35 fixture's high 64-bit PCI MMIO allocation window, not a
+ * portable x86 host bridge range or an independently measured BAR aperture.
+ * H5 still requires fw_cfg + unique QEMU NVMe device + explicit QEMU build. */
+#define H5_QEMU_MMIO64_BASE UINT64_C(0x000000c000000000)
+#define H5_QEMU_MMIO64_BYTES UINT64_C(0x0000000100000000)
+#endif
 
 struct h3_nvme_mmio {
     uint64_t virtual_base;
@@ -148,10 +155,12 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     if(!function || !resources)return -EINVAL;
     /* The only permitted target is this exact QEMU-generated device/profile.
      * No generic physical NVMe BAR write support is implied by H3. */
-    if(function->bus!=0U || function->slot!=3U || function->function!=0U ||
-       function->vendor_id!=0x1b36U || function->device_id!=0x0010U ||
+    if(function->vendor_id!=0x1b36U || function->device_id!=0x0010U ||
        function->class_code!=1U || function->subclass!=8U ||
        function->programming_interface!=2U ||
+#ifndef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
+       function->bus!=0U || function->slot!=3U || function->function!=0U ||
+#endif
        !h3_qemu_fw_cfg_signature()) {
         nas_print("[H3 NVME FAIL] not the isolated QEMU controller\n");
         return -ENODEV;
@@ -163,12 +172,28 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
             break;
         }
     }
-    if(!bar || bar->kind!=NAS_PCI_BAR_MEM64 ||
+    if(!bar || bar->kind!=NAS_PCI_BAR_MEM64 || bar->prefetchable ||
+#ifndef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
        bar->base!=H3_NVME_QEMU_BAR ||
-       (bar->base&4095U) || bar->base>UINT64_MAX-H3_NVME_MAPPED_BYTES) {
+#endif
+       (bar->base&4095U) || bar->base>UINT64_MAX-H3_NVME_MAPPED_BYTES ||
+       bar->base>UINT64_C(0x000ffffffffff000)-H3_NVME_MAPPED_BYTES) {
         nas_print("[H3 NVME FAIL] unsupported/unqualified QEMU BAR0\n");
         return -ENODEV;
     }
+#ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
+    struct nas_pci_mmio_owner owner={
+        .window_base=H5_QEMU_MMIO64_BASE,
+        .window_bytes=H5_QEMU_MMIO64_BYTES
+    };
+    struct nas_pci_mmio_claim claim={0};
+    int claim_rc=nas_pci_mmio_claim_bar(&owner,resources,0U,
+                                       H3_NVME_MAPPED_BYTES,&claim);
+    if(claim_rc) {
+        nas_print("[H5 PCI BAR FAIL] outside bounded QEMU MMIO64 fixture window\n");
+        return claim_rc;
+    }
+#endif
     /* No unhandled guest interrupts can race the CF8 selector while the
      * experimental admin-queue device is active. This image halts afterward. */
     __asm__ volatile("cli" ::: "memory");
@@ -179,6 +204,13 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
             return -EIO;
         }
     }
+#ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
+    nas_print("[H5 PCI BAR QUALIFIED] bus=");nas_dec(function->bus);
+    nas_print(" slot=");nas_dec(function->slot);
+    nas_print(" function=");nas_dec(function->function);
+    nas_print(" BAR0=");nas_hex(claim.base);
+    nas_print(" extent=8192 QEMU fixture only; true BAR size unknown\n");
+#endif
     /* PCI Command bits: memory-space decode + bus master. No I/O decode,
      * MSI, MSI-X, DMA remapping or actual namespace/block driver binding. */
     /* Upper PCI Status bits are W1C. Never echo their readback into the
@@ -201,6 +233,9 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
      * disable/quiesce admin DMA before returning, even on error. */
     h3_pci_config_write32(function->bus,function->slot,function->function,
                           4U,before);
+#ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
+    if(!rc && nas_pci_mmio_release(&owner,&claim))rc=-EIO;
+#endif
     if(rc) {
 #ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
         nas_print("[H4 NVME FAIL] read-only LBA/block path error=");

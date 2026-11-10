@@ -140,6 +140,8 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
                      const struct nas_dma_provider *dma,
                      struct nas_nvme_ro_session *s) {
     if(!io || !io->read32 || !io->write32 || !dma || !s ||
+       !dma->alloc_page || !dma->release_page ||
+       (!dma->coherent && !dma->sync) ||
        io->mmio_bytes<NVME_DOORBELL_BASE+16U)return -EINVAL;
     if(s->io || s->admin.sq.cpu || s->admin.cq.cpu || s->data.sq.cpu ||
        s->data.cq.cpu || s->bounce.cpu)return -EBUSY;
@@ -148,19 +150,21 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     int rc=io_read(s,NVME_CAP,&cap_lo);
     if(!rc)rc=io_read(s,NVME_CAP+4U,&cap_hi);
     if(!rc)rc=io_read(s,NVME_CC,&cc);
-    if(rc)return rc;
+    if(rc)goto failed;
     uint64_t cap=(uint64_t)cap_lo|((uint64_t)cap_hi<<32);
     if((cap&0xffffU)<NAS_NVME_RO_QUEUE_DEPTH-1U ||
-       !(cap&(UINT64_C(1)<<37)) || ((cap>>48)&15U)!=0U)return -EOPNOTSUPP;
+       !(cap&(UINT64_C(1)<<37)) || ((cap>>48)&15U)!=0U) {
+        rc=-EOPNOTSUPP;goto failed;
+    }
     s->doorbell_stride=(uint8_t)((cap>>32)&15U);
     if(db_off(s,&(struct nas_nvme_ro_queue){.qid=1U},true) >
-       io->mmio_bytes-4U)return -EOPNOTSUPP;
+       io->mmio_bytes-4U) {rc=-EOPNOTSUPP;goto failed;}
     if(cc&NVME_CC_EN) {
         rc=io_write(s,NVME_CC,cc&~NVME_CC_EN);
-        if(rc)return rc;
+        if(rc)goto failed;
     }
     rc=ready_wait(s,false);
-    if(rc)return rc;
+    if(rc)goto failed;
     struct nas_dma_page *pages[]={&s->admin.sq,&s->admin.cq,
                                   &s->data.sq,&s->data.cq,&s->bounce};
     for(unsigned i=0;i<sizeof(pages)/sizeof(pages[0]);i++) {
@@ -223,6 +227,11 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     s->ready=true;
     return 0;
 failed:
+    /* Every failed open follows one cleanup path. Before controller enable,
+     * cleanup only owns local pages and no DMA can reference them. Once CC
+     * may have taken effect, close must prove RDY=0 first, or preserve all
+     * DMA descriptors so a later quiesce can retry safely. A clean failure
+     * leaves a reusable zeroed session rather than a stale busy handle. */
     (void)nas_nvme_ro_close(s);
     return rc;
 }

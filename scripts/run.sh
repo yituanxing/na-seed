@@ -45,18 +45,39 @@ if [ "${NAS_QEMU_H2_NVME:-0}" = 1 ]; then
         echo 'H2 controller-only and H4 namespace profiles are exclusive' >&2
         exit 2
     }
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" != 1 ] || {
+        echo 'H2 controller-only and H5 PCI namespace profiles are exclusive' >&2
+        exit 2
+    }
     set -- "$@" -device nvme,id=naseed_h2_nvme,serial=naseedh2
 fi
 # H4: a known, generated one-megabyte namespace fixture, explicitly mounted
 # read-only. NEVER accept a caller-supplied raw disk/device path. This profile
 # is a QEMU-only experiment, not a physical-machine hardware path.
 if [ "${NAS_QEMU_H4_NVME:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" != 1 ] || {
+        echo 'H4 fixed-BDF and H5 relocated PCI profiles are exclusive' >&2
+        exit 2
+    }
     h4_image=build/h4-qemu-only/h4-seed.img
     sh scripts/check-h4-nvme-seed.sh || exit 2
     set -- "$@" \
         -drive "if=none,id=naseed_h4_disk,format=raw,file=$h4_image,readonly=on" \
         -device nvme,id=naseed_h2_nvme,serial=naseedh2 \
         -device nvme-ns,drive=naseed_h4_disk,nsid=1
+fi
+# H5: same fixed, disposable, read-only namespace, but the NVMe endpoint is
+# deliberately moved away from H4's 00:03.0 PCI function. A harmless PCI
+# balloon-function decoy occupies slot 3. Dynamic PCI BAR qualification is
+# exercised by the guest; no caller-selected block images or physical DMA.
+if [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 1 ]; then
+    h5_image=build/h4-qemu-only/h4-seed.img
+    sh scripts/check-h4-nvme-seed.sh || exit 2
+    set -- "$@" \
+        -device virtio-balloon-pci,id=naseed_h5_decoy,disable-legacy=on,bus=pcie.0,addr=0x3 \
+        -drive "if=none,id=naseed_h5_disk,format=raw,file=$h5_image,readonly=on" \
+        -device nvme,id=naseed_h5_nvme,serial=naseedh5,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h5_disk,nsid=1
 fi
 # Real QEMU input devices, separate from the serial console and RAMFB.
 # The default headless device profile remains unchanged.

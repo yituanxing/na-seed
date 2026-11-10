@@ -18,6 +18,7 @@ enum nas_pci_bar_kind {
 
 #define NAS_PCI_RESOURCE_BAR_LIMIT 6U
 #define NAS_PCI_RESOURCE_CAP_LIMIT 32U
+#define NAS_PCI_MMIO_CLAIM_LIMIT 8U
 
 struct nas_pci_bar_desc {
     enum nas_pci_bar_kind kind;
@@ -34,6 +35,30 @@ struct nas_pci_resources {
     struct nas_pci_bar_desc bars[NAS_PCI_RESOURCE_BAR_LIMIT];
     struct nas_pci_cap_desc caps[NAS_PCI_RESOURCE_CAP_LIMIT];
 };
+
+/* A platform-qualified *window* is independent of an unsized BAR snapshot.
+ * The platform must establish that this is a safe host-bridge MMIO aperture
+ * before constructing the owner. Claims only reserve a caller-requested
+ * extent within that window: they DO NOT probe BAR size, map pages, assign
+ * an IRQ, authorize DMA or prove that firmware has reserved the aperture. */
+struct nas_pci_mmio_claim {
+    uint64_t base, bytes;
+    uint8_t bar_index;
+};
+struct nas_pci_mmio_owner {
+    uint64_t window_base, window_bytes;
+    unsigned held;
+    struct nas_pci_mmio_claim claims[NAS_PCI_MMIO_CLAIM_LIMIT];
+};
+
+/* Fail closed on invalid, unaligned, overflowing, out-of-window or
+ * overlapping claims. No PCI config I/O is performed. */
+int nas_pci_mmio_claim_bar(struct nas_pci_mmio_owner *owner,
+                           const struct nas_pci_resources *resources,
+                           uint8_t bar_index,uint64_t required_bytes,
+                           struct nas_pci_mmio_claim *out);
+int nas_pci_mmio_release(struct nas_pci_mmio_owner *owner,
+                          const struct nas_pci_mmio_claim *claim);
 
 /* No PCI config writes. Reads only Command/Status, BARs and conventional
  * capabilities (first 256 bytes). Rejects malformed reserved encodings,

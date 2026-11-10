@@ -33,7 +33,9 @@ struct h1_context {
     unsigned h2_xhci;
 #endif
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
-    unsigned h3_verified;
+    bool h3_candidate_found;
+    struct nas_pci_function_info h3_candidate;
+    struct nas_pci_resources h3_candidate_resources;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -120,9 +122,14 @@ static int h1_compare_function(void *context,
 #endif
         ++h1->h2_nvme;
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
-        if(h1->h3_verified ||
-           nas_x86_h3_nvme_identify(function,&resources))return -EIO;
-        ++h1->h3_verified;
+        /* Keep H2's discovery phase read-only until the entire PCI scan
+         * confirms there is exactly one NVMe candidate. In particular a
+         * second controller must not appear *after* controller writes. */
+        if(!h1->h3_candidate_found) {
+            h1->h3_candidate=*function;
+            h1->h3_candidate_resources=resources;
+            h1->h3_candidate_found=true;
+        }
 #endif
     } else if(function->class_code==0x01U && function->subclass==0x06U &&
               function->programming_interface==0x01U) ++h1->h2_ahci;
@@ -163,8 +170,10 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         return result ? result : -EIO;
     }
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
-    if(h1.h3_verified!=1U) {
-        nas_print("[H3 NVME FAIL] expected exactly one QEMU NVMe Identify\n");
+    if(h1.h2_nvme!=1U || !h1.h3_candidate_found ||
+       nas_x86_h3_nvme_identify(&h1.h3_candidate,
+                                 &h1.h3_candidate_resources)) {
+        nas_print("[H3 NVME FAIL] one qualified candidate required before controller writes\n");
         return -ENODEV;
     }
 #endif

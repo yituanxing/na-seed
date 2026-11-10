@@ -153,6 +153,53 @@ int main(void) {
           "do not follow garbage pointer without status capability bit");
 
     good_fixture(&f);
+    check(!probe(&f,&dev,&r),"restore BAR snapshot for scoped MMIO claims");
+    struct nas_pci_mmio_owner owner={
+        .window_base=UINT64_C(0x0000000100000000),
+        .window_bytes=UINT64_C(0x0000000020000000)
+    };
+    struct nas_pci_mmio_claim claim={0};
+    check(!nas_pci_mmio_claim_bar(&owner,&r,1U,8192U,&claim) &&
+          owner.held==1U && claim.base==UINT64_C(0x0000000110000000) &&
+          claim.bytes==8192U && claim.bar_index==1U,
+          "independently bounded MMIO window admits chosen 8KiB BAR extent");
+    struct nas_pci_mmio_claim second={0};
+    check(nas_pci_mmio_claim_bar(&owner,&r,1U,4096U,&second)==-EBUSY &&
+          !second.base && owner.held==1U,
+          "duplicate/overlapping reservations fail closed");
+    check(nas_pci_mmio_claim_bar(&owner,&r,3U,4096U,&second)==-ENODEV &&
+          !second.base,"I/O BAR cannot authorize MMIO mapping");
+    check(nas_pci_mmio_claim_bar(&owner,&r,0U,4096U,&second)==-ENODEV &&
+          !second.base,"firmware BAR outside bounded host-bridge aperture");
+    check(nas_pci_mmio_claim_bar(&owner,&r,1U,1234U,&second)==-EINVAL,
+          "MMIO reservation rejects unaligned extent");
+    check(!nas_pci_mmio_release(&owner,&claim) && owner.held==0U &&
+          nas_pci_mmio_release(&owner,&claim)==-ENODEV,
+          "MMIO claim release is explicit and idempotence is rejected");
+    check(!nas_pci_mmio_claim_bar(&owner,&r,1U,4096U,&second) &&
+          !nas_pci_mmio_release(&owner,&second),
+          "released BAR may be reclaimed without stale ownership");
+
+    struct nas_pci_mmio_owner bad_owner={
+        .window_base=UINT64_MAX-4095U,.window_bytes=8192U
+    };
+    check(nas_pci_mmio_claim_bar(&bad_owner,&r,1U,4096U,&second)==-EINVAL,
+          "overflowing host bridge window is not trusted");
+    bad_owner=(struct nas_pci_mmio_owner){
+        .window_base=UINT64_C(0x0000000110000000),.window_bytes=4096U
+    };
+    check(nas_pci_mmio_claim_bar(&bad_owner,&r,1U,8192U,&second)==-ENODEV,
+          "requested MMIO extent must fit independently qualified window");
+    struct nas_pci_resources malformed=r;
+    malformed.bars[1].base=UINT64_MAX-4095U;
+    check(nas_pci_mmio_claim_bar(&owner,&malformed,1U,8192U,&second)==-ENODEV,
+          "BAR range cannot wrap address space");
+    malformed=r;
+    malformed.bars[1].base++;
+    check(nas_pci_mmio_claim_bar(&owner,&malformed,1U,4096U,&second)==-ENODEV,
+          "unaligned BAR base is never device-mapped");
+
+    good_fixture(&f);
     dev.header_type=1U;
     f.reg[0x14/4]=UINT32_C(0x00001004);
     probe_failed(&f,&dev,-EIO,"bridge MEM64 last-slot pair rejected");
@@ -171,6 +218,6 @@ int main(void) {
     check(nas_pci_resources_probe(&reader,&dev,NULL)==-EINVAL,
           "missing result rejected");
 
-    puts("[H2 PCI RESOURCE HOST PASS] BAR types, 64-bit pairs, capability loops, bounded read-only probe");
+    puts("[H2 PCI RESOURCE HOST PASS] BAR types, 64-bit pairs, capability loops, read-only probe, bounded MMIO claims");
     return 0;
 }

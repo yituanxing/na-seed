@@ -82,3 +82,64 @@ int nas_pci_resources_probe(const struct nas_pci_config_reader *reader,
     *out=found;
     return 0;
 }
+
+static bool pci_range_valid(uint64_t base,uint64_t bytes) {
+    return base && bytes && !(base&4095U) && !(bytes&4095U) &&
+           base<=UINT64_MAX-bytes;
+}
+
+int nas_pci_mmio_claim_bar(struct nas_pci_mmio_owner *owner,
+                           const struct nas_pci_resources *resources,
+                           uint8_t bar_index,uint64_t required_bytes,
+                           struct nas_pci_mmio_claim *out) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_pci_mmio_claim){0};
+    if(!owner || !resources ||
+       !pci_range_valid(owner->window_base,owner->window_bytes) ||
+       !required_bytes || (required_bytes&4095U) ||
+       owner->held>=NAS_PCI_MMIO_CLAIM_LIMIT) return -EINVAL;
+    const struct nas_pci_bar_desc *bar=NULL;
+    for(unsigned i=0;i<resources->bar_count &&
+                       i<NAS_PCI_RESOURCE_BAR_LIMIT;i++) {
+        if(resources->bars[i].index==bar_index) {
+            if(bar)return -EIO; /* malformed duplicate BAR index */
+            bar=&resources->bars[i];
+        }
+    }
+    if(!bar || (bar->kind!=NAS_PCI_BAR_MEM32 &&
+                 bar->kind!=NAS_PCI_BAR_MEM64) ||
+       !pci_range_valid(bar->base,required_bytes))return -ENODEV;
+    if(bar->base<owner->window_base ||
+       bar->base-owner->window_base>=owner->window_bytes ||
+       required_bytes>owner->window_bytes-(bar->base-owner->window_base))
+        return -ENODEV;
+    uint64_t end=bar->base+required_bytes;
+    for(unsigned i=0;i<owner->held;i++) {
+        uint64_t old_base=owner->claims[i].base;
+        uint64_t old_end=old_base+owner->claims[i].bytes;
+        if(bar->base<old_end && old_base<end)return -EBUSY;
+    }
+    struct nas_pci_mmio_claim claim={
+        .base=bar->base,.bytes=required_bytes,.bar_index=bar_index
+    };
+    owner->claims[owner->held++]=claim;
+    *out=claim;
+    return 0;
+}
+
+int nas_pci_mmio_release(struct nas_pci_mmio_owner *owner,
+                          const struct nas_pci_mmio_claim *claim) {
+    if(!owner || !claim || !claim->bytes ||
+       owner->held>NAS_PCI_MMIO_CLAIM_LIMIT)return -EINVAL;
+    for(unsigned i=0;i<owner->held;i++) {
+        const struct nas_pci_mmio_claim *old=&owner->claims[i];
+        if(old->base!=claim->base || old->bytes!=claim->bytes ||
+           old->bar_index!=claim->bar_index)continue;
+        for(unsigned j=i+1U;j<owner->held;j++)
+            owner->claims[j-1U]=owner->claims[j];
+        --owner->held;
+        owner->claims[owner->held]=(struct nas_pci_mmio_claim){0};
+        return 0;
+    }
+    return -ENODEV;
+}
