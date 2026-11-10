@@ -48,7 +48,10 @@ wait "$observer_pid" 2>/dev/null || :
 qemu_pid=''
 observer_pid=''
 tr -d '\r' < "$serial_log" > "$clean"
-if [ "$rc" -ne 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 143 ]; then
+# The observer may stop an already-refusing guest cleanly (rc=0); the
+# required real rejection marker and all no-userspace/no-fallback checks
+# below remain mandatory regardless of this host-side process status.
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 143 ]; then
     echo "[H12 NO-USB-KBD FAIL] QEMU did not refuse/halt within bound rc=$rc" >&2
     tail -150 "$clean" >&2
     exit 1

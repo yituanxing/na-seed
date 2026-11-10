@@ -47,7 +47,9 @@ wait "$observer_pid" 2>/dev/null || :
 qemu_pid=''
 observer_pid=''
 tr -d '\r' < "$serial_log" > "$clean"
-if [ "$rc" -ne 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 143 ]; then
+# A clean rc=0 after SIGTERM is not a guest success. Only the independent
+# exact refusal marker plus absent-hardware/no-PID1 evidence below may PASS.
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 143 ]; then
     echo "[H12 NO-XHCI FAIL] QEMU did not refuse/halt within bound rc=$rc" >&2
     tail -150 "$clean" >&2
     exit 1
