@@ -25,7 +25,7 @@ RUN_MARKERS = (
     b"[M256 RUN TMPFS] real mount(2) attached /run",
     b"[M256 INITCTL] signaled real Debian PID1 to reopen control FIFO",
     b"[M256 INITCTL] original PID1 FIFO is an actual named pipe",
-    b"[M256 INITCTL] signed Debian telinit submitted runlevel 3",
+    b"INIT: Switching to runlevel: 3",
     b"[M256 RUNLEVEL] original Debian init executed runlevel 3 inittab action",
 )
 SIGNED_EXEC = b"[EXEC] replaced process with lwext4 ELF: /usr/sbin/telinit"
@@ -41,7 +41,7 @@ def inspect(raw: bytes) -> dict:
         RUN_MARKERS[0], RUN_MARKERS[1],
         b"[M255 SYSINIT] original Debian init launched inittab sysinit action",
         b"M255-SERVICE-FIRST-PID=", b"M255-SERVICE-RESPAWN-PID=",
-        RUN_MARKERS[2],
+        RUN_MARKERS[2], SIGNED_EXEC, RUN_MARKERS[3], RUN_MARKERS[4],
     )
     last = -1
     for marker in require_order:

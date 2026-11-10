@@ -17,5 +17,7 @@ done
 # terminates all runlevel-2 services.
 /usr/bin/sleep 1
 /usr/bin/printf '%s\n' '[M256 INITCTL] original PID1 FIFO is an actual named pipe'
+# A successful runlevel transition may terminate this runlevel-2 process
+# before telinit returns. The authoritative result is PID1's switch marker
+# plus its runlevel-3 inittab action, not a post-telinit shell print.
 /usr/sbin/telinit 3
-/usr/bin/printf '%s\n' '[M256 INITCTL] signed Debian telinit submitted runlevel 3'

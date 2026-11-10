@@ -33,8 +33,9 @@ def fake():
         b"M255-SERVICE-RESPAWN-PID=11",
         *m255.EXEC_MARKERS,
         *([b"[DYN] real ELF interpreter loaded, entry=0x1234"] * 5),
-        *uart.RUN_MARKERS[2:],
+        uart.RUN_MARKERS[2],
         uart.SIGNED_EXEC,
+        *uart.RUN_MARKERS[3:],
     )) + b"\n"
 
 
@@ -104,6 +105,7 @@ class M256RealUART(unittest.TestCase):
             fake().replace(uart.SIGNED_EXEC, b"FAKE signed telinit"),
             fake().replace(uart.RUN_MARKERS[0], b"not mounted"),
             fake().replace(uart.RUN_MARKERS[-1], b"echo instead of runlevel"),
+            fake().replace(uart.RUN_MARKERS[3], b"no actual PID1 runlevel switch"),
             fake().replace(b"M255-SERVICE-RESPAWN-PID=11", b"M255-SERVICE-RESPAWN-PID=8"),
             fake().replace(uart.RUN_MARKERS[2], b"[M256 INITCTL FAIL] cannot open"),
         ):
