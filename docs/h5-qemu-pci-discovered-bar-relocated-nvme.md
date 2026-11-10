@@ -31,11 +31,18 @@ final marker; it fails on guest errors and verifies the generated namespace SHA
 both before and after QEMU execution. CI stores the serial log, ISO, and fixed
 seed in artifacts.
 
+The first actual H5 QEMU UEFI acceptance on 2026-11-10
+([run 42813493844](https://github.com/yituanxing/na-seed/actions/runs/42813493844))
+observed BDF `00:05.0`, BAR0 `0x000000c000004000`, and successful exact
+LBA0/LBA1 reads through `nas_block_read`. H4 used BAR0 `0x000000c000000000`.
+The regression script additionally rejects that old hardcoded BAR0 when
+running the H5 fixture, while accepting other valid relocated QEMU BAR values.
+
 ## What this does **not** prove
 
-- Relocating the PCI **function** (BDF) does not guarantee OVMF assigned a
-  different physical BAR address. The guest logs the discovered BAR; the test
-  must not assert a BAR relocation unless serial data actually confirms it.
+- Relocating the PCI **function** (BDF) does not *generally* guarantee OVMF
+  assigns a different physical BAR address. This exact QEMU fixture did show
+  a different BAR and now asserts it, but that is not a portable firmware rule.
 - Firmware-assigned BAR metadata alone does not establish actual BAR aperture
   size, exclusive ownership, safe DMA address translation, cache coherency,
   interrupt routing, or IOMMU mappings on physical x86 hardware.

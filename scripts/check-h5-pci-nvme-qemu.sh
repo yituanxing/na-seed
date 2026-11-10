@@ -53,6 +53,15 @@ for required in \
     fi
 done
 
+# H4's qualified controller was mapped at 0xc000000000. Besides relocating
+# the BDF, this fixture must actually exercise a newly assigned MMIO BAR;
+# otherwise a regression could still accidentally use the old hardcoded PA.
+if grep -Fq '[H5 PCI BAR QUALIFIED] bus=0 slot=5 function=0 BAR0=0x000000c000000000' "$serial_log"; then
+    echo 'H5: BAR0 did not move from H4 fixed physical address' >&2
+    tail -120 "$serial_log" >&2
+    exit 1
+fi
+
 if grep -Eq '^\[FAIL\]|^\[H[345] .*FAIL\]|^\[H[45] ERROR\]' "$serial_log"; then
     echo 'H5: guest reported error despite apparent success markers' >&2
     tail -120 "$serial_log" >&2
