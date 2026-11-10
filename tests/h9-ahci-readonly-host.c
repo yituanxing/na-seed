@@ -80,6 +80,7 @@ struct fake_ahci {
     unsigned identify_count,read_count,illegal_ata,write_headers,prdt_errors;
     unsigned atapi_port_writes;
     bool no_completion,fail_stop,bad_identify,fail_read,fail_cap_read;
+    bool placeholder_sig,placeholder_stuck,placeholder_becomes_atapi;
     unsigned fail_at_read_count;
     uint64_t sectors;
     uint64_t last_lba;
@@ -163,6 +164,14 @@ static int fake_write(void *ctx,uint32_t off,uint32_t value) {
         unsigned status=value&~(AHCI_CMD_CR|AHCI_CMD_FR);
         if(value&AHCI_CMD_ST)status|=AHCI_CMD_CR;
         if(value&AHCI_CMD_FRE)status|=AHCI_CMD_FR;
+        if((value&AHCI_CMD_FRE) && f->placeholder_sig &&
+           !(f->reg[off/4U]&AHCI_CMD_FRE) &&
+           !f->placeholder_stuck) {
+            /* QEMU ahci_init_d2h() publishes PxSIG only once the guest
+             * enables the FIS receive engine. */
+            f->reg[AHCI_PX_SIG/4U]=f->placeholder_becomes_atapi ?
+                                     0xeb140101U : 0x00000101U;
+        }
         if(f->fail_stop) status|=f->reg[off/4U]&
                            (AHCI_CMD_CR|AHCI_CMD_FR);
         f->reg[off/4U]=status;
@@ -232,6 +241,36 @@ int main(void) {
                          close_rc,f.reg[AHCI_PX_CMD/4U],active_dma,
                          s.lease.held,s.lease.may_dma);
     CHECK(close_rc==0);
+    CHECK(allocations==frees && !invalid_free);
+
+    /* QEMU's AHCI reset can leave PxSIG=0xffffffff until first FRE.
+     * Selection is provisional; only the post-FRE SATA D2H signature
+     * authorizes IDENTIFY and any actual disk data transfer. */
+    reset(&f);s=(struct nas_ahci_ro_session){0};
+    f.placeholder_sig=true;
+    f.reg[AHCI_PX_SIG/4U]=UINT32_MAX;
+    CHECK(open_session(&f,&io,&s)==0);
+    CHECK(f.reg[AHCI_PX_SIG/4U]==0x00000101U);
+    CHECK(f.identify_count==1U && f.illegal_ata==0U);
+    CHECK(nas_ahci_ro_read(&s,42U,1U,sector)==0);
+    for(unsigned i=0;i<512U;i++)
+        CHECK(sector[i]==(uint8_t)(i+17U*42U));
+    CHECK(nas_ahci_ro_close(&s)==0);
+    CHECK(allocations==frees && !invalid_free);
+
+    reset(&f);s=(struct nas_ahci_ro_session){0};
+    f.placeholder_sig=f.placeholder_stuck=true;
+    f.reg[AHCI_PX_SIG/4U]=UINT32_MAX;
+    CHECK(open_session(&f,&io,&s)==-ENODEV);
+    CHECK(f.identify_count==0U && f.illegal_ata==0U);
+    CHECK(allocations==frees && !invalid_free);
+
+    reset(&f);s=(struct nas_ahci_ro_session){0};
+    f.placeholder_sig=f.placeholder_becomes_atapi=true;
+    f.reg[AHCI_PX_SIG/4U]=UINT32_MAX;
+    CHECK(open_session(&f,&io,&s)==-ENODEV);
+    CHECK(f.reg[AHCI_PX_SIG/4U]==0xeb140101U);
+    CHECK(f.identify_count==0U && f.illegal_ata==0U);
     CHECK(allocations==frees && !invalid_free);
 
     /* Q35 includes the boot ISO on another SATA/ATAPI port. One real ATA

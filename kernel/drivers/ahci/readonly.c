@@ -299,13 +299,23 @@ int nas_ahci_ro_open(const struct nas_ahci_io *io,
         rc=io_read(s,off+AHCI_SSTS,&ssts);
         if(!rc)rc=io_read(s,off+AHCI_SIG,&sig);
         if(rc)goto failed;
-        /* Other active ATAPI ports (the Q35 UEFI boot CDROM) are never
-         * touched; one and only one plain SATA data disk may be owned. */
-        if((ssts&15U)==3U && ((ssts>>8)&15U)==1U &&
-           sig==AHCI_SIG_ATA) {
-            if(++disks!=1U) {rc=-EOPNOTSUPP;goto failed;}
-            s->port=(uint8_t)p;
+        /* This is a FIXED Q35 fixture: the readonly data disk uses ide.0
+         * (AHCI port zero), while the UEFI boot CDROM is another, ATAPI
+         * port. QEMU may report PxSIG=0xffffffff on an unused SATA port
+         * until FRE receives its first D2H FIS. Read-only inventory may
+         * provisionally select ONLY port zero in that state; below, after
+         * enabling FRE, the final SATA signature MUST be proven before
+         * sending even the read-only ATA IDENTIFY command. */
+        bool present=(ssts&15U)==3U && ((ssts>>8)&15U)==1U;
+        if(!present)continue;
+        if(p==0U && (sig==AHCI_SIG_ATA || sig==UINT32_MAX)) {
+            if(++disks!=1U){rc=-EOPNOTSUPP;goto failed;}
+            s->port=0U;
             s->port_offset=off;
+        } else if(sig==AHCI_SIG_ATA) {
+            /* An additional real ATA data disk violates fixed media
+             * ownership. Unrecognized other ports are never modified. */
+            rc=-EOPNOTSUPP;goto failed;
         }
     }
     if(disks!=1U){rc=-ENODEV;goto failed;}
@@ -336,7 +346,22 @@ int nas_ahci_ro_open(const struct nas_ahci_io *io,
     uint32_t cmd=0;
     rc=port_read(s,AHCI_CMD,&cmd);
     if(!rc)rc=port_write(s,AHCI_CMD,cmd|AHCI_CMD_FRE);
-    if(!rc)rc=port_write(s,AHCI_CMD,(cmd|AHCI_CMD_FRE|AHCI_CMD_ST));
+    if(rc)goto failed;
+    /* QEMU publishes the type signature on the initial D2H FIS after
+     * FRE is armed. A pre-FRE placeholder must never authorize commands
+     * to an ATAPI or unknown target. The same rule safely handles a port
+     * whose firmware already initialized the signature before takeover. */
+    bool disk_confirmed=false;
+    for(unsigned i=0;i<AHCI_POLL_LIMIT;i++) {
+        uint32_t sig=0;
+        rc=port_read(s,AHCI_SIG,&sig);
+        if(rc)goto failed;
+        if(sig==AHCI_SIG_ATA){disk_confirmed=true;break;}
+        if(sig!=UINT32_MAX)break;
+    }
+    if(!disk_confirmed){rc=-ENODEV;goto failed;}
+    rc=port_read(s,AHCI_CMD,&cmd);
+    if(!rc)rc=port_write(s,AHCI_CMD,cmd|AHCI_CMD_ST);
     if(rc)goto failed;
     s->ready=true;
 

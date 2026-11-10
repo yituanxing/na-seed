@@ -152,9 +152,12 @@ if [ "${NAS_QEMU_H8_NVME:-0}" = 1 ]; then
         -device nvme-ns,drive=naseed_h8_disk,nsid=1
 fi
 # H9: Q35 already supplies one ICH9 AHCI SATA controller at 00:1f.2. Do
-# NOT add another AHCI device. Attach only a known, SHA-verified, isolated
-# read-only image to its first SATA/IDE bus; -cdrom occupies IDE1 master.
-# This is an emulator-qualified experiment, never a physical SATA path.
+# NOT add another AHCI device. QEMU ide-hd rejects a read-only block *node*,
+# so its SATA frontend sees an ephemeral writable QCOW2 snapshot while the
+# actual fixed raw backing image stays mode 0444 and SHA-pinned. The NaSeed
+# AHCI and BlockDevice remain strictly read-only; no ATA writes are issued.
+# -cdrom occupies IDE1 master, while our disk is IDE0. QEMU-only, never a
+# physical SATA path or an arbitrary user-selected storage device.
 if [ "${NAS_QEMU_H9_AHCI:-0}" = 1 ]; then
     [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
     [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
@@ -177,8 +180,12 @@ if [ "${NAS_QEMU_H9_AHCI:-0}" = 1 ]; then
         echo 'H9 SATA original-Alpine media checksum mismatch before boot' >&2
         exit 2
     }
+    [ "$(stat -c '%a' "$h9_image")" = 444 ] || {
+        echo 'H9 SATA raw backing image must be chmod 0444 before snapshot boot' >&2
+        exit 2
+    }
     set -- "$@" \
-        -drive "if=none,id=naseed_h9_disk,format=raw,file=$h9_image,readonly=on" \
+        -drive "if=none,id=naseed_h9_disk,format=raw,file=$h9_image,snapshot=on,readonly=off" \
         -device ide-hd,drive=naseed_h9_disk,bus=ide.0
 fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero

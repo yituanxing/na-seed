@@ -23,7 +23,7 @@ rescue="$out/rescue.cpio"
 source_root=build/external/m39-packages/amd64/rootfs
 
 for tool in docker sudo curl tar readelf sha256sum mke2fs debugfs \
-            truncate cpio cmp grep find tr; do
+            truncate cpio cmp grep find tr stat chmod; do
     command -v "$tool" >/dev/null || {
         echo "[H9 HOST FAIL] missing required $tool" >&2
         exit 1
@@ -80,6 +80,10 @@ else
     mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' \
         -U 01234567-89ab-4cde-8000-000000000009 \
         -d "$tree" "$image"
+    # QEMU IDE/SATA does not accept an actually read-only block node. Give
+    # ide-hd a disposable snapshot overlay while protecting the raw backing
+    # image at the host filesystem level, independently of guest semantics.
+    chmod 0444 "$image"
     (cd "$out" && sha256sum h9-alpine.ext4 > h9-media-before.sha256)
     sha256sum "$source_root/bin/busybox" "$tree/bin/busybox" \
         "$source_root/usr/bin/lua5.4" "$tree/usr/bin/lua5.4" \
@@ -94,6 +98,10 @@ if cpio -it --quiet < "$rescue" |
     exit 1
 fi
 (cd "$out" && sha256sum -c h9-media-before.sha256)
+[ "$(stat -c '%a' "$image")" = 444 ] || {
+    echo '[H9 HOST FAIL] SATA raw backing image not chmod 0444' >&2
+    exit 1
+}
 sha256sum -c "$originals"
 
 # Actual ext4 inode readback, not merely a host directory or filename proof.

@@ -14,7 +14,15 @@ command-table and bounce-page leases, and must stop both port engines and
 confirm their hardware-running bits clear before freeing DMA pages. No SATA
 write/flush operation is supported. PCI BAR5 is qualified, mapped UC and
 claimed only for the known QEMU profile. The exact host image is a bounded
-128 MiB, read-only QEMU fixture with a SHA-256 witness before and after.
+128 MiB raw fixture with mode `0444` and SHA-256 witness before and after.
+
+QEMU's `ide-hd` frontend refuses a block node with `readonly=on`; this is
+different from NVMe's support for a read-only QEMU backing node. To avoid
+unblocking real media writes, H9 uses `snapshot=on` **only on its fixed SATA
+drive**: QEMU redirects any hypothetical writes into a disposable temporary
+overlay; the raw `0444` backing image is never written. NaSeed's SATA driver
+and VFS additionally expose readonly semantics and issue no ATA writes.
+The image's unchanged SHA-256 is still required after actual guest execution.
 
 ## Exact run and acceptance contract
 
