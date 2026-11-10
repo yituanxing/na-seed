@@ -1,0 +1,78 @@
+name: NaSeed H4 QEMU-only NVMe read-only namespace LBA
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h4-qemu-nvme-readonly.yml'
+      - 'kernel/platform/x86_h4_*'
+      - 'kernel/platform/x86_h3_nvme.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/nvme/**'
+      - 'kernel/drivers/port/block.*'
+      - 'kernel/kernel.c'
+      - 'tests/h4-*.c'
+      - 'scripts/check-h4-*.sh'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h4-nvme-readonly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h4-qemu-namespace-readonly-lba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding tools and QEMU NVMe
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0–H4 host regression and isolated kernel build
+        run: |
+          make hw-h4-host-check
+          make hw-h4-kernel
+          readelf -h build/h4-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          make hw-h4-iso
+      - name: Generate and SHA-verify disposable 1 MiB NVMe namespace
+        run: sh scripts/check-h4-nvme-seed.sh
+      - name: Actual QEMU UEFI NVMe namespace LBA0+LBA1 read-only acceptance
+        timeout-minutes: 5
+        run: sh scripts/check-h4-nvme-readonly-qemu.sh build/h4-qemu-only/naseed.iso build/h4-qemu-only/h4-qemu-uefi-serial.log
+      - name: Preserve H4 NVMe read-only LBA serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h4-x86-qemu-nvme-readonly-lba-serial
+          path: build/h4-qemu-only/h4-qemu-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve H4 disposable namespace fixture and UEFI image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h4-x86-qemu-nvme-readonly-uefi-and-seed
+          path: |
+            build/h4-qemu-only/naseed.iso
+            build/h4-qemu-only/h4-seed.img
+          if-no-files-found: error

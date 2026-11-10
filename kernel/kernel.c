@@ -294,7 +294,9 @@ void kmain(void) {
 #else
     (void)h0_acpi_ok;
 #endif
-#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+    nas_print("[H4 COMPLETE] QEMU-only disposable namespace read; no LBA writes\n");
+#elif defined(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY)
     nas_print("[H3 COMPLETE] QEMU-only NVMe Identify; no namespace LBA I/O\n");
 #else
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");

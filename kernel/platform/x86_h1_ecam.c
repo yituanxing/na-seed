@@ -110,7 +110,11 @@ static int h1_compare_function(void *context,
     if(function->class_code==0x01U && function->subclass==0x08U &&
        function->programming_interface==0x02U) {
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+        nas_print("[H2 NVME CANDIDATE] discovered; H4 QEMU namespace read follows\n");
+#else
         nas_print("[H2 NVME CANDIDATE] discovered; H3 QEMU admin test follows\n");
+#endif
 #else
         nas_print("[H2 NVME CANDIDATE] discovered; no controller writes/DMA\n");
 #endif
@@ -169,7 +173,11 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
     nas_print(" mapped RO/UC pages=");
     nas_dec(h1.mapped);
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+    nas_print(" (H1 config snapshot; H4 QEMU namespace BAR MMIO separate)\n");
+#else
     nas_print(" (H1 config snapshot; H3 QEMU admin BAR MMIO separate)\n");
+#endif
 #else
     nas_print(" no BAR MMIO/DMA/IRQ access\n");
 #endif
@@ -178,7 +186,11 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
     nas_print(" AHCI=");nas_dec(h1.h2_ahci);
     nas_print(" xHCI=");nas_dec(h1.h2_xhci);
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+    nas_print(" (H2 discovery snapshot; H4 QEMU namespace writes separate)\n");
+#else
     nas_print(" (H2 discovery snapshot; H3 QEMU admin writes separate)\n");
+#endif
 #else
     nas_print(" PCI register writes=0 driver registrations=0\n");
 #endif

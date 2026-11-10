@@ -58,6 +58,12 @@ $(error NAS_ENABLE_H3_QEMU_NVME_IDENTIFY requires H2 discovery)
 endif
 CFLAGS += -DNAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1
 endif
+ifeq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+ifneq ($(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY),1)
+$(error NAS_ENABLE_H4_QEMU_NVME_READONLY requires isolated H3 QEMU NVMe profile)
+endif
+CFLAGS += -DNAS_ENABLE_H4_QEMU_NVME_READONLY=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -138,6 +144,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 .PHONY: hw-h1-host-check hw-h1-kernel hw-h1-iso
 .PHONY: hw-h2-host-check hw-h2-kernel hw-h2-iso
 .PHONY: hw-h3-host-check hw-h3-kernel hw-h3-iso
+.PHONY: hw-h4-host-check hw-h4-kernel hw-h4-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -182,6 +189,17 @@ hw-h3-kernel:
 hw-h3-iso:
 	$(MAKE) OUT=build/h3-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 iso
 
+# H4 cannot be booted on a real PC: it writes QEMU NVMe admin/I/O queues.
+# A separate OUT prevents incremental-build reuse with all other profiles.
+hw-h4-host-check: hw-h3-host-check
+	sh scripts/check-h4-nvme-readonly-host.sh
+
+hw-h4-kernel:
+	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 kernel
+
+hw-h4-iso:
+	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 iso
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -195,6 +213,9 @@ endif
 ifeq ($(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY),1)
 H0_HW_SRCS += kernel/platform/x86_h3_nvme.c \
  kernel/drivers/nvme/identify.c kernel/drivers/port/dma.c
+endif
+ifeq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+H0_HW_SRCS += kernel/drivers/nvme/readonly.c kernel/drivers/port/block.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw

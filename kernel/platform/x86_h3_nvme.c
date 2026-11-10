@@ -1,6 +1,11 @@
 #include "x86_h3_nvme.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/nvme/identify.h"
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+#include "../drivers/nvme/readonly.h"
+#include "../drivers/port/block.h"
+#include "../block/device.h"
+#endif
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <stdbool.h>
@@ -17,6 +22,78 @@
 struct h3_nvme_mmio {
     uint64_t virtual_base;
 };
+
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+/* H4's real read test uses the normal BlockDevice registry. The I/O queue,
+ * DMA and port storage remain stable for the entire synchronous probe. */
+static struct nas_nvme_ro_session h4_session;
+static struct nas_port_block h4_port;
+static uint8_t h4_sector[4096];
+static const struct nas_port_block_ops h4_port_ops;
+
+static int64_t h4_port_read(void *backend,uint64_t lba,
+                             uint32_t count,void *dst) {
+    int rc=nas_nvme_ro_read((struct nas_nvme_ro_session *)backend,lba,
+                            count,dst);
+    return rc ? rc : (int64_t)count;
+}
+static const struct nas_port_block_ops h4_port_ops={.read=h4_port_read};
+
+static bool h4_expected_sector(unsigned which,const uint8_t *data) {
+    static const char marker0[]="NASEED-H4-NVME-LBA0-20261110";
+    static const char marker1[]="NASEED-H4-NVME-LBA1-20261110";
+    const char *marker=which ? marker1 : marker0;
+    unsigned size=(unsigned)(sizeof(marker0)-1U);
+    for(unsigned i=0;i<512U;i++) {
+        uint8_t expected=0;
+        if(i<size)expected=(uint8_t)marker[i];
+        if(i==511U)expected=(uint8_t)(which ? '1' : '0');
+        if(data[i]!=expected)return false;
+    }
+    return true;
+}
+
+static int h4_readonly_block_proof(const struct nas_nvme_io *io) {
+    int rc=nas_nvme_ro_open(io,&nas_dma_qemu_coherent,&h4_session);
+    if(rc)return rc;
+    bool attached=false;
+    struct nas_block_device *block=NULL;
+    if(h4_session.sector_bytes!=512U || h4_session.sectors<2U) {
+        rc=-EOPNOTSUPP;
+        goto finish;
+    }
+    rc=nas_port_block_attach(&h4_port,"h4nvme",&h4_session,
+                              h4_session.sectors,h4_session.sector_bytes,
+                              1U,true,NAS_PORT_BLOCK_SECTORS,&h4_port_ops);
+    if(rc)goto finish;
+    attached=true;
+    block=nas_block_get("h4nvme");
+    if(!block) {rc=-ENODEV;goto finish;}
+    for(unsigned lba=0;lba<2U;lba++) {
+        rc=nas_block_read(block,lba,1U,h4_sector);
+        if(rc || !h4_expected_sector(lba,h4_sector)) {
+            if(!rc)rc=-EIO;
+            goto finish;
+        }
+    }
+    nas_print("[H4 NVME LBA VERIFIED] NSID=1 LBA0+LBA1 exact fixture bytes\n");
+    if(nas_block_write(block,0U,1U,h4_sector)!=-EROFS) {
+        rc=-EIO;
+        goto finish;
+    }
+    nas_print("[H4 BLOCK PORT VERIFIED] nas_block_read x2, writes=-EROFS\n");
+finish:
+    if(block)nas_block_put(block);
+    if(attached) {
+        int detach=nas_port_block_detach(&h4_port);
+        if(detach && !rc)rc=detach;
+    }
+    /* If the controller cannot stop, its DMA allocations remain pinned. */
+    int close_rc=nas_nvme_ro_close(&h4_session);
+    if(close_rc && !rc)rc=close_rc;
+    return rc;
+}
+#endif
 
 static bool h3_qemu_fw_cfg_signature(void) {
     static const char signature[4] = { 'Q', 'E', 'M', 'U' };
@@ -114,17 +191,28 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
         .context=&mmio,.mmio_bytes=H3_NVME_MAPPED_BYTES,
         .read32=h3_mmio_read32,.write32=h3_mmio_write32
     };
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+    int rc=h4_readonly_block_proof(&io);
+#else
     struct nas_nvme_identity id={0};
     int rc=nas_nvme_identify_controller(&io,&nas_dma_qemu_coherent,&id);
+#endif
     /* Reset only the PCI command flags enabled by H3. The NVMe core must
      * disable/quiesce admin DMA before returning, even on error. */
     h3_pci_config_write32(function->bus,function->slot,function->function,
                           4U,before);
     if(rc) {
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+        nas_print("[H4 NVME FAIL] read-only LBA/block path error=");
+#else
         nas_print("[H3 NVME FAIL] Identify admin queue error=");
+#endif
         nas_dec((unsigned)(-rc));nas_print("\n");
         return rc;
     }
+#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+    nas_print("[H4 NVME] QEMU namespace read-only proof; LBA writes=0\n");
+#else
     nas_print("[H3 NVME IDENTIFY VERIFIED] VS=");nas_hex(id.version);
     nas_print(" VID=");nas_hex(id.vendor_id);
     nas_print(" ControllerNN(raw)=");nas_dec(id.controller_nn);
@@ -132,5 +220,6 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     nas_print(" MN=");nas_print(id.model);
     nas_print("\n");
     nas_print("[H3 NVME] no namespace block attach; no LBA I/O\n");
+#endif
     return 0;
 }

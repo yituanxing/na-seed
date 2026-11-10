@@ -41,7 +41,22 @@ fi
 # may read PCI configuration metadata but cannot touch a host or guest disk.
 # Normal QEMU profiles are unchanged unless explicitly opted in.
 if [ "${NAS_QEMU_H2_NVME:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H4_NVME:-0}" != 1 ] || {
+        echo 'H2 controller-only and H4 namespace profiles are exclusive' >&2
+        exit 2
+    }
     set -- "$@" -device nvme,id=naseed_h2_nvme,serial=naseedh2
+fi
+# H4: a known, generated one-megabyte namespace fixture, explicitly mounted
+# read-only. NEVER accept a caller-supplied raw disk/device path. This profile
+# is a QEMU-only experiment, not a physical-machine hardware path.
+if [ "${NAS_QEMU_H4_NVME:-0}" = 1 ]; then
+    h4_image=build/h4-qemu-only/h4-seed.img
+    sh scripts/check-h4-nvme-seed.sh || exit 2
+    set -- "$@" \
+        -drive "if=none,id=naseed_h4_disk,format=raw,file=$h4_image,readonly=on" \
+        -device nvme,id=naseed_h2_nvme,serial=naseedh2 \
+        -device nvme-ns,drive=naseed_h4_disk,nsid=1
 fi
 # Real QEMU input devices, separate from the serial console and RAMFB.
 # The default headless device profile remains unchanged.
