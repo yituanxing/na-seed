@@ -12,6 +12,9 @@
 #include <limine.h>
 #include <stdint.h>
 #include <stdbool.h>
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)
+#define NAS_EXTERNAL_EXT4_BOOT_ROOT 1
+#endif
 #ifdef NAS_ENABLE_M179_FS_IRQ
 #include "../../kernel/mm/heap.h"
 #include "../../kernel/task/kthread.h"
@@ -55,16 +58,21 @@ static void partition_device_name(char name[32],
 
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
 extern void nas_dec(uint64_t);
 static void m191_boot_fail(const char *phase,int code) {
-    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    nas_print("[H8 NVME ROOT FAIL] ");
+#else
+    nas_print("[M191 ROOT FAIL] ");
+#endif
+    nas_print(phase);
     nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
     nas_print("\n");
 }
 #endif
 static bool boot_shutdown_failed(const char *stage,int code) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
     nas_print("[LWEXT4 SHUTDOWN ERROR] ");nas_print(stage);
     nas_print(" errno=");nas_dec((uint64_t)(code<0?-code:code));
     nas_print("\n");
@@ -102,7 +110,7 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
     }
     if(file) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         /* The persistent Alpine root must be backed by a real partition.
          * A Limine RAM image cannot satisfy the reboot-persistence gate. */
         return false;
@@ -187,7 +195,7 @@ bool nas_lwext4_guest_boot_mount(void) {
             nas_print("[H7 NVME EXT4 FAIL] no genuine ext4 superblock on nvme0\n");
             return false;
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
             m191_boot_fail("ext4-superblock-not-found",disks);
             return false; /* selected external root is mandatory */
 #else
@@ -211,7 +219,7 @@ bool nas_lwext4_guest_boot_mount(void) {
             selected_device=partition_name;
         }
         const char *target=
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
             "/";
 #else
             "/mnt";
@@ -239,19 +247,25 @@ bool nas_lwext4_guest_boot_mount(void) {
             }
             return false;
         }
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         /* The M191 build switch now also hosts signed Debian/glibc root
          * programs. Keep its old acceptance marker for Alpine regressions,
          * and provide a distribution-neutral physical root observation. */
         nas_print("[ROOTFS] physical ext4 root registered at /\n");
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
         nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
+#endif
 #endif
 #ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
         if(!boot_mount.mount.read_only) {
             nas_print("[H7 NVME EXT4 FAIL] mounted filesystem must be read-only\n");
             return false;
         }
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+        nas_print("[H8 NVME ALPINE ROOT MOUNTED] / read-only source=nvme0\n");
+#else
         nas_print("[H7 NVME EXT4 MOUNTED] /mnt read-only source=nvme0\n");
+#endif
 #else
         nas_print(chosen_partition_index ?
             "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :
@@ -267,7 +281,7 @@ bool nas_lwext4_guest_boot_mount(void) {
     struct nas_fs_node node;
     /* Same VFS pathwalk whether the provider owns a RAM module or real disk. */
     const char *mounted_path=
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         "/";
 #else
         "/mnt";
@@ -302,7 +316,7 @@ bool nas_lwext4_guest_boot_shutdown(void) {
      * shutdown and therefore executes the full readonly unmount below. */
     if (boot_mount.mount.read_only) return true;
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
     /* Original OpenRC mounts real runtime tmpfs (such as /run), which
      * retains parent/covered root Dentries even after PID1 and its shell
      * exit. Quiescence has already closed every File and cwd owner here. */

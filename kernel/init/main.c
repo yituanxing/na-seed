@@ -7,6 +7,9 @@
 #include "../syscall/reboot_policy.h"
 #include "../errno.h"
 #include "../lib/string.h"
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)
+#define NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT 1
+#endif
 #ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
 #include "../platform/x86_h3_nvme.h"
 #endif
@@ -19,11 +22,11 @@ extern bool nas_lwext4_async_runtime_passed(void);
 extern bool nas_lwext4_async_runtime_armed(void);
 extern void nas_lwext4_async_runtime_step(void);
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 void nas_init_process_deferred_exit_service(void);
 static bool pid1_exit_waiting;
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
 static bool pid1_shutdown_quiesced;
 static uint64_t pid1_shutdown_signals;
 static uint32_t pid1_power_command;
@@ -89,7 +92,7 @@ static void deferred_lwext4_worker(void *context) {
     nas_lwext4_async_runtime_step();
 }
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 static void deferred_pid1_exit(void *context) {
     (void)context;
     nas_init_process_deferred_exit_service();
@@ -132,7 +135,7 @@ static void init_deferred_services(void) {
                                    deferred_input_events,NULL);
     if(rc)nas_fail("deferred input service registration failed");
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
     rc=nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
                                    deferred_pid1_exit,NULL);
@@ -145,7 +148,7 @@ static void init_deferred_services(void) {
  * The scheduler publishes its group-finalization event; the boot policy
  * stays here, never in an ISA trap or the syscall dispatch hot path. */
 static void nas_init_finish_success(void) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* The physical ext4 filesystem is /, and all other mounts attach to
      * its Dentry tree. Detach any additional guests before the root. */
 #ifdef NAS_ENABLE_RAMFS
@@ -172,9 +175,12 @@ static void nas_init_finish_success(void) {
      * failed quiesce must NEVER produce a userland PASS marker. */
     if (nas_x86_h7_nvme_shutdown())
         nas_fail("H7 NVMe controller shutdown or BlockDevice detach failed");
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    nas_print("[H8 NVME ALPINE ROOT SHUTDOWN] ext4 unmounted; controller quiesced\n");
+#endif
     nas_print("[H7 NVME USERLAND SHUTDOWN] ext4 unmounted; controller quiesced\n");
 #endif
-#ifndef NAS_ENABLE_M191_ALPINE_ROOT
+#ifndef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
 #ifdef NAS_ENABLE_LITTLEFS
     if (!nas_littlefs_guest_boot_shutdown())
         nas_fail("littlefs guest VFS unmount failed");
@@ -184,7 +190,7 @@ static void nas_init_finish_success(void) {
         nas_fail("upstream ramfs guest VFS unmount failed");
 #endif
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* A failed/unsupported final reboot(2) may still leave original PID1
      * in its shutdown sleep. Always finish the real ext4
      * teardown BEFORE reporting this failure: panic-on-exit would otherwise
@@ -323,7 +329,7 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     if(signal)nas_fail("init terminated by default fatal signal");
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
     if(code)nas_fail("userspace exited nonzero");
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* A detached watchdog, daemon or worker may outlive a successful PID1.
      * Do not unmount its /dev or ext4 beneath real live OpenFiles. The
      * final scheduler boundary has its own stack and can quiesce all user
@@ -363,9 +369,9 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 #endif
 }
 
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 void nas_init_process_deferred_exit_service(void) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     if(pid1_power_command && !pid1_exit_waiting) {
         /* The real BusyBox shutdown parent never calls exit(2). Its legal
          * reboot vfork child must have fully exited and released the shared
@@ -466,19 +472,19 @@ void nas_init_userspace(void) {
      * bootfs.c; only this layer maps the actual ELF into userspace.
      */
     struct nas_boot_image selected_image;
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* Keep CPIO as an immutable rescue archive, but take PID1 from the
      * official Alpine ext4 root after its real BlockDevice is registered.
      * Select root ownership before any pseudo mount gets a parent Dentry. */
     if(!nas_boot_argv_first())
-        nas_fail("M191 requires explicit naseed.argv=/sbin/init");
+        nas_fail("external ext4 root requires explicit naseed.argv=/absolute/elf");
 #ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
     if(strcmp(nas_boot_argv_first(),"/sbin/init")!=0)
         nas_fail("M257 requires original Debian /sbin/init PID1 from physical ext4");
 #endif
     const char *boot_error=nas_boot_prepare(NULL,&selected_image);
     if(nas_vfs_prepare_external_boot_root())
-        nas_fail("M191 root selection happened after VFS registration");
+        nas_fail("external root selection happened after VFS registration");
 #else
     const char *boot_error = nas_boot_prepare(
         nas_boot_argv_first(), &selected_image);
@@ -491,7 +497,7 @@ void nas_init_userspace(void) {
     if (!nas_lwext4_guest_boot_mount())
         nas_fail("opt-in lwext4 Limine module/VFS mount failed");
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     boot_error=nas_boot_prepare_vfs_root(nas_boot_argv_first(),
                                          &selected_image);
     if(boot_error)nas_fail(boot_error);

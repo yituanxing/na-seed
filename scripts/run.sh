@@ -100,6 +100,7 @@ if [ "${NAS_QEMU_H7_NVME:-0}" = 1 ]; then
     [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
     [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
     [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
     [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
     [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] || {
         echo 'H7 fixed read-only NVMe and other controller/block profiles are exclusive' >&2
@@ -119,6 +120,36 @@ if [ "${NAS_QEMU_H7_NVME:-0}" = 1 ]; then
         -drive "if=none,id=naseed_h7_disk,format=raw,file=$h7_image,readonly=on" \
         -device nvme,id=naseed_h7_nvme,serial=naseedh7,bus=pcie.0,addr=0x5 \
         -device nvme-ns,drive=naseed_h7_disk,nsid=1
+fi
+# H8's pinned, original Alpine-musl root image is a distinct QEMU-only
+# acceptance medium, never an arbitrary physical block path. Only one
+# discovered NVMe controller exists, on the same relocated Q35 slot as H7.
+if [ "${NAS_QEMU_H8_NVME:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] || {
+        echo 'H8 original Alpine NVMe and other disk/controller profiles are exclusive' >&2
+        exit 2
+    }
+    h8_image=build/h8-qemu-only/h8-alpine.ext4
+    test -s "$h8_image" && [ ! -L "$h8_image" ] &&
+    test -s build/h8-qemu-only/h8-media-before.sha256 || {
+        echo 'H8 fixed original-Alpine NVMe root image/hash missing' >&2
+        exit 2
+    }
+    (cd build/h8-qemu-only && sha256sum -c h8-media-before.sha256 >/dev/null) || {
+        echo 'H8 QEMU Alpine NVMe media checksum mismatch before boot' >&2
+        exit 2
+    }
+    set -- "$@" \
+        -device virtio-balloon-pci,id=naseed_h8_decoy,disable-legacy=on,bus=pcie.0,addr=0x3 \
+        -drive "if=none,id=naseed_h8_disk,format=raw,file=$h8_image,readonly=on" \
+        -device nvme,id=naseed_h8_nvme,serial=naseedh8,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h8_disk,nsid=1
 fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but

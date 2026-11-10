@@ -67,6 +67,17 @@ const char *nas_boot_prepare(const char *selected,
             return "invalid CPIO initramfs module";
         nas_print("[FS] CPIO newc read-only archive mounted\n");
     }
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    /* H8 boots from the real NVMe ext4 root. A minimal, immutable rescue
+     * CPIO remains in Limine's first module slot, but MUST NOT supply an
+     * alternate executable. The actual original Alpine BusyBox and musl
+     * ELF interpreter are selected from the mounted disk afterwards. */
+    if (!selected) {
+        if (!archive_only) return "H8 requires a real rescue CPIO module";
+        nas_print("[H8 ROOT] rescue CPIO indexed; executable must come from NVMe ext4\n");
+        return NULL;
+    }
+#endif
     if (archive_only) {
         /* This is *selection* from the actual archive index, not an
          * alternate hardcoded executable or a writable initramfs.
@@ -182,6 +193,15 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
         nas_boot_image_release(out);
         return "M191 root PID1 has invalid ELF interpreter";
     }
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    /* H8 proves the original dynamically linked Alpine BusyBox enters
+     * through its original musl interpreter, never a static rescue stub. */
+    if (strcmp(selected,"/bin/busybox") != 0 || !wants_loader ||
+        strcmp(out->interpreter_path,NAS_ELF_INTERP) != 0) {
+        nas_boot_image_release(out);
+        return "H8 requires original dynamic /bin/busybox with musl PT_INTERP";
+    }
+#endif
     if (wants_loader) {
         if (nas_fs_lookup_node(out->interpreter_path,true,
                                &out->loader,canonical) ||
@@ -195,6 +215,11 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
         out->interpreter=out->loader.data;
         out->interpreter_size=out->loader.size;
     }
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    nas_print("[H8 NVME PT_INTERP] real NVMe ext4 interpreter: ");
+    nas_print(out->interpreter_path);
+    nas_print("\n");
+#endif
     /* The physical-root path is shared by original Alpine and Debian ELF
      * files. Retain M191's exact Alpine acceptance marker for its two
      * historical init entrypoints; do not label a Debian dash as Alpine. */
