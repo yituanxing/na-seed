@@ -99,10 +99,6 @@ static void copy_bytes(void *dst, const void *src, uint32_t count) {
 static uint16_t le16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
 static void put32(void *dst, uint32_t v) {
     uint8_t *p = (uint8_t *)dst;
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
