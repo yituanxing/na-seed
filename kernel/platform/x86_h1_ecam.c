@@ -10,6 +10,9 @@
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
 #include "x86_h3_nvme.h"
 #endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+#include "x86_h9_ahci.h"
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -36,6 +39,11 @@ struct h1_context {
     bool h3_candidate_found;
     struct nas_pci_function_info h3_candidate;
     struct nas_pci_resources h3_candidate_resources;
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+    bool h9_candidate_found;
+    struct nas_pci_function_info h9_candidate;
+    struct nas_pci_resources h9_candidate_resources;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -132,7 +140,18 @@ static int h1_compare_function(void *context,
         }
 #endif
     } else if(function->class_code==0x01U && function->subclass==0x06U &&
-              function->programming_interface==0x01U) ++h1->h2_ahci;
+              function->programming_interface==0x01U) {
+        ++h1->h2_ahci;
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+        /* Never open a SATA controller in the enumeration callback. The
+         * complete read-only scan must first rule out ambiguous owners. */
+        if(!h1->h9_candidate_found) {
+            h1->h9_candidate=*function;
+            h1->h9_candidate_resources=resources;
+            h1->h9_candidate_found=true;
+        }
+#endif
+    }
     else if(function->class_code==0x0cU && function->subclass==0x03U &&
             function->programming_interface==0x30U) ++h1->h2_xhci;
 #endif
@@ -187,6 +206,14 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         nas_print("[H3 NVME FAIL] one qualified candidate required before controller writes\n");
         return -ENODEV;
     }
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+    if(h1.h2_ahci!=1U || !h1.h9_candidate_found) {
+        nas_print("[H9 AHCI FAIL] required unique QEMU SATA controller unavailable\n");
+        return -ENODEV;
+    }
+    if(nas_x86_h9_ahci_bind(&h1.h9_candidate,
+                            &h1.h9_candidate_resources))return -ENODEV;
 #endif
     nas_print("[H1 ECAM VERIFIED] CF8/ECAM identical functions=");
     nas_dec(h1.verified);

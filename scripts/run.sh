@@ -151,6 +151,36 @@ if [ "${NAS_QEMU_H8_NVME:-0}" = 1 ]; then
         -device nvme,id=naseed_h8_nvme,serial=naseedh8,bus=pcie.0,addr=0x5 \
         -device nvme-ns,drive=naseed_h8_disk,nsid=1
 fi
+# H9: Q35 already supplies one ICH9 AHCI SATA controller at 00:1f.2. Do
+# NOT add another AHCI device. Attach only a known, SHA-verified, isolated
+# read-only image to its first SATA/IDE bus; -cdrom occupies IDE1 master.
+# This is an emulator-qualified experiment, never a physical SATA path.
+if [ "${NAS_QEMU_H9_AHCI:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] || {
+        echo 'H9 AHCI original Alpine and NVMe/VirtIO block profiles are exclusive' >&2
+        exit 2
+    }
+    h9_image=build/h9-qemu-only/h9-alpine.ext4
+    test -s "$h9_image" && [ ! -L "$h9_image" ] &&
+    test -s build/h9-qemu-only/h9-media-before.sha256 || {
+        echo 'H9 fixed original-Alpine SATA root image/hash missing' >&2
+        exit 2
+    }
+    (cd build/h9-qemu-only && sha256sum -c h9-media-before.sha256 >/dev/null) || {
+        echo 'H9 SATA original-Alpine media checksum mismatch before boot' >&2
+        exit 2
+    }
+    set -- "$@" \
+        -drive "if=none,id=naseed_h9_disk,format=raw,file=$h9_image,readonly=on" \
+        -device ide-hd,drive=naseed_h9_disk,bus=ide.0
+fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but
 # must refuse write-capable NVMe initialization before touching either BAR or

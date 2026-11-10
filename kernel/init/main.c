@@ -7,11 +7,16 @@
 #include "../syscall/reboot_policy.h"
 #include "../errno.h"
 #include "../lib/string.h"
-#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
 #define NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT 1
 #endif
 #ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
 #include "../platform/x86_h3_nvme.h"
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+#include "../platform/x86_h9_ahci.h"
 #endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
@@ -179,6 +184,11 @@ static void nas_init_finish_success(void) {
     nas_print("[H8 NVME ALPINE ROOT SHUTDOWN] ext4 unmounted; controller quiesced\n");
 #endif
     nas_print("[H7 NVME USERLAND SHUTDOWN] ext4 unmounted; controller quiesced\n");
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+    if(nas_x86_h9_ahci_shutdown())
+        nas_fail("H9 SATA port/DMA/BAR shutdown failed");
+    nas_print("[H9 AHCI USERLAND SHUTDOWN] ext4 unmounted; SATA port quiesced\n");
 #endif
 #ifndef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
 #ifdef NAS_ENABLE_LITTLEFS

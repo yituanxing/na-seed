@@ -306,6 +306,10 @@ void kmain(void) {
         nas_print("[H3 NVME FAIL] required QEMU admin test failed\n");
         nas_arch_halt();
 #endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+        nas_print("[H9 AHCI FAIL] required QEMU SATA disk unavailable\n");
+        nas_arch_halt();
+#endif
     }
 #endif
 #else
@@ -316,6 +320,8 @@ void kmain(void) {
      * VFS, ELF loader and Ring-3 entry after H0-H6 qualified the device.
      * H0-H6 standalone discovery builds retain their mandatory halt. */
     nas_print("[H7 NVME BOOT CONTINUE] qualified QEMU-only NVMe; normal userspace path\n");
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");
 #elif defined(NAS_ENABLE_H4_QEMU_NVME_READONLY)
     nas_print("[H4 COMPLETE] QEMU-only disposable namespace read; no LBA writes\n");
 #elif defined(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY)
@@ -323,7 +329,8 @@ void kmain(void) {
 #else
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
 #endif
-#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+#if !defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) && \
+    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_arch_halt();
 #endif
 #endif

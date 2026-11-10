@@ -67,14 +67,20 @@ const char *nas_boot_prepare(const char *selected,
             return "invalid CPIO initramfs module";
         nas_print("[FS] CPIO newc read-only archive mounted\n");
     }
-#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+#if defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     /* H8 boots from the real NVMe ext4 root. A minimal, immutable rescue
      * CPIO remains in Limine's first module slot, but MUST NOT supply an
      * alternate executable. The actual original Alpine BusyBox and musl
      * ELF interpreter are selected from the mounted disk afterwards. */
     if (!selected) {
+#if defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+        if (!archive_only) return "H9 requires a non-executable rescue CPIO module";
+        nas_print("[H9 ROOT] rescue CPIO indexed; executable must come from AHCI ext4\n");
+#else
         if (!archive_only) return "H8 requires a real rescue CPIO module";
         nas_print("[H8 ROOT] rescue CPIO indexed; executable must come from NVMe ext4\n");
+#endif
         return NULL;
     }
 #endif
@@ -193,13 +199,14 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
         nas_boot_image_release(out);
         return "M191 root PID1 has invalid ELF interpreter";
     }
-#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+#if defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     /* H8 proves the original dynamically linked Alpine BusyBox enters
      * through its original musl interpreter, never a static rescue stub. */
     if (strcmp(selected,"/bin/busybox") != 0 || !wants_loader ||
         strcmp(out->interpreter_path,NAS_ELF_INTERP) != 0) {
         nas_boot_image_release(out);
-        return "H8 requires original dynamic /bin/busybox with musl PT_INTERP";
+        return "external QEMU readonly root requires dynamic /bin/busybox with musl PT_INTERP";
     }
 #endif
     if (wants_loader) {
@@ -217,6 +224,11 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
     }
 #ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
     nas_print("[H8 NVME PT_INTERP] real NVMe ext4 interpreter: ");
+    nas_print(out->interpreter_path);
+    nas_print("\n");
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+    nas_print("[H9 AHCI PT_INTERP] ");
     nas_print(out->interpreter_path);
     nas_print("\n");
 #endif
