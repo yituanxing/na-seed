@@ -15,9 +15,17 @@
 #define H9_AHCI_VIRT_BASE UINT64_C(0xfffffe8001200000)
 #define H9_QEMU_PCI_VENDOR 0x8086U
 #define H9_QEMU_ICH9_AHCI 0x2922U
-#define H9_QEMU_MMIO32_MIN UINT64_C(0x00000000f0000000)
-#define H9_QEMU_MMIO32_MAX UINT64_C(0x00000000fffff000)
-#define H9_QEMU_MMIO32_BYTES UINT64_C(0x10000000)
+/* The fixed 256 MiB Q35 acceptance machine places the ICH9 PCI MMIO BAR5
+ * in its low 32-bit PCI aperture. The actual H9 QEMU serial resource
+ * inventory observed BAR5=0x810c4000, not the high f0000000 range used by
+ * other PC layouts. Only the 16 MiB slice containing this witnessed BAR is
+ * accepted; changed firmware allocations require fresh qualification.
+ * These bounds are an independent, explicitly isolated
+ * QEMU fixture reservation, never inferred from the discovered BAR and
+ * never transferable to a real host's PCI memory map. */
+#define H9_QEMU_MMIO32_MIN UINT64_C(0x0000000081000000)
+#define H9_QEMU_MMIO32_MAX UINT64_C(0x0000000081fff000)
+#define H9_QEMU_MMIO32_BYTES UINT64_C(0x01000000)
 #define H9_CAP 0x00U
 #define H9_PI 0x0cU
 #define H9_PORT_BASE 0x100U
