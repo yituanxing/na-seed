@@ -218,11 +218,12 @@ static int tmp_mknod_node(const struct nas_fs_node *parent,const char *name,
                           uint64_t mode,struct nas_fs_node *out) {
     if(!parent || !parent->is_dir)return -ENOTDIR;
     if(!out || !name)return -EINVAL;
-    if((mode&0170000ULL)!=0140000ULL)return -EOPNOTSUPP;
+    const uint64_t type=mode&0170000ULL;
+    if(type!=0140000ULL && type!=0010000ULL)return -EOPNOTSUPP;
     if(tmp_find_child(parent->inode,name))return -EEXIST;
-    /* The tmpfs namespace owner initializes S_IFSOCK before publishing
-     * the dentry. Never expose a transient regular-file inode as the old
-     * AF_UNIX bind path did. */
+    /* The tmpfs namespace owner initializes S_IFSOCK or S_IFIFO before
+     * publishing the dentry. Never expose a transient regular-file inode
+     * as the old AF_UNIX bind path did. */
     struct nas_tmp_file *created=tmp_mknod_at(parent->inode,name,(uint32_t)mode);
     if(!created)return -ENOSPC;
     tmp_fill(created,out);

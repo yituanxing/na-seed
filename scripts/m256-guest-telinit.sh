@@ -6,7 +6,10 @@ exec </dev/console >/dev/console 2>&1
 n=0
 while [ ! -p /run/initctl ] || [ ! -f /var/tmp/m255-sysvinit/respawn ]; do
     n=$((n + 1))
-    test "$n" -lt 30 || exit 88
+    if [ "$n" -ge 30 ]; then
+        /usr/bin/printf '%s\n' '[M256 INITCTL FAIL] guest FIFO or respawn missing after 30 polls'
+        exit 88
+    fi
     /usr/bin/sleep 1
 done
 # The respawn shell persists its marker just before execing original Debian

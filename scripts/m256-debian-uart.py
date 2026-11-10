@@ -83,7 +83,8 @@ def run(port: str, runner: str, serial: Path, runner_log: Path,
                         chunk = source.read()
                         seen.extend(chunk)
                         offset += len(chunk)
-                if b"[FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen:
+                if (b"[FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen or
+                        b"[M256 INITCTL FAIL]" in seen):
                     raise RuntimeError("real guest reported kernel/initctl failure")
                 if RUN_MARKERS[-1] in seen and SIGNED_EXEC in seen:
                     result = inspect(bytes(seen))

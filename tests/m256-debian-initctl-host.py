@@ -53,6 +53,14 @@ class M256SignedTelinit(unittest.TestCase):
 
 
 class M256GuestInitctl(unittest.TestCase):
+    def test_tmpfs_provider_accepts_fifo_as_well_as_unix_socket(self):
+        provider = (ROOT / "kernel/fs/vfs_providers.c").read_text()
+        start = provider.index("static int tmp_mknod_node(")
+        end = provider.index("static int64_t tmp_write_node(", start)
+        segment = provider[start:end]
+        self.assertIn("type!=0140000ULL && type!=0010000ULL", segment)
+        self.assertIn("tmp_mknod_at(parent->inode,name", segment)
+
     def test_mount_helper_is_actual_mount_then_sigusr1(self):
         src = ROOT / "tests/m256-mount-run.c"
         result = subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -74,6 +82,7 @@ class M256GuestInitctl(unittest.TestCase):
         ctl = (ROOT / "scripts/m256-guest-telinit.sh").read_text()
         self.assertIn("[ ! -p /run/initctl ]", ctl)
         self.assertIn("/usr/sbin/telinit 3", ctl)
+        self.assertIn("[M256 INITCTL FAIL]", ctl)
 
     def test_stage_never_preseeds_fifo_or_guest_result(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -107,6 +116,7 @@ class M256RealUART(unittest.TestCase):
         self.assertIn("DIAGNOSTIC VERIFIED", script)
         self.assertIn("poweroff/durable ext4 NOT YET PASS", script)
         self.assertNotIn("[PASS] cmdline userspace exit 0", script)
+        self.assertIn('b"[M256 INITCTL FAIL]" in seen', script)
 
 
 class M256NativeGate(unittest.TestCase):
