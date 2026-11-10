@@ -302,6 +302,10 @@ void kmain(void) {
     if(!h0_acpi_ok ||
        nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL)) {
         nas_print("[H1 ECAM] unavailable or mismatch; no drivers bound\n");
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+        nas_print("[H10 E1000 FAIL] required QEMU E1000 missing; no Alpine network userland\n");
+        nas_arch_halt();
+#endif
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
         nas_print("[H3 NVME FAIL] required QEMU admin test failed\n");
         nas_arch_halt();
@@ -320,6 +324,9 @@ void kmain(void) {
      * VFS, ELF loader and Ring-3 entry after H0-H6 qualified the device.
      * H0-H6 standalone discovery builds retain their mandatory halt. */
     nas_print("[H7 NVME BOOT CONTINUE] qualified QEMU-only NVMe; normal userspace path\n");
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    nas_print("[H10 E1000 BOOT CONTINUE] original Alpine NVMe root with real PCI Ethernet\n");
+#endif
 #elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
     nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");
 #elif defined(NAS_ENABLE_H4_QEMU_NVME_READONLY)

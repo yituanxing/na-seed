@@ -188,6 +188,49 @@ if [ "${NAS_QEMU_H9_AHCI:-0}" = 1 ]; then
         -drive "if=none,id=naseed_h9_disk,format=raw,file=$h9_image,snapshot=on,readonly=off" \
         -device ide-hd,drive=naseed_h9_disk,bus=ide.0
 fi
+# H10: two isolated profiles differ in ONE real PCI device: an Intel
+# 82540EM E1000 on bus 0 slot 4. QEMU otherwise adds an ambient 82574L
+# E1000e at 00:02.0 even without a -net argument; -nic none removes that
+# hidden fallback in BOTH the real-E1000 and no-E1000 negative controls.
+# Signed dynamic Alpine and musl stay on a QEMU read-only H8-derived NVMe
+# ext4 root. The HTTP server is a separate host process, never a guest file.
+if [ "${NAS_QEMU_H10_E1000:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H10_NO_E1000:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H10_E1000:-0}" != "${NAS_QEMU_H10_NO_E1000:-0}" ] &&
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_NET_PCAP:-}" ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] &&
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H9_AHCI:-0}" = 0 ] || {
+        echo 'H10 E1000 profile requires one isolated NVMe disk and no other NIC' >&2
+        exit 2
+    }
+    h10_image=build/h10-qemu-only/h10-alpine.ext4
+    test -s "$h10_image" && [ ! -L "$h10_image" ] &&
+    test -s build/h10-qemu-only/h10-media-before.sha256 &&
+    (cd build/h10-qemu-only && sha256sum -c h10-media-before.sha256 >/dev/null) || {
+        echo 'H10 signed Alpine NVMe disk missing or SHA modified' >&2
+        exit 2
+    }
+    set -- "$@" -nic none \
+        -device virtio-balloon-pci,id=naseed_h10_decoy,disable-legacy=on,bus=pcie.0,addr=0x3 \
+        -drive "if=none,id=naseed_h10_disk,format=raw,file=$h10_image,readonly=on" \
+        -device nvme,id=naseed_h10_nvme,serial=naseedh10,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h10_disk,nsid=1
+    if [ "${NAS_QEMU_H10_E1000:-0}" = 1 ]; then
+        set -- "$@" \
+            -netdev user,id=naseed_h10_net \
+            -device e1000,id=naseed_h10_e1000,netdev=naseed_h10_net,mac=52:54:00:12:34:56,bus=pcie.0,addr=0x4 \
+            -object filter-dump,id=naseed_h10_wire,netdev=naseed_h10_net,file=build/h10-qemu-only/h10-wire.pcap
+    fi
+fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but
 # must refuse write-capable NVMe initialization before touching either BAR or

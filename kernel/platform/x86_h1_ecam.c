@@ -13,6 +13,9 @@
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
 #include "x86_h9_ahci.h"
 #endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+#include "x86_h10_e1000.h"
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -44,6 +47,12 @@ struct h1_context {
     bool h9_candidate_found;
     struct nas_pci_function_info h9_candidate;
     struct nas_pci_resources h9_candidate_resources;
+#endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    unsigned h10_e1000_count;
+    bool h10_candidate_found;
+    struct nas_pci_function_info h10_candidate;
+    struct nas_pci_resources h10_candidate_resources;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -154,6 +163,20 @@ static int h1_compare_function(void *context,
     }
     else if(function->class_code==0x0cU && function->subclass==0x03U &&
             function->programming_interface==0x30U) ++h1->h2_xhci;
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    /* H10 qualifies only the explicit 82540EM QEMU fixture, never the
+     * different 82574L/e1000e default adapter. Complete the entire PCI
+     * inventory before any E1000 BAR write or DMA activation. */
+    if(function->class_code==2U && function->subclass==0U &&
+       function->vendor_id==0x8086U && function->device_id==0x100eU) {
+        ++h1->h10_e1000_count;
+        if(!h1->h10_candidate_found) {
+            h1->h10_candidate_found=true;
+            h1->h10_candidate=*function;
+            h1->h10_candidate_resources=resources;
+        }
+    }
+#endif
 #endif
     ++h1->verified;
     return 0;
@@ -188,6 +211,19 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         nas_print("[H1 ECAM] fail-closed: mapping, config or CF8 mismatch\n");
         return result ? result : -EIO;
     }
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    if(h1.h10_e1000_count!=1U || !h1.h10_candidate_found) {
+        nas_print("[H10 E1000 FAIL] required unique QEMU E1000 missing or duplicate; BAR/DMA untouched\n");
+        return h1.h10_e1000_count>1U ? -EEXIST : -ENODEV;
+    }
+    if(!nas_x86_h10_e1000_candidate(&h1.h10_candidate,
+                                     &h1.h10_candidate_resources) ||
+       nas_x86_h10_e1000_bind(&h1.h10_candidate,
+                               &h1.h10_candidate_resources)) {
+        nas_print("[H10 E1000 FAIL] qualified QEMU E1000 bind required\n");
+        return -ENODEV;
+    }
+#endif
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
     /* H6 negative acceptance: the complete *read-only* scan must refuse
      * ambiguous NVMe ownership before calling any write-capable H3/H4 core.

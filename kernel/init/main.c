@@ -18,6 +18,9 @@
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
 #include "../platform/x86_h9_ahci.h"
 #endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+#include "../platform/x86_h10_e1000.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -35,6 +38,9 @@ static bool pid1_exit_waiting;
 static bool pid1_shutdown_quiesced;
 static uint64_t pid1_shutdown_signals;
 static uint32_t pid1_power_command;
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+static bool h10_nic_shutdown_done;
+#endif
 #ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
 static bool pid1_debian_power;
 #endif
@@ -415,6 +421,19 @@ void nas_init_process_deferred_exit_service(void) {
 #else
         if(!nas_lwext4_async_runtime_passed())return;
 #endif
+    }
+#endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    /* The lwIP core thread may still hold a pinned e10000 NetDevice even
+     * after PID1 and its descriptors have exited. Device removal notifies
+     * the existing network worker; defer actual PCI DMA/BAR release until
+     * that worker has asynchronously detached the netif. No nested task
+     * scheduling or busy-spin is allowed from the terminating task. */
+    if(!h10_nic_shutdown_done) {
+        int nic_rc=nas_x86_h10_e1000_shutdown();
+        if(nic_rc==-EBUSY)return;
+        if(nic_rc)nas_fail("H10 E1000 worker detach or DMA shutdown failed");
+        h10_nic_shutdown_done=true;
     }
 #endif
 #else

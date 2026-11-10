@@ -105,6 +105,17 @@ $(error H9 QEMU AHCI and NVMe/VirtIO block profiles are mutually exclusive)
 endif
 CFLAGS += -DNAS_ENABLE_H9_QEMU_AHCI_USERLAND=1
 endif
+# H10 keeps H8's already proven signed Alpine/NVMe root as a control and
+# changes ONLY the network controller to a QEMU-only Intel E1000 PCI NIC.
+ifeq ($(NAS_ENABLE_H10_QEMU_E1000_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H10 E1000 requires H8 original Alpine ext4 / and H2 PCI resource discovery)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_VIRTIO_NET)),)
+$(error H10 E1000 cannot share the H9 AHCI/VirtIO network profile)
+endif
+CFLAGS += -DNAS_ENABLE_H10_QEMU_E1000_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -192,6 +203,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 .PHONY: hw-h7-host-check hw-h7-kernel hw-h7-iso
 .PHONY: hw-h8-host-check hw-h8-kernel hw-h8-iso
 .PHONY: hw-h9-host-check hw-h9-kernel hw-h9-iso
+.PHONY: hw-h10-host-check hw-h10-kernel hw-h10-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -319,6 +331,20 @@ hw-h9-iso: hw-h9-kernel
 	sh scripts/stage-h9-ahci-alpine.sh
 	sh scripts/build-h9-ahci-iso.sh
 
+# H10 keeps real signed Alpine/musl ELF and native lwIP syscalls from H8,
+# but routes every TCP frame through the new E1000 PCI MAC/RX/TX descriptor
+# driver. No VirtIO-Net and no simulated host socket stand-in.
+hw-h10-host-check: hw-h8-host-check
+	sh scripts/check-h10-e1000-host.sh
+
+hw-h10-kernel:
+	$(MAKE) OUT=build/h10-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_LWIP=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H10_QEMU_E1000_USERLAND=1 kernel
+
+hw-h10-iso: hw-h10-kernel
+	$(MAKE) OUT=build/h10-qemu-only build/h10-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h10-e1000-alpine.sh
+	sh scripts/build-h10-e1000-iso.sh
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -340,6 +366,10 @@ ifeq ($(NAS_ENABLE_H9_QEMU_AHCI_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h9_ahci.c \
  kernel/drivers/ahci/readonly.c \
  kernel/drivers/port/dma.c kernel/drivers/port/block.c
+endif
+ifeq ($(NAS_ENABLE_H10_QEMU_E1000_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h10_e1000.c \
+ kernel/drivers/e1000/e1000_nic.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw
