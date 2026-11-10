@@ -1499,7 +1499,12 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     }
     /* A failed physical flush must leave mount and inode ownership
      * untouched. Never unregister the VFS mount before checking durability. */
-    int rc=ext_sync_mount(ctx);
+    /* A read-only block adapter is not required to implement FLUSH, and
+     * there can be no dirty filesystem data to commit. In particular the
+     * H7 QEMU NVMe backend exposes only READ and cannot advertise durable
+     * writeback. Still unmount upstream and release the BlockDevice lease
+     * before its DMA queues are allowed to quiesce. */
+    int rc=ctx->mount.read_only ? 0 : ext_sync_mount(ctx);
     if(rc)return ext_unmount_issue("ext4 sync",rc);
     rc=nas_vfs_unregister_mount(&ctx->mount);
     if(rc)return ext_unmount_issue("VFS root mount detach",rc);
@@ -1530,7 +1535,8 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     /* Upstream ext4_umount updates on-disk superblock/counters AFTER the
      * preceding data-cache flush. Flush its final metadata writes through
      * the actual storage controller before releasing BlockDevice ownership. */
-    int final_sync=nas_block_flush(ctx->device.storage);
+    int final_sync=ctx->mount.read_only ? 0 :
+                   nas_block_flush(ctx->device.storage);
     /* ext4_umount has already finalized its superblock. On a final hardware
      * flush error the VFS namespace is gone: returning here would leak a
      * permanently pinned BlockDevice with mounted=false and no retry path.

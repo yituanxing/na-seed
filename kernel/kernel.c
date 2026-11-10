@@ -311,14 +311,21 @@ void kmain(void) {
 #else
     (void)h0_acpi_ok;
 #endif
-#ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* The H7 QEMU-only profile continues through the ordinary kernel,
+     * VFS, ELF loader and Ring-3 entry after H0-H6 qualified the device.
+     * H0-H6 standalone discovery builds retain their mandatory halt. */
+    nas_print("[H7 NVME BOOT CONTINUE] qualified QEMU-only NVMe; normal userspace path\n");
+#elif defined(NAS_ENABLE_H4_QEMU_NVME_READONLY)
     nas_print("[H4 COMPLETE] QEMU-only disposable namespace read; no LBA writes\n");
 #elif defined(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY)
     nas_print("[H3 COMPLETE] QEMU-only NVMe Identify; no namespace LBA I/O\n");
 #else
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
 #endif
+#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
     nas_arch_halt();
+#endif
 #endif
 #ifndef NASEED_PORT_M0
     nas_heap_set_grow_callback(grow_heap_from_frames,NULL);

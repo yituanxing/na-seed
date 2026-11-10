@@ -9,4 +9,11 @@
 int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *,
                             const struct nas_pci_resources *);
 
+/* H7 isolated QEMU-only runtime image: caller must first unmount every VFS
+ * filesystem backed by nvme0, then invoke this and require success before
+ * reporting the genuine guest-software pass. Never enabled on physical PCs. */
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+int nas_x86_h7_nvme_shutdown(void);
+#endif
+
 #endif

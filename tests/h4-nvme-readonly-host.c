@@ -62,6 +62,7 @@ struct fake_nvme {
     uint8_t admin_phase,io_phase;
     unsigned identify_count,create_cq_count,create_sq_count,read_count;
     bool no_completion,bad_namespace,fail_disable,io_failure,bad_opcode;
+    unsigned fail_at_read_count;
     bool read_cap_failure;
     bool write_enable_applied_but_error;
     bool four_k,metadata,bad_capacity;
@@ -140,7 +141,10 @@ static void read_command(struct fake_nvme *f) {
     memset(data,0,NAS_DMA_PAGE_BYTES);
     for(unsigned i=0;i<(f->four_k?4096U:512U);i++)
         data[i]=(uint8_t)((i+17U*lba)&255U);
-    complete(f,false,sq,f->io_failure?0x02U:0U);
+    complete(f,false,sq,
+             (f->io_failure ||
+              (f->fail_at_read_count &&
+               f->read_count==f->fail_at_read_count))?0x02U:0U);
 }
 static int fake_write(void *context,uint32_t off,uint32_t val) {
     struct fake_nvme *f=context;
@@ -191,6 +195,11 @@ int main(void) {
     CHECK(session.sectors==128U && session.sector_bytes==512U);
     CHECK(f.identify_count==1 && f.create_cq_count==1 &&
           f.create_sq_count==1 && !f.bad_opcode);
+    session.in_io=true; /* synthetic contending reader/shutdown */
+    CHECK(nas_nvme_ro_read(&session,0U,1U,sector)==-EBUSY);
+    CHECK(nas_nvme_ro_close(&session)==-EBUSY);
+    CHECK(f.read_count==0U && free_count==0U);
+    session.in_io=false;
     CHECK(nas_nvme_ro_read(&session,0U,1U,sector)==0);
     for(unsigned i=0;i<512;i++)CHECK(sector[i]==(uint8_t)i);
     CHECK(nas_nvme_ro_read(&session,1U,1U,sector)==0);
@@ -200,9 +209,32 @@ int main(void) {
         CHECK(nas_nvme_ro_read(&session,n,1U,sector)==0);
         for(unsigned i=0;i<512;i++)CHECK(sector[i]==(uint8_t)(i+17U*n));
     }
+    uint8_t multi[5U*512U]={0};
+    CHECK(nas_nvme_ro_read(&session,12U,5U,multi)==0);
+    for(unsigned lba=0;lba<5U;lba++)
+        for(unsigned i=0;i<512U;i++)
+            CHECK(multi[lba*512U+i]==(uint8_t)(i+17U*(lba+12U)));
+    CHECK(nas_nvme_ro_read(&session,127U,2U,multi)==-EINVAL);
     CHECK(nas_nvme_ro_read(&session,128U,1U,sector)==-EINVAL);
-    CHECK(nas_nvme_ro_read(&session,0U,2U,sector)==-EINVAL);
-    CHECK(f.read_count==7U && !f.bad_opcode);
+    CHECK(nas_nvme_ro_read(&session,0U,0U,sector)==-EINVAL);
+    CHECK(f.read_count==12U && !f.bad_opcode);
+    CHECK(nas_nvme_ro_close(&session)==0);
+    CHECK(alloc_count==5U && free_count==5U && !invalid_free);
+
+    /* A larger VFS read fails on its second LBA: never return a short
+     * success, never copy the failed sector, and never submit LBA three. */
+    reset(&f);session=(struct nas_nvme_ro_session){0};
+    CHECK(open_session(&f,&session,&io)==0);
+    f.fail_at_read_count=2U;
+    uint8_t interrupted[3U*512U];
+    memset(interrupted,0xa5,sizeof(interrupted));
+    CHECK(nas_nvme_ro_read(&session,40U,3U,interrupted)==-EIO);
+    CHECK(!session.ready && f.read_count==2U);
+    CHECK(nas_nvme_ro_read(&session,41U,1U,sector)==-EINVAL);
+    for(unsigned i=0;i<512U;i++)
+        CHECK(interrupted[i]==(uint8_t)(i+17U*40U));
+    for(unsigned i=512U;i<sizeof(interrupted);i++)
+        CHECK(interrupted[i]==0xa5U);
     CHECK(nas_nvme_ro_close(&session)==0);
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 
@@ -301,6 +333,11 @@ int main(void) {
     CHECK(session.sector_bytes==4096U);
     CHECK(nas_nvme_ro_read(&session,1U,1U,sector)==0);
     for(unsigned i=0;i<4096U;i++)CHECK(sector[i]==(uint8_t)(i+17U));
+    uint8_t multi4k[2U*4096U]={0};
+    CHECK(nas_nvme_ro_read(&session,8U,2U,multi4k)==0);
+    for(unsigned lba=0;lba<2U;lba++)
+        for(unsigned i=0;i<4096U;i++)
+            CHECK(multi4k[lba*4096U+i]==(uint8_t)(i+17U*(lba+8U)));
     CHECK(nas_nvme_ro_close(&session)==0);
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 

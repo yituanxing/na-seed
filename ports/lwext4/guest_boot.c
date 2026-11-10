@@ -18,10 +18,12 @@
 #include "../../kernel/panic.h"
 #include "../uboot/async_blk.h"
 #endif
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND)
 #include "../../kernel/block/device.h"
 #include "../../kernel/block/partition.h"
+#ifdef NAS_ENABLE_VIRTIO_BLK
 extern int nas_platform_virtio_blk_probe(void);
+#endif
 static struct nas_partition_view boot_partition;
 static bool boot_partition_attached;
 /* Inspect an ext4 superblock at byte 1080 relative to the BlockDevice
@@ -114,11 +116,18 @@ bool nas_lwext4_guest_boot_mount(void) {
         if(ram_rw)
             nas_print("[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage\n");
     } else {
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND)
         /* Bus/transport discovery happens below the FS, not via a
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        /* H7 is a separate, QEMU-qualified, permanently owned NVMe session.
+         * Its readonly BlockDevice was attached in H1/H3 discovery, before
+         * the full boot moves into VFS. A real PC must never use this path. */
+        int disks=1;
+#else
         int disks=nas_platform_virtio_blk_probe();
+#endif
         if(disks<0) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
             m191_boot_fail("virtio-probe",disks);
@@ -131,8 +140,12 @@ bool nas_lwext4_guest_boot_mount(void) {
         struct nas_partition_extent chosen_extent={0};
         bool chosen_writable=false;
         for(int i=0;i<disks;i++){
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+            const char block_name[]="nvme0";
+#else
             char block_name[]="virtio0";
             block_name[6]=(char)('0'+i);
+#endif
             struct nas_block_device *block=nas_block_get(block_name);
             if(!block) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
@@ -170,6 +183,10 @@ bool nas_lwext4_guest_boot_mount(void) {
             nas_block_put(block);
         }
         if(!found) {
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+            nas_print("[H7 NVME EXT4 FAIL] no genuine ext4 superblock on nvme0\n");
+            return false;
+#endif
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
             m191_boot_fail("ext4-superblock-not-found",disks);
             return false; /* selected external root is mandatory */
@@ -199,8 +216,19 @@ bool nas_lwext4_guest_boot_mount(void) {
 #else
             "/mnt";
 #endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        if(chosen_writable) {
+            nas_print("[H7 NVME EXT4 FAIL] QEMU NVMe BlockDevice unexpectedly writable\n");
+            return false;
+        }
+#endif
         int mount_rc=nas_lwext4_device_mount(&boot_mount,selected_device,
-                                           "virtio-ext4",target,chosen_writable);
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+                                           "h7-nvme-ext4",
+#else
+                                           "virtio-ext4",
+#endif
+                                           target,chosen_writable);
         if(mount_rc) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
             m191_boot_fail("lwext4-device-mount",mount_rc);
@@ -218,11 +246,19 @@ bool nas_lwext4_guest_boot_mount(void) {
         nas_print("[ROOTFS] physical ext4 root registered at /\n");
         nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
 #endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        if(!boot_mount.mount.read_only) {
+            nas_print("[H7 NVME EXT4 FAIL] mounted filesystem must be read-only\n");
+            return false;
+        }
+        nas_print("[H7 NVME EXT4 MOUNTED] /mnt read-only source=nvme0\n");
+#else
         nas_print(chosen_partition_index ?
             "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :
             "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted\n");
         if(!boot_mount.mount.read_only)
             nas_print("[VIRTIO-BLK] persistent block device write+flush enabled\n");
+#endif
 #else
         return true; /* No boot RAM image and physical driver not enabled */
 #endif
@@ -259,7 +295,13 @@ bool nas_lwext4_guest_boot_mount(void) {
  * Without ext4_umount, the journal/superblock free counters can lag even
  * after fsync and block-cache flush; QEMU termination is not an unmount. */
 bool nas_lwext4_guest_boot_shutdown(void) {
-    if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
+    if (!boot_mount.mounted) return true;
+#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* Legacy Limine readonly boot modules are kept for the kernel lifetime.
+     * H7 must drop its physical NVMe filesystem lease before controller
+     * shutdown and therefore executes the full readonly unmount below. */
+    if (boot_mount.mount.read_only) return true;
+#endif
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
     /* Original OpenRC mounts real runtime tmpfs (such as /run), which
      * retains parent/covered root Dentries even after PID1 and its shell
@@ -272,9 +314,10 @@ bool nas_lwext4_guest_boot_shutdown(void) {
     /* A read-only image cannot have dirty metadata to commit and some
      * upstream read-only close paths refuse redundant writeback. Only a
      * writable filesystem requires final ext4 superblock commit. */
+    const bool was_read_only=boot_mount.mount.read_only;
     int unmount_rc=nas_lwext4_unmount(&boot_mount);
     if(unmount_rc)return boot_shutdown_failed("root ext4 unmount",unmount_rc);
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND)
     /* The mounted filesystem has dropped its BlockDevice reference.
      * Only NOW may the partition release its parent physical device. */
     if(boot_partition_attached) {
@@ -283,7 +326,9 @@ bool nas_lwext4_guest_boot_shutdown(void) {
         boot_partition_attached=false;
     }
 #endif
-    nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
+    nas_print(was_read_only ?
+        "[LWEXT4 GUEST] read-only upstream unmount; no media writes/flush\n" :
+        "[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
     return true;
 }
 

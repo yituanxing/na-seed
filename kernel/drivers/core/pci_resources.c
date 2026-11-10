@@ -158,3 +158,29 @@ int nas_pci_mmio_pin_mapping_attempt(struct nas_pci_mmio_owner *owner,
     }
     return -ENODEV;
 }
+
+int nas_pci_mmio_quiesced_unmap_release(struct nas_pci_mmio_owner *owner,
+                                        const struct nas_pci_mmio_claim *claim,
+                                        uint64_t virtual_base,
+                                        bool dma_quiesced,
+                                        nas_pci_mmio_unmap_fn unmap) {
+    if(!owner || !claim || !claim->bytes || !unmap ||
+       (virtual_base&4095U) ||
+       virtual_base<UINT64_C(0xffff800000000000) ||
+       owner->held>NAS_PCI_MMIO_CLAIM_LIMIT)
+        return -EINVAL;
+    for(unsigned i=0;i<owner->held;i++) {
+        struct nas_pci_mmio_claim *held=&owner->claims[i];
+        if(held->base!=claim->base || held->bytes!=claim->bytes ||
+           held->bar_index!=claim->bar_index)continue;
+        if(!held->mapping_pinned)return -EINVAL;
+        if(held->bytes-1U>UINT64_MAX-virtual_base)return -EINVAL;
+        /* An error/pending DMA must never trigger even a read-only PTE
+         * inspection callback, let alone make this BAR reusable. */
+        if(!dma_quiesced)return -EBUSY;
+        if(!unmap(held->base,virtual_base,held->bytes/4096U))return -EIO;
+        held->mapping_pinned=false;
+        return nas_pci_mmio_release(owner,claim);
+    }
+    return -ENODEV;
+}

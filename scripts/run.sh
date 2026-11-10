@@ -91,6 +91,35 @@ if [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 1 ]; then
         -device nvme,id=naseed_h5_nvme,serial=naseedh5,bus=pcie.0,addr=0x5 \
         -device nvme-ns,drive=naseed_h5_disk,nsid=1
 fi
+# H7: one brand-new, scripted and bounded ext4 image, with only verified
+# original Debian BusyBox/Bash ELF files.  This is intentionally NOT the H4
+# fixed LBA seed, an arbitrary disk, or a physical NVMe device.  QEMU alone
+# presents the generated image read-only at the same moved PCI BDF as H5/H6.
+if [ "${NAS_QEMU_H7_NVME:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] || {
+        echo 'H7 fixed read-only NVMe and other controller/block profiles are exclusive' >&2
+        exit 2
+    }
+    h7_image=build/h7-qemu-only/h7-ext4.img
+    test -s "$h7_image" && test -s build/h7-qemu-only/h7-media-before.sha256 || {
+        echo 'H7 fixed, generated read-only ext4 fixture missing' >&2
+        exit 2
+    }
+    sha256sum -c build/h7-qemu-only/h7-media-before.sha256 >/dev/null || {
+        echo 'H7 fixed NVMe image checksum mismatch before QEMU' >&2
+        exit 2
+    }
+    set -- "$@" \
+        -device virtio-balloon-pci,id=naseed_h7_decoy,disable-legacy=on,bus=pcie.0,addr=0x3 \
+        -drive "if=none,id=naseed_h7_disk,format=raw,file=$h7_image,readonly=on" \
+        -device nvme,id=naseed_h7_nvme,serial=naseedh7,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h7_disk,nsid=1
+fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but
 # must refuse write-capable NVMe initialization before touching either BAR or

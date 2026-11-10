@@ -31,6 +31,11 @@ static int drive_write(struct ext4_blockdev *bd,const void *src,
 static int drive_close(struct ext4_blockdev *bd) {
     struct nas_lwext4_device *ctx=bridge(bd);
     if(!ctx || !ctx->storage)return ENODEV;
+    /* Read-only ext4 cannot have dirty data or metadata. Requiring a
+     * write-cache FLUSH opcode from a read-only device would make an
+     * otherwise successful NVMe filesystem unmount fail; ext4_fs_fini()
+     * already skips superblock writes for a read-only mount. */
+    if(ctx->storage->read_only)return 0;
     return positive(nas_block_flush(ctx->storage));
 }
 static int drive_lock(struct ext4_blockdev *bd) {(void)bd;return 0;}

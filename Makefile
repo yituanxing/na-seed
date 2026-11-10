@@ -82,6 +82,12 @@ $(error NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME requires H6 QEMU-only resource profile
 endif
 CFLAGS += -DNAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME=1
 endif
+ifeq ($(NAS_ENABLE_H7_QEMU_NVME_USERLAND),1)
+ifneq ($(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME)$(NAS_ENABLE_LWEXT4),11)
+$(error H7 NVMe userland requires NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_LWEXT4=1)
+endif
+CFLAGS += -DNAS_ENABLE_H7_QEMU_NVME_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -166,6 +172,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 .PHONY: hw-h5-host-check hw-h5-kernel hw-h5-iso
 .PHONY: hw-h6-host-check hw-h6-kernel hw-h6-iso
 .PHONY: hw-h6-ambiguous-host-check hw-h6-ambiguous-kernel hw-h6-ambiguous-iso
+.PHONY: hw-h7-host-check hw-h7-kernel hw-h7-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -252,6 +259,20 @@ hw-h6-ambiguous-kernel:
 
 hw-h6-ambiguous-iso:
 	$(MAKE) OUT=build/h6-qemu-ambiguous NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME=1 iso
+
+# H7 is a full Linux userspace kernel (unlike H0–H6 smoke kernels): the
+# existing lwext4 VFS executes original Debian ELF files from an isolated
+# 32MiB QEMU NVMe ext4 namespace, never via a Limine ext4 RAM module.
+hw-h7-host-check: hw-h6-host-check
+	sh scripts/check-h7-x86-mmio-unmap-host.sh
+
+hw-h7-kernel:
+	$(MAKE) OUT=build/h7-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 kernel
+
+hw-h7-iso: hw-h7-kernel
+	$(MAKE) OUT=build/h7-qemu-only build/h7-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h7-nvme-userland.sh
+	sh scripts/build-h7-nvme-iso.sh
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)

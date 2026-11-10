@@ -44,8 +44,9 @@ struct nas_pci_resources {
 struct nas_pci_mmio_claim {
     uint64_t base, bytes;
     uint8_t bar_index;
-    /* The claim cannot be reused once a page-table mapping may exist.
-     * A physical MMIO map has no unmap operation in the current x86 port. */
+    /* A mapping attempt pins physical ownership, even if some PTEs failed
+     * to install. Only a verified whole-range unmap after device quiescence
+     * may release the claim. */
     bool mapping_pinned;
 };
 struct nas_pci_mmio_owner {
@@ -61,8 +62,7 @@ int nas_pci_mmio_claim_bar(struct nas_pci_mmio_owner *owner,
                            uint8_t bar_index,uint64_t required_bytes,
                            struct nas_pci_mmio_claim *out);
 /* Must be called BEFORE attempting the first MMIO mapping, even if the
- * mapping callback can fail after installing one or more pages. An owner
- * permanently retains this reservation until a real unmap facility exists.
+ * mapping callback can fail after installing one or more pages.
  * Idempotent for the same live claim. Never accesses device registers. */
 int nas_pci_mmio_pin_mapping_attempt(struct nas_pci_mmio_owner *owner,
                                       const struct nas_pci_mmio_claim *claim);
@@ -70,6 +70,20 @@ int nas_pci_mmio_pin_mapping_attempt(struct nas_pci_mmio_owner *owner,
  * no MMIO page-table mapping attempt has occurred. */
 int nas_pci_mmio_release(struct nas_pci_mmio_owner *owner,
                           const struct nas_pci_mmio_claim *claim);
+/* The ONLY release path for a pinned BAR. The caller must establish that
+ * the controller is quiesced (e.g. CSTS.RDY=0) and all users have stopped
+ * touching MMIO. The callback validates exact physical/virtual UC/NX PTEs
+ * and atomically removes the entire mapping, or reports failure. A failed
+ * callback can leave a partial range: the claim deliberately STAYS pinned.
+ * This interface does not itself stop DMA or implement IOMMU isolation. */
+typedef bool (*nas_pci_mmio_unmap_fn)(uint64_t physical_base,
+                                      uint64_t virtual_base,
+                                      uint64_t page_count);
+int nas_pci_mmio_quiesced_unmap_release(struct nas_pci_mmio_owner *owner,
+                                        const struct nas_pci_mmio_claim *claim,
+                                        uint64_t virtual_base,
+                                        bool dma_quiesced,
+                                        nas_pci_mmio_unmap_fn unmap);
 
 /* No PCI config writes. Reads only Command/Status, BARs and conventional
  * capabilities (first 256 bytes). Rejects malformed reserved encodings,

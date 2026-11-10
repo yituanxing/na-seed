@@ -8,7 +8,9 @@
 /* The H4 protocol core owns the two admin/IO queues and one bounce page.
  * This is NOT a physical-NVMe driver or a second block/VFS registry: QEMU's
  * qualified adapter supplies MMIO/DMA, then nas_port_block supplies ABI.
- * Session instances must be zero-initialized, stable and single-threaded.
+ * Session instances must be zero-initialized and stable. Shared queue and
+ * bounce descriptors are deliberately non-reentrant; concurrent callers are
+ * rejected before any DMA state is touched (not an SMP scheduling driver).
  */
 #define NAS_NVME_RO_QUEUE_DEPTH 4U
 struct nas_nvme_ro_queue {
@@ -26,11 +28,13 @@ struct nas_nvme_ro_session {
     uint32_t sector_bytes;
     uint8_t doorbell_stride;
     bool may_dma, ready;
+    bool in_io;
 };
 
 /* QEMU disposable-namespace-only: identify NSID=1, validate its selected
- * LBA format and create one polling I/O SQ/CQ. One LBA per read and only
- * NVMe READ opcode 0x02; no Write, Format, Flush or namespace management.
+ * LBA format and create one polling I/O SQ/CQ. Multi-LBA reads sequentially
+ * submit one bounce-page PRP per LBA using only NVMe READ opcode 0x02; no
+ * Write, Format, Flush or namespace management.
  * Failed controller disable leaves all DMA pages pinned for safety. */
 int nas_nvme_ro_open(const struct nas_nvme_io *,
                      const struct nas_dma_provider *,

@@ -14,6 +14,13 @@ bool nas_arch_x86_map_device_page(uint64_t physical,uint64_t virtual_address);
 /* Discovery-only ECAM mappings must be UC, supervisor-only, NX and read-only. */
 bool nas_arch_x86_map_readonly_device_page(uint64_t physical,
                                            uint64_t virtual_address);
+/* Transactional all-or-none unmap of an exact supervisor UC/NX MMIO range.
+ * The caller must first stop all device DMA and prevent concurrent MMIO
+ * access; this never frees physical device memory or intermediate tables.
+ * Each PTE must still point at the specified aligned physical page. */
+bool nas_arch_x86_unmap_device_pages(uint64_t physical_base,
+                                     uint64_t virtual_base,
+                                     uint64_t page_count);
 
 uint64_t nas_mmu_alloc_root(void);
 bool nas_mmu_reclaim_root(uint64_t root);

@@ -14,6 +14,18 @@ struct fixture {
     unsigned bad_access;
 };
 
+static unsigned unmap_attempts;
+static bool unmap_succeeds;
+static uint64_t unmapped_physical,unmapped_virtual,unmapped_pages;
+static bool fake_unmap(uint64_t physical,uint64_t virtual_base,
+                       uint64_t pages) {
+    ++unmap_attempts;
+    unmapped_physical=physical;
+    unmapped_virtual=virtual_base;
+    unmapped_pages=pages;
+    return unmap_succeeds;
+}
+
 static uint32_t fake_read32(void *context, uint8_t bus, uint8_t slot,
                             uint8_t function, uint16_t offset) {
     struct fixture *f=context;
@@ -207,6 +219,47 @@ int main(void) {
     check(nas_pci_mmio_pin_mapping_attempt(&owner,NULL)==-EINVAL,
           "H6 rejects a missing pin descriptor");
 
+    /* H7: a pinned claim is recycled only after positive device quiescence
+     * AND one successful all-or-nothing exact-PTE unmap callback. */
+    const uint64_t mapped_virtual=UINT64_C(0xfffffe8001100000);
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual,false,fake_unmap)==-EBUSY &&
+          unmap_attempts==0U && mapped_owner.held==1U,
+          "H7 live DMA forbids an unmap attempt or BAR claim recycle");
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual,true,NULL)==-EINVAL &&
+          unmap_attempts==0U,
+          "H7 missing MMU unmap verifier must fail closed");
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual-1U,true,fake_unmap)==-EINVAL &&
+          unmap_attempts==0U,
+          "H7 unaligned virtual BAR alias cannot reach unmap callback");
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                UINT64_C(0xfffffffffffff000),true,fake_unmap)==-EINVAL &&
+          unmap_attempts==0U,
+          "H7 wrapping MMIO virtual extent cannot reach unmap callback");
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual,true,fake_unmap)==-EIO &&
+          unmap_attempts==1U && mapped_owner.held==1U &&
+          mapped_owner.claims[0].mapping_pinned &&
+          unmapped_physical==mapped_claim.base &&
+          unmapped_virtual==mapped_virtual && unmapped_pages==2U,
+          "H7 failed/partial unmap retains physical owner and exact request");
+    check(nas_pci_mmio_release(&mapped_owner,&mapped_claim)==-EBUSY,
+          "H7 unmap failure cannot be bypassed through ordinary release");
+    unmap_succeeds=true;
+    check(!nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual,true,fake_unmap) &&
+          mapped_owner.held==0U && unmap_attempts==2U,
+          "H7 quiesced whole-range unmap releases pinned MMIO claim once");
+    check(nas_pci_mmio_quiesced_unmap_release(&mapped_owner,&mapped_claim,
+                mapped_virtual,true,fake_unmap)==-ENODEV &&
+          unmap_attempts==2U,
+          "H7 stale detached claim cannot drive hardware MMU changes");
+    check(!nas_pci_mmio_claim_bar(&mapped_owner,&r,1U,8192U,&mapped_claim) &&
+          !nas_pci_mmio_release(&mapped_owner,&mapped_claim),
+          "H7 verified reclaim enables re-reservation without stale owner");
+
     struct nas_pci_mmio_owner bad_owner={
         .window_base=UINT64_MAX-4095U,.window_bytes=8192U
     };
@@ -246,5 +299,6 @@ int main(void) {
           "missing result rejected");
 
     puts("[H2 PCI RESOURCE HOST PASS] BAR types, capabilities, bounded MMIO claims and H6 pinned ownership");
+    puts("[H7 PCI MMIO RECLAIM HOST PASS] quiescence gate, failed-unmap pin, exact UC/PTE release and reservation reuse");
     return 0;
 }

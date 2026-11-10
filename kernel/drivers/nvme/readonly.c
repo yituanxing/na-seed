@@ -117,15 +117,25 @@ static int queue_submit(struct nas_nvme_ro_session *s,
 }
 
 int nas_nvme_ro_close(struct nas_nvme_ro_session *s) {
-    if(!s || !s->io || !s->dma)return -EINVAL;
+    if(!s)return -EINVAL;
+    if(__atomic_exchange_n(&s->in_io,true,__ATOMIC_ACQUIRE))
+        return -EBUSY;
+    if(!s->io || !s->dma) {
+        __atomic_store_n(&s->in_io,false,__ATOMIC_RELEASE);
+        return -EINVAL;
+    }
+    /* Once stop was attempted, even a timeout may have transitioned CC;
+     * no subsequent filesystem read can resubmit commands on this session. */
+    s->ready=false;
+    int result=0;
     if(s->may_dma) {
         uint32_t cc=0;
         int rc=io_read(s,NVME_CC,&cc);
         if(!rc)rc=io_write(s,NVME_CC,cc&~NVME_CC_EN);
         if(!rc)rc=ready_wait(s,false);
-        if(rc)return rc; /* DMA pages stay PINNED on an unsafe stop. */
+        if(rc){result=rc;goto failed;} /* PINNED on unsafe stop. */
         rc=nas_dma_lease_disarm_after_quiesce(&s->lease);
-        if(rc)return rc;
+        if(rc){result=rc;goto failed;}
         s->may_dma=false;
     }
     struct nas_dma_page *pages[]={&s->bounce,&s->data.cq,&s->data.sq,
@@ -133,13 +143,16 @@ int nas_nvme_ro_close(struct nas_nvme_ro_session *s) {
     for(unsigned i=0;i<sizeof(pages)/sizeof(pages[0]);i++) {
         if(pages[i]->cpu) {
             int rc=nas_dma_lease_free_page(&s->lease,pages[i]);
-            if(rc)return rc;
+            if(rc){result=rc;goto failed;}
         }
     }
     int lease_rc=nas_dma_lease_end(&s->lease);
-    if(lease_rc)return lease_rc;
+    if(lease_rc){result=lease_rc;goto failed;}
     *s=(struct nas_nvme_ro_session){0};
     return 0;
+failed:
+    __atomic_store_n(&s->in_io,false,__ATOMIC_RELEASE);
+    return result;
 }
 
 int nas_nvme_ro_open(const struct nas_nvme_io *io,
@@ -250,19 +263,41 @@ failed:
 
 int nas_nvme_ro_read(struct nas_nvme_ro_session *s,uint64_t lba,
                      uint32_t count,void *dst) {
-    if(!s || !s->ready || !dst || count!=1U || lba>=s->sectors ||
-       (s->sector_bytes!=512U && s->sector_bytes!=4096U))return -EINVAL;
-    zero_bytes(s->bounce.cpu,NAS_DMA_PAGE_BYTES);
-    int rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
+    if(!s || !dst || !count)return -EINVAL;
+    if(__atomic_exchange_n(&s->in_io,true,__ATOMIC_ACQUIRE))
+        return -EBUSY; /* one completion queue and one shared bounce page */
+    if(!s->ready || !s->may_dma || !s->bounce.cpu ||
+       lba>=s->sectors || (uint64_t)count>s->sectors-lba ||
+       (s->sector_bytes!=512U && s->sector_bytes!=4096U) ||
+       (size_t)count>SIZE_MAX/s->sector_bytes) {
+        __atomic_store_n(&s->in_io,false,__ATOMIC_RELEASE);
+        return -EINVAL;
+    }
+    int rc=0;
+    /* Filesystems request multi-sector extents. Keep the H4-tested,
+     * one-sector/one-PRP1 command invariant: bounded sequential reads into
+     * the same leased 4 KiB bounce page and commit only completed sectors
+     * to the destination. An error never masquerades as a short success. */
+    for(uint32_t i=0;i<count;i++) {
+        zero_bytes(s->bounce.cpu,NAS_DMA_PAGE_BYTES);
+        rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
                               NAS_DMA_FROM_DEVICE);
-    if(rc){s->ready=false;return rc;}
-    rc=queue_submit(s,&s->data,NVME_OP_NVM_READ,1U,
-                    s->bounce.bus_address,(uint32_t)lba,
-                    (uint32_t)(lba>>32),0U /* NLB zero-based: one LBA */);
-    if(rc){s->ready=false;return rc;}
-    rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
-                          NAS_DMA_FROM_DEVICE);
-    if(rc){s->ready=false;return rc;}
-    copy_bytes(dst,s->bounce.cpu,s->sector_bytes);
+        if(rc)goto failed;
+        uint64_t current=lba+(uint64_t)i;
+        rc=queue_submit(s,&s->data,NVME_OP_NVM_READ,1U,
+                        s->bounce.bus_address,(uint32_t)current,
+                        (uint32_t)(current>>32),0U);
+        if(rc)goto failed;
+        rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
+                              NAS_DMA_FROM_DEVICE);
+        if(rc)goto failed;
+        copy_bytes((uint8_t *)dst+(size_t)i*s->sector_bytes,
+                   s->bounce.cpu,s->sector_bytes);
+    }
+    __atomic_store_n(&s->in_io,false,__ATOMIC_RELEASE);
     return 0;
+failed:
+    s->ready=false;
+    __atomic_store_n(&s->in_io,false,__ATOMIC_RELEASE);
+    return rc;
 }

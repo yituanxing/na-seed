@@ -57,6 +57,63 @@ bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
 bool nas_arch_x86_map_readonly_device_page(uint64_t phys,uint64_t virt) {
     return nas_map_device_page(phys,virt,false);
 }
+/* A device MMIO range belongs to a BAR/host bridge owner, not to the PMM.
+ * Validate ALL leaves before changing any of them. A failed first or second
+ * mapping attempt may leave only a subset installed; in that case retain the
+ * PCI claim, as the caller must never recycle a partially mapped aperture.
+ * Firmware/huge/user/ordinary RAM mappings are never unmapped here. */
+bool nas_arch_x86_unmap_device_pages(uint64_t physical_base,
+                                     uint64_t virtual_base,
+                                     uint64_t page_count) {
+    const uint64_t page=4096U;
+    const uint64_t span_limit=UINT64_MAX/page;
+    const uint64_t device_flags=P_PRESENT|0x18ULL|(1ULL<<63);
+    if(!physical_base || (physical_base&(page-1U)) ||
+       (virtual_base&(page-1U)) ||
+       virtual_base<UINT64_C(0xffff800000000000) ||
+       !page_count || page_count>span_limit ||
+       physical_base>PHYS_MASK ||
+       page_count-1U>(PHYS_MASK-physical_base)/page ||
+       page_count-1U>(UINT64_MAX-virtual_base)/page)
+        return false;
+    const uint64_t root_pa=nas_arch_current_page_root()&PHYS_MASK;
+    if(!root_pa)return false;
+    /* A leaf walk that does not allocate or accept huge-page ancestors. */
+    for(uint64_t n=0;n<page_count;n++) {
+        uint64_t va=virtual_base+n*page,table_pa=root_pa;
+        for(unsigned level=3;level>0;--level) {
+            const uint64_t *table=(const uint64_t *)(uintptr_t)
+                (nas_hhdm_offset()+table_pa);
+            uint64_t entry=table[(va>>(12U+9U*level))&511U];
+            if(!(entry&P_PRESENT) || (entry&P_USER) ||
+               (entry&(1ULL<<7)))return false;
+            table_pa=entry&PHYS_MASK;
+            if(!table_pa)return false;
+        }
+        const uint64_t *table=(const uint64_t *)(uintptr_t)
+            (nas_hhdm_offset()+table_pa);
+        uint64_t leaf=table[(va>>12)&511U];
+        if((leaf&device_flags)!=device_flags || (leaf&P_USER) ||
+           (leaf&~(PHYS_MASK|device_flags|P_RW|0x60ULL)) ||
+           (leaf&PHYS_MASK)!=physical_base+n*page)return false;
+    }
+    /* No intervening mapping can occur in the caller's quiescent context.
+     * Leave intermediate page tables present: other kernel roots may share
+     * them via the supervisor half copied at exec/fork. */
+    for(uint64_t n=0;n<page_count;n++) {
+        uint64_t va=virtual_base+n*page,table_pa=root_pa;
+        for(unsigned level=3;level>0;--level) {
+            const uint64_t *table=(const uint64_t *)(uintptr_t)
+                (nas_hhdm_offset()+table_pa);
+            table_pa=table[(va>>(12U+9U*level))&511U]&PHYS_MASK;
+        }
+        uint64_t *table=(uint64_t *)(uintptr_t)
+            (nas_hhdm_offset()+table_pa);
+        table[(va>>12)&511U]=0;
+        nas_arch_invalidate_page(va);
+    }
+    return true;
+}
 bool nas_arch_x86_map_lapic_page(uint64_t phys) {
     return nas_arch_x86_map_device_page(phys,NAS_X86_LAPIC_VIRT);
 }

@@ -25,13 +25,24 @@
 #define H5_QEMU_MMIO64_BASE UINT64_C(0x000000c000000000)
 #define H5_QEMU_MMIO64_BYTES UINT64_C(0x0000000100000000)
 #ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
-/* One-shot QEMU platform owner. Keep claims alive beyond this function:
- * nas_arch_x86_map_device_page currently has no corresponding unmap API.
+/* One-shot QEMU platform owner. H0-H6 deliberately keep mapped claims pinned;
+ * H7 may reclaim one only after an explicitly verified DMA-safe unmap.
  * Never substitute this Q35 fixture window on a physical host bridge. */
 static struct nas_pci_mmio_owner h6_qemu_mmio_owner={
     .window_base=H5_QEMU_MMIO64_BASE,
     .window_bytes=H5_QEMU_MMIO64_BYTES
 };
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+/* Lifetime extends across filesystem mount and genuine userspace execution.
+ * The only release path is explicit H7 unmount -> controller quiesce -> DMA
+ * lease teardown -> PCI command restore -> checked UC BAR unmap/release. */
+static struct {
+    bool attached;
+    uint8_t bus,slot,function;
+    uint16_t pci_command_before;
+    struct nas_pci_mmio_claim claim;
+} h7_persistent;
+#endif
 #endif
 #endif
 
@@ -44,7 +55,9 @@ struct h3_nvme_mmio {
  * DMA and port storage remain stable for the entire synchronous probe. */
 static struct nas_nvme_ro_session h4_session;
 static struct nas_port_block h4_port;
+#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
 static uint8_t h4_sector[4096];
+#endif
 static const struct nas_port_block_ops h4_port_ops;
 
 static int64_t h4_port_read(void *backend,uint64_t lba,
@@ -55,6 +68,35 @@ static int64_t h4_port_read(void *backend,uint64_t lba,
 }
 static const struct nas_port_block_ops h4_port_ops={.read=h4_port_read};
 
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+static int h7_attach_persistent_block(const struct nas_nvme_io *io) {
+    if(h7_persistent.attached || h4_session.io || h4_port.block.registered)
+        return -EBUSY;
+    int rc=nas_nvme_ro_open(io,&nas_dma_qemu_coherent,&h4_session);
+    if(rc)return rc;
+    if(h4_session.sector_bytes!=512U || h4_session.sectors<16384U) {
+        rc=-EOPNOTSUPP;
+        goto failed;
+    }
+    rc=nas_port_block_attach(&h4_port,"nvme0",&h4_session,
+                              h4_session.sectors,h4_session.sector_bytes,
+                              8U,true,NAS_PORT_BLOCK_SECTORS,&h4_port_ops);
+    if(rc)goto failed;
+    h7_persistent.attached=true;
+    nas_print("[H7 NVME BLOCK ATTACHED] name=nvme0 read-only sectors=");
+    nas_dec((unsigned)h4_session.sectors);
+    nas_print(" sector_bytes=");nas_dec(h4_session.sector_bytes);
+    nas_print(" PCI bus master and DMA lease retained until shutdown\n");
+    return 0;
+failed:
+    /* Never claim a safe release if the device's disable/RDY check fails;
+     * the live lease remains pinned for the failed boot to halt safely. */
+    (void)nas_nvme_ro_close(&h4_session);
+    return rc;
+}
+#endif
+
+#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
 static bool h4_expected_sector(unsigned which,const uint8_t *data) {
     static const char marker0[]="NASEED-H4-NVME-LBA0-20261110";
     static const char marker1[]="NASEED-H4-NVME-LBA1-20261110";
@@ -110,6 +152,7 @@ finish:
     return rc;
 }
 #endif
+#endif
 
 static bool h3_qemu_fw_cfg_signature(void) {
     static const char signature[4] = { 'Q', 'E', 'M', 'U' };
@@ -158,6 +201,33 @@ static void h3_pci_config_write32(uint8_t bus,uint8_t slot,uint8_t function,
     __asm__ volatile("outl %0,%1" :: "a"(value),"Nd"(data)
                      : "memory");
 }
+
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+static void h7_restore_interrupts(uint64_t saved_rflags) {
+    if(saved_rflags&(UINT64_C(1)<<9))
+        __asm__ volatile("sti" ::: "memory");
+}
+
+int nas_x86_h7_nvme_shutdown(void) {
+    if(!h7_persistent.attached)return -ENODEV;
+    int rc=nas_port_block_detach(&h4_port);
+    if(rc)return rc; /* VFS/FD still pins the block device. */
+    rc=nas_nvme_ro_close(&h4_session);
+    if(rc)return rc; /* Controller may still DMA: do not release BAR. */
+    /* Restore exactly the Command bits which were present before H7 bound.
+     * A successful close proved CSTS.RDY=0 and freed every leased page. */
+    h3_pci_config_write32(h7_persistent.bus,h7_persistent.slot,
+                           h7_persistent.function,4U,
+                           h7_persistent.pci_command_before);
+    rc=nas_pci_mmio_quiesced_unmap_release(
+        &h6_qemu_mmio_owner,&h7_persistent.claim,H3_NVME_VIRT_BASE,true,
+        nas_arch_x86_unmap_device_pages);
+    if(rc)return rc;
+    h7_persistent.attached=false;
+    nas_print("[H7 NVME QUIESCED RELEASED] CSTS.RDY=0 DMA pages freed BAR UC unmapped PCI claim released\n");
+    return 0;
+}
+#endif
 
 int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
                              const struct nas_pci_resources *resources) {
@@ -208,8 +278,12 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
         return claim_rc;
     }
 #endif
-    /* No unhandled guest interrupts can race the CF8 selector while the
-     * experimental admin-queue device is active. This image halts afterward. */
+    /* No unhandled guest interrupts can race the CF8 selector during setup.
+     * H3-H6 halt afterward; H7 restores its previous IF before userspace. */
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    uint64_t h7_saved_flags=0;
+    __asm__ volatile("pushfq; popq %0" : "=r"(h7_saved_flags) :: "memory");
+#endif
     __asm__ volatile("cli" ::: "memory");
 #ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
     /* Pin the claim BEFORE even the first mapping attempt. A failed MMU
@@ -218,6 +292,9 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     int pin_rc=nas_pci_mmio_pin_mapping_attempt(owner,&claim);
     if(pin_rc) {
         nas_print("[H6 PCI MMIO FAIL] cannot pin mapping ownership\n");
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        h7_restore_interrupts(h7_saved_flags);
+#endif
         return pin_rc;
     }
 #endif
@@ -225,6 +302,9 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
         if(!nas_arch_x86_map_device_page(bar->base+(uint64_t)i*4096U,
                                          H3_NVME_VIRT_BASE+(uint64_t)i*4096U)) {
             nas_print("[H3 NVME FAIL] cannot map QEMU BAR UC/RW/NX\n");
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+            h7_restore_interrupts(h7_saved_flags);
+#endif
             return -EIO;
         }
     }
@@ -240,15 +320,37 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     nas_print(" slot=");nas_dec(function->slot);
     nas_print(" function=");nas_dec(function->function);
     nas_print(" BAR0=");nas_hex(claim.base);
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    nas_print(" until H7 userspace unmount and verified quiesced unmap\n");
+#else
     nas_print(" until UC pages are explicitly unmapped (not implemented)\n");
 #endif
+#endif
     /* PCI Command bits: memory-space decode + bus master. No I/O decode,
-     * MSI, MSI-X, DMA remapping or actual namespace/block driver binding. */
+     * MSI, MSI-X or DMA remapping. H7 alone registers a live BlockDevice. */
     /* Upper PCI Status bits are W1C. Never echo their readback into the
      * configuration DWORD, or the diagnostic would clear error status. */
     const uint32_t before=(uint32_t)resources->command;
     h3_pci_config_write32(function->bus,function->slot,function->function,
                           4U,before|UINT32_C(0x00000006));
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* Both MMIO and IO descriptor MUST outlive this function: ext4 and real
+     * ELF reads arrive asynchronously after PCI inventory has returned. */
+    static struct h3_nvme_mmio h7_mmio;
+    static struct nas_nvme_io h7_io;
+    h7_mmio.virtual_base=H3_NVME_VIRT_BASE;
+    h7_io=(struct nas_nvme_io){
+        .context=&h7_mmio,.mmio_bytes=H3_NVME_MAPPED_BYTES,
+        .read32=h3_mmio_read32,.write32=h3_mmio_write32
+    };
+    h7_persistent.claim=claim;
+    h7_persistent.bus=function->bus;
+    h7_persistent.slot=function->slot;
+    h7_persistent.function=function->function;
+    h7_persistent.pci_command_before=resources->command;
+    int rc=h7_attach_persistent_block(&h7_io);
+    h7_restore_interrupts(h7_saved_flags);
+#else
     struct h3_nvme_mmio mmio={.virtual_base=H3_NVME_VIRT_BASE};
     const struct nas_nvme_io io={
         .context=&mmio,.mmio_bytes=H3_NVME_MAPPED_BYTES,
@@ -260,16 +362,31 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     struct nas_nvme_identity id={0};
     int rc=nas_nvme_identify_controller(&io,&nas_dma_qemu_coherent,&id);
 #endif
+#endif
     /* Reset only the PCI command flags enabled by H3. The NVMe core must
      * disable/quiesce admin DMA before returning, even on error. */
+#ifndef NAS_ENABLE_H7_QEMU_NVME_USERLAND
     h3_pci_config_write32(function->bus,function->slot,function->function,
                           4U,before);
+#endif
 #if defined(NAS_ENABLE_H5_QEMU_PCI_RESOURCE) && !defined(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME)
     if(!rc && nas_pci_mmio_release(owner,&claim))rc=-EIO;
 #endif
     if(rc) {
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        /* Only an already quiesced, fully closed failed setup may restore
+         * the original Command. A failed CSTS.RDY wait preserves the lease
+         * and BUS MASTER state to avoid silently invalidating live DMA. */
+        if(!h4_session.may_dma && !h4_session.io)
+            h3_pci_config_write32(function->bus,function->slot,
+                                   function->function,4U,before);
+#endif
 #ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        nas_print("[H7 NVME FAIL] persistent read-only block path error=");
+#else
         nas_print("[H4 NVME FAIL] read-only LBA/block path error=");
+#endif
 #else
         nas_print("[H3 NVME FAIL] Identify admin queue error=");
 #endif
@@ -277,7 +394,11 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
         return rc;
     }
 #ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    nas_print("[H7 NVME] live read-only ext4 backing via nvme0; no LBA writes\n");
+#else
     nas_print("[H4 NVME] QEMU namespace read-only proof; LBA writes=0\n");
+#endif
 #else
     nas_print("[H3 NVME IDENTIFY VERIFIED] VS=");nas_hex(id.version);
     nas_print(" VID=");nas_hex(id.vendor_id);

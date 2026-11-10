@@ -7,6 +7,9 @@
 #include "../syscall/reboot_policy.h"
 #include "../errno.h"
 #include "../lib/string.h"
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+#include "../platform/x86_h3_nvme.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -161,6 +164,15 @@ static void nas_init_finish_success(void) {
      * Applies to both RAM and hardware devices, no ISA branches. */
     if (!nas_lwext4_guest_boot_shutdown())
         nas_fail("lwext4 final unmount/durable device flush failed");
+#endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* The genuine NVMe-backed ELF and data Files have closed, and lwext4
+     * dropped its BlockDevice lease. Only now may the QEMU-only session
+     * disarm DMA, disable PCI bus mastering and release the BAR claim. A
+     * failed quiesce must NEVER produce a userland PASS marker. */
+    if (nas_x86_h7_nvme_shutdown())
+        nas_fail("H7 NVMe controller shutdown or BlockDevice detach failed");
+    nas_print("[H7 NVME USERLAND SHUTDOWN] ext4 unmounted; controller quiesced\n");
 #endif
 #ifndef NAS_ENABLE_M191_ALPINE_ROOT
 #ifdef NAS_ENABLE_LITTLEFS
