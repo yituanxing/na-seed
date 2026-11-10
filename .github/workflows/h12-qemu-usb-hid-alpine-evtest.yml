@@ -1,0 +1,134 @@
+name: NaSeed H12 genuine xHCI USB Boot Keyboard original signed Alpine evtest QMP A down/up
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h12-qemu-usb-hid-alpine-evtest.yml'
+      - 'kernel/platform/x86_h12_hid.*'
+      - 'kernel/platform/x86_h11_usb.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/usb/**'
+      - 'kernel/drivers/input/**'
+      - 'kernel/drivers/evdev/**'
+      - 'kernel/fs/input_chrdev.*'
+      - 'kernel/fs/syscall.c'
+      - 'kernel/drivers/port/**'
+      - 'kernel/init/main.c'
+      - 'kernel/boot_image.c'
+      - 'kernel/kernel.c'
+      - 'ports/lwext4/**'
+      - 'scripts/h12-*'
+      - 'scripts/check-h12-*.sh'
+      - 'tests/h12-*'
+      - 'scripts/stage-h12-usb-hid-alpine.sh'
+      - 'scripts/build-h12-usb-hid-iso.sh'
+      - 'scripts/stage-m166-prebuilt.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
+      - 'scripts/stage-h8-alpine-nvme.sh'
+      - 'scripts/build-lwext4-guest.sh'
+      - 'limine-h12-usb-hid.conf'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h12-qemu-xhci-usb-hid-evtest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h12-real-xhci-usb-hid-original-alpine-evtest:
+    name: Genuine QEMU USB Boot Keyboard -> real evdev -> signed original evtest KEY_A press/release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install cross C toolchain, signed Alpine APK staging, ext4, QEMU, OVMF, Python
+        timeout-minutes: 15
+        run: |
+          set -eu
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' 'cmake:cmake' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'sha256sum:coreutils' \
+                      'curl:curl' 'tar:tar' 'gzip:gzip' 'openssl:openssl' \
+                      'python3:python3' 'xorriso:xorriso' \
+                      'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: Real H12 HID report/input host regressions and H12 script/Python syntax
+        timeout-minutes: 8
+        run: |
+          set -eu
+          sh -n scripts/stage-h12-usb-hid-alpine.sh
+          sh -n scripts/h12-guest-workload.sh
+          sh -n scripts/build-h12-usb-hid-iso.sh
+          sh -n scripts/check-h12-usb-hid-qemu.sh
+          sh -n scripts/check-h12-no-usb-kbd-qemu.sh
+          sh -n scripts/check-h12-no-xhci-qemu.sh
+          sh -n scripts/run.sh
+          python3 -m py_compile scripts/h12-qmp-evtest.py
+          make hw-h12-host-check
+      - name: Build isolated H12 xHCI HID kernel, H8-original signed Alpine plus signed evtest NVMe root, UEFI ISO
+        timeout-minutes: 50
+        run: |
+          set -eu
+          make hw-h12-iso
+          readelf -h build/h12-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          (cd build/h12-qemu-only && sha256sum -c h12-media-before.sha256)
+          sha256sum -c build/h12-qemu-only/h12-original-alpine-elfs.sha256
+      - name: REAL QEMU USB HID physical KEY_A down/up through original signed Alpine evtest
+        timeout-minutes: 9
+        run: sh scripts/check-h12-usb-hid-qemu.sh
+      - name: Negative QEMU xHCI without usb-kbd refuses evtest input
+        timeout-minutes: 3
+        run: sh scripts/check-h12-no-usb-kbd-qemu.sh
+      - name: Negative QEMU with NO xHCI refuses evtest input
+        timeout-minutes: 3
+        run: sh scripts/check-h12-no-xhci-qemu.sh
+      - name: Reverify immutable original Alpine/evtest NVMe ext4 SHA after genuine positive and negatives
+        if: success()
+        run: |
+          set -eu
+          (cd build/h12-qemu-only && sha256sum -c h12-media-before.sha256)
+          sha256sum -c build/h12-qemu-only/h12-original-alpine-elfs.sha256
+      - name: Preserve genuine USB HID, no-keyboard, no-controller serial and QMP oracle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h12-qemu-xhci-usb-hid-original-evtest-real-serial-qmp
+          path: |
+            build/h12-qemu-only/h12-qemu-uefi-serial.log
+            build/h12-qemu-only/h12-qemu-uefi-clean.log
+            build/h12-qemu-only/h12-qmp-evtest.log
+            build/h12-qemu-only/h12-no-usb-kbd-uefi-serial.log
+            build/h12-qemu-only/h12-no-usb-kbd-uefi-clean.log
+            build/h12-qemu-only/h12-no-xhci-uefi-serial.log
+            build/h12-qemu-only/h12-no-xhci-uefi-clean.log
+          if-no-files-found: ignore
+      - name: Preserve exact H12 xHCI kernel, UEFI ISO, original signed evtest/Alpine digests
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h12-qemu-usb-hid-original-alpine-evtest-verified-artifacts
+          path: |
+            build/h12-qemu-only/kernel.elf
+            build/h12-qemu-only/naseed.iso
+            build/h12-qemu-only/h12-media-before.sha256
+            build/h12-qemu-only/h12-original-alpine-elfs.sha256
+          if-no-files-found: error

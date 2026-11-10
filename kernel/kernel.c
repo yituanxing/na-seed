@@ -22,6 +22,19 @@
 #include "random.h"
 #include "mm/user_space.h"
 #include "init/main.h"
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+#if !defined(__x86_64__)
+#error "H0 physical PC discovery currently supports only x86-64"
+#endif
+#include "platform/firmware_acpi.h"
+#include "platform/x86_h0_pci.h"
+#ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
+#include "errno.h"
+#endif
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+#include "platform/x86_h1_ecam.h"
+#endif
+#endif
 
 /*
  * NaSeed M0: Limine handoff + real COM1 UART + physical frame bitmap.
@@ -63,12 +76,116 @@ USED_REQUEST static volatile struct limine_executable_cmdline_request cmdline_re
 USED_REQUEST static volatile struct limine_framebuffer_request fb_req = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0
 };
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+/* Limine base revision 6 returns an HHDM-mapped virtual RSDP pointer.
+ * Firmware tables are parsed read-only; this request never starts AML or
+ * probes a disk, PCI BAR, interrupt controller, or power-management port. */
+USED_REQUEST static volatile struct limine_rsdp_request h0_rsdp_req = {
+    .id = LIMINE_RSDP_REQUEST_ID, .revision = 0
+};
+#endif
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t requests_start[] = LIMINE_REQUESTS_START_MARKER;
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
 const struct limine_file *nas_user_module(void);
+
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+static bool h0_acpi_memory_type(uint64_t type) {
+    return type==LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+           type==LIMINE_MEMMAP_ACPI_NVS ||
+           type==LIMINE_MEMMAP_RESERVED_MAPPED;
+}
+
+/* ACPI contents are never trusted to identify an accessible address. Every
+ * physical read is checked against the Limine memory map before HHDM access.
+ * Requiring a single contiguous allowed descriptor safely rejects ambiguous
+ * firmware maps and any physical MMIO or ordinary RAM address. */
+static size_t h0_acpi_mapped_extent(uint64_t physical, size_t requested) {
+    if (!mmap_req.response || !requested ||
+        physical>UINT64_MAX-(uint64_t)requested)return 0;
+    for(uint64_t i=0;i<mmap_req.response->entry_count;i++) {
+        const struct limine_memmap_entry *entry=mmap_req.response->entries[i];
+        if(!entry || !h0_acpi_memory_type(entry->type) ||
+           physical<entry->base || physical-entry->base>=entry->length)
+            continue;
+        uint64_t available=entry->length-(physical-entry->base);
+        if(available<requested)return 0;
+        return available>4096U ? 4096U : (size_t)available;
+    }
+    return 0;
+}
+
+static const void *h0_acpi_physical_map(void *context,uint64_t physical,
+                                        size_t bytes) {
+    (void)context;
+    if(!h0_acpi_mapped_extent(physical,bytes))return NULL;
+    uint64_t hhdm=nas_hhdm_offset();
+    if(physical>UINTPTR_MAX-hhdm)return NULL;
+    return (const void *)(uintptr_t)(physical+hhdm);
+}
+
+static bool h0_acpi_diagnostic(struct nas_acpi_discovery *out) {
+    nas_print("[H0] read-only firmware discovery (no driver binding)\n");
+    if(!out)return false;
+    if(!h0_rsdp_req.response || !h0_rsdp_req.response->address) {
+        nas_print("[H0 ACPI] no Limine RSDP response\n");
+        return false;
+    }
+    uint64_t virtual_address=(uint64_t)(uintptr_t)h0_rsdp_req.response->address;
+    uint64_t hhdm=nas_hhdm_offset();
+    if(virtual_address<hhdm) {
+        nas_print("[H0 ACPI] RSDP not in Limine HHDM\n");
+        return false;
+    }
+    uint64_t physical=virtual_address-hhdm;
+    size_t available=h0_acpi_mapped_extent(physical,20U);
+    if(!available) {
+        nas_print("[H0 ACPI] RSDP outside allowed firmware memory\n");
+        return false;
+    }
+    struct nas_acpi_discovery acpi={0};
+    if(nas_acpi_probe(h0_rsdp_req.response->address,available,
+                      h0_acpi_physical_map,NULL,&acpi)) {
+        nas_print("[H0 ACPI] invalid/inaccessible tables; no MMIO mapped\n");
+        return false;
+    }
+    nas_print("[H0 ACPI] XSDT=");nas_dec(acpi.used_xsdt);
+    nas_print(" tables=");nas_dec(acpi.table_count);
+    nas_print(" MADT=");nas_dec(acpi.madt_present);
+    nas_print(" MCFG windows=");nas_dec(acpi.mcfg_count);
+    nas_print("\n");
+    for(unsigned i=0;i<acpi.mcfg_count;i++) {
+        nas_print("[H0 MCFG] ECAM=");nas_hex(acpi.mcfg[i].ecam_base);
+        nas_print(" segment=");nas_dec(acpi.mcfg[i].segment);
+        nas_print(" buses=");nas_dec(acpi.mcfg[i].bus_start);
+        nas_print("..");nas_dec(acpi.mcfg[i].bus_end);
+        nas_print("\n");
+    }
+    *out=acpi;
+    return true;
+}
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+/* ECAM is MMIO, NOT ACPI table memory. Only a full reserved descriptor is
+ * eligible for a new UC/RO PTE. Never use the Limine HHDM as an MMIO alias. */
+static bool h1_ecam_mmio_allowed(void *context, uint64_t physical,
+                                  size_t bytes) {
+    (void)context;
+    if(!mmap_req.response || !bytes || physical>UINT64_MAX-(uint64_t)bytes)
+        return false;
+    for(uint64_t i=0;i<mmap_req.response->entry_count;i++) {
+        const struct limine_memmap_entry *entry=mmap_req.response->entries[i];
+        if(!entry || (entry->type!=LIMINE_MEMMAP_RESERVED &&
+                      entry->type!=LIMINE_MEMMAP_RESERVED_MAPPED) ||
+           physical<entry->base || physical-entry->base>=entry->length)
+            continue;
+        return (uint64_t)bytes<=entry->length-(physical-entry->base);
+    }
+    return false;
+}
+#endif
+#endif
 
 #ifndef NASEED_PORT_M0
 /* HHDM translates physically adjacent frames into one contiguous arena.
@@ -146,6 +263,9 @@ void kmain(void) {
         }
     }
     if(!fb_ready)nas_print("[FB] no usable firmware framebuffer\n");
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+    else nas_h0_serial_enable_framebuffer();
+#endif
 #endif
     uint64_t before = nas_free_frames();
     nas_print("[MM] available frames=");
@@ -159,6 +279,104 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+    struct nas_acpi_discovery h0_acpi={0};
+    bool h0_acpi_ok=h0_acpi_diagnostic(&h0_acpi);
+    struct nas_pci_scan_stats h0_pci_stats={0};
+    if(nas_x86_h0_pci_inventory(&h0_pci_stats))
+        nas_print("[H0 PCI] legacy config read failed; no drivers bound\n");
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+#ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
+    /* A negative acceptance image with two known QEMU NVMe controllers and
+     * zero namespaces. Success means rejecting both before H3/H4 can write
+     * controller registers or allocate DMA, never merely reaching kmain. */
+    int h6_result=h0_acpi_ok ?
+        nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL) : -EIO;
+    if(h6_result!=-EEXIST) {
+        nas_print("[H6 AMBIGUOUS NVME FAIL] did not refuse duplicate candidates\n");
+        nas_arch_halt();
+    }
+    nas_print("[H6 AMBIGUOUS NVME COMPLETE] two QEMU NVMe controllers refused before controller writes/DMA\n");
+    nas_arch_halt();
+#else
+    if(!h0_acpi_ok ||
+       nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL)) {
+        nas_print("[H1 ECAM] unavailable or mismatch; no drivers bound\n");
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+        nas_print("[H10 E1000 FAIL] required QEMU E1000 missing; no Alpine network userland\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+        nas_print("[H3 NVME FAIL] required QEMU admin test failed\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+        nas_print("[H9 AHCI FAIL] required QEMU SATA disk unavailable\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
+        nas_print("[H11 XHCI FAIL] required QEMU USB Mass Storage absent; no Alpine USB userland\n");
+        nas_print("[H11 USB FAIL] required QEMU USB Mass Storage unavailable\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+        nas_print("[H12 HID FAIL] required QEMU USB Boot Keyboard unavailable; no evtest userland\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+        nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable; no evtest userland\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+        nas_print("[H14 DUAL FAIL] H1 PCI/xHCI or two physical HID devices unavailable; no evtest userland\n");
+        nas_arch_halt();
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+        nas_print("[H15 FTDI FAIL] H1 PCI/xHCI or real FT232BM unavailable; no original Alpine userland\n");
+        nas_arch_halt();
+#endif
+    }
+#endif
+#else
+    (void)h0_acpi_ok;
+#endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* The H7 QEMU-only profile continues through the ordinary kernel,
+     * VFS, ELF loader and Ring-3 entry after H0-H6 qualified the device.
+     * H0-H6 standalone discovery builds retain their mandatory halt. */
+    nas_print("[H7 NVME BOOT CONTINUE] qualified QEMU-only NVMe; normal userspace path\n");
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    nas_print("[H10 E1000 BOOT CONTINUE] original Alpine NVMe root with real PCI Ethernet\n");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    nas_print("[H12 HID BOOT CONTINUE] original Alpine NVMe root with real PCI xHCI Boot Keyboard\n");
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    nas_print("[H13 MOUSE BOOT CONTINUE] original Alpine NVMe root with real PCI xHCI Boot Mouse\n");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    nas_print("[H14 DUAL HID BOOT CONTINUE] original signed Alpine NVMe root with one PCI xHCI and two physical USB HID root-port devices\n");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    nas_print("[H15 FTDI BOOT CONTINUE] original signed Alpine NVMe root with real Q35 xHCI FT232BM USB-serial, no VirtIO\n");
+#endif
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    nas_print("[H9 AHCI BOOT CONTINUE] qualified QEMU-only SATA; normal userspace path\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    nas_print("[H11 USB BOOT CONTINUE] qualified QEMU xHCI USB Mass Storage; original Alpine userland\n");
+#elif defined(NAS_ENABLE_H4_QEMU_NVME_READONLY)
+    nas_print("[H4 COMPLETE] QEMU-only disposable namespace read; no LBA writes\n");
+#elif defined(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY)
+    nas_print("[H3 COMPLETE] QEMU-only NVMe Identify; no namespace LBA I/O\n");
+#else
+    nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
+#endif
+#if !defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) && \
+    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) && \
+    !defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    nas_arch_halt();
+#endif
+#endif
 #ifndef NASEED_PORT_M0
     nas_heap_set_grow_callback(grow_heap_from_frames,NULL);
     bool entropy_ready = entropy_req.response &&

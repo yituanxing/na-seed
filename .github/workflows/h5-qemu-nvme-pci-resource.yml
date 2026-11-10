@@ -1,0 +1,80 @@
+name: NaSeed H5 isolated QEMU dynamic PCI BAR and NVMe read-only LBA
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h5-qemu-nvme-pci-resource.yml'
+      - 'kernel/platform/x86_h3_nvme.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/core/pci_resources.*'
+      - 'kernel/drivers/nvme/**'
+      - 'kernel/drivers/port/**'
+      - 'kernel/kernel.c'
+      - 'tests/h4-*.c'
+      - 'tests/h2-pci-resource-host.c'
+      - 'scripts/check-h5-*.sh'
+      - 'scripts/check-h4-*.sh'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h5-pci-nvme-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h5-relocated-pci-nvme:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding kernel tools and QEMU NVMe
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0–H5 host regressions and isolated build
+        run: |
+          make hw-h5-host-check
+          make hw-h5-kernel
+          readelf -h build/h5-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          make hw-h5-iso
+      - name: Generate and SHA-check fixed disposable NVMe namespace
+        run: sh scripts/check-h4-nvme-seed.sh
+      - name: Boot real QEMU UEFI with NVMe relocated to PCI slot 5
+        timeout-minutes: 5
+        run: sh scripts/check-h5-pci-nvme-qemu.sh build/h5-qemu-only/naseed.iso build/h5-qemu-only/h5-qemu-uefi-serial.log
+      - name: Preserve H5 PCI resource and guest LBA serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h5-x86-qemu-relocated-pci-nvme-readonly-serial
+          path: build/h5-qemu-only/h5-qemu-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve isolated H5 ISO and fixed read-only LBA fixture
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h5-x86-qemu-pci-nvme-uefi-and-seed
+          path: |
+            build/h5-qemu-only/naseed.iso
+            build/h4-qemu-only/h4-seed.img
+          if-no-files-found: error

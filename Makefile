@@ -32,6 +32,147 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
  -I $(OUT)/deps -I kernel -I third_party/unikraft/include -I ports/unikraft/include
+# Physical-machine H0 is a separate read-only firmware/PCI discovery image.
+# It deliberately stops before userspace, VirtIO, DMA, IRQ setup or disk I/O.
+ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
+ifneq ($(ARCH),x86_64)
+$(error NaSeed H0 hardware discovery is currently x86-64 only)
+endif
+CFLAGS += -DNAS_ENABLE_H0_HARDWARE_DISCOVERY=1
+endif
+ifeq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
+ifneq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
+$(error NAS_ENABLE_H1_ECAM_DISCOVERY requires the read-only H0 discovery profile)
+endif
+CFLAGS += -DNAS_ENABLE_H1_ECAM_DISCOVERY=1
+endif
+ifeq ($(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY),1)
+ifneq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
+$(error NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY requires the read-only H1 ECAM profile)
+endif
+CFLAGS += -DNAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1
+endif
+ifeq ($(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY),1)
+ifneq ($(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY),1)
+$(error NAS_ENABLE_H3_QEMU_NVME_IDENTIFY requires H2 discovery)
+endif
+CFLAGS += -DNAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1
+endif
+ifeq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+ifneq ($(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY),1)
+$(error NAS_ENABLE_H4_QEMU_NVME_READONLY requires isolated H3 QEMU NVMe profile)
+endif
+CFLAGS += -DNAS_ENABLE_H4_QEMU_NVME_READONLY=1
+endif
+ifeq ($(NAS_ENABLE_H5_QEMU_PCI_RESOURCE),1)
+ifneq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+$(error NAS_ENABLE_H5_QEMU_PCI_RESOURCE requires the isolated H4 read-only namespace profile)
+endif
+CFLAGS += -DNAS_ENABLE_H5_QEMU_PCI_RESOURCE=1
+endif
+ifeq ($(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME),1)
+ifneq ($(NAS_ENABLE_H5_QEMU_PCI_RESOURCE),1)
+$(error NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME requires isolated H5 QEMU PCI resource profile)
+endif
+CFLAGS += -DNAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1
+endif
+ifeq ($(NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME),1)
+ifneq ($(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME),1)
+$(error NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME requires H6 QEMU-only resource profile)
+endif
+CFLAGS += -DNAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME=1
+endif
+ifeq ($(NAS_ENABLE_H7_QEMU_NVME_USERLAND),1)
+ifneq ($(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME)$(NAS_ENABLE_LWEXT4),11)
+$(error H7 NVMe userland requires NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_LWEXT4=1)
+endif
+CFLAGS += -DNAS_ENABLE_H7_QEMU_NVME_USERLAND=1
+endif
+ifeq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT),1)
+ifneq ($(NAS_ENABLE_H7_QEMU_NVME_USERLAND)$(NAS_ENABLE_LWEXT4),11)
+$(error H8 original Alpine NVMe root requires H7 QEMU NVMe userland and lwext4)
+endif
+CFLAGS += -DNAS_ENABLE_H8_QEMU_ALPINE_ROOT=1
+endif
+# H9 is a separate QEMU-only ICH9 AHCI/SATA software-boot target. It uses
+# the same VFS and original Alpine userland as H8, but no NVMe driver at all.
+ifeq ($(NAS_ENABLE_H9_QEMU_AHCI_USERLAND),1)
+ifneq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY)$(NAS_ENABLE_H1_ECAM_DISCOVERY)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),1111)
+$(error H9 AHCI userland requires H0/H1/H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY) $(NAS_ENABLE_H4_QEMU_NVME_READONLY) $(NAS_ENABLE_H5_QEMU_PCI_RESOURCE) $(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME) $(NAS_ENABLE_H7_QEMU_NVME_USERLAND) $(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) $(NAS_ENABLE_VIRTIO_BLK)),)
+$(error H9 QEMU AHCI and NVMe/VirtIO block profiles are mutually exclusive)
+endif
+CFLAGS += -DNAS_ENABLE_H9_QEMU_AHCI_USERLAND=1
+endif
+# H10 keeps H8's already proven signed Alpine/NVMe root as a control and
+# changes ONLY the network controller to a QEMU-only Intel E1000 PCI NIC.
+ifeq ($(NAS_ENABLE_H10_QEMU_E1000_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H10 E1000 requires H8 original Alpine ext4 / and H2 PCI resource discovery)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_VIRTIO_NET)),)
+$(error H10 E1000 cannot share the H9 AHCI/VirtIO network profile)
+endif
+CFLAGS += -DNAS_ENABLE_H10_QEMU_E1000_USERLAND=1
+endif
+# H11 isolates one explicit QEMU xHCI PCI controller and USB Mass Storage
+# read-only Alpine root. It must never inherit another block-controller path.
+ifeq ($(NAS_ENABLE_H11_QEMU_XHCI_USERLAND),1)
+ifneq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY)$(NAS_ENABLE_H1_ECAM_DISCOVERY)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),1111)
+$(error H11 USB original Alpine requires H0/H1/H2 discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY) $(NAS_ENABLE_H4_QEMU_NVME_READONLY) $(NAS_ENABLE_H5_QEMU_PCI_RESOURCE) $(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME) $(NAS_ENABLE_H7_QEMU_NVME_USERLAND) $(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) $(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_VIRTIO_BLK)),)
+$(error H11 QEMU xHCI USB root is exclusive of NVMe/AHCI/VirtIO block profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H11_QEMU_XHCI_USERLAND=1
+endif
+# H12 reuses the H8 signed Alpine/NVMe root with one isolated QEMU xHCI
+# USB Boot Keyboard. The Linux input core/evdev is provider-neutral: its
+# H12 object linkage must NOT implicitly compile a VirtIO input backend.
+ifeq ($(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H12 USB HID requires H8 original Alpine ext4 root, H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H12 isolated USB HID cannot share H9/H10/H11 or VirtIO Input profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H12_QEMU_USB_HID_USERLAND=1
+endif
+# H13 retains H8 original signed Alpine + NVMe as readonly backing media,
+# replacing only the isolated Q35 xHCI HID provider with USB Boot Mouse.
+ifeq ($(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H13 USB Mouse requires H8 original Alpine ext4 root, H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H13 isolated USB Mouse cannot share H9-H12 or VirtIO Input profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND=1
+endif
+# H14: ONE Q35 xHCI with simultaneous root-port Boot Keyboard + Mouse.
+# Original signed Alpine evtest from H8 immutable NVMe ext4 only.
+ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H14 dual HID requires H8 original signed Alpine ext4 root, H2 discovery, lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H14 dual HID cannot share H9-H13 or VirtIO Input hardware profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1
+endif
+# H15: one Q35 xHCI FT232BM USB-serial. Original signed Alpine on
+# immutable H8-derived NVMe ext4 executes BusyBox stty/head/printf over
+# dynamically published /dev/ttyUSB0 (USB Bulk IN/OUT, not boot UART).
+ifeq ($(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H15 FTDI requires H8 original signed Alpine ext4 root, H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H15 isolated USB serial cannot share H9-H14 or VirtIO Input hardware profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -108,9 +249,281 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
 
 .PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe ash-pipe-backend-probe boot-handoff-probe ash-resources-probe shebang-abi-probe preflight
+.PHONY: hw-h0-host-check hw-h0-kernel hw-h0-iso
+.PHONY: hw-h1-host-check hw-h1-kernel hw-h1-iso
+.PHONY: hw-h2-host-check hw-h2-kernel hw-h2-iso
+.PHONY: hw-h3-host-check hw-h3-kernel hw-h3-iso
+.PHONY: hw-h4-host-check hw-h4-kernel hw-h4-iso
+.PHONY: hw-h5-host-check hw-h5-kernel hw-h5-iso
+.PHONY: hw-h6-host-check hw-h6-kernel hw-h6-iso
+.PHONY: hw-h6-ambiguous-host-check hw-h6-ambiguous-kernel hw-h6-ambiguous-iso
+.PHONY: hw-h7-host-check hw-h7-kernel hw-h7-iso
+.PHONY: hw-h8-host-check hw-h8-kernel hw-h8-iso
+.PHONY: hw-h9-host-check hw-h9-kernel hw-h9-iso
+.PHONY: hw-h10-host-check hw-h10-kernel hw-h10-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
+
+hw-h0-host-check:
+	sh scripts/check-h0-acpi-host.sh
+	sh scripts/check-pci-scan.sh
+
+# Keep H0's compile-time feature flag and objects away from ordinary NaSeed
+# build outputs; changing CFLAGS in-place would otherwise reuse stale .o files.
+hw-h0-kernel:
+	$(MAKE) OUT=build/h0-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 kernel
+
+hw-h0-iso:
+	$(MAKE) OUT=build/h0-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 iso
+
+hw-h1-host-check: hw-h0-host-check
+	sh scripts/check-h1-pci-ecam-host.sh
+
+# H1 owns separate objects and cannot contaminate H0 or three-ISA outputs.
+hw-h1-kernel:
+	$(MAKE) OUT=build/h1-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 kernel
+
+hw-h1-iso:
+	$(MAKE) OUT=build/h1-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 iso
+
+hw-h2-host-check: hw-h1-host-check
+	sh scripts/check-h2-pci-resource-host.sh
+
+hw-h2-kernel:
+	$(MAKE) OUT=build/h2-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 kernel
+
+hw-h2-iso:
+	$(MAKE) OUT=build/h2-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 iso
+
+hw-h3-host-check: hw-h2-host-check
+	sh scripts/check-h3-nvme-identify-host.sh
+
+hw-h3-kernel:
+	$(MAKE) OUT=build/h3-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 kernel
+
+hw-h3-iso:
+	$(MAKE) OUT=build/h3-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 iso
+
+# H4 cannot be booted on a real PC: it writes QEMU NVMe admin/I/O queues.
+# A separate OUT prevents incremental-build reuse with all other profiles.
+hw-h4-host-check: hw-h3-host-check
+	sh scripts/check-h4-nvme-readonly-host.sh
+
+hw-h4-kernel:
+	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 kernel
+
+hw-h4-iso:
+	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 iso
+
+# H5 is deliberately a distinct, QEMU-only artifact. It accepts discovered
+# PCI resources only after the runtime QEMU and NVMe safety qualification;
+# it is NOT a physical-machine driver enablement image.
+hw-h5-host-check: hw-h4-host-check
+
+hw-h5-kernel:
+	$(MAKE) OUT=build/h5-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 kernel
+
+hw-h5-iso:
+	$(MAKE) OUT=build/h5-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 iso
+
+# H6 positive: retain the same known H5 relocated QEMU controller + disposable
+# read-only namespace, but exercise lifetime ownership of mapped PCI BAR pages.
+hw-h6-host-check: hw-h5-host-check
+
+hw-h6-kernel:
+	$(MAKE) OUT=build/h6-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 kernel
+
+hw-h6-iso:
+	$(MAKE) OUT=build/h6-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 iso
+
+# H6 intentionally refuses two discovered NVMe controllers before any driver
+# config/MMIO writes or DMA. Separate output keeps the negative experiment
+# away from all H0–H5 and normal three-ISA build artifacts.
+hw-h6-ambiguous-host-check: hw-h5-host-check
+
+hw-h6-ambiguous-kernel:
+	$(MAKE) OUT=build/h6-qemu-ambiguous NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME=1 kernel
+
+hw-h6-ambiguous-iso:
+	$(MAKE) OUT=build/h6-qemu-ambiguous NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME=1 iso
+
+# H7 is a full Linux userspace kernel (unlike H0–H6 smoke kernels): the
+# existing lwext4 VFS executes original Debian ELF files from an isolated
+# 32MiB QEMU NVMe ext4 namespace, never via a Limine ext4 RAM module.
+hw-h7-host-check: hw-h6-host-check
+	sh scripts/check-h7-x86-mmio-unmap-host.sh
+
+hw-h7-kernel:
+	$(MAKE) OUT=build/h7-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 kernel
+
+hw-h7-iso: hw-h7-kernel
+	$(MAKE) OUT=build/h7-qemu-only build/h7-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h7-nvme-userland.sh
+	sh scripts/build-h7-nvme-iso.sh
+
+# H8 keeps the H0-H7 hardware regressions, then replaces H7's /mnt Debian
+# staging path with a genuine original Alpine musl / root on NVMe ext4. The
+# rescue CPIO contains no executable: no disk means no Alpine program run.
+hw-h8-host-check: hw-h7-host-check
+
+hw-h8-kernel:
+	$(MAKE) OUT=build/h8-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 kernel
+
+hw-h8-iso: hw-h8-kernel
+	$(MAKE) OUT=build/h8-qemu-only build/h8-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h8-alpine-nvme.sh
+	sh scripts/build-h8-nvme-iso.sh
+
+# H9: built-in Q35 ICH9 AHCI 00:1f.2 with one readonly SATA ext4 root.
+# Keep H9 objects, signed Alpine image and UEFI media isolated from H8.
+hw-h9-host-check: hw-h2-host-check
+	sh scripts/check-h9-ahci-readonly-host.sh
+
+hw-h9-kernel:
+	$(MAKE) OUT=build/h9-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H9_QEMU_AHCI_USERLAND=1 kernel
+
+hw-h9-iso: hw-h9-kernel
+	$(MAKE) OUT=build/h9-qemu-only build/h9-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h9-ahci-alpine.sh
+	sh scripts/build-h9-ahci-iso.sh
+
+# H10 keeps real signed Alpine/musl ELF and native lwIP syscalls from H8,
+# but routes every TCP frame through the new E1000 PCI MAC/RX/TX descriptor
+# driver. No VirtIO-Net and no simulated host socket stand-in.
+hw-h10-host-check: hw-h8-host-check
+	sh scripts/check-h10-e1000-host.sh
+
+hw-h10-kernel:
+	$(MAKE) OUT=build/h10-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_LWIP=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H10_QEMU_E1000_USERLAND=1 kernel
+
+hw-h10-iso: hw-h10-kernel
+	$(MAKE) OUT=build/h10-qemu-only build/h10-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h10-e1000-alpine.sh
+	sh scripts/build-h10-e1000-iso.sh
+
+# H11: real QEMU PCI xHCI -> USB Mass Storage BOT/SCSI -> readonly ext4 `/`
+# -> signed original dynamic Alpine ELF; no NVMe, AHCI or VirtIO substitution.
+hw-h11-host-check: hw-h2-host-check
+	sh scripts/check-h11-usb-host.sh
+
+hw-h11-kernel:
+	$(MAKE) OUT=build/h11-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H11_QEMU_XHCI_USERLAND=1 kernel
+
+hw-h11-iso: hw-h11-kernel
+	$(MAKE) OUT=build/h11-qemu-only build/h11-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h11-usb-alpine.sh
+	sh scripts/build-h11-usb-iso.sh
+
+# H12 changes only the input provider to USB HID over xHCI; keep the
+# independently signed H8 NVMe ext4 Alpine root and the common evdev ABI.
+# Native evtest 24-byte input_event readings, QMP key injection and real
+# no-keyboard/no-xHCI negatives are mandatory before declaring H12 PASS.
+hw-h12-host-check: hw-h8-host-check
+	sh scripts/check-h12-hid-host.sh
+
+hw-h12-kernel:
+	$(MAKE) OUT=build/h12-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H12_QEMU_USB_HID_USERLAND=1 kernel
+
+hw-h12-iso: hw-h12-kernel
+	$(MAKE) OUT=build/h12-qemu-only build/h12-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h12-usb-hid-alpine.sh
+	sh scripts/build-h12-usb-hid-iso.sh
+
+# H13 QEMU USB Boot Mouse: original signed Alpine evtest reports actual
+# REL_X/Y/WHEEL and BTN_LEFT transitions after independent QMP injection.
+hw-h13-host-check: hw-h8-host-check
+	sh scripts/check-h13-mouse-host.sh
+	sh scripts/check-h13-xhci-host.sh
+
+hw-h13-kernel:
+	$(MAKE) OUT=build/h13-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND=1 kernel
+
+hw-h13-iso: hw-h13-kernel
+	$(MAKE) OUT=build/h13-qemu-only build/h13-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h13-usb-mouse-alpine.sh
+	sh scripts/build-h13-usb-mouse-iso.sh
+
+# H14: real single-controller/two-root-port xHCI HID and original evtest.
+hw-h14-host-check: hw-h13-host-check
+	sh scripts/check-h14-dual-hid-host.sh
+
+hw-h14-kernel:
+	$(MAKE) OUT=build/h14-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1 kernel
+
+hw-h14-iso: hw-h14-kernel
+	$(MAKE) OUT=build/h14-qemu-only build/h14-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h14-dual-hid-alpine.sh
+	sh scripts/build-h14-dual-hid-iso.sh
+
+# H15: USB Bulk-IN/Bulk-OUT FT232BM, original signed Alpine BusyBox.
+hw-h15-host-check: hw-h14-host-check
+	sh scripts/check-h15-ftdi-host.sh
+
+hw-h15-kernel:
+	$(MAKE) OUT=build/h15-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND=1 kernel
+
+hw-h15-iso: hw-h15-kernel
+	$(MAKE) OUT=build/h15-qemu-only build/h15-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h15-ftdi-alpine.sh
+	sh scripts/build-h15-ftdi-iso.sh
+
+H0_HW_OBJS :=
+ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
+H0_HW_SRCS := kernel/platform/firmware_acpi.c \
+ kernel/drivers/core/pci_scan.c kernel/platform/x86_h0_pci.c
+ifeq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
+H0_HW_SRCS += kernel/platform/pci_ecam.c kernel/platform/x86_h1_ecam.c
+endif
+ifeq ($(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY),1)
+H0_HW_SRCS += kernel/drivers/core/pci_resources.c
+endif
+ifeq ($(NAS_ENABLE_H3_QEMU_NVME_IDENTIFY),1)
+H0_HW_SRCS += kernel/platform/x86_h3_nvme.c \
+ kernel/drivers/nvme/identify.c kernel/drivers/port/dma.c
+endif
+ifeq ($(NAS_ENABLE_H4_QEMU_NVME_READONLY),1)
+H0_HW_SRCS += kernel/drivers/nvme/readonly.c kernel/drivers/port/block.c
+endif
+ifeq ($(NAS_ENABLE_H9_QEMU_AHCI_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h9_ahci.c \
+ kernel/drivers/ahci/readonly.c \
+ kernel/drivers/port/dma.c kernel/drivers/port/block.c
+endif
+ifeq ($(NAS_ENABLE_H10_QEMU_E1000_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h10_e1000.c \
+ kernel/drivers/e1000/e1000_nic.c
+endif
+ifeq ($(NAS_ENABLE_H11_QEMU_XHCI_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h11_usb.c \
+ kernel/drivers/usb/xhci.c kernel/drivers/usb/msc.c \
+ kernel/drivers/port/dma.c kernel/drivers/port/block.c
+endif
+ifeq ($(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h12_hid.c \
+ kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c
+endif
+ifeq ($(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h13_mouse.c \
+ kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot_mouse.c
+endif
+ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h14_dual_hid.c \
+  kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c \
+  kernel/drivers/usb/hid_boot_mouse.c
+endif
+ifeq ($(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h15_ftdi.c \
+  kernel/drivers/usb/xhci.c kernel/fs/usb_serial_chrdev.c
+endif
+H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
+define nas_compile_h0_hw
+$(OUT)/h0_$(notdir $(basename $(1))).o: $(1) $(HDR)
+	mkdir -p $(OUT)
+	clang $(CFLAGS) -MMD -MP -c $$< -o $$@
+endef
+$(foreach source,$(H0_HW_SRCS),$(eval $(call nas_compile_h0_hw,$(source))))
+endif
 
 # Opt-in unchanged original U-Boot source behind a modern PCI transport.
 # All request code is shared with ARM/RV; only x86 PCI enumeration is extra.
@@ -150,7 +563,7 @@ endif
 # Shared Linux input-core/evdev plus provider-based character endpoints.
 # No input stack is linked into the old serial-only hardware profile.
 NAS_INPUT_COMMON_OBJS :=
-ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
+ifneq ($(filter 1,$(NAS_ENABLE_VIRTIO_INPUT) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)),)
 NAS_INPUT_COMMON_SRCS := kernel/drivers/input/core.c \
  kernel/drivers/input/evdev.c kernel/fs/input_chrdev.c
 NAS_INPUT_COMMON_OBJS += $(patsubst %.c,$(OUT)/nasinput_%.o,$(notdir $(NAS_INPUT_COMMON_SRCS)))
@@ -789,6 +1202,8 @@ $(OUT)/shebang-abi: $(OUT)/shebang-abi.o user/linker.ld
 
 $(KERNEL): $(OUT)/driver_bus.o $(OUT)/driver_irq.o $(OUT)/driver_chrdev.o $(OUT)/driver_misc.o $(OUT)/fbdev_chrdev.o $(OUT)/fbdev.o $(OUT)/fbcon.o $(OUT)/kernel.o $(OUT)/random.o $(OUT)/timekeeper.o $(OUT)/uts.o $(OUT)/init_main.o $(OUT)/task_exec.o $(OUT)/syscall_dispatch.o $(OUT)/task_accounting.o $(OUT)/task.o $(OUT)/task_kernel_context.o $(OUT)/task_wait_queue.o $(OUT)/task_futex_wait.o $(OUT)/task_run_state.o $(OUT)/task_blocked_completion.o $(OUT)/task_kthread.o $(OUT)/task_kthread_boot.o $(OUT)/task_k_sync.o $(OUT)/task_scheduler_service.o $(OUT)/task_sched_core.o $(OUT)/nas_mm.o $(OUT)/exception.o $(OUT)/mm_fault.o $(OUT)/task_resources.o $(OUT)/process.o $(OUT)/ptrace.o $(OUT)/session.o $(OUT)/sched.o $(OUT)/task_wait.o $(OUT)/bootfs.o $(OUT)/tmpfs.o $(OUT)/block_core.o $(OUT)/block_ramdisk.o $(OUT)/block_partition.o $(OUT)/mm_heap.o $(OUT)/fs_tmp_namespace.o $(OUT)/fd.o $(OUT)/pipe.o $(OUT)/boot_image.o $(OUT)/arch.o $(OUT)/arch_cpu.o $(OUT)/arch_context.o $(OUT)/arch_kernel_switch.o $(OUT)/arch_timer.o $(OUT)/serial.o $(OUT)/tty.o $(OUT)/vt.o $(OUT)/pty.o $(OUT)/tty_ldisc.o $(OUT)/arch_console.o $(OUT)/frame.o $(OUT)/platform.o $(OUT)/arch_mmu.o $(OUT)/vm.o $(OUT)/anon_regions.o $(OUT)/remote_copy.o $(OUT)/usercopy.o $(OUT)/elf.o $(OUT)/elf_segments.o $(OUT)/user_stack.o $(OUT)/signal.o $(OUT)/arch_signal_frame.o $(OUT)/klib_string.o $(OUT)/arch_syscall.o $(OUT)/fs_procfs.o $(OUT)/ipc_sysv.o $(OUT)/net_device_port.o $(OUT)/fs_pidfd.o $(OUT)/fs_lookup.o $(OUT)/fs_vfs.o $(OUT)/fs_vfs_providers.o $(OUT)/fs_devfs.o $(OUT)/fs_epoll.o $(OUT)/fs_eventfd.o $(OUT)/fs_timerfd.o $(OUT)/fs_inotify.o $(OUT)/fs_unix_socket.o $(OUT)/fs_namespace_syscall.o $(OUT)/fs_socket_syscall.o $(OUT)/fs_netlink_core.o $(OUT)/fs_netlink_route.o $(OUT)/fs_netlink_filter.o $(OUT)/fs_netlink_generic.o $(OUT)/fs_packet_socket.o $(OUT)/fs_memfd.o $(OUT)/fs_file_io.o $(OUT)/fs_broker.o $(OUT)/fs_user_broker.o $(OUT)/fs_poll_syscall.o $(OUT)/fs_metadata_syscall.o $(OUT)/fs_syscall.o $(LWEXT4_EXTRA) $(LITTLEFS_EXTRA) $(RAMFS_EXTRA) $(VIRTIO_X86_OBJS) $(NAS_INPUT_COMMON_OBJS) $(LWIP_X86_OBJS) kernel/arch/$(ARCH)/linker.ld
 	ld.lld $(LDFLAGS) $(filter %.o,$^) -o $@
+
+$(KERNEL): $(H0_HW_OBJS)
 
 $(BINARY_TAR):
 	mkdir -p $(dir $@)

@@ -26,6 +26,27 @@ struct nas_dma_provider {
     int (*sync)(void *, struct nas_dma_page *, uint32_t offset,
                 uint32_t bytes, enum nas_dma_direction);
 };
+/* An explicit, bounded software ownership lease for one DMA-capable device.
+ * A controller must arm the lease BEFORE a write that might enable bus
+ * mastering and disarm it ONLY AFTER verified device quiescence. While armed,
+ * even an accidental cleanup path cannot release any of its DMA pages.
+ * This is NOT an IOMMU, physical DMA isolation or a coherent-memory proof. */
+#define NAS_DMA_LEASE_PAGE_LIMIT 8U
+struct nas_dma_lease {
+    const struct nas_dma_provider *provider;
+    struct nas_dma_page *pages[NAS_DMA_LEASE_PAGE_LIMIT];
+    unsigned held;
+    bool may_dma;
+};
+int nas_dma_lease_begin(struct nas_dma_lease *,
+                        const struct nas_dma_provider *);
+int nas_dma_lease_alloc_page(struct nas_dma_lease *,struct nas_dma_page *);
+int nas_dma_lease_sync(struct nas_dma_lease *,struct nas_dma_page *,
+                       uint32_t,uint32_t,enum nas_dma_direction);
+int nas_dma_lease_arm(struct nas_dma_lease *);
+int nas_dma_lease_disarm_after_quiesce(struct nas_dma_lease *);
+int nas_dma_lease_free_page(struct nas_dma_lease *,struct nas_dma_page *);
+int nas_dma_lease_end(struct nas_dma_lease *);
 int nas_dma_alloc_page(const struct nas_dma_provider *, struct nas_dma_page *);
 /* If a provider allocates an invalid descriptor and its rollback release
  * fails, allocation returns that release error and leaves page.cpu non-NULL

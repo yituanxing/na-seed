@@ -7,6 +7,37 @@
 #include "../syscall/reboot_policy.h"
 #include "../errno.h"
 #include "../lib/string.h"
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+#define NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT 1
+#endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+#include "../platform/x86_h3_nvme.h"
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+#include "../platform/x86_h9_ahci.h"
+#endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+#include "../platform/x86_h10_e1000.h"
+#endif
+#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
+#include "../platform/x86_h11_usb.h"
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+#include "../platform/x86_h12_hid.h"
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+#include "../platform/x86_h13_mouse.h"
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+#include "../platform/x86_h14_dual_hid.h"
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+#include "../platform/x86_h15_ftdi.h"
+#include "../fs/usb_serial_chrdev.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -16,14 +47,17 @@ extern bool nas_lwext4_async_runtime_passed(void);
 extern bool nas_lwext4_async_runtime_armed(void);
 extern void nas_lwext4_async_runtime_step(void);
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 void nas_init_process_deferred_exit_service(void);
 static bool pid1_exit_waiting;
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
 static bool pid1_shutdown_quiesced;
 static uint64_t pid1_shutdown_signals;
 static uint32_t pid1_power_command;
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+static bool h10_nic_shutdown_done;
+#endif
 #ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
 static bool pid1_debian_power;
 #endif
@@ -86,7 +120,7 @@ static void deferred_lwext4_worker(void *context) {
     nas_lwext4_async_runtime_step();
 }
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 static void deferred_pid1_exit(void *context) {
     (void)context;
     nas_init_process_deferred_exit_service();
@@ -105,6 +139,40 @@ static void deferred_input_events(void *context) {
     (void)context;
     (void)nas_virtio_input_poll(64U);
     nas_virtio_input_irq_report();
+}
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+static void deferred_h12_usb_keyboard(void *context) {
+    (void)context;
+    /* Genuine interrupt-IN completion is polled at most eight times in
+     * this existing bounded scheduler service; no IRQ/task switch. */
+    if(nas_x86_h12_hid_poll(8U)<0)
+        nas_fail("H12 xHCI USB keyboard poll failed");
+}
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+static void deferred_h13_usb_mouse(void *context) {
+    (void)context;
+    /* Complete real xHCI mouse Interrupt-IN TRBs in bounded scheduler
+     * service, never synthesize a motion event from a timer or keyboard. */
+    if(nas_x86_h13_mouse_poll(8U)<0)
+        nas_fail("H13 xHCI USB mouse poll failed");
+}
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+static void deferred_h14_usb_dual(void *context) {
+    (void)context;
+    /* One shared xHC polls two independent physical USB root-port slots. */
+    if(nas_x86_h14_dual_hid_poll(8U)<0)
+        nas_fail("H14 xHCI dual HID poll failed");
+}
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+static void deferred_h15_ftdi_serial(void *context) {
+    (void)context;
+    /* Real xHCI Bulk-IN polling only; bounded per scheduler slice. */
+    if(nas_x86_h15_ftdi_poll(8U)<0)
+        nas_fail("H15 real FTDI USB Bulk-IN poll failed");
 }
 #endif
 static void init_deferred_services(void) {
@@ -129,7 +197,27 @@ static void init_deferred_services(void) {
                                    deferred_input_events,NULL);
     if(rc)nas_fail("deferred input service registration failed");
 #endif
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_h12_usb_keyboard,NULL);
+    if(rc)nas_fail("deferred USB HID input service registration failed");
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_h13_usb_mouse,NULL);
+    if(rc)nas_fail("deferred USB HID mouse service registration failed");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                   deferred_h14_usb_dual,NULL);
+    if(rc)nas_fail("deferred dual USB HID service registration failed");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                    deferred_h15_ftdi_serial,NULL);
+    if(rc)nas_fail("deferred FT232BM USB-serial RX registration failed");
+#endif
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
     rc=nas_sched_register_deferred(NAS_SCHED_AFTER_WORKERS,
                                    deferred_pid1_exit,NULL);
@@ -142,7 +230,7 @@ static void init_deferred_services(void) {
  * The scheduler publishes its group-finalization event; the boot policy
  * stays here, never in an ISA trap or the syscall dispatch hot path. */
 static void nas_init_finish_success(void) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* The physical ext4 filesystem is /, and all other mounts attach to
      * its Dentry tree. Detach any additional guests before the root. */
 #ifdef NAS_ENABLE_RAMFS
@@ -162,7 +250,49 @@ static void nas_init_finish_success(void) {
     if (!nas_lwext4_guest_boot_shutdown())
         nas_fail("lwext4 final unmount/durable device flush failed");
 #endif
-#ifndef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+    /* The genuine NVMe-backed ELF and data Files have closed, and lwext4
+     * dropped its BlockDevice lease. Only now may the QEMU-only session
+     * disarm DMA, disable PCI bus mastering and release the BAR claim. A
+     * failed quiesce must NEVER produce a userland PASS marker. */
+    if (nas_x86_h7_nvme_shutdown())
+        nas_fail("H7 NVMe controller shutdown or BlockDevice detach failed");
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    nas_print("[H8 NVME ALPINE ROOT SHUTDOWN] ext4 unmounted; controller quiesced\n");
+#endif
+    nas_print("[H7 NVME USERLAND SHUTDOWN] ext4 unmounted; controller quiesced\n");
+#endif
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+    if(nas_x86_h9_ahci_shutdown())
+        nas_fail("H9 SATA port/DMA/BAR shutdown failed");
+    nas_print("[H9 AHCI USERLAND SHUTDOWN] ext4 unmounted; SATA port quiesced\n");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    if(nas_x86_h12_hid_shutdown())
+        nas_fail("H12 USB HID device/evdev or xHCI DMA/BAR shutdown failed");
+    nas_print("[H12 HID USERLAND SHUTDOWN] evdev closed, xHCI halted\n");
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    if(nas_x86_h13_mouse_shutdown())
+        nas_fail("H13 USB Mouse/evdev or xHCI DMA/BAR shutdown failed");
+    nas_print("[H13 MOUSE USERLAND SHUTDOWN] evdev closed, xHCI halted\n");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    if(nas_x86_h14_dual_hid_shutdown())
+        nas_fail("H14 USB Keyboard+Mouse/evdev or xHCI DMA/BAR shutdown failed");
+    nas_print("[H14 DUAL USERLAND SHUTDOWN] event0/event1 closed, xHCI halted\n");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    if(nas_x86_h15_ftdi_shutdown())
+        nas_fail("H15 FTDI ttyUSB0 still open or xHCI DMA/BAR shutdown failed");
+    nas_print("[H15 FTDI USERLAND SHUTDOWN] original BusyBox stty/head/printf closed, real xHCI FTDI quiesced\n");
+#endif
+#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
+    if(nas_x86_h11_usb_shutdown())
+        nas_fail("H11 USB Mass Storage DMA/BAR shutdown failed");
+    nas_print("[H11 USB USERLAND SHUTDOWN] ext4 unmounted; xHCI DMA quiesced\n");
+#endif
+#ifndef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
 #ifdef NAS_ENABLE_LITTLEFS
     if (!nas_littlefs_guest_boot_shutdown())
         nas_fail("littlefs guest VFS unmount failed");
@@ -172,7 +302,7 @@ static void nas_init_finish_success(void) {
         nas_fail("upstream ramfs guest VFS unmount failed");
 #endif
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* A failed/unsupported final reboot(2) may still leave original PID1
      * in its shutdown sleep. Always finish the real ext4
      * teardown BEFORE reporting this failure: panic-on-exit would otherwise
@@ -311,7 +441,7 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
     if(signal)nas_fail("init terminated by default fatal signal");
     nas_print("[EXIT] user status=");nas_dec(code);nas_print("\n");
     if(code)nas_fail("userspace exited nonzero");
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* A detached watchdog, daemon or worker may outlive a successful PID1.
      * Do not unmount its /dev or ext4 beneath real live OpenFiles. The
      * final scheduler boundary has its own stack and can quiesce all user
@@ -351,9 +481,9 @@ void nas_init_process_terminated(uint32_t code,uint32_t signal) {
 #endif
 }
 
-#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_M191_ALPINE_ROOT)
+#if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
 void nas_init_process_deferred_exit_service(void) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     if(pid1_power_command && !pid1_exit_waiting) {
         /* The real BusyBox shutdown parent never calls exit(2). Its legal
          * reboot vfork child must have fully exited and released the shared
@@ -389,6 +519,19 @@ void nas_init_process_deferred_exit_service(void) {
 #endif
     }
 #endif
+#ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
+    /* The lwIP core thread may still hold a pinned e10000 NetDevice even
+     * after PID1 and its descriptors have exited. Device removal notifies
+     * the existing network worker; defer actual PCI DMA/BAR release until
+     * that worker has asynchronously detached the netif. No nested task
+     * scheduling or busy-spin is allowed from the terminating task. */
+    if(!h10_nic_shutdown_done) {
+        int nic_rc=nas_x86_h10_e1000_shutdown();
+        if(nic_rc==-EBUSY)return;
+        if(nic_rc)nas_fail("H10 E1000 worker detach or DMA shutdown failed");
+        h10_nic_shutdown_done=true;
+    }
+#endif
 #else
 #ifdef NAS_ENABLE_M180_FS_USER_IRQ
     if(!pid1_exit_waiting || !nas_lwext4_m180_shutdown_complete())return;
@@ -411,12 +554,35 @@ void nas_init_userspace(void) {
     if(nas_misc_chrdev_init() || nas_tty_chrdev_init() ||
        nas_pty_chrdev_init() || nas_fbdev_chrdev_init())
         nas_fail("base character-device publication failed");
-#ifdef NAS_ENABLE_VIRTIO_INPUT
+#if defined(NAS_ENABLE_VIRTIO_INPUT) || \
+    defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
     /* Publish the event character-device handler before the shared bus
      * can discover a VirtIO input device (through lwIP or block boot). */
     extern int nas_input_chrdev_init(void);
     if(nas_input_chrdev_init())
         nas_fail("evdev character-device registration failed");
+#endif
+#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
+    /* PCI discovery happened before the input class was published.
+     * Publish /dev/input/event0 only after this one-time class init. */
+    if(nas_x86_h12_hid_publish_input())
+        nas_fail("H12 USB HID evdev publication after class init failed");
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    if(nas_x86_h13_mouse_publish_input())
+        nas_fail("H13 USB mouse evdev publication after class init failed");
+#endif
+#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
+    if(nas_x86_h14_dual_hid_publish_input())
+        nas_fail("H14 two USB HID evdev publications after class init failed");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    /* Publish only the actually enumerated FT232BM class node, after
+     * base character-device bootstrap and before original BusyBox starts. */
+    if(nas_usb_serial_chrdev_publish())
+        nas_fail("H15 real FTDI ttyUSB0 class publication failed");
 #endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts
      * before user syscalls begin using the same continuation mechanism. */
@@ -454,19 +620,19 @@ void nas_init_userspace(void) {
      * bootfs.c; only this layer maps the actual ELF into userspace.
      */
     struct nas_boot_image selected_image;
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     /* Keep CPIO as an immutable rescue archive, but take PID1 from the
      * official Alpine ext4 root after its real BlockDevice is registered.
      * Select root ownership before any pseudo mount gets a parent Dentry. */
     if(!nas_boot_argv_first())
-        nas_fail("M191 requires explicit naseed.argv=/sbin/init");
+        nas_fail("external ext4 root requires explicit naseed.argv=/absolute/elf");
 #ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
     if(strcmp(nas_boot_argv_first(),"/sbin/init")!=0)
         nas_fail("M257 requires original Debian /sbin/init PID1 from physical ext4");
 #endif
     const char *boot_error=nas_boot_prepare(NULL,&selected_image);
     if(nas_vfs_prepare_external_boot_root())
-        nas_fail("M191 root selection happened after VFS registration");
+        nas_fail("external root selection happened after VFS registration");
 #else
     const char *boot_error = nas_boot_prepare(
         nas_boot_argv_first(), &selected_image);
@@ -479,7 +645,7 @@ void nas_init_userspace(void) {
     if (!nas_lwext4_guest_boot_mount())
         nas_fail("opt-in lwext4 Limine module/VFS mount failed");
 #endif
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT
     boot_error=nas_boot_prepare_vfs_root(nas_boot_argv_first(),
                                          &selected_image);
     if(boot_error)nas_fail(boot_error);

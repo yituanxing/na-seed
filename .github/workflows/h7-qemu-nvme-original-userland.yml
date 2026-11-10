@@ -1,0 +1,114 @@
+name: NaSeed H7 real NVMe read-only ext4 original Debian BusyBox Bash
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h7-qemu-nvme-original-userland.yml'
+      - 'kernel/platform/x86_h3_nvme.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/core/pci_resources.*'
+      - 'kernel/drivers/nvme/**'
+      - 'kernel/drivers/port/**'
+      - 'kernel/arch/x86_64/mmu.*'
+      - 'kernel/kernel.c'
+      - 'kernel/init/main.c'
+      - 'ports/lwext4/**'
+      - 'tests/h7-*.c'
+      - 'scripts/check-h7-*.sh'
+      - 'scripts/h7-guest-workload.sh'
+      - 'scripts/stage-h7-nvme-userland.sh'
+      - 'scripts/build-h7-nvme-iso.sh'
+      - 'scripts/build-lwext4-guest.sh'
+      - 'limine-h7-nvme.conf'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h7-qemu-readonly-ext4-original-userland-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h7-physical-nvme-path-original-debian-elf:
+    name: QEMU-only NVMe -> ext4 -> original Debian BusyBox and Bash
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install C toolchain, ext4 tools, Debian package tools, QEMU and OVMF
+        timeout-minutes: 15
+        run: |
+          set -eu
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'cmake:cmake' 'dpkg-deb:dpkg' 'readelf:binutils' \
+                      'cpio:cpio' 'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' \
+                      'sha256sum:coreutils' \
+                      'curl:curl' 'xorriso:xorriso' \
+                      'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0–H7 host regressions, MMIO safety, read-only block guard
+        timeout-minutes: 8
+        run: |
+          set -eu
+          sh -n scripts/stage-h7-nvme-userland.sh
+          sh -n scripts/h7-guest-workload.sh
+          sh -n scripts/build-h7-nvme-iso.sh
+          sh -n scripts/check-h7-nvme-userland-qemu.sh
+          sh -n scripts/check-h7-no-nvme-qemu.sh
+          sh -n scripts/run.sh
+          make hw-h7-host-check
+      - name: Generate isolated H7 real kernel, original Debian ELFs and 32MiB NVMe ext4 UEFI media
+        timeout-minutes: 22
+        run: |
+          set -eu
+          make hw-h7-iso
+          readelf -h build/h7-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          sha256sum -c build/h7-qemu-only/h7-media-before.sha256
+          sha256sum -c build/h7-qemu-only/h7-elfs.sha256
+      - name: Genuine QEMU UEFI H7 reads and runs original Debian BusyBox+Bash from NVMe readonly ext4
+        timeout-minutes: 5
+        run: sh scripts/check-h7-nvme-userland-qemu.sh
+      - name: Negative QEMU UEFI H7 absent-NVMe must not execute CPIO substitute
+        timeout-minutes: 3
+        run: sh scripts/check-h7-no-nvme-qemu.sh
+      - name: Preserve actual positive and negative guest serial transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h7-qemu-nvme-original-debian-busybox-bash-serial
+          path: |
+            build/h7-qemu-only/h7-qemu-uefi-serial.log
+            build/h7-qemu-only/h7-qemu-uefi-clean.log
+            build/h7-qemu-only/h7-no-nvme-uefi-serial.log
+            build/h7-qemu-only/h7-no-nvme-uefi-clean.log
+          if-no-files-found: ignore
+      - name: Preserve kernel, UEFI image, Debian provenance and read-only media hash
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h7-qemu-nvme-original-debian-uefi-artifacts
+          path: |
+            build/h7-qemu-only/kernel.elf
+            build/h7-qemu-only/naseed.iso
+            build/h7-qemu-only/h7-media-before.sha256
+            build/h7-qemu-only/h7-elfs.sha256
+            build/h7-qemu-only/fixture/debian-busybox.fixture
+          if-no-files-found: error

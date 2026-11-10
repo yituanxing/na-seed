@@ -12,16 +12,27 @@
 #include <limine.h>
 #include <stdint.h>
 #include <stdbool.h>
+#if defined(NAS_ENABLE_M191_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H8_QEMU_ALPINE_ROOT) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+#define NAS_EXTERNAL_EXT4_BOOT_ROOT 1
+#endif
 #ifdef NAS_ENABLE_M179_FS_IRQ
 #include "../../kernel/mm/heap.h"
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/panic.h"
 #include "../uboot/async_blk.h"
 #endif
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || \
+    defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
 #include "../../kernel/block/device.h"
 #include "../../kernel/block/partition.h"
+#ifdef NAS_ENABLE_VIRTIO_BLK
 extern int nas_platform_virtio_blk_probe(void);
+#endif
 static struct nas_partition_view boot_partition;
 static bool boot_partition_attached;
 /* Inspect an ext4 superblock at byte 1080 relative to the BlockDevice
@@ -53,16 +64,25 @@ static void partition_device_name(char name[32],
 
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
 extern void nas_dec(uint64_t);
 static void m191_boot_fail(const char *phase,int code) {
-    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+    nas_print("[H8 NVME ROOT FAIL] ");
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    nas_print("[H9 AHCI ROOT FAIL] ");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    nas_print("[H11 USB ROOT FAIL] ");
+#else
+    nas_print("[M191 ROOT FAIL] ");
+#endif
+    nas_print(phase);
     nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
     nas_print("\n");
 }
 #endif
 static bool boot_shutdown_failed(const char *stage,int code) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
     nas_print("[LWEXT4 SHUTDOWN ERROR] ");nas_print(stage);
     nas_print(" errno=");nas_dec((uint64_t)(code<0?-code:code));
     nas_print("\n");
@@ -100,7 +120,7 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
     }
     if(file) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         /* The persistent Alpine root must be backed by a real partition.
          * A Limine RAM image cannot satisfy the reboot-persistence gate. */
         return false;
@@ -114,11 +134,23 @@ bool nas_lwext4_guest_boot_mount(void) {
         if(ram_rw)
             nas_print("[LWEXT4 GUEST] explicit ephemeral RW RamDisk only; NOT persistent storage\n");
     } else {
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || \
+    defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
         /* Bus/transport discovery happens below the FS, not via a
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
+#if defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+        /* H7 is a separate, QEMU-qualified, permanently owned NVMe session.
+         * Its readonly BlockDevice was attached in H1/H3 discovery, before
+         * the full boot moves into VFS. A real PC must never use this path. */
+        int disks=1;
+#else
         int disks=nas_platform_virtio_blk_probe();
+#endif
         if(disks<0) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
             m191_boot_fail("virtio-probe",disks);
@@ -131,8 +163,16 @@ bool nas_lwext4_guest_boot_mount(void) {
         struct nas_partition_extent chosen_extent={0};
         bool chosen_writable=false;
         for(int i=0;i<disks;i++){
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+            const char block_name[]="nvme0";
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+            const char block_name[]="ahci0";
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            const char block_name[]="usb0";
+#else
             char block_name[]="virtio0";
             block_name[6]=(char)('0'+i);
+#endif
             struct nas_block_device *block=nas_block_get(block_name);
             if(!block) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
@@ -170,7 +210,17 @@ bool nas_lwext4_guest_boot_mount(void) {
             nas_block_put(block);
         }
         if(!found) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+            nas_print("[H7 NVME EXT4 FAIL] no genuine ext4 superblock on nvme0\n");
+            return false;
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+            nas_print("[H9 AHCI ROOT FAIL] no genuine ext4 superblock on ahci0\n");
+            return false;
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            nas_print("[H11 USB ROOT FAIL] no genuine ext4 superblock on usb0\n");
+            return false;
+#endif
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
             m191_boot_fail("ext4-superblock-not-found",disks);
             return false; /* selected external root is mandatory */
 #else
@@ -194,13 +244,36 @@ bool nas_lwext4_guest_boot_mount(void) {
             selected_device=partition_name;
         }
         const char *target=
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
             "/";
 #else
             "/mnt";
 #endif
+#if defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+        if(chosen_writable) {
+#ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
+            nas_print("[H9 AHCI ROOT FAIL] SATA BlockDevice unexpectedly writable\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+            nas_print("[H11 USB ROOT FAIL] USB BlockDevice unexpectedly writable\n");
+#else
+            nas_print("[H7 NVME EXT4 FAIL] QEMU NVMe BlockDevice unexpectedly writable\n");
+#endif
+            return false;
+        }
+#endif
         int mount_rc=nas_lwext4_device_mount(&boot_mount,selected_device,
-                                           "virtio-ext4",target,chosen_writable);
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+                                           "h7-nvme-ext4",
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+                                           "h9-ahci-ext4",
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+                                           "h11-usb-ext4",
+#else
+                                           "virtio-ext4",
+#endif
+                                           target,chosen_writable);
         if(mount_rc) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
             m191_boot_fail("lwext4-device-mount",mount_rc);
@@ -211,18 +284,44 @@ bool nas_lwext4_guest_boot_mount(void) {
             }
             return false;
         }
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         /* The M191 build switch now also hosts signed Debian/glibc root
          * programs. Keep its old acceptance marker for Alpine regressions,
          * and provide a distribution-neutral physical root observation. */
         nas_print("[ROOTFS] physical ext4 root registered at /\n");
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
         nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
 #endif
+#endif
+#ifdef NAS_ENABLE_H7_QEMU_NVME_USERLAND
+        if(!boot_mount.mount.read_only) {
+            nas_print("[H7 NVME EXT4 FAIL] mounted filesystem must be read-only\n");
+            return false;
+        }
+#ifdef NAS_ENABLE_H8_QEMU_ALPINE_ROOT
+        nas_print("[H8 NVME ALPINE ROOT MOUNTED] / read-only source=nvme0\n");
+#else
+        nas_print("[H7 NVME EXT4 MOUNTED] /mnt read-only source=nvme0\n");
+#endif
+#elif defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+        if(!boot_mount.mount.read_only) {
+            nas_print("[H9 AHCI ROOT FAIL] mounted filesystem must be read-only\n");
+            return false;
+        }
+        nas_print("[H9 AHCI ROOT MOUNTED] / read-only source=ahci0\n");
+#elif defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+        if(!boot_mount.mount.read_only) {
+            nas_print("[H11 USB ROOT FAIL] mounted filesystem must be read-only\n");
+            return false;
+        }
+        nas_print("[H11 USB ROOT MOUNTED] / read-only source=usb0\n");
+#else
         nas_print(chosen_partition_index ?
             "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :
             "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted\n");
         if(!boot_mount.mount.read_only)
             nas_print("[VIRTIO-BLK] persistent block device write+flush enabled\n");
+#endif
 #else
         return true; /* No boot RAM image and physical driver not enabled */
 #endif
@@ -231,7 +330,7 @@ bool nas_lwext4_guest_boot_mount(void) {
     struct nas_fs_node node;
     /* Same VFS pathwalk whether the provider owns a RAM module or real disk. */
     const char *mounted_path=
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
         "/";
 #else
         "/mnt";
@@ -259,8 +358,16 @@ bool nas_lwext4_guest_boot_mount(void) {
  * Without ext4_umount, the journal/superblock free counters can lag even
  * after fsync and block-cache flush; QEMU termination is not an unmount. */
 bool nas_lwext4_guest_boot_shutdown(void) {
-    if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    if (!boot_mount.mounted) return true;
+#if !defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) && \
+    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) && \
+    !defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
+    /* Legacy Limine readonly boot modules are kept for the kernel lifetime.
+     * H7 must drop its physical NVMe filesystem lease before controller
+     * shutdown and therefore executes the full readonly unmount below. */
+    if (boot_mount.mount.read_only) return true;
+#endif
+#ifdef NAS_EXTERNAL_EXT4_BOOT_ROOT
     /* Original OpenRC mounts real runtime tmpfs (such as /run), which
      * retains parent/covered root Dentries even after PID1 and its shell
      * exit. Quiescence has already closed every File and cwd owner here. */
@@ -272,9 +379,13 @@ bool nas_lwext4_guest_boot_shutdown(void) {
     /* A read-only image cannot have dirty metadata to commit and some
      * upstream read-only close paths refuse redundant writeback. Only a
      * writable filesystem requires final ext4 superblock commit. */
+    const bool was_read_only=boot_mount.mount.read_only;
     int unmount_rc=nas_lwext4_unmount(&boot_mount);
     if(unmount_rc)return boot_shutdown_failed("root ext4 unmount",unmount_rc);
-#ifdef NAS_ENABLE_VIRTIO_BLK
+#if defined(NAS_ENABLE_VIRTIO_BLK) || \
+    defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     /* The mounted filesystem has dropped its BlockDevice reference.
      * Only NOW may the partition release its parent physical device. */
     if(boot_partition_attached) {
@@ -283,7 +394,9 @@ bool nas_lwext4_guest_boot_shutdown(void) {
         boot_partition_attached=false;
     }
 #endif
-    nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
+    nas_print(was_read_only ?
+        "[LWEXT4 GUEST] read-only upstream unmount; no media writes/flush\n" :
+        "[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
     return true;
 }
 

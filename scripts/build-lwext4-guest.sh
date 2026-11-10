@@ -65,15 +65,55 @@ for source in $sources; do
         }
         virt_flags="$virt_flags -DNAS_ENABLE_M191_ALPINE_ROOT=1"
     fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H7_QEMU_NVME_USERLAND:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || {
+            echo '[H7 LWEXT4 BUILD FAIL] NVMe userland requires lwext4' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H7_QEMU_NVME_USERLAND=1"
+    fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_H7_QEMU_NVME_USERLAND:-0}" = 1 ] || {
+            echo '[H8 LWEXT4 BUILD FAIL] Alpine NVMe root requires H7' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H8_QEMU_ALPINE_ROOT=1"
+    fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || {
+            echo '[H9 LWEXT4 BUILD FAIL] AHCI Alpine root requires lwext4' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H9_QEMU_AHCI_USERLAND=1"
+    fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || {
+            echo '[H11 LWEXT4 BUILD FAIL] USB Alpine root requires lwext4' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H11_QEMU_XHCI_USERLAND=1"
+    fi
     clang --target="$triple" $archflags $virt_flags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
-        -I "$port/include" -I "$vendor/include" -I kernel -I build/deps \
+        -I "$port/include" -I "$vendor/include" -I kernel \
+        -I "$out/deps" -I build/deps \
         -include "$port/platform.h" -c "$source" -o "$obj"
     objects="$objects $obj"
 done
 ld.lld -m "$emulation" -r $objects -o "$out/lwext4_guest.o"
 readelf -h "$out/lwext4_guest.o" | grep -q 'Type:.*REL'
+if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; then
+    # A missing #if around guest_boot.c's physical USB mount once left the
+    # kernel's H11 PCI driver running but silently skipped ext4 / entirely.
+    # Check the actual compiled TU, not the source text or build flags.
+    guest_boot_object="$out/ports_lwext4_guest_boot.c.o"
+    nm -u "$guest_boot_object" | grep -Eq '[[:space:]]U[[:space:]]+nas_block_get$' || {
+        echo '[H11 LWEXT4 BUILD FAIL] compiled guest_boot.c never references physical BlockDevice' >&2
+        exit 1
+    }
+    sh scripts/check-h11-usb-guest-boot-guard.sh "$out/lwext4_guest.o"
+fi
 undefined="$(nm -u "$out/lwext4_guest.o" | awk 'NF {print $NF}' | sort -u)"
 if [ "$mode" = closed ]; then
     if [ -n "$undefined" ]; then
@@ -86,16 +126,22 @@ else
         case "$symbol" in
             nas_heap_*|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_partition_probe|nas_partition_attach|nas_partition_detach|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|nas_module|nas_platform_virtio_blk_probe) ;;
             nas_vfs_shutdown_external_root_pseudos|nas_vfs_shutdown_runtime_tmpfs)
-                [ "$mode" = kernel ] && [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] || {
-                    echo '[LWEXT4 KERNEL LINK FAIL] M191 root pseudo-unmount without opt-in' >&2
+                [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] external root pseudo-unmount without M191/H8/H9/H11 opt-in' >&2
                     exit 1
                 } ;;
             # M179 is kernel-only: these are actual common-kernel worker,
             # VFS and IRQ-backed block engine exports, never hosted copies.
             nas_dec)
                 [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] ||
-                                         [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ]; } || {
-                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191' >&2
+                                         [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191/H8/H9/H11' >&2
                     exit 1
                 } ;;
             nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt)
