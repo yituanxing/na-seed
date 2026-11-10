@@ -146,6 +146,12 @@ int main(void) {
     put16(mcfg+68,0);mcfg[70]=64;mcfg[71]=255;finish_sdt(mcfg);
     probe_fail("overlapping segments");
     fixture();
+    /* The second window starts at bus 128, but MCFG base still describes
+     * bus zero: checking only (end-start+1) would miss this wrap. */
+    put64(mcfg+60,UINT64_C(0xfffffffff0000000));
+    finish_sdt(mcfg);
+    probe_fail("nonzero-start-bus MCFG absolute-base overflow");
+    fixture();
     put32(xsdt+4,35);finish_sdt(xsdt);
     probe_fail("truncated XSDT");
     fixture();reject_mcfg=true;

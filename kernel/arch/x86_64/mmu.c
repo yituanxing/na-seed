@@ -24,7 +24,7 @@ extern void nas_print(const char *);
 #define NAS_X86_LAPIC_VIRT UINT64_C(0xfffffe8000000000)
 /* Generic supervisor-only, uncached device PTE. The same MMU primitive
  * handles LAPIC and PCI BARs; never create a per-device page walker. */
-bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
+static bool nas_map_device_page(uint64_t phys,uint64_t virt,bool writable) {
     if (!phys || (phys & 4095U) || (virt & 4095U) ||
         virt < UINT64_C(0xffff800000000000)) return false;
     uint64_t root=nas_arch_current_page_root() & PHYS_MASK;
@@ -47,9 +47,15 @@ bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
     unsigned idx=(unsigned)((virt>>12)&511U);
     if (pt[idx]) return false;
     /* Write-back caching on LAPIC MMIO is forbidden. PCD+PWT, NX, supervisor. */
-    pt[idx]=phys|P_PRESENT|P_RW|0x18ULL|(1ULL<<63);
+    pt[idx]=phys|P_PRESENT|(writable?P_RW:0U)|0x18ULL|(1ULL<<63);
     nas_arch_invalidate_page(virt);
     return true;
+}
+bool nas_arch_x86_map_device_page(uint64_t phys,uint64_t virt) {
+    return nas_map_device_page(phys,virt,true);
+}
+bool nas_arch_x86_map_readonly_device_page(uint64_t phys,uint64_t virt) {
+    return nas_map_device_page(phys,virt,false);
 }
 bool nas_arch_x86_map_lapic_page(uint64_t phys) {
     return nas_arch_x86_map_device_page(phys,NAS_X86_LAPIC_VIRT);

@@ -1,0 +1,93 @@
+name: NaSeed H1 read-only PCIe ECAM resource verification
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h1-readonly-pcie-ecam.yml'
+      - 'kernel/kernel.c'
+      - 'kernel/arch/x86_64/mmu.*'
+      - 'kernel/platform/firmware_acpi.*'
+      - 'kernel/platform/pci_ecam.*'
+      - 'kernel/platform/x86_h0_pci.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/core/pci_scan.*'
+      - 'tests/h0-acpi-host.c'
+      - 'tests/h1-pci-ecam-host.c'
+      - 'scripts/check-h1-pci-ecam-host.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h1-ecam-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h1-readonly-ecam-uefi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding build and UEFI test tools
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0/H1 ACPI, PCI and ECAM fail-closed host tests
+        run: make hw-h1-host-check
+      - name: Build isolated H1 x86-64 freestanding kernel
+        run: |
+          make hw-h1-kernel
+          readelf -h build/h1-hardware/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          nm build/h1-hardware/kernel.elf > build/h1-hardware/h1-symbols.txt
+          grep -q ' nas_pci_ecam_scan_read32$' build/h1-hardware/h1-symbols.txt
+          grep -q ' nas_arch_x86_map_readonly_device_page$' build/h1-hardware/h1-symbols.txt
+          grep -q ' nas_x86_h1_ecam_verify$' build/h1-hardware/h1-symbols.txt
+      - name: Boot H1 UEFI image and compare CF8 to real MMIO ECAM
+        timeout-minutes: 5
+        run: |
+          make hw-h1-iso
+          set +e
+          timeout 50s sh scripts/run.sh build/h1-hardware/naseed.iso > build/h1-hardware/h1-qemu-uefi-serial.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            tail -80 build/h1-hardware/h1-qemu-uefi-serial.log
+            exit "$rc"
+          fi
+          tail -80 build/h1-hardware/h1-qemu-uefi-serial.log
+          grep -Fq '[H0 ACPI] XSDT=' build/h1-hardware/h1-qemu-uefi-serial.log
+          grep -Fq '[H0 PCI]' build/h1-hardware/h1-qemu-uefi-serial.log
+          grep -Fq '[H1 ECAM VERIFIED] CF8/ECAM identical functions=' build/h1-hardware/h1-qemu-uefi-serial.log
+          grep -Fq '[H0 COMPLETE] firmware inventory only; no physical disk I/O' build/h1-hardware/h1-qemu-uefi-serial.log
+      - name: Preserve H1 read-only UEFI firmware and PCIe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h1-x86-qemu-uefi-ecam-serial
+          path: build/h1-hardware/h1-qemu-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve H1 read-only UEFI ISO for spare-PC test
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h1-x86-readonly-uefi-iso
+          path: build/h1-hardware/naseed.iso
+          if-no-files-found: error

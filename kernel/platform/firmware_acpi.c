@@ -73,8 +73,9 @@ static bool add_mcfg(struct nas_acpi_discovery *found,
         if(candidate.bus_start>candidate.bus_end ||
            !candidate.ecam_base ||
            (candidate.ecam_base&(ACPI_PCI_BUS_BYTES-1U)))return false;
-        uint64_t covered=((uint64_t)candidate.bus_end-
-                          candidate.bus_start+1U)*ACPI_PCI_BUS_BYTES;
+        /* ACPI MCFG base is bus-0 absolute, even for a window that starts
+         * on bus 1+. Reject the last-bus extent wrapping physical space. */
+        uint64_t covered=((uint64_t)candidate.bus_end+1U)*ACPI_PCI_BUS_BYTES;
         if(candidate.ecam_base>UINT64_MAX-covered)return false;
         for(unsigned j=0;j<found->mcfg_count;j++) {
             const struct nas_acpi_mcfg_window *prior=&found->mcfg[j];

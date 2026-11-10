@@ -11,6 +11,9 @@ bool nas_mmu_bootstrap(void);
 bool nas_arch_x86_map_lapic_page(uint64_t physical);
 /* Map one aligned PCI/device MMIO page into supervisor-only, UC, NX VA. */
 bool nas_arch_x86_map_device_page(uint64_t physical,uint64_t virtual_address);
+/* Discovery-only ECAM mappings must be UC, supervisor-only, NX and read-only. */
+bool nas_arch_x86_map_readonly_device_page(uint64_t physical,
+                                           uint64_t virtual_address);
 
 uint64_t nas_mmu_alloc_root(void);
 bool nas_mmu_reclaim_root(uint64_t root);

@@ -16,8 +16,8 @@ static uint32_t config_data_read(void) {
                      : "Nd"((uint16_t)0xcfc) : "memory");
     return value;
 }
-static uint32_t pci_read32(void *context, uint8_t bus, uint8_t slot,
-                           uint8_t function, uint16_t offset) {
+uint32_t nas_x86_h0_pci_config_read32(void *context, uint8_t bus, uint8_t slot,
+                                      uint8_t function, uint16_t offset) {
     (void)context;
     /* Scanner requests standard aligned header DWORDs only. */
     uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
@@ -63,7 +63,9 @@ static int print_function(void *context, const struct nas_pci_function_info *d) 
 int nas_x86_h0_pci_inventory(struct nas_pci_scan_stats *stats) {
     struct nas_pci_scan_stats local = {0};
     struct inventory_context inventory = {0};
-    const struct nas_pci_config_reader reader = {NULL, pci_read32};
+    const struct nas_pci_config_reader reader = {
+        NULL, nas_x86_h0_pci_config_read32
+    };
     /* Root bus 0 is a useful non-invasive compatibility probe, not a claim
      * that every host bridge/PCI segment was discovered. */
     int rc = nas_pci_scan_root(&reader, 0U, print_function, &inventory, &local);

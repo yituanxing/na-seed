@@ -28,6 +28,9 @@
 #endif
 #include "platform/firmware_acpi.h"
 #include "platform/x86_h0_pci.h"
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+#include "platform/x86_h1_ecam.h"
+#endif
 #endif
 
 /*
@@ -120,29 +123,30 @@ static const void *h0_acpi_physical_map(void *context,uint64_t physical,
     return (const void *)(uintptr_t)(physical+hhdm);
 }
 
-static void h0_acpi_diagnostic(void) {
+static bool h0_acpi_diagnostic(struct nas_acpi_discovery *out) {
     nas_print("[H0] read-only firmware discovery (no driver binding)\n");
+    if(!out)return false;
     if(!h0_rsdp_req.response || !h0_rsdp_req.response->address) {
         nas_print("[H0 ACPI] no Limine RSDP response\n");
-        return;
+        return false;
     }
     uint64_t virtual_address=(uint64_t)(uintptr_t)h0_rsdp_req.response->address;
     uint64_t hhdm=nas_hhdm_offset();
     if(virtual_address<hhdm) {
         nas_print("[H0 ACPI] RSDP not in Limine HHDM\n");
-        return;
+        return false;
     }
     uint64_t physical=virtual_address-hhdm;
     size_t available=h0_acpi_mapped_extent(physical,20U);
     if(!available) {
         nas_print("[H0 ACPI] RSDP outside allowed firmware memory\n");
-        return;
+        return false;
     }
     struct nas_acpi_discovery acpi={0};
     if(nas_acpi_probe(h0_rsdp_req.response->address,available,
                       h0_acpi_physical_map,NULL,&acpi)) {
         nas_print("[H0 ACPI] invalid/inaccessible tables; no MMIO mapped\n");
-        return;
+        return false;
     }
     nas_print("[H0 ACPI] XSDT=");nas_dec(acpi.used_xsdt);
     nas_print(" tables=");nas_dec(acpi.table_count);
@@ -156,7 +160,28 @@ static void h0_acpi_diagnostic(void) {
         nas_print("..");nas_dec(acpi.mcfg[i].bus_end);
         nas_print("\n");
     }
+    *out=acpi;
+    return true;
 }
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+/* ECAM is MMIO, NOT ACPI table memory. Only a full reserved descriptor is
+ * eligible for a new UC/RO PTE. Never use the Limine HHDM as an MMIO alias. */
+static bool h1_ecam_mmio_allowed(void *context, uint64_t physical,
+                                  size_t bytes) {
+    (void)context;
+    if(!mmap_req.response || !bytes || physical>UINT64_MAX-(uint64_t)bytes)
+        return false;
+    for(uint64_t i=0;i<mmap_req.response->entry_count;i++) {
+        const struct limine_memmap_entry *entry=mmap_req.response->entries[i];
+        if(!entry || (entry->type!=LIMINE_MEMMAP_RESERVED &&
+                      entry->type!=LIMINE_MEMMAP_RESERVED_MAPPED) ||
+           physical<entry->base || physical-entry->base>=entry->length)
+            continue;
+        return (uint64_t)bytes<=entry->length-(physical-entry->base);
+    }
+    return false;
+}
+#endif
 #endif
 
 #ifndef NASEED_PORT_M0
@@ -252,10 +277,18 @@ void kmain(void) {
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
 #ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
-    h0_acpi_diagnostic();
+    struct nas_acpi_discovery h0_acpi={0};
+    bool h0_acpi_ok=h0_acpi_diagnostic(&h0_acpi);
     struct nas_pci_scan_stats h0_pci_stats={0};
     if(nas_x86_h0_pci_inventory(&h0_pci_stats))
         nas_print("[H0 PCI] legacy config read failed; no drivers bound\n");
+#ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+    if(!h0_acpi_ok ||
+       nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL))
+        nas_print("[H1 ECAM] unavailable or mismatch; no drivers bound\n");
+#else
+    (void)h0_acpi_ok;
+#endif
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
     nas_arch_halt();
 #endif
