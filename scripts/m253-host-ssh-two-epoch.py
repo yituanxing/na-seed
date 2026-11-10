@@ -71,7 +71,9 @@ def ack_command(phase):
             "test \"$HOME\" = /home/m253user; "
             "test \"$(/bin/busybox stat -c %u:%g /home/m253user/m253-nonroot-data.txt)\" = 1101:1101; "
             "grep -qxF M253-NONROOT-REAL-DAC-PERSISTED /home/m253user/m253-nonroot-data.txt; "
-            "apk info -e jq >/dev/null; apk info -e tree >/dev/null; "
+            # Alpine's nonroot SSH PATH intentionally does not include /sbin.
+            # APK metadata is readable without root; use its absolute path.
+            "/sbin/apk info -e jq >/dev/null; /sbin/apk info -e tree >/dev/null; "
             "test -x /usr/bin/jq; test -x /usr/bin/tree; "
             "/usr/bin/tree /home/m253user | /bin/busybox grep -q m253-nonroot-data.txt; "
             +app+"; "
@@ -103,7 +105,8 @@ def user_epoch(phase,args,client_sha,first):
     expected=(ACK[phase][1]+"\n").encode("ascii")
     if trial.returncode!=0 or trial.stdout!=expected:
         raise ValueError("M253 SSH command not actually UID1101, DAC failed or ACK absent: "
-                         +phase+" exit="+str(trial.returncode))
+                         +phase+" exit="+str(trial.returncode)+
+                         " stderr_tail="+repr(trial.stderr[-600:]))
     return {
       "phase":phase,"host":"127.0.0.1","host_port":args.host_port,
       "guest_port":BASE.GUEST_PORT,"transport":PTY.TRANSPORT,
