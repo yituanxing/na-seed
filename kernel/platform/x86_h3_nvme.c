@@ -24,6 +24,15 @@
  * H5 still requires fw_cfg + unique QEMU NVMe device + explicit QEMU build. */
 #define H5_QEMU_MMIO64_BASE UINT64_C(0x000000c000000000)
 #define H5_QEMU_MMIO64_BYTES UINT64_C(0x0000000100000000)
+#ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
+/* One-shot QEMU platform owner. Keep claims alive beyond this function:
+ * nas_arch_x86_map_device_page currently has no corresponding unmap API.
+ * Never substitute this Q35 fixture window on a physical host bridge. */
+static struct nas_pci_mmio_owner h6_qemu_mmio_owner={
+    .window_base=H5_QEMU_MMIO64_BASE,
+    .window_bytes=H5_QEMU_MMIO64_BYTES
+};
+#endif
 #endif
 
 struct h3_nvme_mmio {
@@ -182,12 +191,17 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
         return -ENODEV;
     }
 #ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
-    struct nas_pci_mmio_owner owner={
+#ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
+    struct nas_pci_mmio_owner *owner=&h6_qemu_mmio_owner;
+#else
+    struct nas_pci_mmio_owner local_owner={
         .window_base=H5_QEMU_MMIO64_BASE,
         .window_bytes=H5_QEMU_MMIO64_BYTES
     };
+    struct nas_pci_mmio_owner *owner=&local_owner;
+#endif
     struct nas_pci_mmio_claim claim={0};
-    int claim_rc=nas_pci_mmio_claim_bar(&owner,resources,0U,
+    int claim_rc=nas_pci_mmio_claim_bar(owner,resources,0U,
                                        H3_NVME_MAPPED_BYTES,&claim);
     if(claim_rc) {
         nas_print("[H5 PCI BAR FAIL] outside bounded QEMU MMIO64 fixture window\n");
@@ -197,6 +211,16 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     /* No unhandled guest interrupts can race the CF8 selector while the
      * experimental admin-queue device is active. This image halts afterward. */
     __asm__ volatile("cli" ::: "memory");
+#ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
+    /* Pin the claim BEFORE even the first mapping attempt. A failed MMU
+     * call may have installed a partial PTE; releasing or reassigning this
+     * physical resource without unmapping would be unsafe. */
+    int pin_rc=nas_pci_mmio_pin_mapping_attempt(owner,&claim);
+    if(pin_rc) {
+        nas_print("[H6 PCI MMIO FAIL] cannot pin mapping ownership\n");
+        return pin_rc;
+    }
+#endif
     for(unsigned i=0;i<H3_NVME_MAPPED_BYTES/4096U;i++) {
         if(!nas_arch_x86_map_device_page(bar->base+(uint64_t)i*4096U,
                                          H3_NVME_VIRT_BASE+(uint64_t)i*4096U)) {
@@ -210,6 +234,13 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
     nas_print(" function=");nas_dec(function->function);
     nas_print(" BAR0=");nas_hex(claim.base);
     nas_print(" extent=8192 QEMU fixture only; true BAR size unknown\n");
+#endif
+#ifdef NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME
+    nas_print("[H6 PCI MMIO PINNED] bus=");nas_dec(function->bus);
+    nas_print(" slot=");nas_dec(function->slot);
+    nas_print(" function=");nas_dec(function->function);
+    nas_print(" BAR0=");nas_hex(claim.base);
+    nas_print(" until UC pages are explicitly unmapped (not implemented)\n");
 #endif
     /* PCI Command bits: memory-space decode + bus master. No I/O decode,
      * MSI, MSI-X, DMA remapping or actual namespace/block driver binding. */
@@ -233,8 +264,8 @@ int nas_x86_h3_nvme_identify(const struct nas_pci_function_info *function,
      * disable/quiesce admin DMA before returning, even on error. */
     h3_pci_config_write32(function->bus,function->slot,function->function,
                           4U,before);
-#ifdef NAS_ENABLE_H5_QEMU_PCI_RESOURCE
-    if(!rc && nas_pci_mmio_release(&owner,&claim))rc=-EIO;
+#if defined(NAS_ENABLE_H5_QEMU_PCI_RESOURCE) && !defined(NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME)
+    if(!rc && nas_pci_mmio_release(owner,&claim))rc=-EIO;
 #endif
     if(rc) {
 #ifdef NAS_ENABLE_H4_QEMU_NVME_READONLY

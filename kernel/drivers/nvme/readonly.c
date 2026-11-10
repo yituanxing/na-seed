@@ -91,15 +91,17 @@ static int queue_submit(struct nas_nvme_ro_session *s,
     put32(cmd+40U,cdw10);
     put32(cmd+44U,cdw11);
     put32(cmd+48U,cdw12);
-    int rc=nas_dma_sync(s->dma,&q->sq,(uint32_t)q->sq_tail*64U,64U,
-                        NAS_DMA_TO_DEVICE);
+    int rc=nas_dma_lease_sync(&s->lease,&q->sq,
+                              (uint32_t)q->sq_tail*64U,64U,
+                              NAS_DMA_TO_DEVICE);
     if(rc)return rc;
     q->sq_tail=(uint8_t)((q->sq_tail+1U)%NAS_NVME_RO_QUEUE_DEPTH);
     rc=io_write(s,db_off(s,q,false),q->sq_tail);
     if(rc)return rc;
     for(unsigned i=0;i<NVME_POLL_LIMIT;i++) {
         uint32_t byte_off=(uint32_t)q->cq_head*16U;
-        rc=nas_dma_sync(s->dma,&q->cq,byte_off,16U,NAS_DMA_FROM_DEVICE);
+        rc=nas_dma_lease_sync(&s->lease,&q->cq,byte_off,16U,
+                              NAS_DMA_FROM_DEVICE);
         if(rc)return rc;
         const uint8_t *c=(const uint8_t *)q->cq.cpu+byte_off;
         uint32_t dw3=le32(c+12U);
@@ -122,16 +124,20 @@ int nas_nvme_ro_close(struct nas_nvme_ro_session *s) {
         if(!rc)rc=io_write(s,NVME_CC,cc&~NVME_CC_EN);
         if(!rc)rc=ready_wait(s,false);
         if(rc)return rc; /* DMA pages stay PINNED on an unsafe stop. */
+        rc=nas_dma_lease_disarm_after_quiesce(&s->lease);
+        if(rc)return rc;
         s->may_dma=false;
     }
     struct nas_dma_page *pages[]={&s->bounce,&s->data.cq,&s->data.sq,
                                   &s->admin.cq,&s->admin.sq};
     for(unsigned i=0;i<sizeof(pages)/sizeof(pages[0]);i++) {
         if(pages[i]->cpu) {
-            int rc=nas_dma_free_page(s->dma,pages[i]);
+            int rc=nas_dma_lease_free_page(&s->lease,pages[i]);
             if(rc)return rc;
         }
     }
+    int lease_rc=nas_dma_lease_end(&s->lease);
+    if(lease_rc)return lease_rc;
     *s=(struct nas_nvme_ro_session){0};
     return 0;
 }
@@ -146,6 +152,8 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     if(s->io || s->admin.sq.cpu || s->admin.cq.cpu || s->data.sq.cpu ||
        s->data.cq.cpu || s->bounce.cpu)return -EBUSY;
     *s=(struct nas_nvme_ro_session){.io=io,.dma=dma};
+    int lease_rc=nas_dma_lease_begin(&s->lease,dma);
+    if(lease_rc){*s=(struct nas_nvme_ro_session){0};return lease_rc;}
     uint32_t cap_lo=0,cap_hi=0,cc=0;
     int rc=io_read(s,NVME_CAP,&cap_lo);
     if(!rc)rc=io_read(s,NVME_CAP+4U,&cap_hi);
@@ -168,7 +176,7 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     struct nas_dma_page *pages[]={&s->admin.sq,&s->admin.cq,
                                   &s->data.sq,&s->data.cq,&s->bounce};
     for(unsigned i=0;i<sizeof(pages)/sizeof(pages[0]);i++) {
-        rc=nas_dma_alloc_page(dma,pages[i]);
+        rc=nas_dma_lease_alloc_page(&s->lease,pages[i]);
         if(rc)goto failed;
         if(pages[i]->bus_address&4095U) {rc=-EIO;goto failed;}
         zero_bytes(pages[i]->cpu,NAS_DMA_PAGE_BYTES);
@@ -184,7 +192,11 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     if(!rc)rc=addr_write(s,NVME_ASQ,s->admin.sq.bus_address);
     if(!rc)rc=addr_write(s,NVME_ACQ,s->admin.cq.bus_address);
     if(rc)goto failed;
-    s->may_dma=true; /* CC write could succeed despite callback failure. */
+    /* Arm before CC: a callback can report failure after the controller has
+     * already observed the write. An armed lease blocks all DMA frees. */
+    rc=nas_dma_lease_arm(&s->lease);
+    if(rc)goto failed;
+    s->may_dma=true;
     rc=io_write(s,NVME_CC,NVME_CC_EN|(6U<<16)|(4U<<20));
     if(rc)goto failed;
     rc=ready_wait(s,true);
@@ -194,8 +206,8 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     rc=queue_submit(s,&s->admin,NVME_OP_IDENTIFY,1U,
                     s->bounce.bus_address,0U,0U,0U);
     if(rc)goto failed;
-    rc=nas_dma_sync(dma,&s->bounce,0U,NAS_DMA_PAGE_BYTES,
-                    NAS_DMA_FROM_DEVICE);
+    rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,NAS_DMA_PAGE_BYTES,
+                          NAS_DMA_FROM_DEVICE);
     if(rc)goto failed;
     const uint8_t *ns=s->bounce.cpu;
     s->sectors=le64(ns);
@@ -241,15 +253,15 @@ int nas_nvme_ro_read(struct nas_nvme_ro_session *s,uint64_t lba,
     if(!s || !s->ready || !dst || count!=1U || lba>=s->sectors ||
        (s->sector_bytes!=512U && s->sector_bytes!=4096U))return -EINVAL;
     zero_bytes(s->bounce.cpu,NAS_DMA_PAGE_BYTES);
-    int rc=nas_dma_sync(s->dma,&s->bounce,0U,s->sector_bytes,
-                        NAS_DMA_FROM_DEVICE);
+    int rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
+                              NAS_DMA_FROM_DEVICE);
     if(rc){s->ready=false;return rc;}
     rc=queue_submit(s,&s->data,NVME_OP_NVM_READ,1U,
                     s->bounce.bus_address,(uint32_t)lba,
                     (uint32_t)(lba>>32),0U /* NLB zero-based: one LBA */);
     if(rc){s->ready=false;return rc;}
-    rc=nas_dma_sync(s->dma,&s->bounce,0U,s->sector_bytes,
-                    NAS_DMA_FROM_DEVICE);
+    rc=nas_dma_lease_sync(&s->lease,&s->bounce,0U,s->sector_bytes,
+                          NAS_DMA_FROM_DEVICE);
     if(rc){s->ready=false;return rc;}
     copy_bytes(dst,s->bounce.cpu,s->sector_bytes);
     return 0;

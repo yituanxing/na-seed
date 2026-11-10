@@ -49,6 +49,10 @@ if [ "${NAS_QEMU_H2_NVME:-0}" = 1 ]; then
         echo 'H2 controller-only and H5 PCI namespace profiles are exclusive' >&2
         exit 2
     }
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" != 1 ] || {
+        echo 'H2 and H6 ambiguous PCI profiles are exclusive' >&2
+        exit 2
+    }
     set -- "$@" -device nvme,id=naseed_h2_nvme,serial=naseedh2
 fi
 # H4: a known, generated one-megabyte namespace fixture, explicitly mounted
@@ -57,6 +61,10 @@ fi
 if [ "${NAS_QEMU_H4_NVME:-0}" = 1 ]; then
     [ "${NAS_QEMU_H5_PCI_NVME:-0}" != 1 ] || {
         echo 'H4 fixed-BDF and H5 relocated PCI profiles are exclusive' >&2
+        exit 2
+    }
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" != 1 ] || {
+        echo 'H4 and H6 ambiguous PCI profiles are exclusive' >&2
         exit 2
     }
     h4_image=build/h4-qemu-only/h4-seed.img
@@ -71,6 +79,10 @@ fi
 # balloon-function decoy occupies slot 3. Dynamic PCI BAR qualification is
 # exercised by the guest; no caller-selected block images or physical DMA.
 if [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 1 ]; then
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" != 1 ] || {
+        echo 'H5 positive and H6 ambiguous PCI profiles are exclusive' >&2
+        exit 2
+    }
     h5_image=build/h4-qemu-only/h4-seed.img
     sh scripts/check-h4-nvme-seed.sh || exit 2
     set -- "$@" \
@@ -78,6 +90,15 @@ if [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 1 ]; then
         -drive "if=none,id=naseed_h5_disk,format=raw,file=$h5_image,readonly=on" \
         -device nvme,id=naseed_h5_nvme,serial=naseedh5,bus=pcie.0,addr=0x5 \
         -device nvme-ns,drive=naseed_h5_disk,nsid=1
+fi
+# H6 fail-closed acceptance: two controllers with zero namespaces and zero
+# backing drives. The guest may enumerate both via read-only PCI config, but
+# must refuse write-capable NVMe initialization before touching either BAR or
+# starting DMA. No arbitrary host storage paths are accepted by this profile.
+if [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 1 ]; then
+    set -- "$@" \
+        -device nvme,id=naseed_h6_nvme_a,serial=naseedh6a,bus=pcie.0,addr=0x5 \
+        -device nvme,id=naseed_h6_nvme_b,serial=naseedh6b,bus=pcie.0,addr=0x6
 fi
 # Real QEMU input devices, separate from the serial console and RAMFB.
 # The default headless device profile remains unchanged.

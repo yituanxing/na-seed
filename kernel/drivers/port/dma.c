@@ -74,3 +74,74 @@ int nas_dma_sync(const struct nas_dma_provider *provider,
     if (!provider->sync) return -EOPNOTSUPP;
     return provider->sync(provider->context, page, offset, bytes, direction);
 }
+
+/* Keep queue pages attributed to exactly one device session, independently
+ * of the transport-specific allocator. The guard is deliberately simple:
+ * the caller must prove quiescence, it cannot infer that from a timeout. */
+static int lease_find(const struct nas_dma_lease *lease,
+                      const struct nas_dma_page *page) {
+    if (!lease || !page || lease->held > NAS_DMA_LEASE_PAGE_LIMIT)
+        return -1;
+    for (unsigned i=0;i<lease->held;i++)
+        if (lease->pages[i]==page) return (int)i;
+    return -1;
+}
+int nas_dma_lease_begin(struct nas_dma_lease *lease,
+                        const struct nas_dma_provider *provider) {
+    if (!lease || !provider || !provider->alloc_page ||
+        !provider->release_page || (!provider->coherent && !provider->sync))
+        return -EINVAL;
+    if (lease->provider || lease->held || lease->may_dma) return -EBUSY;
+    *lease=(struct nas_dma_lease){.provider=provider};
+    return 0;
+}
+int nas_dma_lease_alloc_page(struct nas_dma_lease *lease,
+                             struct nas_dma_page *page) {
+    if (!lease || !lease->provider || !page) return -EINVAL;
+    if (lease->may_dma || page->cpu || lease_find(lease,page)>=0)
+        return -EBUSY; /* never adopt another lease's live page */
+    if (lease->held==NAS_DMA_LEASE_PAGE_LIMIT) return -ENOSPC;
+    int rc=nas_dma_alloc_page(lease->provider,page);
+    /* A provider can fail to roll back an invalid descriptor. If it retains
+     * a CPU alias, preserve the lease owner so cleanup can be retried. */
+    if (!rc || page->cpu) lease->pages[lease->held++]=page;
+    return rc;
+}
+int nas_dma_lease_sync(struct nas_dma_lease *lease,
+                       struct nas_dma_page *page,uint32_t offset,
+                       uint32_t bytes,enum nas_dma_direction direction) {
+    if (!lease || !lease->provider || lease_find(lease,page)<0)
+        return -EINVAL;
+    return nas_dma_sync(lease->provider,page,offset,bytes,direction);
+}
+int nas_dma_lease_arm(struct nas_dma_lease *lease) {
+    if (!lease || !lease->provider || !lease->held) return -EINVAL;
+    if (lease->may_dma) return -EBUSY;
+    lease->may_dma=true;
+    return 0;
+}
+int nas_dma_lease_disarm_after_quiesce(struct nas_dma_lease *lease) {
+    if (!lease || !lease->provider || !lease->may_dma) return -EINVAL;
+    /* ONLY a caller that verified the controller cannot DMA may do this. */
+    lease->may_dma=false;
+    return 0;
+}
+int nas_dma_lease_free_page(struct nas_dma_lease *lease,
+                            struct nas_dma_page *page) {
+    if (!lease || !lease->provider) return -EINVAL;
+    if (lease->may_dma) return -EBUSY;
+    int i=lease_find(lease,page);
+    if (i<0) return -EINVAL;
+    int rc=nas_dma_free_page(lease->provider,page);
+    if (rc) return rc; /* preserve ownership for a retry */
+    for (unsigned j=(unsigned)i+1U;j<lease->held;j++)
+        lease->pages[j-1U]=lease->pages[j];
+    lease->pages[--lease->held]=NULL;
+    return 0;
+}
+int nas_dma_lease_end(struct nas_dma_lease *lease) {
+    if (!lease || !lease->provider) return -EINVAL;
+    if (lease->may_dma || lease->held) return -EBUSY;
+    *lease=(struct nas_dma_lease){0};
+    return 0;
+}

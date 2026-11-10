@@ -19,6 +19,7 @@ struct nas_nvme_ro_queue {
 struct nas_nvme_ro_session {
     const struct nas_nvme_io *io;
     const struct nas_dma_provider *dma;
+    struct nas_dma_lease lease; /* H6: session-owned, DMA-active release gate */
     struct nas_nvme_ro_queue admin, data;
     struct nas_dma_page bounce;
     uint64_t sectors;

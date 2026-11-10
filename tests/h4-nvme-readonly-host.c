@@ -9,6 +9,7 @@
 static void *frames[16];
 static unsigned alloc_count,free_count;
 static bool active_dma,invalid_free;
+static bool fail_release_once;
 uint64_t nas_frame_alloc(void) {
     if(alloc_count==16U)return 0;
     void *page=aligned_alloc(NAS_DMA_PAGE_BYTES,NAS_DMA_PAGE_BYTES);
@@ -26,6 +27,20 @@ bool nas_frame_put(uint64_t pa) {
         }
     }
     return false;
+}
+static int lease_fake_alloc(void *context,struct nas_dma_page *page) {
+    (void)context;
+    uint64_t pa=nas_frame_alloc();
+    if(!pa)return -ENOMEM;
+    *page=(struct nas_dma_page){.frame_pa=pa,.bus_address=pa,
+                                 .cpu=(void *)(uintptr_t)pa,
+                                 .bytes=NAS_DMA_PAGE_BYTES};
+    return 0;
+}
+static int lease_fake_release(void *context,struct nas_dma_page *page) {
+    (void)context;
+    if(fail_release_once){fail_release_once=false;return -EIO;}
+    return nas_frame_put(page->frame_pa)?0:-EIO;
 }
 
 static void put32(uint8_t *p,uint32_t v) {
@@ -150,6 +165,7 @@ static void reset(struct fake_nvme *f) {
     }
     alloc_count=free_count=0U;
     active_dma=invalid_free=false;
+    fail_release_once=false;
     memset(f,0,sizeof(*f));
     f->reg[0]=63U;
     f->reg[1]=1U<<5; /* CAP.CSS.NVM. */
@@ -189,6 +205,65 @@ int main(void) {
     CHECK(f.read_count==7U && !f.bad_opcode);
     CHECK(nas_nvme_ro_close(&session)==0);
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
+
+    /* H6: device-scoped DMA ownership prevents adopting a foreign page,
+     * syncing it through another controller, or freeing while armed. */
+    reset(&f);
+    struct nas_dma_lease lease_a={0},lease_b={0};
+    struct nas_dma_page lease_page={0},second_page={0};
+    CHECK(nas_dma_lease_begin(&lease_a,&nas_dma_qemu_coherent)==0);
+    CHECK(nas_dma_lease_begin(&lease_b,&nas_dma_qemu_coherent)==0);
+    CHECK(nas_dma_lease_alloc_page(&lease_a,&lease_page)==0);
+    CHECK(lease_a.held==1U && lease_b.held==0U);
+    CHECK(nas_dma_lease_alloc_page(&lease_b,&lease_page)==-EBUSY);
+    CHECK(lease_a.held==1U && lease_b.held==0U);
+    CHECK(nas_dma_lease_sync(&lease_b,&lease_page,0U,16U,
+                              NAS_DMA_TO_DEVICE)==-EINVAL);
+    CHECK(nas_dma_lease_free_page(&lease_b,&lease_page)==-EINVAL);
+    CHECK(nas_dma_lease_end(&lease_a)==-EBUSY);
+    CHECK(nas_dma_lease_arm(&lease_a)==0);
+    CHECK(nas_dma_lease_alloc_page(&lease_a,&second_page)==-EBUSY);
+    CHECK(nas_dma_lease_free_page(&lease_a,&lease_page)==-EBUSY);
+    CHECK(nas_dma_lease_end(&lease_a)==-EBUSY);
+    CHECK(nas_dma_lease_sync(&lease_a,&lease_page,0U,64U,
+                              NAS_DMA_TO_DEVICE)==0);
+    CHECK(nas_dma_lease_disarm_after_quiesce(&lease_a)==0);
+    CHECK(nas_dma_lease_free_page(&lease_a,&lease_page)==0);
+    CHECK(nas_dma_lease_end(&lease_a)==0);
+    CHECK(nas_dma_lease_end(&lease_b)==0);
+    CHECK(alloc_count==1U && free_count==1U && !invalid_free);
+
+    reset(&f);
+    struct nas_dma_lease retry_lease={0};
+    struct nas_dma_page retry_page={0};
+    const struct nas_dma_provider retry_provider={
+        .coherent=true,.alloc_page=lease_fake_alloc,
+        .release_page=lease_fake_release
+    };
+    CHECK(nas_dma_lease_begin(&retry_lease,&retry_provider)==0);
+    CHECK(nas_dma_lease_alloc_page(&retry_lease,&retry_page)==0);
+    fail_release_once=true;
+    CHECK(nas_dma_lease_free_page(&retry_lease,&retry_page)==-EIO);
+    CHECK(retry_lease.held==1U && retry_page.cpu!=NULL);
+    CHECK(nas_dma_lease_end(&retry_lease)==-EBUSY);
+    CHECK(nas_dma_lease_free_page(&retry_lease,&retry_page)==0);
+    CHECK(nas_dma_lease_end(&retry_lease)==0);
+    CHECK(alloc_count==1U && free_count==1U && !invalid_free);
+
+    reset(&f);
+    struct nas_dma_lease bounded={0};
+    struct nas_dma_page many[NAS_DMA_LEASE_PAGE_LIMIT+1U]={0};
+    CHECK(nas_dma_lease_begin(&bounded,&nas_dma_qemu_coherent)==0);
+    for(unsigned i=0;i<NAS_DMA_LEASE_PAGE_LIMIT;i++)
+        CHECK(nas_dma_lease_alloc_page(&bounded,&many[i])==0);
+    CHECK(nas_dma_lease_alloc_page(&bounded,
+                                   &many[NAS_DMA_LEASE_PAGE_LIMIT])==-ENOSPC);
+    CHECK(bounded.held==NAS_DMA_LEASE_PAGE_LIMIT);
+    for(unsigned i=0;i<NAS_DMA_LEASE_PAGE_LIMIT;i++)
+        CHECK(nas_dma_lease_free_page(&bounded,&many[i])==0);
+    CHECK(nas_dma_lease_end(&bounded)==0);
+    CHECK(alloc_count==NAS_DMA_LEASE_PAGE_LIMIT &&
+          free_count==NAS_DMA_LEASE_PAGE_LIMIT && !invalid_free);
 
     reset(&f);session=(struct nas_nvme_ro_session){0};
     io=(struct nas_nvme_io){.context=&f,.mmio_bytes=sizeof(f.reg),
@@ -274,5 +349,6 @@ int main(void) {
     CHECK(alloc_count==5U && free_count==5U && !invalid_free);
 
     puts("[H4 NVMe READ-ONLY HOST PASS] namespace geometry, IO queue/LBA 0-1, errors and DMA teardown");
+    puts("[H6 DMA LEASE HOST PASS] foreign-page isolation, live-DMA pinning, retryable release");
     return 0;
 }

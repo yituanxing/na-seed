@@ -44,6 +44,9 @@ struct nas_pci_resources {
 struct nas_pci_mmio_claim {
     uint64_t base, bytes;
     uint8_t bar_index;
+    /* The claim cannot be reused once a page-table mapping may exist.
+     * A physical MMIO map has no unmap operation in the current x86 port. */
+    bool mapping_pinned;
 };
 struct nas_pci_mmio_owner {
     uint64_t window_base, window_bytes;
@@ -57,6 +60,14 @@ int nas_pci_mmio_claim_bar(struct nas_pci_mmio_owner *owner,
                            const struct nas_pci_resources *resources,
                            uint8_t bar_index,uint64_t required_bytes,
                            struct nas_pci_mmio_claim *out);
+/* Must be called BEFORE attempting the first MMIO mapping, even if the
+ * mapping callback can fail after installing one or more pages. An owner
+ * permanently retains this reservation until a real unmap facility exists.
+ * Idempotent for the same live claim. Never accesses device registers. */
+int nas_pci_mmio_pin_mapping_attempt(struct nas_pci_mmio_owner *owner,
+                                      const struct nas_pci_mmio_claim *claim);
+/* Rejects releasing a pinned mapping. Resource release is only legal while
+ * no MMIO page-table mapping attempt has occurred. */
 int nas_pci_mmio_release(struct nas_pci_mmio_owner *owner,
                           const struct nas_pci_mmio_claim *claim);
 

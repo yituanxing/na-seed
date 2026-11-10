@@ -170,6 +170,17 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         return result ? result : -EIO;
     }
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    /* H6 negative acceptance: the complete *read-only* scan must refuse
+     * ambiguous NVMe ownership before calling any write-capable H3/H4 core.
+     * CF8 SELECT writes during discovery are not controller-register writes.
+     * A dedicated result distinguishes this intentionally refused QEMU image
+     * from an ordinary probe/controller failure in the boot harness. */
+#ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
+    if(h1.h2_nvme==2U && h1.h3_candidate_found) {
+        nas_print("[H6 PCI FAIL-CLOSED] duplicate NVMe candidates; controller writes=0 DMA=0\n");
+        return -EEXIST;
+    }
+#endif
     if(h1.h2_nvme!=1U || !h1.h3_candidate_found ||
        nas_x86_h3_nvme_identify(&h1.h3_candidate,
                                  &h1.h3_candidate_resources)) {

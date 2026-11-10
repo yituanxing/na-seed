@@ -180,6 +180,33 @@ int main(void) {
           !nas_pci_mmio_release(&owner,&second),
           "released BAR may be reclaimed without stale ownership");
 
+    /* H6: MMU page mapping cannot currently be undone, so pin ownership
+     * before attempting to install even its first PTE. A failed mapping
+     * callback may still leave a partial mapping; never offer that address
+     * to a second device or clear the lease on an NVMe teardown error. */
+    struct nas_pci_mmio_owner mapped_owner={
+        .window_base=UINT64_C(0x0000000100000000),
+        .window_bytes=UINT64_C(0x0000000020000000)
+    };
+    struct nas_pci_mmio_claim mapped_claim={0};
+    check(!nas_pci_mmio_claim_bar(&mapped_owner,&r,1U,8192U,&mapped_claim),
+          "H6 owner reserves BAR before MMIO mapping");
+    check(!nas_pci_mmio_pin_mapping_attempt(&mapped_owner,&mapped_claim) &&
+          mapped_owner.claims[0].mapping_pinned,
+          "H6 pins owner before any potentially partial MMU map");
+    check(!nas_pci_mmio_pin_mapping_attempt(&mapped_owner,&mapped_claim),
+          "H6 repeated same mapping pin is harmless");
+    check(nas_pci_mmio_release(&mapped_owner,&mapped_claim)==-EBUSY &&
+          mapped_owner.held==1U,
+          "H6 refuses to release a still-mapped hardware aperture");
+    check(nas_pci_mmio_claim_bar(&mapped_owner,&r,1U,4096U,&second)==-EBUSY &&
+          mapped_owner.held==1U,
+          "H6 refuses another lease overlapping pinned BAR");
+    check(nas_pci_mmio_pin_mapping_attempt(&owner,&mapped_claim)==-ENODEV,
+          "H6 cannot pin an unowned BAR claim");
+    check(nas_pci_mmio_pin_mapping_attempt(&owner,NULL)==-EINVAL,
+          "H6 rejects a missing pin descriptor");
+
     struct nas_pci_mmio_owner bad_owner={
         .window_base=UINT64_MAX-4095U,.window_bytes=8192U
     };
@@ -218,6 +245,6 @@ int main(void) {
     check(nas_pci_resources_probe(&reader,&dev,NULL)==-EINVAL,
           "missing result rejected");
 
-    puts("[H2 PCI RESOURCE HOST PASS] BAR types, 64-bit pairs, capability loops, read-only probe, bounded MMIO claims");
+    puts("[H2 PCI RESOURCE HOST PASS] BAR types, capabilities, bounded MMIO claims and H6 pinned ownership");
     return 0;
 }

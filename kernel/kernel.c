@@ -28,6 +28,9 @@
 #endif
 #include "platform/firmware_acpi.h"
 #include "platform/x86_h0_pci.h"
+#ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
+#include "errno.h"
+#endif
 #ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
 #include "platform/x86_h1_ecam.h"
 #endif
@@ -283,6 +286,19 @@ void kmain(void) {
     if(nas_x86_h0_pci_inventory(&h0_pci_stats))
         nas_print("[H0 PCI] legacy config read failed; no drivers bound\n");
 #ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
+#ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
+    /* A negative acceptance image with two known QEMU NVMe controllers and
+     * zero namespaces. Success means rejecting both before H3/H4 can write
+     * controller registers or allocate DMA, never merely reaching kmain. */
+    int h6_result=h0_acpi_ok ?
+        nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL) : -EIO;
+    if(h6_result!=-EEXIST) {
+        nas_print("[H6 AMBIGUOUS NVME FAIL] did not refuse duplicate candidates\n");
+        nas_arch_halt();
+    }
+    nas_print("[H6 AMBIGUOUS NVME COMPLETE] two QEMU NVMe controllers refused before controller writes/DMA\n");
+    nas_arch_halt();
+#else
     if(!h0_acpi_ok ||
        nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL)) {
         nas_print("[H1 ECAM] unavailable or mismatch; no drivers bound\n");
@@ -291,6 +307,7 @@ void kmain(void) {
         nas_arch_halt();
 #endif
     }
+#endif
 #else
     (void)h0_acpi_ok;
 #endif

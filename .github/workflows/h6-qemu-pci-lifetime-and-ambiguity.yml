@@ -1,0 +1,89 @@
+name: NaSeed H6 QEMU PCI BAR lifetime + ambiguous NVMe refusal
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h6-qemu-pci-lifetime-and-ambiguity.yml'
+      - 'kernel/platform/x86_h3_nvme.*'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/core/pci_resources.*'
+      - 'kernel/drivers/nvme/**'
+      - 'kernel/drivers/port/dma.*'
+      - 'kernel/kernel.c'
+      - 'tests/h4-*.c'
+      - 'tests/h2-pci-resource-host.c'
+      - 'scripts/check-h6-*.sh'
+      - 'scripts/check-h4-*.sh'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h6-pci-resource-and-ambiguous-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h6-qemu-positive-and-negative:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding tools and QEMU NVMe/OVMF
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0–H6 host regression and two isolated kernels/ISOs
+        run: |
+          make hw-h6-host-check
+          make hw-h6-kernel
+          make hw-h6-iso
+          make hw-h6-ambiguous-kernel
+          make hw-h6-ambiguous-iso
+          readelf -h build/h6-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          readelf -h build/h6-qemu-ambiguous/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+      - name: Verify fixed 1 MiB read-only positive fixture
+        run: sh scripts/check-h4-nvme-seed.sh
+      - name: Actual QEMU UEFI positive H6 BAR owner and real LBA proof
+        timeout-minutes: 5
+        run: sh scripts/check-h6-pci-mmio-qemu.sh
+      - name: Actual QEMU UEFI negative H6 two-controller fail-closed proof
+        timeout-minutes: 5
+        run: sh scripts/check-h6-nvme-ambiguity-qemu.sh
+      - name: Preserve positive and negative H6 serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h6-x86-qemu-pci-resource-serial-positive-negative
+          path: |
+            build/h6-qemu-only/h6-qemu-uefi-serial.log
+            build/h6-qemu-ambiguous/h6-ambiguous-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve two H6 UEFI images and disposable positive seed
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h6-x86-qemu-pci-resource-uefi-proofs
+          path: |
+            build/h6-qemu-only/naseed.iso
+            build/h6-qemu-ambiguous/naseed.iso
+            build/h4-qemu-only/h4-seed.img
+          if-no-files-found: error

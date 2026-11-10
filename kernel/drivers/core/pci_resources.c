@@ -135,10 +135,25 @@ int nas_pci_mmio_release(struct nas_pci_mmio_owner *owner,
         const struct nas_pci_mmio_claim *old=&owner->claims[i];
         if(old->base!=claim->base || old->bytes!=claim->bytes ||
            old->bar_index!=claim->bar_index)continue;
+        if(old->mapping_pinned)return -EBUSY;
         for(unsigned j=i+1U;j<owner->held;j++)
             owner->claims[j-1U]=owner->claims[j];
         --owner->held;
         owner->claims[owner->held]=(struct nas_pci_mmio_claim){0};
+        return 0;
+    }
+    return -ENODEV;
+}
+
+int nas_pci_mmio_pin_mapping_attempt(struct nas_pci_mmio_owner *owner,
+                                      const struct nas_pci_mmio_claim *claim) {
+    if(!owner || !claim || !claim->bytes ||
+       owner->held>NAS_PCI_MMIO_CLAIM_LIMIT)return -EINVAL;
+    for(unsigned i=0;i<owner->held;i++) {
+        struct nas_pci_mmio_claim *held=&owner->claims[i];
+        if(held->base!=claim->base || held->bytes!=claim->bytes ||
+           held->bar_index!=claim->bar_index)continue;
+        held->mapping_pinned=true;
         return 0;
     }
     return -ENODEV;
