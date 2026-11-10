@@ -56,6 +56,12 @@ h12_wait_for() {
 }
 
 if ! h12_wait_for ready; then
+    # A real signed evtest can exit before entering its event loop if any
+    # open/ioctl capability query fails. Emit its original diagnostic bytes
+    # only on this failure path; never turn them into synthetic success.
+    printf '%s\n' H12_HID_EVTEST_STARTUP_DIAGNOSTIC_BEGIN
+    /bin/busybox cat "$h12_log" || :
+    printf '%s\n' H12_HID_EVTEST_STARTUP_DIAGNOSTIC_END
     printf '%s\n' H12_HID_EVTEST_NOT_READY
     exit 1
 fi
