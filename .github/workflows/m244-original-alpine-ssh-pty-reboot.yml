@@ -1,0 +1,164 @@
+name: NaSeed M244 upstream Alpine SSH PTY same-QEMU reboot
+
+# Only the scoped headless direct-use gate; the historical M240 9x2 SSH
+# stress suite stays separate. Trigger automatically from this feature branch.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m244-original-alpine-ssh-pty-reboot.yml'
+      - 'scripts/probe-m244-alpine-ssh-reboot.sh'
+      - 'tests/m244-alpine-network-ready.sh'
+      - 'scripts/probe-m241-alpine-poweroff.sh'
+      # The M244 combined guest imports these live command/oracle owners.
+      # Changes to them must never silently skip the native M244 gate.
+      - 'scripts/m243-alpine-cli-uart.py'
+      - 'scripts/m242-alpine-reboot-uart.py'
+      - 'scripts/m191-stage-alpine-rootfs.sh'
+      - 'rootfs/alpine/build.sh'
+      - 'rootfs/alpine/packages-m191-rootfs.txt'
+      - 'scripts/m244-alpine-ssh-uart.py'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/test-m194-uart-prompt.py'
+      - 'scripts/m244-host-ssh-two-epoch.py'
+      - 'scripts/m244-verify-ssh-disk.py'
+      - 'scripts/test-m244-alpine-ssh-uart.py'
+      - 'scripts/test-m244-host-ssh-two-epoch.py'
+      - 'scripts/test-m244-verify-ssh-disk.py'
+      - 'kernel/init/main.c'
+      # Native root-PID1 and execve must share the actual ELF PT_INTERP
+      # policy. No loader change may bypass the original Alpine native gate.
+      - 'kernel/boot_image.c'
+      - 'kernel/boot_image.h'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf.h'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/elf_segments.h'
+      - 'kernel/task/exec.c'
+      - 'kernel/task/sched.c'
+      - 'kernel/mm/vm.c'
+      - 'scripts/test-m86-txn.c'
+      - 'kernel/arch/abi.h'
+      - 'scripts/test-elf-segments.c'
+      - 'kernel/platform/platform.h'
+      - 'kernel/task/scheduler_service.c'
+      - 'kernel/task/sched_core.c'
+      - 'kernel/task/kthread.c'
+      - 'scripts/check-m97-k-timeouts.sh'
+      - 'scripts/test-sched-worker-burst.c'
+      - 'ports/lwip/include/lwipopts.h'
+      - 'ports/lwip/netconn_bridge.c'
+      - 'ports/lwip/socket_port.c'
+      - 'ports/lwip/network_boot.c'
+      - 'scripts/test-lwip-netconn-bridge.c'
+      - 'scripts/acceptance/qemu-netdev.sh'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-upstream-ssh:
+    name: Original Alpine real SSH -tt before/after SAME QEMU reboot / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Validate inherited original Alpine and new host SSH phase contracts
+        run: |
+          set -eu
+          cc -std=c11 -Wall -Wextra -Werror \
+            scripts/test-elf-segments.c kernel/task/elf_segments.c \
+            -o /tmp/naseed-m244-elf-interp
+          /tmp/naseed-m244-elf-interp
+          sh -n scripts/probe-m244-alpine-ssh-reboot.sh \
+            scripts/probe-m241-alpine-poweroff.sh tests/m244-alpine-network-ready.sh
+          python3 -m py_compile scripts/m244-alpine-ssh-uart.py \
+            scripts/m244-host-ssh-two-epoch.py scripts/m244-verify-ssh-disk.py
+          python3 scripts/test-m244-alpine-ssh-uart.py
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m244-host-ssh-two-epoch.py
+          python3 scripts/test-m244-verify-ssh-disk.py
+          python3 scripts/test-m243-alpine-cli-uart.py
+          python3 scripts/test-m242-alpine-reboot-uart.py
+          sh scripts/check-m241-original-alpine-shutdown.sh
+      - name: Install native QEMU, original signed Alpine and host OpenSSH dependencies
+        timeout-minutes: 18
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl' \
+                      'ssh:openssh-client' 'ssh-keygen:openssh-client'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Validate native scheduler worker budget and ISA contracts
+        run: sh scripts/check-m97-k-timeouts.sh
+      - name: Restore official proven three-ISA Limine firmware seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Original signed APK + OpenRC Dropbear + TWO real OpenSSH PTYs SAME QEMU
+        timeout-minutes: 45
+        env:
+          NAS_M244_DIAG_SECONDS: '965'
+          NAS_M244_QEMU_TIMEOUT: '1110'
+          NAS_M244_HOST_READY_TIMEOUT: '700'
+          NAS_M244_HOST_SSH_TIMEOUT: '180'
+        run: sh scripts/probe-m244-alpine-ssh-reboot.sh ${{ matrix.port }}
+      - name: Preserve native UART, authenticated host receipts and true NIC capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m244-original-alpine-same-qemu-host-ssh-pty-${{ matrix.port }}
+          # Private host client key, known_hosts, physical ext4 image and
+          # guest private host key must NEVER leave ephemeral CI workspace.
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m244-*.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m244-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m244-*.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m244-*.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m241-*.log
+            build/busybox-source-parity-x86/m193-batch.serial.log
+            build/port-riscv64/full/matrix-source/m193-batch.serial.log
+            build/port-aarch64/full/matrix-source/m193-batch.serial.log
+          if-no-files-found: warn
+          retention-days: 7

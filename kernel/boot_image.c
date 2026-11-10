@@ -2,6 +2,8 @@
 #include "bootfs.h"
 #include "lib/string.h"
 #include "arch/abi.h"
+#include "fs/lookup.h"
+#include "task/elf_segments.h"
 #include <limine.h>
 
 extern const struct limine_file *nas_user_module(void);
@@ -72,19 +74,32 @@ const char *nas_boot_prepare(const char *selected,
         const char *path = selected ? selected : "/bin/busybox";
         if (path[0] != '/')
             return "CPIO executable must be an absolute path";
-        const struct bootfs_entry *app = bootfs_find(path);
+        char app_path[256];
+        if (bootfs_resolve(path,true,app_path))
+            return "CPIO executable path not found";
+        const struct bootfs_entry *app = bootfs_find(app_path);
         if (!app) return "CPIO executable path not found";
-        if (bootfs_is_dir(app) || !(app->mode & 0111U))
+        if ((app->mode&0170000U)!=0100000U || !(app->mode & 0111U))
             return "CPIO selected path is not an executable regular file";
         out->image = app->data;
         out->size = app->size;
-        const struct bootfs_entry *ldso =
-            bootfs_find(NAS_ELF_INTERP);
-        if (ldso && !bootfs_is_dir(ldso)) {
+        bool wants_loader=false;
+        const struct elf_image main={.data=out->image,.size=out->size};
+        if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+                out->interpreter_path,sizeof(out->interpreter_path),
+                &wants_loader))
+            return "CPIO selected executable has invalid ELF interpreter";
+        char resolved_loader[256];
+        const struct bootfs_entry *ldso = NULL;
+        if (wants_loader &&
+            !bootfs_resolve(out->interpreter_path,true,resolved_loader))
+            ldso=bootfs_find(resolved_loader);
+        if (ldso && (ldso->mode&0170000U)==0100000U &&
+            (ldso->mode&0111U)) {
             out->interpreter = ldso->data;
             out->interpreter_size = ldso->size;
             out->has_interpreter = true;
-        }
+        } else if (wants_loader) return "CPIO ELF interpreter not executable";
         out->busybox = strcmp(basename(path), "busybox") == 0;
         /* ELF64 little-endian e_type is at offset 16; an unmodified
          * Alpine ET_DYN is distinguished from a static Debian ET_EXEC.
@@ -101,12 +116,19 @@ const char *nas_boot_prepare(const char *selected,
     /* Legacy M1-M4: direct real ELF module; optional actual musl module. */
     out->image = (const uint8_t *)module->address;
     out->size = module->size;
+    const struct elf_image main={.data=out->image,.size=out->size};
+    bool wants_loader=false;
+    if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+            out->interpreter_path,sizeof(out->interpreter_path),
+            &wants_loader))
+        return "invalid direct ELF interpreter";
     out->bash = bash_module(module);
     out->busybox = busybox_module(module);
     out->alpine = out->busybox && nas_module(1) != 0;
     if (archive && !out->alpine)
         return "archive file requires real Alpine BusyBox runtime";
-    if (out->alpine) {
+    if (out->alpine && wants_loader &&
+        strcmp(out->interpreter_path,NAS_ELF_INTERP)==0) {
         const struct limine_file *ldso = nas_module(1);
         out->interpreter = (const uint8_t *)ldso->address;
         out->interpreter_size = ldso->size;
@@ -115,4 +137,98 @@ const char *nas_boot_prepare(const char *selected,
     if (out->bash) nas_print("[M2] real GNU Bash module discovered\n");
     if (out->busybox) nas_print("[M3] real BusyBox module discovered\n");
     return 0;
+}
+
+/* M191 uses the SAME mounted VFS and ELF reader as later execve; the boot
+ * policy merely selects its original PID1 image before entering ring 3.
+ * No userspace address is read on the bootstrap kernel stack. */
+static bool root_image_read(const void *context,uint64_t off,
+                            uint8_t *destination,uint64_t length) {
+    const struct nas_fs_node *node=context;
+    return nas_vfs_read_at(node,off,destination,length)==(int64_t)length;
+}
+void nas_boot_image_release(struct nas_boot_image *source) {
+    if(!source)return;
+    if(source->loader_pinned && nas_vfs_node_unpin(&source->loader))
+        nas_print("[M191] interpreter inode lease release failed\n");
+    if(source->source_pinned && nas_vfs_node_unpin(&source->source))
+        nas_print("[M191] boot inode lease release failed\n");
+    source->source_pinned=source->loader_pinned=false;
+}
+const char *nas_boot_prepare_vfs_root(const char *selected,
+                                      struct nas_boot_image *out) {
+    if(!out || !selected || selected[0]!='/')
+        return "M191 requires an absolute original Alpine PID1 path";
+    *out=(struct nas_boot_image){0};
+    char canonical[256];
+    if(nas_fs_lookup_node(selected,true,&out->source,canonical) ||
+       (out->source.mode&0170000U)!=0100000U ||
+       !(out->source.mode&0111U))
+        return "M191 root PID1 executable not found or not executable";
+    if(nas_vfs_node_pin(&out->source))
+        return "M191 root PID1 inode lease failed";
+    out->source_pinned=true;
+    out->image=out->source.data;
+    out->size=out->source.size;
+    struct elf_image main={.data=out->image,.size=out->size};
+    if (!main.data) {
+        main.read_at=root_image_read;
+        main.context=&out->source;
+    }
+    bool wants_loader=false;
+    if (!nas_elf_interpreter_path(&main,NAS_ELF_MACHINE,
+            out->interpreter_path,sizeof(out->interpreter_path),
+            &wants_loader)) {
+        nas_boot_image_release(out);
+        return "M191 root PID1 has invalid ELF interpreter";
+    }
+    if (wants_loader) {
+        if (nas_fs_lookup_node(out->interpreter_path,true,
+                               &out->loader,canonical) ||
+            (out->loader.mode&0170000U)!=0100000U ||
+            !(out->loader.mode&0111U) ||
+            nas_vfs_node_pin(&out->loader)) {
+            nas_boot_image_release(out);
+            return "M191 original PID1 ELF interpreter not executable";
+        }
+        out->loader_pinned=out->has_interpreter=true;
+        out->interpreter=out->loader.data;
+        out->interpreter_size=out->loader.size;
+    }
+    /* The physical-root path is shared by original Alpine and Debian ELF
+     * files. Retain M191's exact Alpine acceptance marker for its two
+     * historical init entrypoints; do not label a Debian dash as Alpine. */
+    nas_print("[ROOTFS] executable PID1 from mounted ext4: ");
+    nas_print(selected);nas_print("\n");
+    /* /sbin/init exists in BOTH original Alpine (musl/BusyBox) and signed
+     * Debian (glibc/sysvinit-core).  This is a diagnostic ABI distinction,
+     * not proof of provenance: signed .deb hashes are checked by the host. */
+    bool debian_init = strcmp(selected,"/sbin/init")==0 && wants_loader &&
+        (strcmp(out->interpreter_path,"/lib64/ld-linux-x86-64.so.2")==0 ||
+         strcmp(out->interpreter_path,"/lib/ld-linux-riscv64-lp64d.so.1")==0 ||
+         strcmp(out->interpreter_path,"/lib/ld-linux-aarch64.so.1")==0);
+    if(debian_init) {
+        nas_print("[M255 ROOT] original Debian sysvinit PID1 from mounted ext4: ");
+        nas_print(selected);nas_print("\n");
+    } else if(strcmp(selected,"/bin/busybox")==0 ||
+              strcmp(selected,"/sbin/init")==0) {
+        nas_print("[M191 ROOT] original Alpine PID1 from mounted ext4: ");
+        nas_print(selected);nas_print("\n");
+    }
+    return NULL;
+}
+void nas_boot_image_elf(const struct nas_boot_image *source,
+                        struct elf_image *main_image,
+                        struct elf_image *interpreter_image) {
+    *main_image=(struct elf_image){.data=source->image,.size=source->size};
+    *interpreter_image=(struct elf_image){.data=source->interpreter,
+                                        .size=source->interpreter_size};
+    if(source->source_pinned && !source->image) {
+        main_image->read_at=root_image_read;
+        main_image->context=&source->source;
+    }
+    if(source->loader_pinned && !source->interpreter) {
+        interpreter_image->read_at=root_image_read;
+        interpreter_image->context=&source->loader;
+    }
 }

@@ -1,0 +1,129 @@
+name: NaSeed M228 original Alpine OpenRC host-to-guest HTTP ingress two-native-boot
+
+# The real amd64 dual-PID1 host-ingress pilot passed on 2026-11-07
+# (run 42374117846). Promote this isolated workflow to the three-ISA
+# acceptance matrix; its path gate avoids re-running it on unrelated commits.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m228-host-ingress.yml'
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Native ISA selection (push now verifies all three)'
+        type: choice
+        required: true
+        default: amd64
+        options: [amd64, riscv64, arm64, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-alpine-host-inbound:
+    name: Real host TCP GET to guest lighttpd / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Validate original M227 and real M228 host ingress contracts
+        run: |
+          set -eu
+          python3 scripts/test-m227-uart-login.py
+          python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m228-guest-contract.py
+          python3 scripts/test-m228-host-inbound.py
+          python3 scripts/test-m228-inbound-oracle.py
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          python3 -m py_compile scripts/m228-alpine-uart.py scripts/m228-host-inbound-check.py scripts/m228-inbound-oracle.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 scripts/test-m197-alpine-host.py
+      - name: Install original Alpine staging and native QEMU cross ABI tools
+        timeout-minutes: 20
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+                test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+                test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Two original Alpine PID1 QEMUs and independent host TCP GET
+        timeout-minutes: 85
+        env:
+          NAS_M228_HOST_INBOUND: '1'
+          NAS_M228_PUBLIC_QEMU_TIMEOUT: '2650'
+          NAS_M228_FIRST_SECONDS: '2500'
+          NAS_M228_REOPEN_QEMU_TIMEOUT: '1050'
+          NAS_M228_REOPEN_SECONDS: '900'
+          NAS_M228_HOST_PORT: '15433'
+        run: sh scripts/probe-m197-alpine-software-cohort.sh '${{ matrix.port }}'
+      - name: Preserve independent host TCP receipts, NIC PCAP and true ext4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m228-host-inbound-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-host-inbound.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-host-inbound.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-host-inbound.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-host-inbound.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-inbound-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn

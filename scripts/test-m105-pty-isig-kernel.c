@@ -9,10 +9,18 @@
 #include "../kernel/task.h"
 #include "../kernel/drivers/pty.h"
 #include "../kernel/drivers/tty.h"
+#include "../kernel/drivers/core/chrdev.h"
+
+uint64_t nas_arch_monotonic_ns(void) { return 0; }
+int nas_chrdev_node_register(struct nas_chrdev_node *node) {
+    (void)node;return 0;
+}
 
 static struct nas_task owner={.pid=42,.sid=42,.pgid=77};
 static struct nas_fd_table fds;
 struct nas_task *nas_current_task=&owner;
+bool nas_tty_controlling(void) {return false;}
+bool nas_vt_controlling(void) {return false;}
 static unsigned slot_for_fd(unsigned fd) { return fds.entries[fd].slot; }
 struct nas_task *nas_task_at(unsigned slot) {(void)slot;return NULL;}
 bool nas_user_read_bytes(uint64_t address,uint8_t *dst,uint64_t length) {
@@ -145,6 +153,17 @@ int main(void) {
     assert(nas_pty_ioctl(1,0x5422,0)==0); /* TIOCNOTTY */
     push(0,3);
     empty();
+    /* A real shell may exit immediately after writing its final line. The
+     * PTY master must expose that buffered output as POLLIN|POLLHUP until
+     * the last byte is drained, then HUP without false readable data. */
+    const uint8_t final='Z';
+    assert(nas_pty_write(slot_for_fd(3),&final,1)==1);
+    nas_pty_release(slot_for_fd(3));
+    assert((nas_pty_poll(slot_for_fd(2),1U)&0x19U)==0x19U);
+    uint8_t observed=0;
+    assert(nas_pty_read(slot_for_fd(2),&observed,1)==1);
+    assert(observed==final);
+    assert((nas_pty_poll(slot_for_fd(2),1U)&0x19U)==0x18U);
     (void)other;
     return 0;
 }

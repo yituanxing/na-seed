@@ -1,19 +1,5 @@
 name: NaSeed M72 signed original strace native three-ISA fail-closed gate
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/stage-m72-prebuilt.sh'
-      - 'scripts/probe-m72-strace.sh'
-      - 'scripts/m72-*'
-      - 'tests/m72-*'
-      - 'rootfs/alpine/packages-m72-strace.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m72-strace.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

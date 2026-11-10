@@ -8,6 +8,7 @@
 #include "../arch/arch.h"
 #include "../fs/io.h"
 #include "../drivers/tty.h"
+#include "../drivers/vt.h"
 #include "../drivers/pty.h"
 #include "process.h"
 #include "sched.h"
@@ -96,6 +97,12 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         return;
     }
     child->group_exit_pending=false;
+    /* A dead VT_PROCESS owner cannot hold graphics/keyboard ownership. */
+    nas_vt_process_exit(child->pid);
+    if(child->pid==child->sid) {
+        nas_tty_session_leader_exit(child->sid);
+        nas_vt_session_leader_exit(child->sid);
+    }
     if (child->vfork_shared_vm) {
         nas_process_vfork_release();
         /* The child has a separate MM reference; final put leaves
@@ -271,6 +278,15 @@ static void native_dispatcher(void) {
         unsigned sig=nas_tty_take_signal(&sid,&pgid);
         if(sig && !nas_signal_tty_event(sid,pgid,sig))
             nas_tty_signal_unsupported();
+        /* Physical VT keyboard and UART are independent foreground groups.
+         * Defer delivery to this scheduler stack, never a VirtIO callback. */
+        uint64_t vt_sid=0,vt_pgid=0;
+        unsigned vt_sig=nas_vt_take_signal(&vt_sid,&vt_pgid);
+        if(vt_sig && !nas_signal_tty_event(vt_sid,vt_pgid,vt_sig)) {
+            nas_print("[VT SIGNAL UNSUPPORTED] sid=");nas_dec(vt_sid);
+            nas_print(" pgid=");nas_dec(vt_pgid);
+            nas_print(" signal=");nas_dec(vt_sig);nas_print("\n");
+        }
         /* PTY master writes originate inside an arbitrary userspace Task's
          * syscall C continuation. Handle ISIG only after it reaches this
          * independent scheduler stack: a foreground SIGINT may terminate
@@ -292,10 +308,13 @@ static void native_dispatcher(void) {
         unsigned slot=0;
         struct nas_task *next=nas_sched_scan_next(&scan,&slot);
         if(next) {
+            /* scan_next already consumed a BLOCKED task's readiness check.
+             * Rechecking a one-shot PTY/wait completion here can observe a
+             * changed state and reject a valid native continuation. The
+             * completion path handles a lost wake by re-parking the task. */
             if(!next->resume_valid ||
                (next->state!=NAS_TASK_READY &&
-                (next->state!=NAS_TASK_BLOCKED ||
-                 !nas_task_wait_ready(next))))
+                next->state!=NAS_TASK_BLOCKED))
                 sched_fail("invalid native schedule candidate");
             if(next->state==NAS_TASK_BLOCKED &&
                !next->kernel_exec.cpu.saved_sp)
@@ -383,9 +402,9 @@ void nas_sched_preempt_select(void) {
     /* The IRQ stack remains owned by the same Task. Return directly to
      * its saved exception frame, after ordinary pending-signal delivery. */
 }
-uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
-                        uint64_t a,uint64_t b,uint64_t c,uint64_t d,
-                        uint64_t (*finish)(struct nas_task *)) {
+uint64_t nas_task_block5(uint64_t *frame,enum nas_syscall_op nr,
+                         uint64_t a,uint64_t b,uint64_t c,uint64_t d,uint64_t e,
+                         uint64_t (*finish)(struct nas_task *)) {
     struct nas_task *self=nas_current_task;
     if(!finish)sched_fail("native Task blocked without completion provider");
     nas_arch_save_user_frame(self,frame);
@@ -398,6 +417,7 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
     self->wait.blocked_args[1]=b;
     self->wait.blocked_args[2]=c;
     self->wait.blocked_args[3]=d;
+    self->wait.blocked_args[4]=e;
     self->state=NAS_TASK_BLOCKED;
     /* This reports a genuine park, never a synthetic blocking result.
      * Keep the immutable original BusyBox large-pipe gate intact. */
@@ -420,4 +440,9 @@ uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
         self->resume_valid=true;
         if(outcome==NAS_BLOCKED_RETRY)self->state=NAS_TASK_BLOCKED;
     }
+}
+uint64_t nas_task_block(uint64_t *frame,enum nas_syscall_op nr,
+                        uint64_t a,uint64_t b,uint64_t c,uint64_t d,
+                        uint64_t (*finish)(struct nas_task *)) {
+    return nas_task_block5(frame,nr,a,b,c,d,0,finish);
 }

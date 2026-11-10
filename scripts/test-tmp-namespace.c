@@ -12,12 +12,12 @@
 
 #define FRAMES 80
 static _Alignas(4096) uint8_t frames[FRAMES][4096];
-static bool busy[FRAMES];
+static unsigned refs[FRAMES];
 static unsigned frame_allocated,frame_freed;
 uint64_t nas_frame_alloc(void) {
     for(unsigned i=0;i<FRAMES;i++)
-        if(!busy[i]) {
-            busy[i]=true;frame_allocated++;
+        if(!refs[i]) {
+            refs[i]=1;frame_allocated++;
             memset(frames[i],0,4096);
             return (uint64_t)(uintptr_t)&frames[i][0];
         }
@@ -25,8 +25,18 @@ uint64_t nas_frame_alloc(void) {
 }
 bool nas_frame_put(uint64_t phys) {
     for(unsigned i=0;i<FRAMES;i++)
-        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && busy[i]) {
-            busy[i]=false;frame_freed++;return true;
+        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && refs[i]) {
+            if(!--refs[i])frame_freed++;
+            return true;
+        }
+    return false;
+}
+bool nas_frame_get(uint64_t phys) {
+    for(unsigned i=0;i<FRAMES;i++)
+        if(phys==(uint64_t)(uintptr_t)&frames[i][0] && refs[i] &&
+           refs[i]!=UINT32_MAX) {
+            refs[i]++;
+            return true;
         }
     return false;
 }
@@ -116,6 +126,17 @@ int main(void) {
     assert(!tmp_find_child(dir,"sock") && tmp_find_child(dir,"sock-renamed")==sock);
     assert(tmp_unlink_at(dir,"sock-renamed",0)==0);
     assert(!sock->used);
+    /* A named FIFO is a distinct special inode; its stream bytes belong
+     * to pipe.c, never to the tmpfs regular-file read/write backend. */
+    struct nas_tmp_file *fifo=tmp_mknod_at(dir,"initctl",0010600U);
+    assert(fifo && fifo->used && fifo->nlink==1 && !fifo->is_dir);
+    assert((fifo->mode&0170000U)==0010000U && (fifo->mode&07777U)==0600U);
+    assert(tmp_find_child(dir,"initctl")==fifo);
+    assert(tmp_mknod_at(dir,"initctl",0010600U)==NULL);
+    assert(tmp_rename_at(dir,"initctl",dir,"initctl-moved",0)==0);
+    assert(tmp_find_child(dir,"initctl-moved")==fifo);
+    assert(tmp_unlink_at(dir,"initctl-moved",0)==0);
+    assert(!fifo->used);
     assert(tmp_child_entry_inode(dir,32)==0);
 
     /* Files survive unlink and even final nlink==0 until all aliased open
@@ -186,7 +207,58 @@ int main(void) {
     borrowed_vfs_pin=0;
     tmp_inode_discard(orphan); /* precisely the final generic unpin hook */
     assert(!orphan->used);
+    /* Runtime /run and later tmpfs mounts must not alias the historical
+     * CPIO-backed /tmp namespace or each other's unaliased roots. Mount
+     * teardown is iterative, releases even nested entries, and recycles
+     * the superblock root only after the VFS has detached its mount. */
+    struct nas_tmp_file *run_root=tmp_inode_alloc(true,0755);
+    struct nas_tmp_file *other_root=tmp_inode_alloc(true,0700);
+    assert(run_root && other_root);
+    run_root->is_mount_root=other_root->is_mount_root=true;
+    tmp_inode_link(run_root);
+    tmp_inode_link(other_root);
+    assert(tmp_dir_parent_inode(run_root)==run_root);
+    assert(tmp_dir_parent_inode(other_root)==other_root);
+    assert(tmp_mkdir_at(run_root,"openrc",0755)==0);
+    struct nas_tmp_file *openrc=tmp_find_child(run_root,"openrc");
+    assert(openrc && tmp_dir_parent_inode(openrc)==run_root);
+    assert(tmp_create_at(openrc,"status",false,0600));
+    assert(tmp_mkdir_at(openrc,"deep",0755)==0);
+    assert(tmp_create_at(tmp_find_child(openrc,"deep"),"pid",false,0600));
+    assert(!tmp_find_child(other_root,"openrc"));
+    assert(!tmp_find_child(root,"openrc"));
+    assert(tmp_destroy_mount_root(run_root)==0);
+    assert(!run_root->used);
+    assert(tmp_find_child(other_root,"openrc")==NULL);
+    assert(tmp_mkdir_at(other_root,"own",0755)==0);
+    assert(tmp_destroy_mount_root(other_root)==0 && !other_root->used);
+    /* Official Alpine OpenRC mounts /run with strictatime, size=20% and
+     * nr_inodes=800k. Exercise the REAL per-superblock accounting with
+     * tiny deterministic limits, including reclaim after unlink/umount. */
+    struct nas_tmp_quota quota={
+        .max_pages=1,.max_inodes=2,.strict_atime=true
+    };
+    struct nas_tmp_file *limited=tmp_inode_alloc_quota(true,0755,&quota);
+    assert(limited && quota.used_inodes==1);
+    limited->is_mount_root=true;
+    tmp_inode_link(limited);
+    struct nas_tmp_file *payload=tmp_create_at(limited,"data",false,0644);
+    assert(payload && payload->quota==&quota && quota.used_inodes==2);
+    assert(!tmp_create_at(limited,"exhausted",false,0600));
+    uint8_t page[4096]={1};
+    assert(tmp_write_at(payload,0,page,sizeof(page))==sizeof(page));
+    assert(quota.used_pages==1);
+    assert(tmp_write_at(payload,4096,page,sizeof(page))==-ENOSPC);
+    uint64_t accessed=payload->atime_ns;
+    uint8_t byte=0;
+    assert(tmp_read_at(payload,0,&byte,1)==1 && byte==1);
+    assert(payload->atime_ns>accessed);
+    assert(tmp_unlink_at(limited,"data",0)==0);
+    assert(quota.used_inodes==1 && quota.used_pages==0);
+    assert(tmp_create_at(limited,"reused",false,0600));
+    assert(tmp_destroy_mount_root(limited)==0);
+    assert(quota.used_inodes==0 && quota.used_pages==0);
     assert(frame_allocated>=frame_freed);
-    puts("[M63 TMP PASS] dentry/inode, real hardlinks, rename, cwd, unlink/open, symlink");
+    puts("[M63 TMP PASS] dentry/inode, hardlinks, rename, cwd, orphan lifetime, independent mount roots, quotas/strictatime, iterative teardown");
     return 0;
 }

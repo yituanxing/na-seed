@@ -1,0 +1,197 @@
+name: NaSeed M206 original Alpine software, native first and second QEMU
+
+on:
+  # Independent M206 original signed Alpine software discovery, extending
+  # the proven M191/M197 first and second native QEMU, without replacements.
+  # Require 20 new native ELF hashes, real semantic tests, signed APK and
+  # durable post-reboot ext4 proof independently on all three target ISAs.
+  # Exact-head recheck: loopback noqueue, iputils keepcaps lifecycle and
+  # canonical Alpine BusyBox aliases; still require real function/reopen
+  # for every candidate, with no invented Netfilter or iperf success.
+  # M207: rerun original native tc, ping, iperf and nft in both boots after
+  # owned loopback noqueue and serial native connect/getname correctness work.
+  # M208: verify real NETLINK_NETFILTER empty-table create/list/delete,
+  # generation, transactional rollback and CAP_NET_ADMIN on original nft ELF.
+  # M209: verify musl's 20-byte rtnetlink GETLINK and real Netlink recvfrom
+  # against original signed iperf2/nft in first and independently reopened QEMU.
+  # M211: validate Linux-oracle exact nft -c/add/list/delete Netlink frames,
+  # stable real table handle and filtered empty NFT dumps on all three ISAs.
+  # M211.1: remove unsupported nas_hex host-link reference in bounded NFT
+  # diagnostics; rerun exact original signed software on first/reopen QEMU.
+  # M212: enforce fail-closed 20/20 native software acceptance on real
+  # first and independent reopen QEMU, retaining APK SHA and ext4 proof.
+  # M211.2: require the original nft delete exit and post-delete ENOENT
+  # across both native QEMU boots, beyond check/add/list output.
+  # M214: one native three-ISA regression after common Netlink protocol
+  # dispatch, genuine link/address events, nlctrl and resizable pipe ABI;
+  # M213 is only a host/probe contract here, not an accepted ELF cohort.
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m206-original-alpine-software.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-signed-alpine:
+    name: M206 real 20 ELF entrypoints and durable ext4 / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Validate new unaccepted ELF manifest, real guest oracle and shared ABI
+        run: |
+          set -eu
+          sh scripts/check-packet-socket.sh
+          sh scripts/check-lwip-foundation.sh
+          sh scripts/check-pipe-capacity.sh
+          python3 scripts/test-m213-alpine-host.py
+          python3 scripts/check-m141-candidates.py --profile m206
+          python3 scripts/test-m206-alpine-host.py
+          python3 scripts/test-m205-alpine-host.py
+          python3 scripts/test-m197-alpine-host.py
+          python3 scripts/test-m204-alpine-host.py
+          sh scripts/check-m191-pid1-quiesce.sh
+          mkdir -p build/m206-host
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-syscall-abi.c \
+            -o build/m206-host/syscall-abi
+          build/m206-host/syscall-abi
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-generic64-clone.c \
+            -o build/m206-host/generic64-abi
+          build/m206-host/generic64-abi
+          for target in native arm64 riscv64; do
+            case "$target" in
+              native) cap_def='' ;;
+              arm64) cap_def='-DNAS_TEST_ARM64' ;;
+              riscv64) cap_def='-DNAS_TEST_RV64' ;;
+            esac
+            cc -std=c11 -Wall -Wextra -Werror $cap_def \
+              scripts/test-linux-capabilities.c \
+              -o "build/m206-host/linux-capabilities-$target"
+            "build/m206-host/linux-capabilities-$target"
+          done
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          sh -n scripts/probe-m206-alpine-compat-cohort.sh
+          sh -n tests/m206-software-workload.sh
+          sh -n tests/m205-software-workload.sh
+          python3 -m py_compile scripts/m206-alpine-uart.py scripts/m206-compat-report.py scripts/m206-alpine-disk-check.py
+      - name: Install native ISA QEMU, cross-GCC and real ext4 host tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Fail-closed signed Alpine ELF census for this exact QEMU commit
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/inventory-m141-signed-apks.sh ${{ matrix.port }} m206
+          tsv=build/external/m206-candidate-inventory/${{ matrix.port }}/candidates.tsv
+          awk -F '\t' 'NR > 1 { n++; if ($3 != "NATIVE_ELF") bad++ } END {
+            if (n != 20 || bad) { print "[M206 SIGNED ELF FAIL] wrong ELF count/status"; exit 1 }
+          }' "$tsv"
+          unique=$(awk -F '\t' 'NR > 1 { print $4 }' "$tsv" | sort -u | wc -l)
+          test "$unique" -eq 20 || {
+            echo "[M206 SIGNED ELF FAIL] expected 20 real unique SHA, got $unique" >&2
+            exit 1
+          }
+          echo "[M206 SIGNED ELF PASS] 20 native paths, 20 independent real ELF SHA"
+      - name: Run real M197 signed public HTTPS and M206 per-ELF first/reopen QEMU
+        timeout-minutes: 95
+        env:
+          NAS_M206_REQUIRE_ALL: '1'
+          NAS_M206_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M206_PUBLIC_SECONDS: '4400'
+          NAS_M206_REOPEN_SECONDS: '900'
+        run: sh scripts/probe-m206-alpine-compat-cohort.sh ${{ matrix.port }}
+      - name: Summarize independently verified strict original guest acceptance
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          port = '${{ matrix.port }}'
+          root = Path('build/external/m191-alpine-rootfs') / port
+          result = root / 'm206-compat-report.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              if result.exists():
+                  payload = json.loads(result.read_text())
+                  print(f"### M206 {port}: real Alpine candidate discovery", file=summary)
+                  print('20 candidate entrypoints; 20 distinct SHA require the independent signed-APK gate.', file=summary)
+                  print(f"Full entrypoints: {payload['newly_installed_full_pass_entrypoints']}/{payload['total_entrypoints']}", file=summary)
+              else:
+                  print(f'### M206 {port}: incomplete QEMU/host proof (no report)', file=summary)
+          PY
+      - name: Preserve raw guest logs, real first/reopen result and wire proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m206-original-alpine-${{ matrix.port }}
+          # On early guest command failure the M197 runner exits before it
+          # copies UART to m197-live.serial.log. Preserve native per-ISA logs.
+          path: |
+            build/external/m206-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m206-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m206-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m206-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+            build/busybox-source-parity-x86/m197-batch*.log
+            build/port-riscv64/full/matrix-source/m197-batch*.log
+            build/port-aarch64/full/matrix-source/m197-batch*.log
+          if-no-files-found: ignore

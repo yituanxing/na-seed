@@ -1,0 +1,37 @@
+# Thirteen genuine encoder/decoder pairs; both sides are new ELF identities.
+usr/bin/pbmtoatk
+usr/bin/atktopbm
+usr/bin/pbmtocmuwm
+usr/bin/cmuwmtopbm
+usr/bin/pbmtogem
+usr/bin/gemtopnm
+usr/bin/pbmtomda
+usr/bin/mdatopbm
+usr/bin/pbmtomgr
+usr/bin/mgrtopbm
+usr/bin/pbmtomrf
+usr/bin/mrftopbm
+usr/bin/pbmtoybm
+usr/bin/ybmtopbm
+usr/bin/pbmtog3
+usr/bin/g3topbm
+usr/bin/pamtopfm
+usr/bin/pfmtopam
+usr/bin/pamtoavs
+usr/bin/avstopam
+usr/bin/pamtosrf
+usr/bin/srftopam
+usr/bin/pamtopdbimg
+usr/bin/pdbimgtopam
+usr/bin/pbmtocis
+usr/bin/cistopbm
+# Nine new native decoders against earlier unmodified signed encoders.
+usr/bin/sunicontopnm
+usr/bin/xbmtopbm
+usr/bin/fitstopnm
+usr/bin/sgitopnm
+usr/bin/rletopnm
+usr/bin/palmtopnm
+usr/bin/xvminitoppm
+usr/bin/tifftopnm
+usr/bin/jpegtopnm

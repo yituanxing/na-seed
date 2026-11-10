@@ -1,0 +1,65 @@
+name: NaSeed M237 original signed Alpine GEOS Linux control
+
+# Host Linux differential only: this is NOT NaSeed native QEMU acceptance.
+# Run on changes to this one scoped control, never replay the expensive M237
+# guest suite solely for a Linux reference measurement.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m237-geos-linux-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  official-alpine-geos-amd64:
+    name: Exact signed GEOS ELF on ordinary Alpine Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Compare the exact signed original GEOS ELF under ordinary Alpine Linux
+        run: |
+          docker run --rm --platform linux/amd64 alpine:3.23 sh -ec '
+            apk add --no-cache geos=3.14.1-r0
+            echo "[M237 LINUX CONTROL] original signed APK version:"
+            apk info -v geos
+            actual=$(sha256sum /usr/bin/geosop | cut -d" " -f1)
+            expected=7eabe7d05c905d05804c44a93235ce24478c2d40d97307d09457a4b91bd8542a
+            printf "[M237 LINUX CONTROL] geosop_sha256=%s expected_sha256=%s\n" "$actual" "$expected"
+            test "$actual" = "$expected" || {
+              echo "[M237 LINUX CONTROL BLOCKED] GEOS APK ELF differs from native guest, no comparison permitted"
+              exit 1
+            }
+            wkt="POLYGON ((0 0, 4 0, 4 3, 0 3, 0 0))"
+            printf "POINT (0 0)\n" > /tmp/geos-origin.wkt
+            printf "POINT (3 4)\n" > /tmp/geos-diagonal.wkt
+            /usr/bin/geosop --help >/tmp/help.log
+            # GEOS 3.14.1 has an upstream executeUnary null-B bug reproduced
+            # by eight controls on ordinary Linux in run #42451106582.
+            # Test the exact unmodified signed ELF on genuine binary geometry.
+            probe() {
+              mode="$1"
+              shift
+              rc=0
+              "$@" > "/tmp/$mode.out" 2> "/tmp/$mode.err" || rc=$?
+              stdout=$(head -c 100 "/tmp/$mode.out" | tr "\t\r\n" "   ")
+              stderr=$(head -c 180 "/tmp/$mode.err" | tr "\t\r\n" "   ")
+              printf "[M237 LINUX DIFF] mode=%s exit=%s stdout=%s stderr=%s\n" "$mode" "$rc" "$stdout" "$stderr"
+              test "$rc" -eq 0
+            }
+            probe point-distance /usr/bin/geosop -a /tmp/geos-origin.wkt -b /tmp/geos-diagonal.wkt --format=txt distance
+            probe point-intersects /usr/bin/geosop -a /tmp/geos-origin.wkt -b /tmp/geos-origin.wkt --format=txt intersects
+            probe point-disjoint /usr/bin/geosop -a /tmp/geos-origin.wkt -b /tmp/geos-diagonal.wkt --format=txt intersects
+            probe polygon-intersection /usr/bin/geosop -a "$wkt" -b "$wkt" --format=txt intersection
+            if grep -Eq "^5(\.0+)?$" /tmp/point-distance.out &&
+               grep -Fxq "true" /tmp/point-intersects.out &&
+               grep -Fxq "false" /tmp/point-disjoint.out &&
+               grep -Fq "POLYGON" /tmp/polygon-intersection.out; then
+              echo "[M237 LINUX BINARY CONTROL PASS] same signed geosop computes distance=5, true/false topology and polygon intersection; NOT NaSeed QEMU PASS"
+            else
+              echo "[M237 LINUX BINARY CONTROL FAIL] original binary GEOS operations not proven"
+              exit 1
+            fi
+          '

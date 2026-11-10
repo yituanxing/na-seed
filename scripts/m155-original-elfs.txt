@@ -1,0 +1,35 @@
+# M155 signed Alpine 3.23 original executables, no historical ELF paths.
+# One physical ELF per line; no BusyBox wrappers or duplicate binary hashes.
+sbin/btrfs
+sbin/mkfs.btrfs
+usr/sbin/btrfs-convert
+usr/sbin/btrfs-find-root
+usr/sbin/btrfs-image
+usr/sbin/btrfs-map-logical
+usr/sbin/btrfs-select-super
+usr/sbin/btrfstune
+sbin/mkfs.xfs
+sbin/xfs_repair
+usr/sbin/xfs_db
+usr/sbin/xfs_copy
+usr/sbin/xfs_logprint
+usr/sbin/xfs_io
+usr/sbin/xfs_mdrestore
+usr/sbin/xfs_spaceman
+usr/sbin/mkfs.f2fs
+usr/sbin/fsck.f2fs
+usr/sbin/f2fs_io
+usr/sbin/f2fscrypt
+usr/sbin/parse.f2fs
+usr/bin/mkfs.erofs
+usr/bin/fsck.erofs
+usr/bin/dump.erofs
+usr/sbin/mkntfs
+usr/sbin/ntfsclone
+usr/sbin/ntfslabel
+usr/sbin/ntfsresize
+usr/bin/ntfsinfo
+usr/bin/ntfsls
+usr/bin/ntfscat
+usr/bin/gdisk
+usr/sbin/parted

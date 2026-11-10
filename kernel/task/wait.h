@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "../task.h"
+#include "../fs/broker.h"
 bool nas_task_wait_ready(const struct nas_task *task);
 /* Per-Task interest registration, never per user-FD ownership. Tasks may
  * subscribe to multiple descriptions in a single poll/select/epoll.
@@ -36,11 +37,38 @@ static inline void nas_task_wait_reset(struct nas_task *task) {
 static inline void nas_task_wait_dispose(struct nas_task *task) {
     if(!task)return;
     struct nas_pending_io *owned=task->wait.pending_io;
+    void *netlink_owned=task->wait.netlink_receive;
+    void (*netlink_release)(void *)=task->wait.netlink_receive_release;
+    struct nas_fs_broker_request *fs_owned=task->wait.fs_request;
     void (*release)(struct nas_pending_io *)=task->wait.pending_io_release;
+    struct nas_poll_snapshot *poll=task->wait.poll_snapshot;
+    void (*poll_release)(struct nas_poll_snapshot *)=
+        task->wait.poll_snapshot_release;
+    unsigned description_slot=task->wait.description_slot;
+    void (*description_release)(unsigned)=task->wait.description_release;
+    struct nas_fd_slot_lease accept_lease=task->wait.accept_lease;
+    void (*accept_cancel)(unsigned,struct nas_fd_slot_lease)=
+        task->wait.accept_lease_cancel;
     task->wait.pending_io=0;
     task->wait.pending_io_release=0;
+    task->wait.netlink_receive=0;
+    task->wait.netlink_receive_release=0;
+    task->wait.fs_request=0;
+    task->wait.poll_snapshot=0;
+    task->wait.poll_snapshot_release=0;
+    task->wait.description_release=0;
+    task->wait.accept_lease_cancel=0;
     if(owned && !release)__builtin_trap();
     if(owned && release)release(owned);
+    if(netlink_owned && !netlink_release)__builtin_trap();
+    if(netlink_owned && netlink_release)netlink_release(netlink_owned);
+    /* Detaching cannot free a RUNNING request while the FS worker still
+     * accesses it; worker-side reference ownership lives in the broker. */
+    if(fs_owned)nas_fs_broker_request_detach(fs_owned);
+    if(poll && !poll_release)__builtin_trap();
+    if(poll && poll_release)poll_release(poll);
+    if(accept_cancel)accept_cancel(description_slot,accept_lease);
+    if(description_release)description_release(description_slot);
     nas_task_wait_reset(task);
 }
 #endif

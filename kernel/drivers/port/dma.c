@@ -26,6 +26,9 @@ int nas_dma_alloc_page(const struct nas_dma_provider *provider,
     if (!provider || !page || !provider->alloc_page ||
         !provider->release_page || (!provider->coherent && !provider->sync))
         return -EINVAL;
+    /* Retrying allocation must not overwrite a page still owned by the
+     * caller after an earlier provider-release failure. */
+    if (page->cpu) return -EBUSY;
     *page = (struct nas_dma_page){0};
     int rc = provider->alloc_page(provider->context, page);
     if (rc) {
@@ -36,7 +39,13 @@ int nas_dma_alloc_page(const struct nas_dma_provider *provider,
     /* DMA bus address 0 is valid with some IOMMU mappings; the CPU
      * alias and mapped size, not a zero sentinel, establish validity. */
     if (!page->cpu || page->bytes != NAS_DMA_PAGE_BYTES) {
-        (void)provider->release_page(provider->context, page);
+        int release_rc = provider->release_page(provider->context, page);
+        /* A provider can fail its release. Preserve the descriptor, so
+         * callers can retry nas_dma_free_page() before reusing storage.
+         * A provider that reports success without a CPU alias violates
+         * the allocation contract and cannot be retried through callers'
+         * normal cpu-pointer ownership checks. */
+        if (release_rc) return release_rc;
         *page = (struct nas_dma_page){0};
         return -EIO;
     }
@@ -54,6 +63,7 @@ int nas_dma_sync(const struct nas_dma_provider *provider,
                  struct nas_dma_page *page, uint32_t offset, uint32_t bytes,
                  enum nas_dma_direction direction) {
     if (!provider || !page || !page->cpu ||
+        page->bytes != NAS_DMA_PAGE_BYTES ||
         (direction != NAS_DMA_TO_DEVICE && direction != NAS_DMA_FROM_DEVICE) ||
         offset > page->bytes || bytes > page->bytes - offset)
         return -EINVAL;

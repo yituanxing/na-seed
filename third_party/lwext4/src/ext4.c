@@ -1436,6 +1436,35 @@ int ext4_cache_flush(const char *path)
 	return ret;
 }
 
+int ext4_sync(const char *path)
+{
+	struct ext4_mountpoint *mp = ext4_get_mount(path);
+	int ret;
+
+	if (!mp)
+		return ENOENT;
+
+	EXT4_MP_LOCK(mp);
+	/* First persist inode, allocation-group and bitmap changes. A later
+	 * superblock counter write may not precede the blocks it describes. */
+	ret = ext4_block_cache_flush(mp->fs.bdev);
+	if (ret != EOK)
+		goto Finish;
+
+	if (!mp->fs.read_only) {
+		/* ext4_fs_fini() would mark a STILL-MOUNTED filesystem clean.
+		 * Keep the normal mounted/error state and persist only the current
+		 * superblock counters and checksum on a real sync/fsync. */
+		ret = ext4_sb_write(mp->fs.bdev, &mp->fs.sb);
+		if (ret != EOK)
+			goto Finish;
+		ret = ext4_block_cache_flush(mp->fs.bdev);
+	}
+Finish:
+	EXT4_MP_UNLOCK(mp);
+	return ret;
+}
+
 int ext4_fremove(const char *path)
 {
 	ext4_file f;
@@ -1769,30 +1798,36 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 		iblock_idx++;
 	}
 
-	fblock_start = 0;
-	fblock_count = 0;
 	while (size >= block_size) {
-		while (iblock_idx < iblock_last) {
-			r = ext4_fs_get_inode_dblk_idx(&ref, iblock_idx,
-						       &fblock, true);
-			if (r != EOK)
-				goto Finish;
-
-			iblock_idx++;
-
-			if (!fblock_start)
-				fblock_start = fblock;
-
-			if ((fblock_start + fblock_count) != fblock)
-				break;
-
-			fblock_count++;
-		}
-
-		r = ext4_blocks_get_direct(file->mp->fs.bdev, u8_buf, fblock_start,
-					   fblock_count);
+		r = ext4_fs_get_inode_dblk_idx(&ref, iblock_idx, &fblock,
+						       true);
 		if (r != EOK)
 			goto Finish;
+
+		fblock_count = 1;
+		if (!fblock) {
+			/* Sparse/unwritten full blocks are zero-filled, never read
+			 * from physical block zero (the filesystem superblock). */
+			memset(u8_buf, 0, block_size);
+		} else {
+			fblock_start = fblock;
+			/* Keep the original contiguous physical-block bulk read
+			 * optimization, stopping before every sparse hole or gap. */
+			while (iblock_idx + fblock_count < iblock_last) {
+				ext4_fsblk_t next;
+				r = ext4_fs_get_inode_dblk_idx(&ref,
+					iblock_idx + fblock_count, &next, true);
+				if (r != EOK)
+					goto Finish;
+				if (!next || next != fblock_start + fblock_count)
+					break;
+				fblock_count++;
+			}
+			r = ext4_blocks_get_direct(file->mp->fs.bdev, u8_buf,
+						fblock_start, fblock_count);
+			if (r != EOK)
+				goto Finish;
+		}
 
 		size -= block_size * fblock_count;
 		u8_buf += block_size * fblock_count;
@@ -1801,8 +1836,7 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 		if (rcnt)
 			*rcnt += block_size * fblock_count;
 
-		fblock_start = fblock;
-		fblock_count = 1;
+		iblock_idx += fblock_count;
 	}
 
 	if (size) {
@@ -1811,10 +1845,17 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 		if (r != EOK)
 			goto Finish;
 
-		off = fblock * block_size;
-		r = ext4_block_readbytes(file->mp->fs.bdev, off, u8_buf, size);
-		if (r != EOK)
-			goto Finish;
+		if (!fblock) {
+			/* The final partial block of an unwritten extent is just
+			 * as sparse as an aligned or initial unaligned block. */
+			memset(u8_buf, 0, size);
+		} else {
+			off = fblock * block_size;
+			r = ext4_block_readbytes(file->mp->fs.bdev, off,
+						      u8_buf, size);
+			if (r != EOK)
+				goto Finish;
+		}
 
 		file->fpos += size;
 
@@ -2456,7 +2497,8 @@ static int ext4_fsymlink_set(ext4_file *f, const void *buf, uint32_t size)
 
 	/*Sync file size*/
 	block_size = ext4_sb_get_block_size(&f->mp->fs.sb);
-	if (size > block_size) {
+	/* A block-backed symlink needs room for the terminating NUL too. */
+	if (size >= block_size) {
 		r = EINVAL;
 		goto Finish;
 	}
@@ -2476,19 +2518,31 @@ static int ext4_fsymlink_set(ext4_file *f, const void *buf, uint32_t size)
 		ext4_inode_clear_flag(ref.inode, EXT4_INODE_FLAG_EXTENTS);
 	} else {
 		uint64_t off;
+		const uint8_t terminator = 0;
 		ext4_fs_inode_blocks_init(&f->mp->fs, &ref);
 		r = ext4_fs_append_inode_dblk(&ref, &fblock, &sblock);
 		if (r != EOK)
-			goto Finish;
+			goto StopWriteBack;
 
 		off = fblock * block_size;
 		r = ext4_block_writebytes(f->mp->fs.bdev, off, buf, size);
 		if (r != EOK)
-			goto Finish;
+			goto StopWriteBack;
+
+		/* The newly allocated data block may contain nonzero old bytes.
+		 * e2fsck requires strlen(block) == i_size for a long symlink.
+		 * Writing only size bytes leaves that invariant uninitialized. */
+		r = ext4_block_writebytes(f->mp->fs.bdev, off + size,
+					   &terminator, sizeof(terminator));
 	}
 
+StopWriteBack:
 	/*Stop write back cache mode*/
-	ext4_block_cache_write_back(f->mp->fs.bdev, 0);
+	{
+		int wb_rc = ext4_block_cache_write_back(f->mp->fs.bdev, 0);
+		if (r == EOK)
+			r = wb_rc;
+	}
 
 	if (r != EOK)
 		goto Finish;
@@ -2511,12 +2565,19 @@ int ext4_fsymlink(const char *target, const char *path)
 	int r;
 	ext4_file f;
 	int filetype;
+	size_t target_size;
 
 	if (!mp)
 		return ENOENT;
 
 	if (mp->fs.read_only)
 		return EROFS;
+
+	/* Reject impossible targets before O_CREAT can allocate an invalid
+	 * zero-length inode or an unterminated block-sized symlink. */
+	if (!target || !(target_size = strlen(target)) ||
+	    target_size >= ext4_sb_get_block_size(&mp->fs.sb))
+		return EINVAL;
 
 	filetype = EXT4_DE_SYMLINK;
 
@@ -2526,7 +2587,7 @@ int ext4_fsymlink(const char *target, const char *path)
 
 	r = ext4_generic_open2(&f, path, O_RDWR | O_CREAT, filetype, NULL, NULL);
 	if (r == EOK)
-		r = ext4_fsymlink_set(&f, target, strlen(target));
+		r = ext4_fsymlink_set(&f, target, (uint32_t)target_size);
 	else
 		goto Finish;
 

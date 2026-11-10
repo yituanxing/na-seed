@@ -10,6 +10,7 @@
 #include "../kernel/mm/usercopy.h"
 #include "../kernel/mm/mm.h"
 #include "../kernel/mm/fault.h"
+#include "../kernel/mm/file_backing.h"
 #include "../kernel/task.h"
 #include "../kernel/arch/user_pt.h"
 #include "../kernel/errno.h"
@@ -24,6 +25,11 @@ static unsigned lookups, checks, mm_checks, read_faults, write_faults, cow_fault
  * deliberately noncontiguous user-byte and permission-provider mocks. */
 static struct nas_mm mock_mm={.users=1,.root_phys=0x7000};
 static struct nas_task mock_task;
+int nas_fs_mmap_dirty(struct nas_mapped_file *file) {
+    (void)file;
+    assert(!"usercopy-page test has no shared file VMAs");
+    return -EIO;
+}
 struct nas_task *nas_current_task=&mock_task;
 const struct nas_anon_region *nas_vma_find(const struct nas_anon_regions *vmas,
                                             uint64_t va) {

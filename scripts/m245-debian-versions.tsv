@@ -1,0 +1,6 @@
+# Exact Debian 13 trixie binary versions for the M245 initial amd64 cohort.
+# The actual .deb SHA256 is independently taken from apt's authenticated
+# InRelease -> Packages index and checked against the downloaded bytes.
+# ISA<TAB>package<TAB>exact-version
+amd64	coreutils	9.7-3
+amd64	libc6	2.41-12+deb13u4

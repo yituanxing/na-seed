@@ -1,0 +1,8 @@
+# Signed original Alpine v3.23 main/community APKs, x86_64/aarch64/riscv64.
+# Six package groups provide twelve new original native ELF entrypoints.
+db-utils
+jsonnet
+ipcalc
+wireguard-tools-wg
+git-lfs
+xh

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include "../kernel/mm/mm.h"
 #include "../kernel/mm/fault.h"
+#include "../kernel/mm/file_backing.h"
 #include "../kernel/exception/exception.h"
 #include "../kernel/arch/user_pt.h"
 #define ROOT 0x3000ULL
@@ -16,8 +17,23 @@ static struct nas_mm space={.users=1,.root_phys=ROOT};
 static uint64_t present_va,present_pa;
 static unsigned present_access,frames,freed;
 static uint8_t dummy_ram[8192];
+/* This fault-policy fixture contains anonymous and immutable snapshot VMAs
+ * only. Mutable backing is exercised by the real VM/FS A005 host suites. */
+bool nas_fs_mmap_get(struct nas_mapped_file *f) {(void)f;assert(0);return false;}
+void nas_fs_mmap_put(struct nas_mapped_file *f) {(void)f;assert(0);}
+int nas_fs_mmap_page(struct nas_mapped_file *f,uint64_t o,uint64_t *pa) {
+    (void)f;(void)o;(void)pa;assert(0);return -1;
+}
+int nas_fs_mmap_dirty(struct nas_mapped_file *f) {(void)f;assert(0);return -1;}
+int64_t nas_fs_mmap_read_private(struct nas_mapped_file *f,
+                                    uint64_t off,uint8_t *dst,uint64_t n) {
+    (void)f;(void)off;(void)dst;(void)n;assert(0);return -1;
+}
 uint64_t nas_hhdm_offset(void){return (uint64_t)(uintptr_t)dummy_ram;}
 uint32_t nas_frame_refs(uint64_t pa){(void)pa;return 1;}
+/* M200's device-fault branch is linked but this older fixture records only
+ * anon/file VMAs. The real device PMM refcount oracle is in test-m101-cow. */
+bool nas_frame_get(uint64_t pa){(void)pa;assert(0);return false;}
 static bool fail_alloc,fail_prepare;
 uint64_t nas_frame_alloc(void) {
     if(fail_alloc)return 0;

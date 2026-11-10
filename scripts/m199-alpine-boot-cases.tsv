@@ -1,0 +1,3 @@
+# Both physical boots MUST load the original Alpine /sbin/init from lwext4.
+# The rescue CPIO is only the existing M191 fallback and is never PID1 here.
+m197-batch	cpio	 	-	-	/sbin/init

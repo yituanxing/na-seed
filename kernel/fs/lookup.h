@@ -15,6 +15,7 @@ struct nas_fs_node {
     /* Filesystem-supplied stable inode/stat identity. VFS never exports
      * a provider pointer as st_ino. Zero means metadata unavailable. */
     uint64_t ino;
+    uint64_t rdev;  /* Linux S_IFCHR/S_IFBLK device identity, not st_dev */
     uint64_t nlink;
     uint32_t uid,gid;
     uint64_t atime_sec,mtime_sec,ctime_sec;
@@ -24,11 +25,6 @@ struct nas_fs_node {
     uint32_t mode;
     bool is_dir, is_symlink;
 };
-int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
-                         char canonical[256]);
-int nas_fs_canonical_candidate(const char *absolute,char canonical[256]);
-/* Follow-final negative dentry for O_CREAT, never unlink/rename. */
-int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]);
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);
 /* Slash-only spelling names the already-existing root. Shared by syscall

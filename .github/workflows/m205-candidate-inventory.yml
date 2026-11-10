@@ -1,0 +1,49 @@
+name: NaSeed M205 signed Alpine ELF inventory (host only, no QEMU)
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m205-candidate-inventory.yml'
+      - 'scripts/m205-candidate-elfs.tsv'
+      - 'rootfs/alpine/packages-m205-candidates.txt'
+      - 'scripts/check-m141-candidates.py'
+      - 'scripts/inventory-m141-signed-apks.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-signed-apk-census:
+    name: M205 official Alpine ELF candidates / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Preflight new unaccepted paths
+        run: |
+          set -eu
+          python3 scripts/check-m141-candidates.py --profile m205
+          sh -n scripts/inventory-m141-signed-apks.sh
+      - name: Verify real ELF machine and SHA from signed APKs
+        timeout-minutes: 50
+        run: sh scripts/inventory-m141-signed-apks.sh ${{ matrix.port }} m205
+      - name: Preserve signed-package inventory for the next real QEMU batch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m205-signed-host-candidates-${{ matrix.port }}
+          path: |
+            build/external/m205-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m205-candidate-inventory/${{ matrix.port }}/candidates.tsv
+          if-no-files-found: ignore

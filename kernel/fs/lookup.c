@@ -1,10 +1,22 @@
 #include "lookup.h"
+#include "dac.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
+/* All pathname users, including fast-path root tests, must observe the same
+ * PATH_MAX boundary.  Reading at most PATH_MAX bytes also avoids an
+ * unbounded scan before the Path-first walker gets a chance to reject a
+ * malformed internal request. */
+static size_t bounded_path_length(const char *path) {
+    size_t n=0;
+    while(n<NAS_VFS_WALK_PATH_LIMIT && path[n])++n;
+    return n;
+}
 bool nas_fs_root_only(const char *path) {
     if(!path || path[0]!='/')return false;
-    for(size_t i=1;path[i];i++)if(path[i]!='/')return false;
+    size_t length=bounded_path_length(path);
+    if(length>=NAS_VFS_WALK_PATH_LIMIT)return false;
+    for(size_t i=1;i<length;i++)if(path[i]!='/')return false;
     return true;
 }
 /* The only checked provider-local child-name builder. A provider may
@@ -22,16 +34,10 @@ int nas_vfs_join_child(const char *parent,const char *name,char out[256]) {
     memcpy(out+n,name,m+1);
     return 0;
 }
-/* Compatibility wrappers retain the historical 256-byte canonical result,
- * but all component, dot, symlink and mount semantics now live in ONE
- * Path-first walker below. The string is a projection of an owned Path,
- * never an input used to retraverse cwd/dirfd or select a backend. */
-static int legacy_join_parent(const struct nas_vfs_path *parent,
-                              const char *leaf,char canonical[256]) {
-    char absolute[256];
-    int rc=nas_vfs_path_string(parent,absolute);
-    return rc ? rc : nas_vfs_join_child(absolute,leaf,canonical);
-}
+/* This compatibility entrypoint remains for early mount registration and
+ * bootstrap paths, which publish a bounded mountpoint string. All mutations
+ * and task cwd/dirfd requests use owned Paths directly; the former three
+ * test-only canonical/parent string adapters have been retired. */
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]) {
     if(!path || !result || !resolved || path[0]!='/')return -EINVAL;
@@ -43,51 +49,6 @@ int nas_fs_lookup_node(const char *path,bool follow_final,
     int dropped=nas_vfs_path_put(&owned);
     return dropped ? dropped : rc;
 }
-int nas_fs_resolve_existing(const char *path,bool follow_final,char out[256]) {
-    if(!path || !out || path[0]!='/')return -EINVAL;
-    struct nas_vfs_path owned={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,path,follow_final,&owned);
-    if(rc)return rc;
-    rc=nas_vfs_path_string(&owned,out);
-    int dropped=nas_vfs_path_put(&owned);
-    return dropped ? dropped : rc;
-}
-int nas_fs_lookup_parent(const char *absolute,struct nas_fs_node *parent,
-                         char canonical[256]) {
-    if(!absolute || !parent || !canonical || absolute[0]!='/')
-        return -EINVAL;
-    size_t length=strlen(absolute);
-    if(length>=256)return -ENAMETOOLONG;
-    if(length>1 && absolute[length-1]=='/')return -ENOTDIR;
-    struct nas_vfs_path owned={0};
-    char leaf[256];
-    int rc=nas_fs_lookup_parent_at(NULL,NULL,absolute,&owned,leaf);
-    if(rc)return rc;
-    rc=nas_vfs_path_node(&owned,parent);
-    if(!rc)rc=legacy_join_parent(&owned,leaf,canonical);
-    int dropped=nas_vfs_path_put(&owned);
-    return dropped ? dropped : rc;
-}
-int nas_fs_canonical_candidate(const char *absolute,char canonical[256]) {
-    if(!absolute || !canonical || absolute[0]!='/')return -EINVAL;
-    struct nas_vfs_path existing={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,absolute,false,&existing);
-    if(!rc) {
-        rc=nas_vfs_path_string(&existing,canonical);
-        int dropped=nas_vfs_path_put(&existing);
-        return dropped ? dropped : rc;
-    }
-    if(rc!=-ENOENT)return rc;
-    struct nas_vfs_path parent={0};
-    char leaf[256];
-    /* Historical mkdir -p allows a missing final directory with '/'. */
-    rc=nas_fs_lookup_parent_mkdir_at(NULL,NULL,absolute,&parent,leaf);
-    if(rc)return rc;
-    rc=legacy_join_parent(&parent,leaf,canonical);
-    int dropped=nas_vfs_path_put(&parent);
-    return dropped ? dropped : rc;
-}
-
 /* Path-first namei: the pathname is only the sequence of names to consume,
  * never the authority for cwd, dirfd, mount attachment or '..'.  A dentry
  * reference owns each intermediate position; an already owned start path
@@ -110,8 +71,7 @@ static int walk_path_at(const struct nas_vfs_path *start,
                            missing_parent==root_clamp)))return -EINVAL;
     if(out)*out=(struct nas_vfs_path){0};
     if(missing_parent)*missing_parent=(struct nas_vfs_path){0};
-    size_t size=0;
-    while(size<NAS_VFS_WALK_PATH_LIMIT && path[size])++size;
+    size_t size=bounded_path_length(path);
     if(size>=NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
     if(!size)return -ENOENT;
     char short_pending[256];
@@ -154,6 +114,19 @@ static int walk_path_at(const struct nas_vfs_path *start,
         size_t tail=pos;
         while(pending[tail]=='/')++tail;
         bool final=!pending[tail];
+        /* Every path component, including . and .., requires search on its
+         * current directory BEFORE revealing presence/absence of children. */
+        if(!current.dentry && nas_dac_nonroot()) {
+            rc=-EACCES;goto done; /* rootless bootstrap is kernel-only */
+        }
+        if(current.dentry) {
+            struct nas_fs_node directory={0};
+            rc=nas_vfs_path_node(&current,&directory);
+            if(rc)goto done;
+            if(!directory.is_dir) {rc=-ENOTDIR;goto done;}
+            rc=nas_dac_mode(&directory,NAS_DAC_SEARCH);
+            if(rc)goto done;
+        }
         if(!strcmp(name,".") || !strcmp(name,"..")) {
             struct nas_fs_node node;
             if(!current.dentry) {rc=-ENOENT;goto done;}
@@ -282,8 +255,7 @@ static int lookup_parent_at_mode(const struct nas_vfs_path *start,
     if(!path || !parent || !leaf || parent==start ||
        parent==root_clamp)return -EINVAL;
     *parent=(struct nas_vfs_path){0};
-    size_t n=0;
-    while(n<NAS_VFS_WALK_PATH_LIMIT && path[n])++n;
+    size_t n=bounded_path_length(path);
     if(n>=NAS_VFS_WALK_PATH_LIMIT)return -ENAMETOOLONG;
     if(!n)return -ENOENT;
     if(policy>NAS_FS_TRAILING_RENAME_DEST)return -EINVAL;

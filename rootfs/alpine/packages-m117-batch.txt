@@ -1,0 +1,9 @@
+# M117: seven signed Alpine 3.23 packages providing 15 separate ELF files.
+# Host stages the signed RPM-free Alpine APKs; guest only runs their binaries.
+binutils
+ripgrep
+fd
+tree
+xz
+bzip2
+tar

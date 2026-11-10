@@ -1,19 +1,5 @@
 name: NaSeed M75 original GNU GDB native three-ISA debug gate
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/stage-m75-prebuilt.sh'
-      - 'scripts/probe-m75-gdb.sh'
-      - 'scripts/m75-*'
-      - 'tests/m75-*'
-      - 'rootfs/alpine/packages-m75-gdb.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m75-gdb.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

@@ -11,8 +11,9 @@ timeout 15s "$work/linux-tty-vectors"
     -ffunction-sections -fdata-sections -fno-builtin -Wl,--gc-sections \
     -I scripts/m89-test-include -I kernel \
     scripts/test-a013-naseed-tty-vectors.c kernel/fs/file_io.c \
-    kernel/mm/usercopy.c kernel/fs/eventfd.c kernel/pipe.c \
+    kernel/mm/usercopy.c kernel/random.c kernel/fs/eventfd.c kernel/pipe.c \
     kernel/lib/string.c kernel/drivers/tty.c kernel/drivers/tty_ldisc.c \
+    kernel/drivers/display/fbdev.c \
     -o "$work/naseed-tty-vectors"
 timeout 15s "$work/naseed-tty-vectors"
 echo '[NAS-A013 TTY READV PASS] host Linux PTY parity and production NaSeed FileOps/TTY'

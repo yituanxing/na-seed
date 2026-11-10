@@ -3,6 +3,10 @@
 # BusyBox through the SAME shared kernel as x86 for a growing workload matrix.
 # No guest-side test-specific kernel shortcuts. Strict stdout + exit checks.
 set -eu
+# Preserve the usual detached stdin unless real serial interaction is under
+# test; no synthetic bytes are injected into the TTY/line discipline.
+serial_input=${NAS_QEMU_SERIAL_FIFO:-/dev/null}
+if [ "$serial_input" != /dev/null ]; then test -p "$serial_input"; fi
 test -s build/port-aarch64/full/kernel.elf || sh scripts/build-aarch64-full.sh
 dir=build/port-aarch64/full
 if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
@@ -105,6 +109,21 @@ boot_case() {
         m83-replay) time_budget=${NAS_M83_REPLAY_QEMU_TIMEOUT:-180} ;;
         m84-build) time_budget=${NAS_M84_BUILD_QEMU_TIMEOUT:-7200} ;;
         m84-replay) time_budget=${NAS_M84_REPLAY_QEMU_TIMEOUT:-360} ;;
+        m109-batch) time_budget=${NAS_M109_QEMU_TIMEOUT:-180} ;;
+        m110-batch) time_budget=${NAS_M110_QEMU_TIMEOUT:-180} ;;
+        m111-batch) time_budget=${NAS_M111_QEMU_TIMEOUT:-180} ;;
+        m250-batch) time_budget=${NAS_M250_QEMU_TIMEOUT:-300} ;;
+        m251-batch) time_budget=${NAS_M251_QEMU_TIMEOUT:-300} ;;
+        m252-batch) time_budget=${NAS_M252_QEMU_TIMEOUT:-300} ;;
+        m254-shell) time_budget=${NAS_M254_QEMU_TIMEOUT:-420} ;;
+        m255-init) time_budget=${NAS_M255_QEMU_TIMEOUT:-420} ;;
+        m256-initctl) time_budget=${NAS_M256_QEMU_TIMEOUT:-480} ;;
+        m257-shutdown) time_budget=${NAS_M257_QEMU_TIMEOUT:-700} ;;
+        m200-fbdev) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-90} ;;
+        m201-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-240} ;;
+        m202-fbi) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-260} ;;
+        m187-vt100) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-850} ;;
+        m1??-batch) time_budget=${NAS_APP_BATCH_QEMU_TIMEOUT:-180} ;;
         m105-*) time_budget=120 ;;
         timer-preempt) time_budget=45 ;;
         process-capacity) time_budget=65 ;;
@@ -121,11 +140,54 @@ boot_case() {
     # Optional second REAL block drive (the first is the UEFI FAT ESP).
     # Not a Limine module: sector I/O goes through original U-Boot VirtIO.
     set --
+    if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ] || [ "${NAS_VIRTIO_NET_USER:-0}" = 1 ] || \
+       [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ] || [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ] || \
+       [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+        # The shared MMIO probe binds modern VirtIO only (version 2).
+        set -- "$@" -global virtio-mmio.force-legacy=false
+    fi
     if [ -n "${NAS_VIRTIO_BLK_IMAGE:-}" ]; then
         test -s "$NAS_VIRTIO_BLK_IMAGE"
-        set -- -global virtio-mmio.force-legacy=false \
-               -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
+        set -- "$@" -drive "if=none,id=real_ext4,format=raw,file=$NAS_VIRTIO_BLK_IMAGE" \
                -device virtio-blk-device,drive=real_ext4
+    fi
+    if [ -n "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ]; then
+        test -s "$NAS_QEMU_ASYNC_BLK_IMAGE"
+        set -- "$@" -drive "if=none,id=m178_async,format=raw,file=$NAS_QEMU_ASYNC_BLK_IMAGE" \
+            -device virtio-blk-device,drive=m178_async
+    fi
+    # M228: one shared, fail-closed three-ISA M228/M233 slirp/hostfwd owner.
+    . scripts/acceptance/qemu-netdev.sh
+    nas_qemu_netdev_prepare || return 2
+    if [ -n "$nas_qemu_netdev_primary" ]; then
+        set -- "$@" -netdev "$nas_qemu_netdev_primary" \
+            -device virtio-net-device,netdev=naseed_net
+    fi
+    if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then
+        set -- "$@" -netdev "$nas_qemu_netdev_secondary" \
+            -device virtio-net-device,netdev=naseed_net2
+    fi
+    if [ -n "$nas_qemu_netdev_capture" ]; then
+        set -- "$@" -object "$nas_qemu_netdev_capture"
+    fi
+    if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then
+        set -- "$@" -device virtio-keyboard-device \
+            -device virtio-tablet-device -device virtio-mouse-device
+    fi
+    if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
+        [ "${NAS_QEMU_RAMFB:-0}" != 1 ] || {
+            echo 'GPU and ramfb acceptance devices cannot be combined' >&2
+            return 2
+        }
+        set -- "$@" -device virtio-gpu-device,xres=800,yres=600
+    elif [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
+        set -- "$@" -device ramfb
+    elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        echo 'NAS_QEMU_QMP_SOCKET requires a real graphics device' >&2
+        return 2
+    fi
+    if [ -n "${NAS_QEMU_QMP_SOCKET:-}" ]; then
+        set -- "$@" -qmp "unix:$NAS_QEMU_QMP_SOCKET,server=on,wait=off"
     fi
     set +e
     timeout "${time_budget}s" qemu-system-aarch64 \
@@ -134,25 +196,40 @@ boot_case() {
         -semihosting-config enable=on,target=native -bios "$fw" \
         -d in_asm -dfilter 0x404700+0x180 -D "$work/$name.instructions.log" \
         -drive if=none,id=esp,format=raw,file="$disk" \
-        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < /dev/null &
+        -device virtio-blk-device,drive=esp "$@" > "$log" 2>&1 < "$serial_input" &
     pid=$!
-    if [ "$name" = timer-preempt ]; then
+    if [ "${NAS_M241_EXPECT_NATURAL_POWEROFF:-0}" = 1 ]; then
+        # Dedicated M241 poweroff-only image: PSCI SYSTEM_OFF must stop
+        # QEMU without the historical host-issued kill-on-marker path.
+        set +e
+        wait "$pid"
+        monitor=$?
+        set -e
+    elif [ "$name" = timer-preempt ]; then
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
           '[INIT] creating common task/VM and architecture user entry' \
           '[M28] timer-preempt from=' 'cpu-hog-did-not-starve-ash'
+        monitor=$?
     else
         sh scripts/port-boot-until.sh "$log" "$pid" "$time_budget" \
           '[INIT] creating common task/VM and architecture user entry' \
           '[PASS] cmdline userspace exit 0' \
           '[ARM64] userspace debug-exit status=0'
+        monitor=$?
     fi
-    monitor=$?
-    kill "$pid" 2>/dev/null || :
-    wait "$pid" 2>/dev/null || :
+    if [ "${NAS_M241_EXPECT_NATURAL_POWEROFF:-0}" != 1 ]; then
+        kill "$pid" 2>/dev/null || :
+        wait "$pid" 2>/dev/null || :
+    fi
     set -e
     tr -d '\r' < "$log" > "$clean"
+    missing_cmdline=0
+    case "$args" in
+        ''|' ') grep -Fxq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry" "$clean" || missing_cmdline=1 ;;
+        *) grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean" || missing_cmdline=1 ;;
+    esac
     if [ "$monitor" -ne 0 ] || grep -Fq '[FAIL]' "$clean" || \
-       ! grep -Fq "[CMDLINE] userspace argv from Limine: naseed.argv=$entry $args" "$clean"; then
+       [ "$missing_cmdline" -ne 0 ]; then
         echo "[ARM64 BUSYBOX FAIL] real $mode BusyBox $args did not cleanly exit" >&2
         tail -110 "$clean" >&2
         if [ -s "$work/$name.instructions.log" ]; then

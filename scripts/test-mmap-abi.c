@@ -9,6 +9,10 @@ int main(void) {
     assert(nas_linux_anon_map_supported(0x4022,UINT64_MAX,0));
     assert(nas_linux_anon_map_supported(0x20022,UINT64_MAX,0));
     assert(nas_linux_anon_map_supported(0x24022,UINT64_MAX,0));
+    /* Original Debian ARM64 glibc reserves libc with MAP_DENYWRITE|
+     * MAP_PRIVATE|MAP_ANONYMOUS and PROT_NONE before mapping PT_LOADs. */
+    assert(nas_linux_anon_map_supported(0x822,UINT64_MAX,0));
+    assert(nas_linux_anon_map_supported(0x4822,UINT64_MAX,0));
     assert(!nas_linux_anon_map_supported(0x20,UINT64_MAX,0));
     assert(!nas_linux_anon_map_supported(0x02,UINT64_MAX,0));
     assert(!nas_linux_anon_map_supported(0x23,UINT64_MAX,0));
@@ -16,10 +20,19 @@ int main(void) {
     assert(nas_linux_anon_fixed_supported(0x32,0));
     assert(nas_linux_anon_fixed_supported(0x4032,0));
     assert(nas_linux_anon_fixed_supported(0x20032,0));
+    assert(nas_linux_anon_fixed_supported(0x832,0));
     assert(!nas_linux_anon_fixed_supported(0x22,0));
     assert(!nas_linux_anon_fixed_supported(0x32,4096));
     assert(!nas_linux_anon_fixed_supported(0x33,0));
     assert(!nas_linux_anon_map_supported(0x1022,UINT64_MAX,0));
     assert(!nas_linux_anon_fixed_supported(0x1032,0));
+    assert(nas_linux_anon_shared_map_supported(0x21,0));
+    assert(nas_linux_anon_shared_map_supported(0x4021,0));
+    assert(nas_linux_anon_shared_map_supported(0x20021,0));
+    assert(nas_linux_anon_shared_map_supported(0x821,0));
+    assert(!nas_linux_anon_shared_map_supported(0x22,0));
+    assert(!nas_linux_anon_shared_map_supported(0x23,0));
+    assert(!nas_linux_anon_shared_map_supported(0x21,4096));
+    assert(!nas_linux_anon_shared_map_supported(0x31,0));
     return 0;
 }

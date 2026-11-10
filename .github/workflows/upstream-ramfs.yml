@@ -1,22 +1,5 @@
 name: NaSeed original independent RamFS against common VFS (host + three ISA)
 on:
-  pull_request:
-    paths:
-      - 'third_party/jkent_ramfs/**'
-      - 'ports/ramfs/**'
-      - 'scripts/test-upstream-ramfs-vfs.c'
-      - 'scripts/check-upstream-ramfs-vfs.sh'
-      - 'scripts/build-ramfs-guest.sh'
-      - 'scripts/probe-vfs-busybox-real.sh'
-      - 'scripts/vfs-busybox-real-cases.tsv'
-      - 'tests/vfs-busybox-real-workload'
-      - 'kernel/fs/vfs*'
-      - 'kernel/fs/lookup*'
-      - 'kernel/init/main.c'
-      - 'scripts/build-riscv64-full.sh'
-      - 'scripts/build-aarch64-full.sh'
-      - 'Makefile'
-      - '.github/workflows/upstream-ramfs.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

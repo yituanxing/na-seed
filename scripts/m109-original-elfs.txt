@@ -1,0 +1,16 @@
+# One authentic signed native target ELF per program, never BusyBox aliases.
+usr/bin/m4
+usr/bin/bison
+usr/bin/lz4
+usr/bin/brotli
+usr/bin/xxhsum
+usr/bin/pv
+usr/bin/xmllint
+usr/bin/xsltproc
+usr/bin/curl
+usr/bin/cpio
+usr/bin/7zz
+usr/bin/msgfmt
+usr/bin/gpg
+usr/bin/perl
+usr/bin/ruby

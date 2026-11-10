@@ -1,0 +1,21 @@
+# M110 host-only signed Alpine APK installation: 20 additional original apps.
+nodejs
+age
+graphviz
+xdelta3
+patchelf
+binutils
+elfutils
+pigz
+rhash
+socat
+dos2unix
+pcre2-tools
+libarchive-tools
+time
+units
+the_silver_searcher
+zsh
+ctags
+b3sum
+xmlstarlet

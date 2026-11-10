@@ -1,0 +1,127 @@
+name: NaSeed M201 original signed Alpine fbi on three physical ISAs
+
+# One native QEMU/OpenRC boot per ISA. Staging uses official signed Alpine
+# APKs on the host; NO historical M191 warm-up VM or M197 guest public WAN.
+# Desktop work is paused: run this costly physical QEMU cohort manually only.
+# Shared kernel changes use the active M206/M204 regressions instead.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m201-original-alpine-fbi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  m201-host-contract:
+    name: One original image + signed root script and QMP oracle contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Check deterministic original PNG and native probe wrappers
+        run: |
+          set -eu
+          sh -n scripts/stage-m201-alpine-fbi.sh
+          sh -n scripts/probe-m201-alpine-fbi.sh
+          python3 -m py_compile scripts/m201-image-fixture.py scripts/m201-qmp-alpine-fbi.py scripts/m201-alpine-uart.py
+          python3 scripts/test-m201-serial-lines.py
+          python3 scripts/m201-image-fixture.py /tmp/m201-original-bars.png
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import struct
+          import zlib
+          path = Path('/tmp/m201-original-bars.png')
+          data = path.read_bytes()
+          assert data.startswith(b'\x89PNG\r\n\x1a\n')
+          assert data[12:16] == b'IHDR'
+          assert struct.unpack('>II', data[16:24]) == (800, 600)
+          print('[M201 HOST ORIGINAL PNG PASS] actual 800x600 PNG input')
+          PY
+          grep -Fxq "$(printf 'm201-fbi\tcpio\t \t-\t-\t/sbin/init')" scripts/m201-fbi-cases.tsv
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+
+  original-fbi-physical-qmp:
+    name: Real signed Alpine fbida-fbi + QMP framebuffer / ${{ matrix.port }}
+    needs: m201-host-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install native system-QEMU, cross toolchain, EFI, ext4 and image tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'gcc:gcc' 'clang:clang' \
+                      'ld.lld:lld' 'readelf:binutils' 'cpio:cpio' \
+                      'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: One original Alpine OpenRC boot, genuine fbi exit 0 and four real QMP RGB samples
+        timeout-minutes: 64
+        run: sh scripts/probe-m201-alpine-fbi.sh '${{ matrix.port }}'
+      - name: Preserve original package provenance, real UART and physical QMP image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m201-original-fbi-${{ matrix.port }}
+          path: |
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi.sha256
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-alpine-rescue.sha256
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-official-installed-apk-db
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-signed-apk.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi-screen.ppm
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi-qmp.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-native-runner.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-physical-qmp-*
+            build/busybox-source-parity-x86/m201-fbi.*.log
+            build/port-riscv64/full/matrix-source/m201-fbi.*.log
+            build/port-aarch64/full/matrix-source/m201-fbi.*.log
+          if-no-files-found: warn

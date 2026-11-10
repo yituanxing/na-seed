@@ -6,6 +6,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
     kernel/task/wait_queue.c kernel/task/kernel_context.c \
     kernel/arch/x86_64/kernel_switch.S -o build/m97-k-timeouts/host
 build/m97-k-timeouts/host
+cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+    scripts/test-sched-worker-burst.c kernel/task/scheduler_service.c \
+    kernel/task/sched_core.c -o build/m97-k-timeouts/sched-worker-burst
+build/m97-k-timeouts/sched-worker-burst
 for arch in riscv64 aarch64; do
     case "$arch" in
       riscv64) flags='--target=riscv64-unknown-elf -march=rv64gc -mabi=lp64 -mno-relax -mcmodel=medany' ;;

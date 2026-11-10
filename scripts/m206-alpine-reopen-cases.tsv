@@ -1,0 +1,3 @@
+# A second independent QEMU reopens the original M197 four-software workload
+# and every M206 case from real persisted ext4, never a preseeded PASS ledger.
+m197-batch	cpio	sh -c "/sbin/apk info -e bash && /sbin/apk info -e lua5.4 && /sbin/apk info -e sqlite && /sbin/apk info -e git && /bin/bash /root/m197-software-workload.sh --reopen && NAS_M206_COMPAT_COHORT=1 sh /root/m205-software-workload.sh --reopen && cat /root/m197-wan.txt"	M197_PUBLIC_ALPINE_SOFTWARE_2026	-	/bin/busybox

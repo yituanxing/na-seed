@@ -1,14 +1,5 @@
 name: NaSeed original 2048 terminal game
 on:
-  pull_request:
-    paths:
-      - 'scripts/build-external-2048.sh'
-      - 'scripts/stage-external-2048-rootfs.sh'
-      - 'scripts/probe-external-2048.sh'
-      - 'scripts/2048-pty-oracle.py'
-      - 'scripts/2048-serial-check.py'
-      - 'tests/2048-native-init.c'
-      - '.github/workflows/game-2048.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

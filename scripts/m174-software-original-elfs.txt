@@ -1,0 +1,26 @@
+# Original Alpine 3.23 executables: 20 candidate paths.
+# Per-ISA native ELF and distinct SHA256 are checked at signed APK staging.
+# D-Bus AF_UNIX and process IPC.
+usr/bin/dbus-cleanup-sockets
+usr/bin/dbus-daemon
+usr/bin/dbus-monitor
+usr/bin/dbus-run-session
+usr/bin/dbus-send
+usr/bin/dbus-test-tool
+usr/bin/dbus-update-activation-environment
+usr/bin/dbus-uuidgen
+# inotify/fanotify: only entry points until the kernel supports event watches.
+usr/bin/fsnotifywait
+usr/bin/fsnotifywatch
+usr/bin/inotifywait
+usr/bin/inotifywatch
+# sysstat's actual Linux /proc CPU, process and device consumers.
+usr/bin/cifsiostat
+bin/iostat
+bin/mpstat
+usr/bin/pidstat
+usr/bin/sadf
+usr/bin/sar
+usr/bin/tapestat
+# Git text interface.
+usr/bin/tig

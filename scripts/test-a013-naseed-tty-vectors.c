@@ -2,10 +2,16 @@
  * CPU RX, user MM, Task identity and monotonic clock as host fixtures.
  * Reuse M106's verified production FD/usercopy/heap harness. */
 #define main m106_fixture_main
+#define NAS_TEST_OVERRIDE_MONOTONIC 1
+#define NAS_TEST_REAL_TTY 1
 #include "test-m106-usercopy-syscalls.c"
 #undef main
 #include "../kernel/drivers/tty.h"
 #include "../kernel/task/wait.h"
+/* The real VT is exercised by a separate owner; this host TTY fixture
+ * isolates the UART-backed N_TTY entrypoint. */
+void nas_vt_init(void) {}
+int nas_vt_chrdev_init(void) {return 0;}
 
 static const uint8_t *rx_bytes;
 static unsigned rx_length;
@@ -36,7 +42,14 @@ static void tty_set(bool canonical,unsigned vmin,unsigned vtime) {
     guest_task.wait.tty_observed_bytes=0;
 }
 int main(void) {
-    assert(m106_fixture_main()==0);
+    /* Own the M106 user-memory/FD fixture, but do not replay M106's mocked
+     * /dev/tty bootstrap checks while linking the genuine N_TTY provider. */
+    guest_task.mm=&guest_mm;
+    guest_files.refs=1;
+    guest_task.files=&guest_files;
+    guest_task.fds=&guest_files.table;
+    guest_task.fs=&guest_fs;
+    nas_fd_system_init();
     reset_mapping();
     const unsigned fd=50,slot=55;
     assert(guest_task.fds->entries[fd].kind==FD_CLOSED);

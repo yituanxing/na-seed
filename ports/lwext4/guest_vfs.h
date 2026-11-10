@@ -27,6 +27,15 @@ struct nas_lwext4_orphan {
     uint32_t ino,serial;
     bool used,is_dir;
 };
+/* A failed mount can leave upstream ext4, the BlockDevice bridge and an
+ * optional RAM source independently owned. Cleanup is ordered and retryable;
+ * a failed step must never permit the next owner to be discarded. */
+enum nas_lwext4_cleanup_stage {
+    NAS_LWEXT4_CLEANUP_NONE = 0,
+    NAS_LWEXT4_CLEANUP_UPSTREAM,
+    NAS_LWEXT4_CLEANUP_DEVICE,
+    NAS_LWEXT4_CLEANUP_RAMDISK
+};
 struct nas_lwext4_mount {
     struct nas_ramdisk ramdisk;
     struct nas_lwext4_device device;
@@ -46,6 +55,10 @@ struct nas_lwext4_mount {
     char device_name[32];
     bool mounted;
     bool owns_ramdisk; /* Only the optional Limine/host RAM image adapter. */
+    bool worker_io_mount; /* explicit opt-in for IRQ-backed runtime volume */
+    enum nas_lwext4_cleanup_stage cleanup_stage;
+    int cleanup_origin_error; /* original operation error, not masked by cleanup */
+    int cleanup_error; /* most recent teardown failure, until cleanup succeeds */
 };
 /* The generic mount consumes ANY existing BlockDevice: driver ownership,
  * DMA, discovery and interrupt completion stay below BlockDevice.
@@ -54,6 +67,10 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *mount,
                             const char *block_name,const char *device_name,
                             const char *mount_point,bool writable);
 int nas_lwext4_unmount(struct nas_lwext4_mount *mount);
+/* Retry a previous failed-mount teardown on the same persistent context.
+ * Only stages still owned by this context are touched. An active VFS mount
+ * must always use nas_lwext4_unmount() instead. */
+int nas_lwext4_cleanup_failed_mount(struct nas_lwext4_mount *mount);
 /* Convenience image adapter, using exactly the same generic mount logic.
  * Guest unlink-open and physical durability still require later contracts. */
 int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *mount,
@@ -65,4 +82,12 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *mount,
                              const char *mount_point,void *image,
                              uint64_t image_bytes);
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *mount);
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+/* Readiness becomes true only AFTER the independent kernel worker mounted
+ * /async. PID1 shutdown drains requests and makes the same worker perform
+ * the final durable ext4 unmount/flush. */
+bool nas_lwext4_m180_runtime_ready(void);
+void nas_lwext4_m180_shutdown_request(void);
+bool nas_lwext4_m180_shutdown_complete(void);
+#endif
 #endif

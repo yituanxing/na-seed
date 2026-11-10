@@ -1,0 +1,6 @@
+# Genuine upstream signed Alpine v3.23 native binaries, common to three ISAs.
+# ELF paths checked against all older M-series original executable inventories.
+netpbm
+giflib-utils
+tiff-tools
+libpng-utils

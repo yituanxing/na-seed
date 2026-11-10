@@ -3,11 +3,14 @@
 #include "../errno.h"
 #include "../fd.h"
 #include "../task.h"
+#include "../arch/arch.h"
 #include "../mm/usercopy.h"
 #include "../lib/string.h"
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "pty.h"
+#include "vt.h"
+#include "core/chrdev.h"
 
 /* One multiplexor with N independently allocated master/slave pairs.
  * Two real byte queues transfer data; a slave-side line discipline and
@@ -33,6 +36,36 @@ struct pty {
 static struct pty ptys[NAS_PTY_LIMIT];
 static uint8_t slot_device[NAS_OPEN_FILE_LIMIT]; /* index + 1 */
 static uint8_t slot_is_master[NAS_OPEN_FILE_LIMIT];
+/* The same class endpoint can represent successive PTY incarnations.
+ * Presence is checked on lookup AND pin; a live OpenFile owns its PTY
+ * independently through the existing per-slot PTY reference. */
+static struct nas_chrdev_node ptmx_node={.path="/dev/ptmx",.info={
+    .fd_kind=FD_PTY_MASTER,.dev=6,.ino=2000,
+    .rdev=(5U<<8)|2U,.mode=0020620U
+}};
+static char pts_names[NAS_PTY_LIMIT][12];
+static struct nas_chrdev_node pts_nodes[NAS_PTY_LIMIT];
+_Static_assert(NAS_PTY_LIMIT<=10U,"PTY node names require two digits");
+int nas_pty_chrdev_init(void) {
+    int rc=nas_chrdev_node_register(&ptmx_node);
+    if(rc)return rc;
+    static const char prefix[]="/dev/pts/";
+    for(unsigned i=0;i<NAS_PTY_LIMIT;i++) {
+        memcpy(pts_names[i],prefix,sizeof(prefix)-1U);
+        pts_names[i][sizeof(prefix)-1U]=(char)('0'+i);
+        pts_names[i][sizeof(prefix)]=0;
+        pts_nodes[i]=(struct nas_chrdev_node){
+            .path=pts_names[i],.info={
+                .fd_kind=FD_PTY_SLAVE,.unit=i,.dev=6,.ino=2000U+i,
+                .rdev=(136U<<8)|i,.mode=0020620U
+            },
+            .present=nas_pty_present
+        };
+        rc=nas_chrdev_node_register(&pts_nodes[i]);
+        if(rc)return rc;
+    }
+    return 0;
+}
 
 static bool pty_queue_signal(const struct pty *p,unsigned signum) {
     /* No controlling session / foreground process group: consume the
@@ -63,19 +96,6 @@ unsigned nas_pty_number(unsigned slot) {
 }
 bool nas_pty_present(unsigned number) {
     return number<NAS_PTY_LIMIT && ptys[number].used && ptys[number].master_open;
-}
-int nas_pty_path_number(const char *path) {
-    const char *prefix="/dev/pts/";
-    unsigned i=0;
-    while(prefix[i] && path[i]==prefix[i])i++;
-    if(prefix[i] || !path[i])return -1;
-    unsigned value=0;
-    for(;path[i];i++) {
-        if(path[i]<'0'||path[i]>'9')return -1;
-        value=value*10+(unsigned)(path[i]-'0');
-        if(value>=NAS_PTY_LIMIT)return -1;
-    }
-    return (int)value;
 }
 static void init_termios(struct nas_termios *t) {
     memset(t,0,sizeof(*t));
@@ -119,6 +139,20 @@ bool nas_pty_controlling(void) {
         if(ptys[i].used && ptys[i].sid==sid)return true;
     return false;
 }
+void nas_pty_open_session(unsigned slot,uint64_t flags) {
+    struct nas_task *task=nas_current_task;
+    struct pty *p=get(slot);
+    /* O_NOCTTY is 0400 octal on Linux.  A background process, a process
+     * with an existing controlling tty or a non-leader can open an unlocked
+     * PTY slave, but must not acquire or steal control of that terminal.
+     * sshpass relies on the other case: setsid(); open(pts,O_RDWR); close();
+     * the acquired controlling terminal then remains available /dev/tty. */
+    if(!task || !p || slot_is_master[slot] || (flags&0x100U) ||
+       task->pid!=task->sid || p->sid || nas_tty_controlling() ||
+       nas_vt_controlling() || nas_pty_controlling())return;
+    p->sid=task->sid;
+    p->pgid=task->pgid;
+}
 int nas_pty_attach_controlling(unsigned slot) {
     uint64_t sid=nas_current_task->sid;
     for(unsigned i=0;sid && i<NAS_PTY_LIMIT;i++)
@@ -156,7 +190,31 @@ bool nas_pty_read_ready(unsigned slot) {
         return p->master_input.count || !p->slave_descriptions;
     if(p->termios.lflag&0000002)
         return p->input.ready || p->input.eof || !p->master_open;
-    return p->slave_input.count || !p->master_open;
+    return nas_ldisc_noncanon_poll(&p->termios,p->slave_input.count) ||
+           !p->master_open;
+}
+/* This is the scheduler's Task-owned timed read state, never a global PTY
+ * timer: unrelated slave readers may have independent VMIN/VTIME waits. */
+static struct nas_ldisc_wait_clock pty_wait_clock(struct nas_task *task) {
+    return (struct nas_ldisc_wait_clock){&task->wait.deadline_active,
+        &task->wait.deadline_ns,&task->wait.tty_observed_bytes};
+}
+void nas_pty_read_wait_start(unsigned slot,struct nas_task *task,
+                              uint64_t requested) {
+    struct pty *p=get(slot);
+    if(!p || !task || slot_is_master[slot] || !requested ||
+       !p->master_open || (p->termios.lflag&0000002U))return;
+    nas_ldisc_noncanon_wait_start(&p->termios,p->slave_input.count,
+                                   pty_wait_clock(task),nas_arch_monotonic_ns());
+}
+bool nas_pty_read_wait_ready(unsigned slot,struct nas_task *task,
+                              uint64_t requested) {
+    struct pty *p=get(slot);
+    if(!p || !task || !requested || slot_is_master[slot] ||
+       !p->master_open || (p->termios.lflag&0000002U))
+        return nas_pty_read_ready(slot);
+    return nas_ldisc_noncanon_wait_ready(&p->termios,p->slave_input.count,
+                       requested,pty_wait_clock(task),nas_arch_monotonic_ns());
 }
 bool nas_pty_write_ready(unsigned slot) {
     struct pty *p=get(slot);
@@ -179,8 +237,15 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
     bool peer_closed=slot_is_master[slot] ?
         !p->slave_descriptions : !p->master_open;
     /* Linux poll reports HUP/ERR even when the caller requested only
-     * POLLIN/POLLOUT. A disconnected peer is not a writable stream. */
-    if(peer_closed)return 0x0018U; /* POLLERR | POLLHUP */
+     * POLLIN/POLLOUT. Unread slave output must remain POLLIN after the last
+     * slave description closes: terminal emulators drain the final prompt
+     * before observing HUP. A disconnected peer is not writable. */
+    if(peer_closed) {
+        uint16_t ready=0x0018U; /* POLLERR | POLLHUP */
+        if((events&1U) && (int64_t)nas_pty_read_plan(slot,1)>0)
+            ready|=1U;
+        return ready;
+    }
     uint16_t ready=0;
     if((events&1U) && nas_pty_read_ready(slot))ready|=1U;
     if((events&4U) && nas_pty_write_ready(slot))ready|=4U;
@@ -190,7 +255,8 @@ uint16_t nas_pty_poll(unsigned slot,uint16_t events) {
  * Short reads must validate only the bytes they can actually return: a
  * request for 1024 with four queued bytes may legally land at the end of a
  * four-byte writable user mapping. Keep this plan in lockstep with read(). */
-uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+uint64_t nas_pty_read_plan_mode(unsigned slot,uint64_t requested,
+                                bool nonblocking) {
     if(!requested)return 0;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
@@ -207,12 +273,26 @@ uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
         return nas_ldisc_peek(&p->input,&p->termios,snapshot,limit);
     }
     const struct pty_ring *ring=master?&p->master_input:&p->slave_input;
-    if(!ring->count)
-        return (master?p->slave_descriptions:p->master_open) ?
-               (uint64_t)-EAGAIN : master?(uint64_t)-EIO:0;
-    return requested>ring->count ? ring->count:requested;
+    if(!ring->count && !(master?p->slave_descriptions:p->master_open))
+        return master?(uint64_t)-EIO:0;
+    if(master)return ring->count ?
+                   (requested>ring->count ? ring->count:requested):
+                   (uint64_t)-EAGAIN;
+    /* Hangup terminates the wait: return the buffered short tail even if
+     * it is below VMIN, then EOF. A blocked read must not repark forever
+     * after its master's final description closed. */
+    if(!p->master_open)
+        return requested>ring->count?ring->count:requested;
+    bool expired=nas_current_task->wait.deadline_active &&
+        nas_arch_monotonic_ns()>=nas_current_task->wait.deadline_ns;
+    return nas_ldisc_noncanon_budget(&p->termios,requested,ring->count,
+                                      nonblocking,expired);
 }
-uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+uint64_t nas_pty_read_plan(unsigned slot,uint64_t requested) {
+    return nas_pty_read_plan_mode(slot,requested,false);
+}
+uint64_t nas_pty_read_mode(unsigned slot,uint8_t *dst,uint64_t count,
+                           bool nonblocking) {
     if(!count) {
         /* A positive-length caller whose read_plan observed canonical EOF
          * calls read(..., 0) as an explicit zero-payload EOF commit. Other
@@ -226,7 +306,7 @@ uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
     if(!dst)return (uint64_t)-EFAULT;
     struct pty *p=get(slot);
     if(!p)return (uint64_t)-EBADF;
-    uint64_t budget=nas_pty_read_plan(slot,count);
+    uint64_t budget=nas_pty_read_plan_mode(slot,count,nonblocking);
     if((int64_t)budget<=0) {
         /* A canonical EOF is consumed by read, never by read_plan. */
         if(!budget && !slot_is_master[slot] &&
@@ -255,6 +335,9 @@ uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
     if(n>first)memcpy(dst+first,ring->bytes,n-first);
     for(unsigned i=0;i<n;i++)(void)ring_take(ring);
     return n;
+}
+uint64_t nas_pty_read(unsigned slot,uint8_t *dst,uint64_t count) {
+    return nas_pty_read_mode(slot,dst,count,false);
 }
 uint64_t nas_pty_write(unsigned slot,const uint8_t *src,uint64_t count) {
     if(!count)return 0;
@@ -353,9 +436,18 @@ uint64_t nas_pty_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     case 0x5413ULL: /* TIOCGWINSZ */
         return nas_user_write_bytes(arg,(const uint8_t *)p->winsize,8)
                ? 0:(uint64_t)-EFAULT;
-    case 0x5414ULL: /* TIOCSWINSZ */
-        return nas_user_read_bytes(arg,(uint8_t *)p->winsize,8)
-               ? 0:(uint64_t)-EFAULT;
+    case 0x5414ULL: { /* TIOCSWINSZ */
+        uint16_t size[4];
+        if(!nas_user_read_bytes(arg,(uint8_t *)size,sizeof(size)))
+            return (uint64_t)-EFAULT;
+        if(!memcmp(p->winsize,size,sizeof(size)))return 0;
+        /* The foreground group observes SIGWINCH only for real geometry
+         * changes.  As with ISIG, deliver safely after the writer's C
+         * frame; a full event FIFO must never silently lose a signal. */
+        if(!pty_queue_signal(p,28U))return (uint64_t)-EAGAIN;
+        memcpy(p->winsize,size,sizeof(size));
+        return 0;
+    }
     case 0x540eULL: /* TIOCSCTTY */
         if(master)return (uint64_t)-ENOTTY;
         if(nas_current_task->pid!=nas_current_task->sid)return (uint64_t)-EPERM;

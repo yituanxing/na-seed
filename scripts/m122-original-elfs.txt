@@ -1,0 +1,16 @@
+# Fifteen new program paths, distinct from every historical original-ELF manifest.
+usr/bin/pbmmake
+usr/bin/pgmmake
+usr/bin/ppmmake
+usr/bin/pamfile
+usr/bin/pamvalidate
+usr/bin/pamflip
+usr/bin/pamcut
+usr/bin/pamscale
+usr/bin/pamchannel
+usr/bin/pamdepth
+usr/bin/pamcat
+usr/bin/pnminvert
+usr/bin/pnmtopng
+usr/bin/pngtopam
+usr/bin/pnmtojpeg

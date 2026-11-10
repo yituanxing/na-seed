@@ -1,0 +1,3 @@
+# Original signed Alpine 3.23 binaries: actual fbdev capture and image pixels.
+fbgrab
+imagemagick

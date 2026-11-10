@@ -1,0 +1,48 @@
+name: NaSeed M255 signed Debian sysvinit PID1 service respawn diagnostic
+
+# Explicitly not a full distro boot/poweroff gate: original sysvinit on real
+# physical ext4 starts inittab sysinit and respawns an original Debian dash
+# service, while PID1 remains running. M241 shutdown proof is not inherited.
+on:
+  push:
+    branches:
+      - naseed-app-batch2
+      - feat/m255-original-debian-init-20261110
+    paths:
+      - '.github/workflows/m255-debian-init-service.yml'
+      - '.github/workflows/m252-debian-text-tools-ext4.yml'
+      - 'scripts/m255-*'
+      - 'tests/m255-*'
+      - 'scripts/m252-*'
+      - 'scripts/m251-*'
+      - 'scripts/m248-*'
+      - 'scripts/m245-*'
+      - 'scripts/native-*'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'kernel/boot_image.c'
+      - 'kernel/init/**'
+      - 'kernel/task/**'
+      - 'kernel/fs/**'
+      - 'kernel/mm/**'
+      - 'kernel/syscall/**'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/virtio_blk*'
+      - 'ports/lwext4/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-debian-sysvinit:
+    uses: ./.github/workflows/m252-debian-text-tools-ext4.yml
+    with:
+      m254_shell: false
+      m255_init: true

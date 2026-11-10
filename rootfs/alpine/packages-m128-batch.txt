@@ -1,0 +1,6 @@
+# M128: 15 new signed Alpine original filesystem-image ELFs.
+exfatprogs
+squashfs-tools
+squashfs-tools-ng
+blkid
+wipefs

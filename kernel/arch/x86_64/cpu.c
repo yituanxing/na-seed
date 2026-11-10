@@ -7,8 +7,11 @@
 #include "../../task/sched.h"
 #include "../../task/signal.h"
 #include "../../exception/exception.h"
+#include "../../mm/usercopy.h"
 #include "../../panic.h"
 #include "irq.h"
+#include "../../errno.h"
+#include "../../drivers/core/irq.h"
 #include "../arch.h"
 void exception_report(const uint64_t *frame);
 #include "mmu.h"
@@ -20,9 +23,15 @@ extern void syscall_entry(void);
 extern void *exception_vectors[32];
 extern char kernel_stack_top;
 extern void nas_x86_timer_isr(void);
+extern void nas_x86_pic_device_isr(void);
 extern uint64_t nas_x86_kernel_stack_ptr;
 void nas_arch_outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+static uint8_t nas_x86_inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
 }
 static void wrmsr(uint32_t reg, uint64_t value) {
     __asm__ volatile ("wrmsr" : : "c"(reg), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
@@ -150,6 +159,17 @@ void nas_arch_cpu_tables_init(void) {
     idt[0x20].ist=0;
     idt[0x20].type=0x8e;
     idt[0x20].reserved=0;
+    /* Q35 explicitly programmed ICH9 PCI INTx -> PIC IRQ11.  Unlike the
+     * timer this IRQ returns to its own hardware IRET frame and never
+     * performs Task preemption.  Vector 0x2b is unrelated to user SS. */
+    irq_addr=(uint64_t)(uintptr_t)nas_x86_pic_device_isr;
+    idt[0x2b].offset_low=irq_addr & 0xffffU;
+    idt[0x2b].offset_middle=(irq_addr>>16)&0xffffU;
+    idt[0x2b].offset_high=irq_addr>>32;
+    idt[0x2b].selector=0x08;
+    idt[0x2b].ist=0;
+    idt[0x2b].type=0x8e;
+    idt[0x2b].reserved=0;
     struct table_pointer idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr));
 }
@@ -190,7 +210,50 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
             nas_print(" rdx=");nas_hex(frame[3]);
             nas_print(" rdi=");nas_hex(frame[1]);
             nas_print(" rbx=");nas_hex(frame[9]);
+            nas_print(" rbp=");nas_hex(frame[10]);
+            /* Compare the actual CPU TLS register with the Task's saved
+             * owner when diagnosing threaded libc faults. An invalid FS
+             * base can make an ordinary %fs-relative access look like a
+             * null-pointer read (for example, CR2=0x10). This is strictly
+             * diagnostic: no register or user mapping is repaired here. */
+            const uint64_t fs_base=rdmsr(UINT32_C(0xc0000100));
+            nas_print(" fs_live=");nas_hex(fs_base);
+            nas_print(" fs_task=");nas_hex(nas_task_tls_base(tracee));
+            uint64_t fs_self=0;
+            if(fs_base && nas_user_read_bytes(fs_base,(uint8_t *)&fs_self,
+                                              sizeof(fs_self))) {
+                nas_print(" fs_self=");nas_hex(fs_self);
+            } else nas_print(" fs_self=inaccessible");
+            /* Usercopy resolves through the MMU's checked kernel alias,
+             * never by dereferencing a raw user instruction pointer.
+             * Bound both the number of fault reports and bytes per report. */
+            uint8_t opcode[8];
+            const bool opcode_ok=nas_user_read_bytes(user_rip,opcode,
+                                                     sizeof(opcode));
+            if(opcode_ok) {
+                nas_print(" opcode=");
+                for(unsigned b=0;b<sizeof(opcode);b++)nas_hex(opcode[b]);
+            } else nas_print(" opcode=unavailable");
             nas_print("\n");
+            /* musl mallocng get_meta() has the recognizable sequence
+             * cmpq 0x10(%rax),%rcx; je ...; hlt. With RAX=0 and CR2=0x10,
+             * inspect only the suspected group's first two words: the
+             * meta pointer and header. This is a bounded, checked read in
+             * the faulting Task's MM, never a raw dereference or repair. */
+            if(opcode_ok && fault_addr==16U && frame[0]==0 &&
+               opcode[0]==0x48 && opcode[1]==0x39 &&
+               opcode[2]==0x48 && opcode[3]==0x10 &&
+               frame[7]<=UINT64_MAX-16U) {
+                uint64_t group_words[2]={0};
+                nas_print("[USERPF MALLOCNG] group=");nas_hex(frame[7]);
+                nas_print(" brk=");nas_hex(tracee->mm->heap_break);
+                if(nas_user_read_bytes(frame[7],(uint8_t *)group_words,
+                                       sizeof(group_words))) {
+                    nas_print(" meta=");nas_hex(group_words[0]);
+                    nas_print(" header=");nas_hex(group_words[1]);
+                } else nas_print(" inaccessible");
+                nas_print("\n");
+            }
             extern void nas_x86_debug_recent_syscalls(uint64_t);
             nas_x86_debug_recent_syscalls(tracee->pid);
         }
@@ -241,8 +304,35 @@ void nas_x86_traced_exception_c(uint64_t *frame) {
                     nas_print(" rsp=");nas_hex(user_sp);
                     nas_print(" saved_rip=");nas_hex(tracee->arch.resume_user_rip);
                     nas_print(" tls=");nas_hex(nas_task_tls_base(tracee));
+                    /* A real user #GP is often a privileged/unsupported
+                     * instruction. Record its exact bytes for actionable
+                     * cross-ISA QEMU diagnosis; never dereference user VA. */
+                    uint8_t instruction[8];
+                    if(nas_user_read_bytes(user_rip,instruction,sizeof(instruction))) {
+                        nas_print(" opcode=");
+                        for(unsigned b=0;b<sizeof(instruction);b++)
+                            nas_hex(instruction[b]);
+                    }
                     nas_print("\n");
                 }
+            }
+            /* Linux userspace legitimately probes x86 I/O-port / CPU
+             * features by installing SIGSEGV, executing a privileged IN
+             * instruction, and recovering via siglongjmp from the handler
+             * (util-linux lscpu does this for hypervisor detection).
+             * A caught synchronous #GP must enter that real signal frame,
+             * not unconditionally kill the process as the default case. */
+            const uint64_t segv_bit=1ULL<<(NAS_SIGSEGV-1U);
+            if(!traced && vector==13 && !tracee->signal_frame_active &&
+               tracee->sighand &&
+               tracee->sighand->actions[NAS_SIGSEGV][0]>1ULL &&
+               !(tracee->blocked_signals&segv_bit)) {
+                tracee->pending_signals|=segv_bit;
+                /* Drop exception vector/error words to restore the native
+                 * 15-register + five-word user IRET return contract. */
+                for(unsigned i=0;i<5;i++)frame[15+i]=frame[17+i];
+                nas_signal_user_return(frame);
+                return;
             }
             /* User #DB/#BP without a ptrace owner is SIGTRAP, never a
              * kernel-wide fatal exception. Tracer-owned stops are intact. */
@@ -358,6 +448,7 @@ static void nas_x86_enable_virtual_wire(void) {
 /* PIT oscillator/8259 PIC: IRQ0 at vector 0x20. User IRET restores IF,
  * kernel-mode syscall/interrupt gates always run with interrupts masked.
  * Single CPU only; replace with real APIC timer/IOAPIC for portability. */
+static bool pic_ready;
 static void nas_x86_enable_legacy_pit(void) {
     nas_arch_outb(0x20,0x11);
     nas_arch_outb(0xa0,0x11);
@@ -373,6 +464,59 @@ static void nas_x86_enable_legacy_pit(void) {
     nas_arch_outb(0x43,0x36); /* channel0, lo/hi, mode3 */
     nas_arch_outb(0x40,(uint8_t)divisor);
     nas_arch_outb(0x40,(uint8_t)(divisor>>8));
+    pic_ready=true;
+}
+/* This is the existing one-CPU Q35 virtual-wire PIC, not a generic PCI
+ * interrupt domain.  The platform must FIRST route the target ICH9 PIRQ
+ * to ISA IRQ11; that programming belongs to x86_virtio_pci.c. */
+int nas_arch_irq_route_enable(unsigned hwirq) {
+    if(hwirq!=11U)return -EINVAL;
+    if(!pic_ready)return -EAGAIN;
+    /* PCI INTx is level triggered.  The PIC cascade must be open at master
+     * IRQ2 and IRQ11 is bit 3 of the slave, not bit 11 of the master. */
+    nas_arch_outb(0x4d1,(uint8_t)(nas_x86_inb(0x4d1)|0x08U));
+    nas_arch_outb(0xa1,(uint8_t)(nas_x86_inb(0xa1)&~0x08U));
+    nas_arch_outb(0x21,(uint8_t)(nas_x86_inb(0x21)&~0x04U));
+    return 0;
+}
+void nas_arch_irq_route_disable(unsigned hwirq) {
+    if(hwirq!=11U || !pic_ready)return;
+    nas_arch_outb(0xa1,(uint8_t)(nas_x86_inb(0xa1)|0x08U));
+}
+/* A shared INTx can arrive just after its last device is reset.  Always
+ * acknowledge the PIC even when no transport currently claims status, but
+ * fail closed on a sustained unclaimed level rather than spinning forever. */
+void nas_x86_pic_device_irq(void) {
+    static unsigned unclaimed;
+    static uint64_t first_unclaimed_cycle;
+    if(nas_irq_dispatch(11U)) {
+        unclaimed=0;
+        first_unclaimed_cycle=0;
+    } else {
+        if(!unclaimed)first_unclaimed_cycle=nas_arch_cycle_counter();
+        if(unclaimed<64U && ++unclaimed==64U) {
+            /* Capture the genuine controller state before preserving the
+             * existing storm quarantine. This cannot read any VirtIO ISR:
+             * those are read-to-clear and belong to the dispatch owners. */
+            uint64_t elapsed=nas_arch_cycle_counter()-first_unclaimed_cycle;
+            uint8_t mask=nas_x86_inb(0xa1);
+            uint8_t elcr=nas_x86_inb(0x4d1);
+            nas_arch_outb(0xa0,0x0b); /* OCW3: read in-service register */
+            uint8_t isr=nas_x86_inb(0xa0);
+            nas_arch_outb(0xa0,0x0a); /* OCW3: read request register */
+            uint8_t irr=nas_x86_inb(0xa0);
+            nas_print("[M195 X86 PIC11 DIAG] unclaimed=64 elapsed_cycles=");
+            nas_dec(elapsed);
+            nas_print(" mask=");nas_hex(mask);
+            nas_print(" elcr=");nas_hex(elcr);
+            nas_print(" isr=");nas_hex(isr);
+            nas_print(" irr=");nas_hex(irr);nas_print("\n");
+            nas_arch_irq_route_disable(11U);
+            nas_print("[M175 x86] masked unclaimed PIC IRQ11 storm\n");
+        }
+    }
+    nas_arch_outb(0xa0,0x20); /* IRQ11 EOI: slave first */
+    nas_arch_outb(0x20,0x20); /* then master's cascade IRQ2 */
 }
 /* Shared init contract: preserve all established x86 hardware operations. */
 void nas_arch_prepare_user_cpu(void) {

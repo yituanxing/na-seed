@@ -1,0 +1,140 @@
+name: NaSeed M248 original Debian glibc dash direct PID1 RV64 ARM64
+
+# Separate native-QEMU extension of the proven M247 x86 gate. Both jobs must
+# boot untouched, signed Debian glibc ELF files as the initial NaSeed process.
+# An apt/host-user-mode result is never a native guest PASS.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m248-debian-dash-3isa.yml'
+      - 'scripts/m248-*'
+      - 'tests/m248-*'
+      - 'docs/m248-*'
+      - 'scripts/m245-*'
+      - 'scripts/m247-*'
+      - 'tests/m245-*'
+      - 'tests/m247-*'
+      - 'scripts/fetch-busybox-fixture.sh'
+      - 'scripts/stage-busybox-rootfs.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'kernel/arch/abi.h'
+      - 'kernel/arch/riscv64/**'
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/boot_image.c'
+      - 'kernel/init/main.c'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/exec.c'
+      - 'kernel/task/process.c'
+      - 'kernel/task/sched.c'
+      - 'kernel/task/user_stack.c'
+      - 'kernel/syscall/**'
+      - 'kernel/mm/vm.c'
+      - 'kernel/mm/mmap_abi.h'
+      - 'scripts/test-mmap-abi.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-original-debian-dash-pid1:
+    name: Original Debian glibc dash direct PID1 native QEMU / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Validate signed-source negative contracts and native probe syntax
+        run: |
+          set -eu
+          test -s scripts/m248-probe-debian-dash-pid1.sh
+          python3 -B tests/m245-debian-dynamic-host.py
+          python3 -B tests/m247-debian-dash-host.py
+          python3 -B tests/m248-debian-multiarch-host.py
+          sh -n scripts/m248-probe-debian-dash-pid1.sh
+          cc -std=c11 -Wall -Wextra -Werror scripts/test-mmap-abi.c \
+            -o /tmp/naseed-m248-mmap-abi
+          /tmp/naseed-m248-mmap-abi
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          for path in sorted(Path('scripts').glob('m248-*.py')):
+              ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+          PY
+          sh scripts/check-m86-txn.sh
+      - name: Install signed Debian metadata and native RISC-V or AArch64 QEMU
+        timeout-minutes: 15
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'xorriso:xorriso' \
+                      'mformat:mtools' 'sgdisk:gdisk' 'curl:curl' \
+                      'python3:python3' 'dpkg-deb:dpkg' 'apt-cache:apt'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg || \
+            missing="$missing debian-archive-keyring"
+          case '${{ matrix.port }}' in
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -s /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
+                missing="$missing qemu-efi-riscv64"
+              ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -s /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || \
+                missing="$missing qemu-efi-aarch64"
+              ;;
+            *) echo 'Unreviewed native QEMU matrix port' >&2; exit 2 ;;
+          esac
+          test -s /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg
+          case '${{ matrix.port }}' in
+            riscv64) test -s /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd ;;
+            arm64) test -s /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ;;
+          esac
+      - name: Restore pinned official working multi-ISA Limine seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Original signed Debian glibc dash and coreutils execute in REAL NaSeed QEMU
+        timeout-minutes: 26
+        run: sh scripts/m248-probe-debian-dash-pid1.sh ${{ matrix.port }}
+      - name: Preserve signed provenance and native serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m248-debian-glibc-dash-pid1-${{ matrix.port }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            build/m248-debian-dash-pid1/${{ matrix.port }}/source/manifest.json
+            build/m248-debian-dash-pid1/${{ matrix.port }}/*.tsv
+            build/port-*/full/matrix-source/m105-m248-*.clean.log
+            build/port-*/full/matrix-source/m105-m248-*.serial.log

@@ -6,6 +6,12 @@ struct limine_memmap_response;
 bool nas_frames_init(const struct limine_memmap_response *, uint64_t);
 uint64_t nas_free_frames(void);
 uint64_t nas_managed_frames(void);
+/* Read-only sysfs memory-block topology, derived from Limine's real usable
+ * physical ranges. The block granularity is an OS-visible 128 MiB unit;
+ * sparse physical address gaps do not create phantom memoryN directories. */
+#define NAS_MEMORY_BLOCK_BYTES (128ULL * 1024ULL * 1024ULL)
+bool nas_memory_block_present(uint64_t index);
+bool nas_memory_block_index_at(uint64_t ordinal, uint64_t *index);
 uint64_t nas_frame_alloc(void);
 /* All-or-nothing reservation of adjacent 4 KiB usable frames, zeroed and
  * returned with one reference each. A zero result leaves state unchanged. */

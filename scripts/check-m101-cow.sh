@@ -4,7 +4,7 @@ mkdir -p build/m101-cow
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
     -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel \
     scripts/test-m101-cow.c kernel/mm/mm.c kernel/mm/fault.c \
-    kernel/mm/usercopy.c kernel/mm/remote_copy.c kernel/mm/anon_regions.c \
+    kernel/mm/usercopy.c kernel/mm/remote_copy.c kernel/mm/anon_regions.c kernel/mm/heap.c \
     -o build/m101-cow/host
 build/m101-cow/host
 for arch in riscv64 aarch64; do

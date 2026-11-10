@@ -1,0 +1,7 @@
+# New official Alpine 3.23 main APKs. Curl is a prior signed regression.
+nginx
+haproxy
+apache2-utils
+valkey
+valkey-cli
+curl

@@ -1,0 +1,22 @@
+# Signed package owners verified on host by staged Alpine APK and ELF machine.
+usr/bin/node
+usr/bin/age
+usr/bin/age-keygen
+usr/bin/dot
+usr/bin/xdelta3
+usr/bin/patchelf
+usr/bin/readelf
+usr/bin/eu-readelf
+usr/bin/pigz
+usr/bin/rhash
+usr/bin/socat
+usr/bin/dos2unix
+usr/bin/pcre2grep
+usr/bin/bsdtar
+usr/bin/time
+usr/bin/units
+usr/bin/ag
+bin/zsh
+usr/bin/ctags
+usr/bin/b3sum
+usr/bin/xmlstarlet

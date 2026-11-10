@@ -238,8 +238,8 @@ bool nas_mmu_map_page(uint64_t va, bool writable) {
     return true;
 }
 bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
-    /* First-set PTE permissions: do not transiently create executable
-     * anonymous RW data, and do not pretend W+X / PROT_NONE is supported. */
+    /* First-set typed PTE permissions follow Linux PROT_READ/WRITE/EXEC;
+     * PROT_NONE lives only in the shared VMA ledger. */
     if (!nas_vm_prot_supported(prot) || !nas_arch_nx_enabled()) return false;
     uint64_t *entry = user_leaf(va, true);
     if (!entry || *entry) return false;

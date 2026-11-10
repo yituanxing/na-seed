@@ -1,0 +1,85 @@
+name: NaSeed M245 original Debian dynamic glibc x86
+
+# A new, isolated and fast official-Debian route. Do not make any previous
+# Alpine M244 workflow depend on this experimental dynamic-glibc acceptance.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m245-debian-dynamic-glibc.yml'
+      - 'scripts/m245-*'
+      - 'tests/m245-*'
+      - 'docs/m245-*'
+      - 'kernel/arch/abi.h'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf.h'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/elf_segments.h'
+      - 'kernel/task/exec.c'
+      - 'kernel/task/sched.c'
+      - 'kernel/mm/vm.c'
+      - 'scripts/test-m86-txn.c'
+      - 'kernel/boot_image.c'
+      - 'kernel/boot_image.h'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-original-debian-glibc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Fast no-network signed-index and guest-evidence negative contracts
+        run: |
+          set -eu
+          python3 tests/m245-debian-dynamic-host.py
+          sh scripts/check-m86-txn.sh
+          sh -n scripts/m245-probe-debian-glibc.sh
+          python3 - <<'PY'
+          import ast
+          ast.parse(open('scripts/m245-fetch-debian-dynamic.py', encoding='utf-8').read())
+          PY
+      - name: Install official signed Debian metadata + native x86 QEMU dependencies
+        timeout-minutes: 13
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+            -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+            debian-archive-keyring cmake g++ clang lld binutils cpio \
+            xorriso mtools curl python3 qemu-system-x86 ovmf
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg
+          test -s /usr/share/OVMF/OVMF_CODE_4M.fd || test -s /usr/share/OVMF/OVMF_CODE.fd
+      - name: Restore pinned official working Limine seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Debian signed index and untouched glibc printf in REAL NaSeed QEMU
+        timeout-minutes: 19
+        run: sh scripts/m245-probe-debian-glibc.sh amd64
+      - name: Preserve authenticated host bill of materials and native serial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m245-debian-dynamic-glibc-amd64
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            build/m245-debian-dynamic-glibc/amd64/source/manifest.json
+            build/m245-debian-dynamic-glibc/amd64/m245-cases.tsv
+            build/busybox-source-parity-x86/m105-m245-debian-glibc.clean.log
+            build/busybox-source-parity-x86/m105-m245-debian-glibc.serial.log

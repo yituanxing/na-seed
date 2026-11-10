@@ -1,6 +1,9 @@
 /* Real upstream ext4 inode -> NaSeed VFS, independent of physical drivers.
  * Ext4 inode numbers (not pathname lookups) identify open files for reads. */
 #include "guest_vfs.h"
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+#include "../../kernel/fs/broker.h"
+#endif
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
@@ -14,6 +17,23 @@
 #include <stdint.h>
 #define EXT4_ORPHAN_DIRECTORY ".naseed-orphans"
 static const char orphan_digits[]="0123456789abcdef";
+/* The M191 physical-root exit gate must distinguish a live inode lease,
+ * VFS attachment pin, upstream journal error and physical final flush.
+ * Diagnostics never change ownership or downgrade a failed unmount. */
+static int ext_unmount_issue(const char *stage,int rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    if(rc) {
+        extern void nas_print(const char *);
+        extern void nas_dec(uint64_t);
+        nas_print("[M191 EXT4 UNMOUNT ERROR] ");nas_print(stage);
+        nas_print(" errno=");nas_dec((uint64_t)(rc<0?-rc:rc));
+        nas_print("\n");
+    }
+#else
+    (void)stage;
+#endif
+    return rc;
+}
 /* Directory offsets are disposable accelerator hints only. A failed VFS
  * mutation may have partly changed vendor state, so invalidate BEFORE it. */
 static void ext_namespace_changed(struct nas_lwext4_mount *ctx) {
@@ -183,6 +203,39 @@ static int ext_snapshot_inode(struct nas_lwext4_mount *ctx,uint32_t ino,
     };
     rc=ext4_fs_put_inode_ref(&ref);
     return rc ? -rc : 0;
+}
+/* Linux statfs/fstatfs are superblock queries, not inode/path operations.
+ * Query the real, live upstream mount instead of returning EOPNOTSUPP for
+ * every persistent inode (apk requires fstatfs for its cache and database).
+ * In particular, f_bavail excludes ext4's reserved blocks even though
+ * f_bfree includes them; values must reflect allocations after mount. */
+static int ext_statfs(const struct nas_fs_node *node,
+                      struct nas_vfs_statfs *out) {
+    if(!node || !node->mount || !node->mount->private_data || !out)
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted || !ctx->upstream_super || !ctx->upstream_mount)
+        return -ENODEV;
+    struct ext4_mount_stats stats={0};
+    int rc=ext4_mount_point_stats(ctx->upstream_prefix,&stats);
+    if(rc)return -rc;
+    if(!stats.block_size || stats.free_blocks_count>stats.blocks_count ||
+       stats.free_inodes_count>stats.inodes_count)return -EIO;
+    uint64_t reserved=ext4_get32(ctx->upstream_super,reserved_blocks_count_lo);
+    reserved|=(uint64_t)ext4_get32(ctx->upstream_super,reserved_blocks_count_hi)<<32;
+    *out=(struct nas_vfs_statfs){
+        .magic=0xef53U, /* Linux EXT4_SUPER_MAGIC */
+        .block_size=stats.block_size,
+        .blocks=stats.blocks_count,
+        .free_blocks=stats.free_blocks_count,
+        .available_blocks=stats.free_blocks_count>reserved ?
+                          stats.free_blocks_count-reserved : 0,
+        .files=stats.inodes_count,
+        .free_files=stats.free_inodes_count,
+        .fragment_size=stats.block_size,
+        .name_max=255
+    };
+    return 0;
 }
 static int ext_lookup_root(const struct nas_vfs_mount *vfs,
                            struct nas_fs_node *out) {
@@ -405,7 +458,7 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
  * Common VFS/ABI never enumerates RAM/PCI/ISA drivers. */
 static int ext_sync_mount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted || !ctx->device.storage)return -ENODEV;
-    int rc=ext4_cache_flush(ctx->upstream_prefix);
+    int rc=ext4_sync(ctx->upstream_prefix);
     if(rc)return -rc;
     return nas_block_flush(ctx->device.storage);
 }
@@ -588,6 +641,42 @@ static int ext_stage_orphan(struct nas_lwext4_mount *ctx,
     };
     return 0;
 }
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+extern bool nas_lwext4_async_worker_current(void);
+/* The *last* generic VFS inode lease may disappear during close/exit in
+ * a user Task. This cleanup can issue ext4 metadata writes and physically
+ * park on an IRQ: never execute it from that Task's kernel C frame. */
+struct ext_orphan_release_request {
+    struct nas_lwext4_mount *mount;
+    uint32_t ino, serial;
+    bool is_dir;
+};
+static int64_t ext_orphan_release_worker(void *opaque) {
+    const struct ext_orphan_release_request *request=opaque;
+    if(!request || !request->mount || !nas_lwext4_async_worker_current())
+        return -EINVAL;
+    struct nas_lwext4_mount *ctx=request->mount;
+    if(!ctx->mounted)return -ENODEV;
+    for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
+        struct nas_lwext4_orphan *o=&ctx->orphans[i];
+        if(!o->used || o->ino!=request->ino ||
+           o->serial!=request->serial || o->is_dir!=request->is_dir)
+            continue;
+        /* The original File dropped its last owner before this was
+         * queued; rechecking the record prevents deleting a reused inode
+         * or a different incarnation after intervening namespace changes. */
+        ext_namespace_changed(ctx);
+        char path[256];
+        int rc=ext_orphan_path(ctx,o->ino,o->serial,o->is_dir,path);
+        if(!rc)rc=ext_remove_staged(path,o->is_dir);
+        if(!rc)o->used=false;
+        /* A failure leaves its private durable name for unmount/reboot
+         * cleanup, and is never represented as a successful unlink. */
+        return rc;
+    }
+    return 0; /* already reclaimed by an earlier owned completion */
+}
+#endif
 static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
@@ -595,6 +684,35 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
         struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
         if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+        if(ctx->worker_io_mount && !nas_lwext4_async_worker_current()) {
+            struct nas_fs_broker_request *request=
+                nas_fs_broker_request_new(sizeof(struct ext_orphan_release_request),
+                                          ext_orphan_release_worker,NULL);
+            if(request) {
+                struct ext_orphan_release_request *payload=
+                    nas_fs_broker_request_payload(request);
+                *payload=(struct ext_orphan_release_request){
+                    .mount=ctx,.ino=orphan->ino,.serial=orphan->serial,
+                    .is_dir=orphan->is_dir
+                };
+                /* This is a kernel-only fire-and-forget request. The
+                 * worker reference must survive the immediate detach AND
+                 * actually run: an ordinary canceled syscall is skipped. */
+                if(!nas_fs_broker_request_make_independent(request)) {
+                    nas_fs_broker_request_detach(request);
+                    return; /* the durable orphan remains for final unmount */
+                }
+                int queued=nas_fs_broker_request_submit(request);
+                nas_fs_broker_request_detach(request);
+                if(!queued)return;
+            }
+            /* Out of memory/shutdown: leave the durable private orphan
+             * registered. The same worker's final unmount reaps it after
+             * all inode leases are gone; never issue foreign ext4 I/O. */
+            return;
+        }
+#endif
         /* Last close can remove a private directory entry without calling
          * a public VFS namespace mutation. It still invalidates cookies. */
         ext_namespace_changed(ctx);
@@ -923,10 +1041,25 @@ static int ext_directory_path(const struct nas_fs_node *node,
         current=parent;
     }
     if(current!=root)return -ELOOP;
-    size_t base=strlen(ctx->mount_point);
+    /* All ext4 pathname APIs are resolved by upstream lwext4,
+     * whose mount registry uses upstream_prefix, NOT the public VFS path.
+     * They happened to be equal for /mnt; a genuine VFS / must never
+     * escape its private /naseed-root/ upstream namespace. Inode-based
+     * reads above are already independent of either spelling. */
+    size_t base=strlen(ctx->upstream_prefix);
+    if(!base || ctx->upstream_prefix[base-1]!='/')return -EINVAL;
     size_t relative=255U-cursor;
+    if(!relative) {
+        /* nas_vfs_join_child expects a canonical parent without a trailing
+         * slash, even though the upstream lwext4 mount registry does. */
+        if(base==1)return -EINVAL;
+        memcpy(absolute,ctx->upstream_prefix,base-1);
+        absolute[base-1]=0;
+        return 0;
+    }
+    base--; /* relative starts with '/', so avoid an extra separator */
     if(base+relative>=256)return -ENAMETOOLONG;
-    memcpy(absolute,ctx->mount_point,base);
+    memcpy(absolute,ctx->upstream_prefix,base);
     memcpy(absolute+base,reverse+cursor,relative+1);
     return 0;
 }
@@ -1007,7 +1140,7 @@ static const struct nas_vfs_type ext_type={
     .root=ext_lookup_root,.lookup_child=ext_lookup_child,
     .readlink=ext_readlink_node,
     .last_inode_unpin=ext_last_inode_unpin,
-    .getattr=ext_live_getattr,
+    .getattr=ext_live_getattr,.statfs=ext_statfs,
     .read_at=ext_read_inode,
     .read_size_is_eof=true,
     .write_at=ext_write_inode,
@@ -1027,7 +1160,16 @@ static const struct nas_vfs_type ext_type={
  * Only delete recognizably named regular orphan records. Always restart
  * iteration after mutation; corrupt or foreign entries fail closed. */
 static int ext_orphan_prepare(struct nas_lwext4_mount *ctx) {
-    int rc=nas_vfs_join_child(ctx->mount_point,EXT4_ORPHAN_DIRECTORY,
+    /* The private orphan store is an upstream lwext4 pathname. Its owner
+     * is the filesystem mounted at upstream_prefix, even when that same
+     * disk is published to the guest VFS at '/'. */
+    char upstream_root[256];
+    size_t base=strlen(ctx->upstream_prefix);
+    if(base<2 || base>=sizeof(upstream_root) ||
+       ctx->upstream_prefix[base-1]!='/')return -EINVAL;
+    memcpy(upstream_root,ctx->upstream_prefix,base);
+    upstream_root[base-1]=0;
+    int rc=nas_vfs_join_child(upstream_root,EXT4_ORPHAN_DIRECTORY,
                               ctx->orphan_dir);
     if(rc)return rc;
     char sample[256];
@@ -1086,13 +1228,73 @@ static bool copy_name(char *out,size_t capacity,const char *src) {
     memcpy(out,src,length+1);
     return true;
 }
+/* Unwind in ownership order: the upstream mount can still issue BlockDevice
+ * requests, and the block bridge pins a RAM source. A failed stage remains
+ * visible and retryable; in particular, never detach RAM while the bridge
+ * still owns a pin. Upstream ext4_umount may return an error AFTER it closed
+ * the block device, so ph_refctr disambiguates a completed unmount and
+ * prevents a dangerous second ext4_umount on an already-finalized mount. */
+int nas_lwext4_cleanup_failed_mount(struct nas_lwext4_mount *ctx) {
+    if(!ctx)return -EINVAL;
+    if(ctx->mounted)return -EBUSY;
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE) {
+        if(ctx->device.registered)
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+        else if(ctx->owns_ramdisk)
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+        else return 0;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_UPSTREAM) {
+        if(ctx->device.interface.ph_refctr) {
+            int e=ext4_umount(ctx->upstream_prefix);
+            if(e) {
+                ctx->cleanup_error=-e;
+                if(!ctx->device.interface.ph_refctr)
+                    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+                return -e;
+            }
+        }
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_DEVICE) {
+        if(ctx->device.registered) {
+            int rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
+            if(rc) {ctx->cleanup_error=rc;return rc;}
+        }
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+    }
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_RAMDISK && ctx->owns_ramdisk) {
+        int rc=nas_ramdisk_detach(&ctx->ramdisk);
+        if(rc) {ctx->cleanup_error=rc;return rc;}
+        ctx->owns_ramdisk=false;
+    }
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_NONE;
+    ctx->cleanup_error=0;
+    ctx->upstream_mount=NULL;
+    ctx->upstream_super=NULL;
+    return 0;
+}
 /* Generic FS mount consumes a previously registered BlockDevice (e.g.
  * VirtIO-Blk, NVMe or RAM). It never owns, probes or dereferences any
  * driver's storage. The device remains pinned until final unmount. */
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+extern void nas_print(const char *);
+extern void nas_dec(uint64_t);
+static void m191_ext4_fail(const char *phase,int code) {
+    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+    nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+}
+#endif
 int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
                             const char *block_name,const char *dev_name,
                             const char *mount_point,bool writable) {
-    if(!ctx || ctx->mounted || ctx->device.registered)return -EINVAL;
+    if(!ctx || ctx->mounted)return -EINVAL;
+    if(ctx->cleanup_stage!=NAS_LWEXT4_CLEANUP_NONE) {
+        int pending=nas_lwext4_cleanup_failed_mount(ctx);
+        if(pending)return pending;
+    }
+    if(ctx->device.registered)return -EBUSY;
     ctx->directory_hint=(struct nas_lwext4_dir_hint){0};
     ctx->namespace_epoch=1;
     struct nas_block_device *block=nas_block_get(block_name);
@@ -1109,55 +1311,118 @@ int nas_lwext4_device_mount(struct nas_lwext4_mount *ctx,
        !copy_name(ctx->mount_point,sizeof(ctx->mount_point),mount_point))
         return -ENAMETOOLONG;
     size_t length=strlen(ctx->mount_point);
-    if(ctx->mount_point[0]!='/' || length<2 ||
-       ctx->mount_point[length-1]=='/' || length+2>sizeof(ctx->upstream_prefix))
+    if(ctx->mount_point[0]!='/' || !length ||
+       (length>1 && ctx->mount_point[length-1]=='/') ||
+       length+2>sizeof(ctx->upstream_prefix))
         return -EINVAL;
-    memcpy(ctx->upstream_prefix,ctx->mount_point,length);
-    ctx->upstream_prefix[length]='/';
-    ctx->upstream_prefix[length+1]=0;
+    /* The upstream lwext4 mount registry and the VFS namespace are
+     * different owners. A VFS root mount still needs a private upstream
+     * prefix: never publish the raw lwext4 root as a second VFS root. */
+    if(length==1) {
+        static const char root_prefix[]="/naseed-root/";
+        memcpy(ctx->upstream_prefix,root_prefix,sizeof(root_prefix));
+    } else {
+        memcpy(ctx->upstream_prefix,ctx->mount_point,length);
+        ctx->upstream_prefix[length]='/';
+        ctx->upstream_prefix[length+1]=0;
+    }
     int rc=nas_lwext4_device_attach(&ctx->device,ctx->block_name,ctx->device_name);
-    if(rc)return rc;
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("block-attach",rc);
+#endif
+        return rc;
+    }
     rc=ext4_mount(ctx->device_name,ctx->upstream_prefix,!writable);
-    if(rc) {rc=-rc;goto FailDevice;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_mount",rc);
+#endif
+        rc=-rc;goto FailDevice;
+    }
     rc=ext4_get_sblock(ctx->upstream_prefix,&ctx->upstream_super);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_get_sblock",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     ext4_dir dir={0};
     rc=ext4_dir_open(&dir,ctx->upstream_prefix);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_dir_open",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     ctx->upstream_mount=dir.f.mp;
     rc=ext4_dir_close(&dir);
-    if(rc) {rc=-rc;goto FailMount;}
+    if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_dir_close",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     if(!ctx->upstream_mount) {rc=-EIO;goto FailMount;}
     struct ext4_inode root_raw;
     rc=ext4_raw_inode_fill(ctx->upstream_prefix,&ctx->root_ino,
                            &root_raw);
-    if(rc){rc=-rc;goto FailMount;}
+    if(rc){
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        m191_ext4_fail("ext4_raw_inode",rc);
+#endif
+        rc=-rc;goto FailMount;
+    }
     if(!ctx->root_ino){rc=-EIO;goto FailMount;}
     if(writable) {
         rc=ext_orphan_prepare(ctx);
-        if(rc)goto FailMount;
-        rc=ext4_cache_flush(ctx->upstream_prefix);
-        if(rc){rc=-rc;goto FailMount;}
+        if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("ext4_orphan_prepare",rc);
+#endif
+            goto FailMount;
+        }
+        rc=ext4_sync(ctx->upstream_prefix);
+        if(rc){
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("ext4_sync",rc);
+#endif
+            rc=-rc;goto FailMount;
+        }
         rc=nas_block_flush(ctx->device.storage);
-        if(rc)goto FailMount;
+        if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_ext4_fail("block-flush",rc);
+#endif
+            goto FailMount;
+        }
     }
     ctx->mount=(struct nas_vfs_mount){
         .mountpoint=ctx->mount_point,
         .type=&ext_type,
         .allow_missing_mountpoint=true, /* internal early-boot /mnt */
         .read_only=!writable,
+        .worker_io=ctx->worker_io_mount,
         .private_data=ctx
     };
     ctx->mounted=true; /* lookup may run during VFS mount registration */
     rc=nas_vfs_register_mount(&ctx->mount);
-    if(!rc)return 0;
+    if(!rc) {
+        ctx->cleanup_origin_error=0;
+        ctx->cleanup_error=0;
+        return 0;
+    }
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    m191_ext4_fail("vfs-root-register",rc);
+#endif
     ctx->mounted=false;
 FailMount:
-    (void)ext4_umount(ctx->upstream_prefix);
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_UPSTREAM;
 FailDevice:
-    (void)nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-    ctx->upstream_mount=NULL;
-    ctx->upstream_super=NULL;
+    if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE)
+        ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    ctx->cleanup_origin_error=rc;
+    (void)nas_lwext4_cleanup_failed_mount(ctx);
     return rc;
 }
 /* RAM-backed boot-module path is an adapter, not the only mount path.
@@ -1166,16 +1431,33 @@ int nas_lwext4_ramdisk_mount_mode(struct nas_lwext4_mount *ctx,
                              const char *block_name,const char *dev_name,
                              const char *mount_point,void *image,
                              uint64_t image_bytes,bool writable) {
-    if(!ctx || !image || ctx->mounted || ctx->ramdisk.block.registered)
+    if(!ctx || !image || ctx->mounted)
         return -EINVAL;
+    /* Do not attach a NEW RAM source while a previous failed mount still
+     * has cleanup ownership: the pending stage would mistake this new RAM
+     * disk for the old one. Complete the old lifecycle before replacement. */
+    if(ctx->cleanup_stage!=NAS_LWEXT4_CLEANUP_NONE) {
+        int pending=nas_lwext4_cleanup_failed_mount(ctx);
+        if(pending)return pending;
+    }
+    if(ctx->ramdisk.block.registered || ctx->device.registered ||
+       ctx->owns_ramdisk)return -EBUSY;
     int rc=nas_ramdisk_attach(&ctx->ramdisk,block_name,image,image_bytes,512,writable);
-    if(rc)return rc;
+    if(rc) {ctx->cleanup_origin_error=rc;return rc;}
+    ctx->owns_ramdisk=true; /* Bridge detach MUST precede this RAM owner. */
     rc=nas_lwext4_device_mount(ctx,block_name,dev_name,mount_point,writable);
     if(rc) {
-        (void)nas_ramdisk_detach(&ctx->ramdisk);
+        ctx->cleanup_origin_error=rc;
+        /* The generic mount already attempted bridge/upstream teardown.
+         * Never retry a failed upstream umount twice in one mount call;
+         * retry remains the explicit caller's decision. The adapter only
+         * owns first cleanup if failure preceded bridge registration. */
+        if(ctx->cleanup_stage==NAS_LWEXT4_CLEANUP_NONE && ctx->owns_ramdisk) {
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_RAMDISK;
+            (void)nas_lwext4_cleanup_failed_mount(ctx);
+        }
         return rc;
     }
-    ctx->owns_ramdisk=true;
     return 0;
 }
 int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
@@ -1196,32 +1478,54 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
         char resolved[256];
         int rc=nas_fs_lookup_node(ctx->mount_point,true,
                                    &mounted_root,resolved);
-        if(rc)return rc;
+        if(rc)return ext_unmount_issue("orphan root lookup",rc);
         struct nas_fs_node target={.mount=mounted_root.mount,
             .filesystem=mounted_root.filesystem,
             .mount_id=mounted_root.mount_id,.inode=(void *)(uintptr_t)o->ino,
             .ino=o->ino};
-        if(nas_vfs_node_has_lease(&target))return -EBUSY;
+        if(nas_vfs_node_has_lease(&target))
+            return ext_unmount_issue("orphan inode lease",-EBUSY);
         char path[256];
         rc=ext_orphan_path(ctx,o->ino,o->serial,o->is_dir,path);
-        if(rc)return rc;
+        if(rc)return ext_unmount_issue("orphan path",rc);
         struct ext4_inode raw;uint32_t live=0;
         rc=ext4_raw_inode_fill(path,&live,&raw);
-        if(rc!=ENOENT && rc)return -rc;
-        if(!rc && live!=o->ino)return -ESTALE;
-        if(!rc && (rc=ext_remove_staged(path,o->is_dir)))return rc;
+        if(rc!=ENOENT && rc)return ext_unmount_issue("orphan inode read",-rc);
+        if(!rc && live!=o->ino)
+            return ext_unmount_issue("orphan inode generation",-ESTALE);
+        if(!rc && (rc=ext_remove_staged(path,o->is_dir)))
+            return ext_unmount_issue("orphan inode removal",rc);
         o->used=false;
     }
     /* A failed physical flush must leave mount and inode ownership
      * untouched. Never unregister the VFS mount before checking durability. */
     int rc=ext_sync_mount(ctx);
-    if(rc)return rc;
+    if(rc)return ext_unmount_issue("ext4 sync",rc);
     rc=nas_vfs_unregister_mount(&ctx->mount);
-    if(rc)return rc;
+    if(rc)return ext_unmount_issue("VFS root mount detach",rc);
     int e=ext4_umount(ctx->upstream_prefix);
     if(e) {
-        (void)nas_vfs_register_mount(&ctx->mount);
-        return -e;
+        /* ext4_umount can return a close/flush error after it has
+         * already finished the upstream mount. The refcount is dropped
+         * before close(): never resurrect a finalized VFS namespace. */
+        if(!ctx->device.interface.ph_refctr) {
+            ctx->mounted=false;
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+            ctx->cleanup_origin_error=-e;
+            (void)nas_lwext4_cleanup_failed_mount(ctx);
+            return ext_unmount_issue("upstream ext4 umount/close",-e);
+        }
+        /* Upstream still owns the device. Preserve the active mount for
+         * a later unmount attempt, unless namespace re-registration fails;
+         * in that case explicitly transfer ownership to retryable cleanup. */
+        int restore=nas_vfs_register_mount(&ctx->mount);
+        if(restore) {
+            ctx->mounted=false;
+            ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_UPSTREAM;
+            ctx->cleanup_origin_error=-e;
+            ctx->cleanup_error=restore;
+        }
+        return ext_unmount_issue("upstream ext4 umount",-e);
     }
     /* Upstream ext4_umount updates on-disk superblock/counters AFTER the
      * preceding data-cache flush. Flush its final metadata writes through
@@ -1233,14 +1537,12 @@ int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
      * Finish all adapter/owned-RAM cleanup and propagate the durability
      * error, never claim fsync success or remount a finalized superblock. */
     ctx->mounted=false;
-    rc=nas_lwext4_device_detach(&ctx->device,ctx->device_name);
-    if(ctx->owns_ramdisk) {
-        int ram_rc=nas_ramdisk_detach(&ctx->ramdisk);
-        if(!rc)rc=ram_rc;
-        if(!ram_rc)ctx->owns_ramdisk=false;
-    }
-    ctx->upstream_mount=NULL;ctx->upstream_super=NULL;
-    return final_sync ? final_sync : rc;
+    ctx->cleanup_stage=NAS_LWEXT4_CLEANUP_DEVICE;
+    ctx->cleanup_origin_error=final_sync;
+    rc=nas_lwext4_cleanup_failed_mount(ctx);
+    if(!final_sync && rc)ctx->cleanup_origin_error=rc;
+    return ext_unmount_issue(final_sync ? "physical final flush" :
+                             "block device cleanup",final_sync ? final_sync : rc);
 }
 int nas_lwext4_ramdisk_unmount(struct nas_lwext4_mount *ctx) {
     return nas_lwext4_unmount(ctx);

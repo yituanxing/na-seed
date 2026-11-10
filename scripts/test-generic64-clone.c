@@ -6,7 +6,13 @@
 #define __riscv 1
 #define __riscv_xlen 64
 #include "../kernel/arch/linux_syscall_abi.h"
+#include "../kernel/syscall/reboot_policy.h"
 int main(void) {
+    assert(nas_linux_decode_syscall(142U)==NAS_SC_reboot);
+    uint32_t shutdown_cmd=0;
+    assert(nas_linux_reboot_validate(NAS_LINUX_REBOOT_MAGIC1,
+        NAS_LINUX_REBOOT_MAGIC2,NAS_LINUX_REBOOT_POWER_OFF,&shutdown_cmd)==0);
+    assert(shutdown_cmd==NAS_LINUX_REBOOT_POWER_OFF);
     uint64_t call[8]={220,0x01200011ULL,0,0,0,0x1a1d30ULL,0,0};
     assert(nas_linux_decode_call(call)==NAS_SC_fork_child_tid);
     assert(nas_linux_clone_child_tid(call)==0x1a1d30ULL);
@@ -25,16 +31,45 @@ int main(void) {
     call[1]=17U;
     call[5]=0;
     assert(nas_linux_decode_call(call)==NAS_SC_fork);
+    /* Original AArch64 Go clone ignores the supplied arg4 without
+     * CLONE_SETTLS; x86 Go variant explicitly supplies thread-local TLS. */
+    call[1]=0x00050f00ULL;
+    call[2]=0x3401e000ULL;
+    call[3]=0x34002540ULL; /* ignored: no PARENT_SETTID flag */
+    call[4]=0x00050f00ULL; /* ignored: no SETTLS */
+    assert(nas_linux_decode_call(call)==NAS_SC_clone_thread);
+    call[1]=0x000d0f00ULL;
+    assert(nas_linux_decode_call(call)==NAS_SC_clone_thread);
+    call[1]|=0x00200000ULL; /* unimplemented extra combination */
+    assert(nas_linux_decode_call(call)==NAS_SC_NONE);
     /* Real RV64/AArch64 BusyBox Kconfig make invokes native /bin/sleep.
      * Linux asm-generic syscall 101 was already supported by the common
      * deadline scheduler, but missing from this architecture decoder. */
     assert(nas_linux_decode_syscall(101U)==NAS_SC_nanosleep);
     assert(nas_linux_decode_syscall(115U)==NAS_SC_clock_nanosleep);
     assert(nas_linux_decode_syscall(166U)==NAS_SC_umask);
+    assert(nas_linux_decode_syscall(161U)==NAS_SC_sethostname);
+    assert(nas_linux_decode_syscall(165U)==NAS_SC_getrusage);
+    assert(nas_linux_decode_syscall(233U)==NAS_SC_madvise);
+    assert(nas_linux_decode_syscall(258U)==NAS_SC_riscv_hwprobe);
+    assert(nas_linux_decode_syscall(259U)==NAS_SC_NONE);
+    assert(nas_linux_decode_syscall(227U)==NAS_SC_msync);
     assert(nas_linux_decode_syscall(54U)==NAS_SC_fchownat);
     assert(nas_linux_decode_syscall(55U)==NAS_SC_fchown);
+    /* AArch64 and RV64 use the same asm-generic fchmodat2 number. */
+    assert(nas_linux_decode_syscall(452U)==NAS_SC_fchmodat2);
     assert(nas_linux_decode_syscall(123U)==NAS_SC_sched_getaffinity);
     assert(nas_linux_decode_syscall(122U)==NAS_SC_sched_setaffinity);
+    assert(nas_linux_decode_syscall(151U)==NAS_SC_setfsuid);
+    assert(nas_linux_decode_syscall(152U)==NAS_SC_setfsgid);
+    /* AArch64 and RV64 share these real Linux credential operations.  Do
+     * not treat an unsupported non-root transition as a successful no-op. */
+    assert(nas_linux_decode_syscall(143U)==NAS_SC_setregid);
+    assert(nas_linux_decode_syscall(145U)==NAS_SC_setreuid);
+    assert(nas_linux_decode_syscall(147U)==NAS_SC_setresuid);
+    assert(nas_linux_decode_syscall(148U)==NAS_SC_getresuid);
+    assert(nas_linux_decode_syscall(149U)==NAS_SC_setresgid);
+    assert(nas_linux_decode_syscall(150U)==NAS_SC_getresgid);
     assert(nas_linux_decode_syscall(67U)==NAS_SC_pread64);
     assert(nas_linux_decode_syscall(68U)==NAS_SC_pwrite64);
     assert(nas_linux_decode_syscall(82U)==NAS_SC_fsync);

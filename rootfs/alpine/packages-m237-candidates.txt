@@ -1,0 +1,6 @@
+# Five official signed Alpine v3.23 main/community APKs, three native ISAs.
+recutils
+yajl-tools
+minisign
+geos
+proj-util

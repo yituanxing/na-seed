@@ -23,13 +23,8 @@
 #define NAS_UBOOT_POLL_BUDGET 20000000U
 #define NAS_UBOOT_STATUS_BYTE 64U
 #define FEATURE(bit) (UINT64_C(1)<<(bit))
-static struct nas_uboot_block *backend(struct udevice *d) {
- return d ? (struct nas_uboot_block *)d->context : NULL;
-}
 static struct nas_uboot_block *queue_backend(struct virtqueue *v) {
- if (!v || !v->transport)return NULL;
- return (struct nas_uboot_block *)((char *)v -
-         offsetof(struct nas_uboot_block,vq));
+ return v ? (struct nas_uboot_block *)v->owner : NULL;
 }
 int nas_uboot_sprintf(char *dst,const char *fmt,...) {
  if(!dst||!fmt)return -EINVAL;
@@ -44,43 +39,6 @@ int nas_uboot_sprintf(char *dst,const char *fmt,...) {
  dst[n]=0;va_end(ap);return n;
 }
 int blk_next_free_devnum(int class_id){(void)class_id;return 0;}
-void virtio_driver_features_init(struct virtio_dev_priv *p,
- const u32 *f,size_t count,const u32 *x,size_t n) {
- (void)x;(void)n;
- if(!p)return;
- /* The unchanged U-Boot backend has an erase entrypoint, but NaSeed's
-  * bounded adapter only supports IN, OUT and FLUSH. Do not advertise a
-  * WRITE_ZEROES command that virtqueue_add would reject. */
- for(size_t i=0;i<count;i++)
-     if(f[i]<64 && f[i]!=VIRTIO_BLK_F_WRITE_ZEROES)
-         p->offered |= FEATURE(f[i]);
- /* Filesystem fsync needs the standard VirtIO flush command. */
- p->offered |= FEATURE(VIRTIO_BLK_F_FLUSH) |
-               FEATURE(VIRTIO_BLK_F_RO);
-}
-bool virtio_has_feature(struct udevice *d,unsigned n) {
- struct nas_uboot_block *b=backend(d);
- return b && n<64 && (b->parent_priv.features & FEATURE(n))!=0;
-}
-void nas_uboot_virtio_cread(struct udevice *d,size_t offset,size_t len,void *dst){
- struct nas_uboot_block *b=backend(d);
- if(!b || !dst || (len!=4 && len!=8)){return;}
- uint64_t v=nas_virtio_config32(&b->transport,(uint32_t)offset);
- if(len==8)v|=(uint64_t)nas_virtio_config32(&b->transport,(uint32_t)(offset+4))<<32;
- if(len==4)*(uint32_t *)dst=(uint32_t)v;
- else *(uint64_t *)dst=v;
-}
-int virtio_find_vqs(struct udevice *d,int count,struct virtqueue **out){
- struct nas_uboot_block *b=backend(d);
- if(!b || !out || count!=1 || !b->ring.active)return -EINVAL;
- *out=&b->vq;
- return 0;
-}
-int virtio_reset(struct udevice *d) {
- struct nas_uboot_block *b=backend(d);
- if(!b || !b->transport.ops || !b->transport.ops->reset)return -EINVAL;
- b->transport.ops->reset(b->transport.context);return 0;
-}
 static void poison(struct virtqueue *v) {
  struct nas_uboot_block *b=queue_backend(v);
  if(!b)return;
@@ -89,7 +47,7 @@ static void poison(struct virtqueue *v) {
  if(b->transport.ops && b->transport.ops->reset)
      b->transport.ops->reset(b->transport.context);
 }
-int virtqueue_add(struct virtqueue *v,struct virtio_sg **sgs,
+static int blk_queue_add(struct virtqueue *v,struct virtio_sg **sgs,
                   unsigned out,unsigned in) {
  struct nas_uboot_block *b=queue_backend(v);
  if(!b||!sgs||v->poisoned||v->pending||!out||!in ||
@@ -144,12 +102,12 @@ int virtqueue_add(struct virtqueue *v,struct virtio_sg **sgs,
 fail:
  poison(v);return rc;
 }
-void virtqueue_kick(struct virtqueue *v) {
+static void blk_queue_kick(struct virtqueue *v) {
  /* nas_vring_queue_submit already notified as required by split-ring
   * semantics; this preserves U-Boot's kick ordering with no double kick. */
  (void)v;
 }
-void *virtqueue_get_buf(struct virtqueue *v,unsigned *used_len) {
+static void *blk_queue_get_buf(struct virtqueue *v,unsigned *used_len) {
  struct nas_uboot_block *b=queue_backend(v);
  if(!b || !v->pending)return NULL;
  uint32_t written=0;uint16_t id=0;int rc=-EAGAIN;
@@ -188,6 +146,9 @@ void *virtqueue_get_buf(struct virtqueue *v,unsigned *used_len) {
  v->pending=false;
  return v;
 }
+static const struct nas_uboot_vq_ops blk_vq_bridge={
+ .add=blk_queue_add,.kick=blk_queue_kick,.get_buf=blk_queue_get_buf
+};
 static int submit_flush(struct nas_uboot_block *b){
  struct virtio_blk_outhdr h={.type=VIRTIO_BLK_T_FLUSH};
  uint8_t status=VIRTIO_BLK_S_IOERR;
@@ -203,7 +164,7 @@ static int64_t read_blocks(void *ctx,uint64_t lba,uint32_t count,void *dst){
  struct nas_uboot_block *b=ctx;
  if(__atomic_exchange_n(&b->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
  int64_t rc=b->poisoned?-EIO:
-      (int64_t)uboot_virtio_blk.ops->read(&b->udev,lba,count,dst);
+      (int64_t)((const struct blk_ops *)uboot_virtio_blk.ops)->read(&b->udev,lba,count,dst);
  if(rc!=(int64_t)count)rc=-EIO;
  __atomic_store_n(&b->busy,false,__ATOMIC_RELEASE);return rc;
 }
@@ -211,7 +172,7 @@ static int64_t write_blocks(void *ctx,uint64_t lba,uint32_t count,const void *sr
  struct nas_uboot_block *b=ctx;
  if(__atomic_exchange_n(&b->busy,true,__ATOMIC_ACQUIRE))return -EBUSY;
  int64_t rc=b->poisoned?-EIO:
-      (int64_t)uboot_virtio_blk.ops->write(&b->udev,lba,count,src);
+      (int64_t)((const struct blk_ops *)uboot_virtio_blk.ops)->write(&b->udev,lba,count,src);
  if(rc!=(int64_t)count)rc=-EIO;
  __atomic_store_n(&b->busy,false,__ATOMIC_RELEASE);return rc;
 }
@@ -225,18 +186,55 @@ static int flush_blocks(void *ctx){
 static const struct nas_port_block_ops block_ops={
  .read=read_blocks,.write=write_blocks,.flush=flush_blocks
 };
+/* Teardown is ordered, retryable and ownership preserving: hardware stops
+ * touching the queue before any DMA page is returned. A failing release
+ * keeps its page/heap pointer intact, and an already released owner is
+ * skipped on retry. This is shared by normal detach and failed attach. */
+static int release_block_owners(struct nas_uboot_block *b) {
+ int rc=0;
+ if(b->ring.active || b->ring.dma_page.cpu) {
+     rc=nas_vring_queue_close(&b->ring);
+     if(rc)return rc;
+ } else if(b->transport.ops && b->transport.ops->reset) {
+     /* Also stop a partially configured transport which never published
+      * an active ring. The real close above already resets its device. */
+     b->transport.ops->reset(b->transport.context);
+ }
+ if(b->header_dma.cpu) {
+     rc=nas_dma_free_page(b->transport.dma,&b->header_dma);
+     if(rc)return rc;
+ }
+ if(b->payload_dma.cpu) {
+     rc=nas_dma_free_page(b->transport.dma,&b->payload_dma);
+     if(rc)return rc;
+ }
+ if(b->udev.priv) {
+     if(!nas_heap_free(b->udev.priv))return -EIO;
+     b->udev.priv=NULL;
+ }
+ return 0;
+}
 int nas_uboot_block_attach(struct nas_uboot_block *b,
  const struct nas_virtio_transport *tr,const char *name){
- if(!b||!tr||!name||!name[0]||!tr->dma||!tr->dma->coherent ||
-    b->port.block.registered||b->ring.active)return -EINVAL;
+ if(!b||!tr||!name||!name[0]||!tr->dma||!tr->dma->coherent)
+     return -EINVAL;
+ if(b->port.block.registered||b->port.block.refs||b->ring.active||
+    b->ring.dma_page.cpu||
+    b->header_dma.cpu||b->payload_dma.cpu||b->udev.priv||
+    b->teardown_pending)return -EBUSY;
  b->transport=*tr;b->poisoned=false;b->busy=false;
- b->parent_priv=(struct virtio_dev_priv){.vendor=0};
+ b->parent_priv=(struct virtio_dev_priv){.vendor=0,
+     .transport=&b->transport,.queues=b->queue_refs,.queue_count=1};
  b->parent=(struct udevice){.name=name,.uclass_priv=&b->parent_priv};
  b->udev=(struct udevice){.name=name,.parent=&b->parent,.context=b,.plat=&b->desc};
  b->udev.priv=nas_heap_calloc(1,uboot_virtio_blk.priv_auto);
  if(!b->udev.priv)return -ENOMEM;
  int rc=uboot_virtio_blk.bind(&b->udev);
  if(rc)goto fail;
+ /* Keep protocol policy at the class adapter, never in common VirtIO glue. */
+ b->parent_priv.offered &= ~FEATURE(VIRTIO_BLK_F_WRITE_ZEROES);
+ b->parent_priv.offered |= FEATURE(VIRTIO_BLK_F_FLUSH) |
+                           FEATURE(VIRTIO_BLK_F_RO);
  uint64_t supported=0;
  rc=nas_virtio_negotiate(&b->transport,0,b->parent_priv.offered,
                           &supported);
@@ -251,8 +249,10 @@ int nas_uboot_block_attach(struct nas_uboot_block *b,
  if(rc)goto fail;
  rc=nas_vring_queue_init(&b->ring,&b->transport,0,8);
  if(rc)goto fail;
- b->vq=(struct virtqueue){.ring=&b->ring,.transport=&b->transport,
-                          .header=&b->header_dma,.payload=&b->payload_dma};
+ b->vq=(struct virtqueue){.bridge=&blk_vq_bridge,.owner=b,
+      .ring=&b->ring,.transport=&b->transport,
+      .header=&b->header_dma,.payload=&b->payload_dma};
+ b->queue_refs[0]=&b->vq;
  rc=nas_virtio_activate(&b->transport);
  if(rc)goto fail;
  rc=uboot_virtio_blk.probe(&b->udev);
@@ -268,24 +268,29 @@ int nas_uboot_block_attach(struct nas_uboot_block *b,
       (uint32_t)b->desc.blksz,NAS_DMA_PAGE_BYTES/(uint32_t)b->desc.blksz,
       ro,NAS_PORT_BLOCK_SECTORS,&block_ops);
  if(!rc)return 0;
-fail:
- if(b->ring.active)(void)nas_vring_queue_close(&b->ring);
- if(b->payload_dma.cpu)(void)nas_dma_free_page(b->transport.dma,&b->payload_dma);
- if(b->header_dma.cpu)(void)nas_dma_free_page(b->transport.dma,&b->header_dma);
- if(b->transport.ops && b->transport.ops->reset)
-      b->transport.ops->reset(b->transport.context);
- if(b->udev.priv){(void)nas_heap_free(b->udev.priv);b->udev.priv=NULL;}
+fail: {
+ /* A failed rollback is still an owned instance. Keep it available for
+  * explicit retry via detach; the class was never published. */
+ int cleanup=release_block_owners(b);
+ if(cleanup) {
+     b->teardown_pending=true;
+     return cleanup;
+ }
  return rc;
+}
 }
 int nas_uboot_block_detach(struct nas_uboot_block *b){
  if(!b)return -EINVAL;
  if(__atomic_load_n(&b->busy,__ATOMIC_ACQUIRE))return -EBUSY;
- int rc=nas_port_block_detach(&b->port);
- if(rc)return rc;
- rc=nas_vring_queue_close(&b->ring);
- if(rc)return rc;
- int e1=nas_dma_free_page(b->transport.dma,&b->header_dma);
- int e2=nas_dma_free_page(b->transport.dma,&b->payload_dma);
- if(b->udev.priv){(void)nas_heap_free(b->udev.priv);b->udev.priv=NULL;}
- return e1?e1:e2;
+ if(!b->teardown_pending) {
+     if(!b->port.block.registered)return -ENODEV;
+     int rc=nas_port_block_detach(&b->port);
+     if(rc)return rc; /* mounted devices keep I/O until their last put */
+     b->teardown_pending=true;
+ }
+ int rc=release_block_owners(b);
+ if(rc)return rc; /* remain unregistered; no new I/O, retry is safe */
+ b->teardown_pending=false;
+ b->queue_refs[0]=NULL;
+ return 0;
 }

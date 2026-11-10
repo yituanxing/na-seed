@@ -1,0 +1,89 @@
+name: NaSeed M247 original Debian glibc dash direct PID1 x86
+
+# Independently validate an original Debian dash as the *initial* NaSeed
+# process. Preserve the already-proven M245/M246 and Alpine acceptance.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m247-debian-dash-pid1.yml'
+      - 'scripts/m247-*'
+      - 'tests/m247-*'
+      - 'docs/m247-*'
+      - 'scripts/m245-fetch-debian-dynamic.py'
+      - 'scripts/m245-debian-versions.tsv'
+      - 'scripts/fetch-busybox-fixture.sh'
+      - 'scripts/stage-busybox-rootfs.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'kernel/boot_image.c'
+      - 'kernel/init/main.c'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/exec.c'
+      - 'kernel/task/sched.c'
+      - 'kernel/mm/vm.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-original-debian-dash-pid1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Offline signed-source and genuine PID1 negative contracts
+        run: |
+          set -eu
+          python3 -B tests/m245-debian-dynamic-host.py
+          python3 -B tests/m247-debian-dash-host.py
+          sh -n scripts/m247-probe-debian-dash-pid1.sh
+          python3 - <<'PY'
+          import ast
+          ast.parse(open('scripts/m247-fetch-debian-dash.py', encoding='utf-8').read())
+          PY
+          sh scripts/check-m86-txn.sh
+      - name: Install signed Debian index and native x86 QEMU prerequisites
+        timeout-minutes: 13
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+            -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+            debian-archive-keyring cmake g++ clang lld binutils cpio \
+            xorriso mtools curl python3 qemu-system-x86 ovmf
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg
+          test -s /usr/share/OVMF/OVMF_CODE_4M.fd || \
+            test -s /usr/share/OVMF/OVMF_CODE.fd
+      - name: Restore pinned official working Limine seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Original Debian glibc dash PID1 runs real shell and coreutils
+        timeout-minutes: 19
+        run: sh scripts/m247-probe-debian-dash-pid1.sh amd64
+      - name: Preserve signed provenance and original native serial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m247-debian-glibc-dash-pid1-amd64
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            build/m247-debian-dash-pid1/amd64/source/manifest.json
+            build/m247-debian-dash-pid1/amd64/dash/manifest.json
+            build/m247-debian-dash-pid1/amd64/m247-cases.tsv
+            build/busybox-source-parity-x86/m105-m247-debian-dash-pid1.clean.log
+            build/busybox-source-parity-x86/m105-m247-debian-dash-pid1.serial.log

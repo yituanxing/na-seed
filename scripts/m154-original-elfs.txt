@@ -1,0 +1,32 @@
+# Exactly 30 distinct signed original Alpine 3.23 native ELF images.
+# Every file is functional-tested with deterministic real input; no help/version.
+usr/bin/a2ps
+usr/bin/barcode
+usr/bin/chafa
+usr/bin/chkfont
+usr/bin/csview
+usr/bin/csvq
+usr/bin/demandoc
+usr/bin/enca
+usr/bin/enscript
+usr/bin/epsffit
+usr/bin/figlet
+usr/bin/gnuplot
+usr/bin/gs
+usr/bin/html2text
+usr/bin/jql
+usr/bin/mandoc
+usr/bin/mkbitmap
+usr/bin/pango-list
+usr/bin/pango-segmentation
+usr/bin/pango-view
+usr/bin/potrace
+usr/bin/psbook
+usr/bin/psnup
+usr/bin/psresize
+usr/bin/psselect
+usr/bin/pstops
+usr/bin/rsvg-convert
+usr/bin/taplo
+usr/bin/unrtf
+usr/bin/xmlcatalog

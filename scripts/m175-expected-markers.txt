@@ -1,0 +1,2 @@
+# Exact scheduler-safe native guest verdict. Numerical counters are separate.
+[M175 INPUT IRQ ONLY PASS]

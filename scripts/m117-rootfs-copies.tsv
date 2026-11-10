@@ -1,0 +1,2 @@
+# Only data assertions are copied; native ELF files come from host-signed APKs.
+tests/m117-batch-run.sh	tests/m117-batch-run.sh

@@ -1,0 +1,2 @@
+# case-id\tmode\targv\texpected-exact-stdout\tevidence\tguest-entry
+m200-fbdev	cpio	-	M200_FB_MMAP_GUEST_PASS	-	/bin/naseed-fb-mmap

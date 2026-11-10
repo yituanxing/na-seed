@@ -13,6 +13,11 @@
 #define NAS_VIRTIO_STATUS_FEATURES_OK 8U
 #define NAS_VIRTIO_STATUS_FAILED 128U
 #define NAS_VIRTIO_F_VERSION_1 (UINT64_C(1)<<32)
+/* Source-owned interrupt status: 0 means this device did NOT assert the
+ * shared line; bits distinguish used-buffer and config-change events.
+ * The transport ACK precedes controller-level EOI/PLIC completion. */
+#define NAS_VIRTIO_IRQ_USED_BUFFER 1U
+#define NAS_VIRTIO_IRQ_CONFIG_CHANGE 2U
 struct nas_virtio_transport_ops {
     void (*reset)(void *);
     uint32_t (*read_status)(void *);
@@ -23,6 +28,15 @@ struct nas_virtio_transport_ops {
                        uint64_t desc, uint64_t driver, uint64_t device);
     void (*notify_queue)(void *, unsigned qid);
     uint32_t (*read_config32)(void *, uint32_t offset);
+    /* Linux virtio-input uses byte-wide select/subsel writes followed by
+     * selected bitmap/ABS-info reads. Keep device configuration accesses
+     * transport-neutral; an individual class driver owns the protocol. */
+    int (*read_config)(void *, uint32_t offset, void *dst, uint32_t bytes);
+    int (*write_config)(void *, uint32_t offset, const void *src,
+                        uint32_t bytes);
+    /* MMIO: read InterruptStatus, write InterruptACK. Modern PCI: read
+     * ISR_CFG byte once, which clears it. Safe in hard IRQ context. */
+    uint32_t (*read_ack_irq)(void *);
 };
 struct nas_virtio_transport {
     void *context;
@@ -42,4 +56,11 @@ int nas_virtio_activate(const struct nas_virtio_transport *);
 void nas_virtio_notify(const struct nas_virtio_transport *, unsigned qid);
 void nas_virtio_fail(const struct nas_virtio_transport *);
 uint32_t nas_virtio_config32(const struct nas_virtio_transport *,uint32_t offset);
+int nas_virtio_config_read(const struct nas_virtio_transport *,uint32_t offset,
+                           void *dst,uint32_t bytes);
+int nas_virtio_config_write(const struct nas_virtio_transport *,uint32_t offset,
+                            const void *src,uint32_t bytes);
+uint32_t nas_virtio_irq_ack(const struct nas_virtio_transport *);
+/* Adapter for nas_irq_bind(source_ack,source_context): source_context=t. */
+uint32_t nas_virtio_irq_ack_source(void *transport_context);
 #endif

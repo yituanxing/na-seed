@@ -1,0 +1,2 @@
+# case_id	rootfs	guest_argv	expected_marker	evidence	entrypoint
+m141-batch	cpio	sh -c '/bin/sh /tests/m141-system-run.sh ncat-loopback && echo M141_SYSTEM_NCAT_LOOPBACK_PASS'	M141_SYSTEM_NCAT_LOOPBACK_PASS	-	/bin/busybox

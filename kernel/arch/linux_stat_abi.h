@@ -50,4 +50,42 @@ _Static_assert(offsetof(struct nas_linux_stat, rdev) == 32, "generic64 rdev");
 _Static_assert(offsetof(struct nas_linux_stat, size) == 48, "size");
 _Static_assert(offsetof(struct nas_linux_stat, blocks) == 64, "blocks");
 _Static_assert(offsetof(struct nas_linux_stat, atime_sec) == 72, "timestamps");
+/* Linux include/uapi/linux/stat.h: statx has the SAME 256-byte layout for
+ * x86-64, AArch64 and RV64. Never use the host C library's statx struct. */
+struct nas_linux_statx_timestamp {
+    int64_t sec;
+    uint32_t nsec;
+    int32_t reserved;
+};
+struct nas_linux_statx {
+    uint32_t mask, blksize;
+    uint64_t attributes;
+    uint32_t nlink, uid, gid;
+    uint16_t mode, spare0;
+    uint64_t ino, size, blocks, attributes_mask;
+    struct nas_linux_statx_timestamp atime, btime, ctime, mtime;
+    uint32_t rdev_major, rdev_minor, dev_major, dev_minor;
+    uint64_t mnt_id;
+    uint32_t dio_mem_align, dio_offset_align;
+    uint64_t spare3[12];
+};
+_Static_assert(sizeof(struct nas_linux_statx_timestamp)==16,"statx timestamp ABI");
+_Static_assert(sizeof(struct nas_linux_statx)==256,"Linux statx ABI size");
+_Static_assert(offsetof(struct nas_linux_statx, ino)==32,"Linux statx ino");
+_Static_assert(offsetof(struct nas_linux_statx, atime)==64,"Linux statx atime");
+_Static_assert(offsetof(struct nas_linux_statx, dev_major)==136,"Linux statx device");
+_Static_assert(offsetof(struct nas_linux_statx, mnt_id)==144,"Linux statx mount ID");
+/* Linux LP64 struct statfs: f_fsid is two 32-bit words, followed by
+ * 64-bit name length, fragment size, mount flags and four spare words.
+ * Both x86-64 and asm-generic LP64 use this same 120-byte wire format. */
+struct nas_linux_statfs {
+    int64_t type, bsize;
+    uint64_t blocks,bfree,bavail,files,ffree;
+    int32_t fsid[2];
+    int64_t namelen,frsize,flags;
+    int64_t spare[4];
+};
+_Static_assert(sizeof(struct nas_linux_statfs)==120,"LP64 statfs size");
+_Static_assert(offsetof(struct nas_linux_statfs,fsid)==56,"LP64 statfs fsid");
+_Static_assert(offsetof(struct nas_linux_statfs,namelen)==64,"LP64 statfs name max");
 #endif

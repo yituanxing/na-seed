@@ -1,0 +1,2 @@
+# Runner only. Host installs all signed original binaries and dependencies.
+tests/m115-batch-run.sh	tests/m115-batch-run.sh

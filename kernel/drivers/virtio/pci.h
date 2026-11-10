@@ -16,7 +16,7 @@ struct nas_virtio_pci_resources {
     struct nas_virtio_pci_bar bars[NAS_VIRTIO_PCI_BAR_COUNT];
 };
 struct nas_virtio_pci {
-    volatile uint8_t *common,*notify,*device;
+    volatile uint8_t *common,*notify,*device,*isr;
     uint32_t device_size,notify_size,notify_multiplier;
     volatile uint16_t *queue_notify[NAS_VIRTIO_PCI_MAX_QUEUES];
 };

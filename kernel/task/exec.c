@@ -5,6 +5,9 @@
 #include "../fs/lookup.h"
 #include "../fs/path_request.h"
 #include "../fs/vfs.h"
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+#include "../fs/dac.h"
+#endif
 #include "../tmpfs.h"
 #include "../task.h"
 #include "../fd.h"
@@ -16,11 +19,14 @@
 #include "../drivers/serial.h"
 #include "../panic.h"
 #include "elf.h"
+#include "elf_segments.h"
 #include "user_stack.h"
 #include "../lib/string.h"
 #include "exec.h"
 #include "../time/clock.h"
 #include "process.h"
+#include "capability.h"
+#include "rusage.h"
 #include "signal.h"
 #include "ptrace.h"
 #include "sched.h"
@@ -44,7 +50,9 @@
 #define EXEC_STRING_MAX 8192
 #define EXEC_POOL_BYTES (512U * 1024U)
 static struct exec_snapshot {
-    char filename[256];
+    /* Linux AT_EXECFN preserves the complete original user pathname, not
+     * the 256-byte textual display projection of the resolved VFS Path. */
+    char filename[NAS_VFS_WALK_PATH_LIMIT];
     char strings[EXEC_POOL_BYTES];
     unsigned used;
     const char *argv[NAS_ARGV_MAX];
@@ -54,6 +62,23 @@ static struct exec_snapshot {
      * replacement; never retain pointers into a CPIO line buffer. */
     char shebang_path[256], shebang_arg[256];
 } pending_exec;
+
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+/* On M253, each staged executable/loader/script must be executable to
+ * the invoking fsuid/groups.  Until kernel-owned set-ID transitions and
+ * exec-time file capabilities are implemented, never silently ignore
+ * setuid/setgid mode bits.  Reject before image replacement begins. */
+static int exec_check_dac(const struct nas_fs_node *node) {
+    /* Node snapshots can predate chmod: inspect authoritative metadata.
+     * A nonroot image must never silently ignore a set-ID transition. */
+    struct nas_fs_node fresh={0};
+    int rc=nas_vfs_getattr(node,&fresh);
+    if(rc)return rc;
+    if((TASK.credentials.euid!=0 || TASK.credentials.fsuid!=0) &&
+       (fresh.mode&06000U))return -EPERM;
+    return nas_dac_mode(node,NAS_DAC_SEARCH);
+}
+#endif
 
 /* Exec's pathname is resolved against an independently pinned cwd/dirfd
  * Dentry, never against a transient canonical string or an old directory
@@ -71,8 +96,14 @@ static int exec_lookup_request(const struct nas_fs_path_request *request,
         int printable=nas_vfs_path_string(&path,display);
         if(printable==-ENAMETOOLONG || printable==-ENOENT) {
             /* The inode is usable even when an ancestor was renamed into
-             * an overlong path. filename[] is argv/debug data, not namei. */
-            memcpy(display,request->pathname,strlen(request->pathname)+1);
+             * an overlong path. This short string is only exec diagnostics
+             * and task comm; preserve full AT_EXECFN in pending_exec. */
+            const char *tail=strrchr(request->pathname,'/');
+            tail=(tail && tail[1]) ? tail+1 : request->pathname;
+            size_t len=strlen(tail);
+            if(len>=256) {tail+=len-255;len=255;}
+            memcpy(display,tail,len);
+            display[len]=0;
         } else rc=printable;
     }
     if(!rc)rc=nas_vfs_node_pin(node);
@@ -268,9 +299,13 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     nas_fs_path_end(&request);
     if(err)return (uint64_t)(int64_t)err;
     app_pinned=true;
-    if(app.is_dir || !(app.mode&0111U)) {
+    if((app.mode&0170000U)!=0100000U || !(app.mode&0111U)) {
         result=(uint64_t)-EACCES;goto exec_fail;
     }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+    err=exec_check_dac(&app);
+    if(err) {result=(uint64_t)(int64_t)err;goto exec_fail;}
+#endif
     struct elf_image main_img=elf_from_fs_node(&app);
 #ifdef NASEED_SYSCALL_TRACE
     static unsigned exec_images_logged;
@@ -301,10 +336,17 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         if(err) {
             result=(uint64_t)(int64_t)err;goto exec_fail;
         }
-        if(bin.is_dir || !(bin.mode&0111U)) {
+        if((bin.mode&0170000U)!=0100000U || !(bin.mode&0111U)) {
             exec_drop_image_sources(&bin,NULL);
             result=(uint64_t)-EACCES;goto exec_fail;
         }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        err=exec_check_dac(&bin);
+        if(err) {
+            exec_drop_image_sources(&bin,NULL);
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
+#endif
         /* Interpreter has its OWN inode lease; retire the script source
          * only AFTER acquiring it, never stage borrowed binfmt data. */
         exec_drop_image_sources(&app,NULL);
@@ -338,15 +380,31 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
         nas_print("\n");
         result=(uint64_t)-ENOEXEC;goto exec_fail;
     }
-    char loader_path[256];
+    char loader_path[256], requested_loader[256];
     struct elf_image interp_img={0};
     const struct elf_image *interp=0;
-    if(!exec_lookup_kernel_absolute(NAS_ELF_INTERP,&loader,loader_path)) {
-        if(!loader.is_dir) {
-            interp_img=elf_from_fs_node(&loader);
-            interp=&interp_img;
-            interpreter_pinned=true;
-        } else exec_drop_image_sources(&loader,NULL);
+    bool has_loader=false;
+    if (!nas_elf_interpreter_path(&main_img,NAS_ELF_MACHINE,
+                                  requested_loader,sizeof(requested_loader),
+                                  &has_loader)) {
+        result=(uint64_t)-ENOEXEC;goto exec_fail;
+    }
+    if (has_loader) {
+        err=exec_lookup_kernel_absolute(requested_loader,&loader,loader_path);
+        if (err) {
+            result=(uint64_t)(int64_t)err;goto exec_fail;
+        }
+        interpreter_pinned=true;
+        if ((loader.mode&0170000U)!=0100000U ||
+            !(loader.mode&0111U)) {
+            result=(uint64_t)-EACCES;goto exec_fail;
+        }
+#ifdef NAS_ENABLE_M253_NONROOT_DAC
+        err=exec_check_dac(&loader);
+        if(err) {result=(uint64_t)(int64_t)err;goto exec_fail;}
+#endif
+        interp_img=elf_from_fs_node(&loader);
+        interp=&interp_img;
     }
     /* Reset the compact pool on EVERY new exec, including retry after
      * failed syscall; do not retain stale pointers from prior attempts. */
@@ -385,7 +443,8 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
     nas_mmu_switch_root(new_root);
     loaded_phdr = loaded_phnum = loaded_main_entry = loaded_interp_base = 0;
     uint64_t entry, sp = 0;
-    bool good = nas_elf_load(&main_img, interp, &entry);
+    bool good = nas_elf_load(&main_img, interp,
+                             has_loader?requested_loader:NULL,&entry);
 #ifdef NASEED_SYSCALL_TRACE
     if (!good) { nas_print("[EXEC REJECT] failed ELF or interpreter load: "); nas_print(actual); nas_print("\n"); }
 #endif
@@ -447,6 +506,19 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * the worker both pointed to one CLONE_FILES object. The parent sees
      * one child PID and precisely one eventual SIGCHLD. */
     if(worker_exec) {
+        /* execve from a nonleader replaces the process identity, not its
+         * measured resource history. Quiescing siblings already charged
+         * their CPU into old_leader->exited_thread_cpu_ns. The old leader's
+         * own CPU becomes completed-thread CPU; the surviving worker keeps
+         * its own per-TID runtime for RUSAGE_THREAD. Previously waited
+         * children also remain owned by this Linux process across execve. */
+        exec_thread->exited_thread_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->exited_thread_cpu_ns,
+            nas_rusage_cpu_add(old_leader->cpu_runtime_ns,
+                               old_leader->exited_thread_cpu_ns));
+        exec_thread->waited_children_cpu_ns=nas_rusage_cpu_add(
+            exec_thread->waited_children_cpu_ns,
+            old_leader->waited_children_cpu_ns);
         exec_thread->pid=inherited_tgid;
         exec_thread->tgid=inherited_tgid;
         exec_thread->ppid=old_leader->ppid;
@@ -475,8 +547,25 @@ uint64_t nas_task_execve(uint64_t pathname, uint64_t argv, uint64_t envp,
      * released by nas_mm_put(previous_mm) after the root switch. */
     nas_time_timers_drop(); /* POSIX timers never survive execve. */
     TASK.execed = true; /* fork parent may no longer setpgid after exec */
+#ifdef NAS_ENABLE_M257_DEBIAN_SHUTDOWN
+    /* This is the committed VFS-resolved, upstream ext4 ELF identity, not
+     * PR_SET_NAME, argv[0], an untrusted path string or a script wrapper.
+     * Keep the original Debian halt command reachable ONLY from the signed
+     * physical-root profile. Reset provenance on every successful exec. */
+    TASK.m257_original_debian_halt =
+        app.filesystem && app.filesystem->exec_source_label &&
+        strcmp(app.filesystem->exec_source_label,"lwext4")==0 &&
+        strcmp(actual,"/usr/sbin/halt")==0;
+#endif
+    /* Linux execve preserves credentials, including Task-owned supplementary
+     * groups, but explicitly clears PR_SET_KEEPCAPS. No non-root identity
+     * or file-capability transition is silently enabled by this reset. */
+    nas_cap_exec_reset(&TASK.credentials);
     TASK.signal_frame_active = false;
     TASK.signal_frame_sp = 0;
+    TASK.signal_stack_sp=0;
+    TASK.signal_stack_size=0;
+    TASK.signal_stack_enabled=false;
     TASK.ppoll_mask_active=false;
     TASK.signal_force_deliver=0;
     thread_clear_tid = 0;

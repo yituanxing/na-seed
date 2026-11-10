@@ -1,0 +1,15 @@
+# M141: signed official Alpine v3.23 APKs (main repository).
+bind-tools
+procps-ng
+iproute2
+binutils
+nmap
+nmap-ncat
+nmap-nping
+openssh-client-default
+openssh-client-common
+iperf3
+tcpdump
+llvm21
+clang21
+util-linux-misc

@@ -1,0 +1,5 @@
+tests/m144-server-batch-run.sh	tests/m144-server-batch-run.sh
+tests/m144-ab-run.sh	tests/m144-ab-run.sh
+tests/m144-nginx-run.sh	tests/m144-nginx-run.sh
+tests/m144-haproxy-run.sh	tests/m144-haproxy-run.sh
+tests/m144-valkey-run.sh	tests/m144-valkey-run.sh

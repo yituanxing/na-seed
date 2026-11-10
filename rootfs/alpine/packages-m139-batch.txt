@@ -1,0 +1,10 @@
+# M139: twenty original font, Netpbm, util-linux, GnuTLS, and GnuPG ELFs.
+fontconfig
+font-dejavu
+netpbm
+util-linux-misc
+mcookie
+gnutls-utils
+gnupg-gpgconf
+ncurses
+ncurses-terminfo-base

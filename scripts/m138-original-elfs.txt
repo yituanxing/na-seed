@@ -1,0 +1,22 @@
+# Exactly 20 historically unused original Alpine LLVM 21 ELF executables.
+usr/bin/llvm21-as
+usr/bin/llvm21-dis
+usr/bin/opt21
+usr/bin/llc21
+usr/bin/llvm21-link
+usr/bin/llvm21-extract
+usr/bin/llvm21-bcanalyzer
+usr/bin/llvm21-diff
+usr/bin/llvm21-cat
+usr/bin/llvm21-cxxfilt
+usr/bin/llvm21-dwarfdump
+usr/bin/llvm21-mc
+usr/bin/llvm21-mca
+usr/bin/llvm21-objdump
+usr/bin/llvm21-nm
+usr/bin/llvm21-size
+usr/bin/llvm21-strings
+usr/bin/llvm21-objcopy
+usr/bin/llvm21-profdata
+usr/bin/llvm21-readobj
+

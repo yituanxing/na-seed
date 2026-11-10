@@ -1,0 +1,44 @@
+name: NaSeed M237 original signed Alpine Recutils Linux CSV diagnostic
+
+# Fast original-APK/Linux control only; never a guest, second boot, or ext4 PASS.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m237-recutils-linux-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  official-recutils-linux-amd64:
+    name: Original signed rec2csv exact output on ordinary Alpine Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Reproduce the guest Rec CSV roundtrip with unmodified signed APK ELFs
+        run: |
+          docker run --rm --platform linux/amd64 alpine:3.23 sh -ec '
+            apk add --no-cache recutils
+            apk info -v recutils
+            sha256sum /usr/bin/rec2csv /usr/bin/csv2rec /usr/bin/recsel
+            printf "%%rec: Contact\n\nName: Ada\nRole: Engineer\n\nName: Lin\nRole: Researcher\n" > /tmp/contacts.rec
+            /usr/bin/recsel -t Contact -c /tmp/contacts.rec > /tmp/source.count
+            /usr/bin/rec2csv -t Contact /tmp/contacts.rec > /tmp/export.csv 2> /tmp/export.err
+            printf "[M237 REC LINUX] rec2csv_size=%s stderr=%s source_count=%s\n" \
+              "$(wc -c < /tmp/export.csv)" "$(cat /tmp/export.err)" "$(cat /tmp/source.count)"
+            printf "[M237 REC LINUX] original rec2csv stdout follows:\n"
+            cat /tmp/export.csv
+            printf "[M237 REC LINUX] original rec2csv raw bytes follow:\n"
+            od -An -tx1 /tmp/export.csv
+            /usr/bin/csv2rec -t Contact /tmp/export.csv > /tmp/roundtrip.rec 2> /tmp/roundtrip.err
+            /usr/bin/recsel -t Contact -c /tmp/roundtrip.rec > /tmp/roundtrip.count
+            printf "[M237 REC LINUX] roundtrip_count=%s\n" "$(cat /tmp/roundtrip.count)"
+            grep -Fxq "2" /tmp/roundtrip.count
+            grep -Fq "Name: Ada" /tmp/roundtrip.rec
+            grep -Fq "Role: Engineer" /tmp/roundtrip.rec
+            grep -Fq "Name: Lin" /tmp/roundtrip.rec
+            grep -Fq "Role: Researcher" /tmp/roundtrip.rec
+            echo "[M237 REC LINUX PASS] original signed Recutils two-record CSV roundtrip; NOT NaSeed native QEMU PASS"
+          '

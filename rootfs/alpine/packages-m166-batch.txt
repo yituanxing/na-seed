@@ -1,0 +1,4 @@
+fbgrab
+imagemagick
+evtest
+libevdev-tools

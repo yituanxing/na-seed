@@ -1,0 +1,4 @@
+# Host files copied to guest after optional host-only fixture generation.
+tests/m118-batch-run.sh	tests/m118-batch-run.sh
+tests/m118-debug.c	tests/m118-debug.c
+tests/m118-debug-other.c	tests/m118-debug-other.c

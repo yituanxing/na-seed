@@ -2,21 +2,20 @@
 #define NASEED_VM_PROT_H
 #include <stdint.h>
 /* Linux mmap/mprotect PROT_*, not native x86/ARM/RISC-V PTE flags.
- * Our first eager-mapping VM requires a present readable page and forbids
- * W+X. A real PROT_NONE mapping requires VMA metadata and must not be
- * simulated with a readable page. Refuse it explicitly until supported.
+ * PROT_NONE is a VMA-only reservation until explicitly made accessible.
+ * Linux permits RWX mappings (notably the original V8 JIT CodeRange); the
+ * three supported user PTE backends can express R|W|X simultaneously.
+ * The VM layer remains responsible for ownership, lazy faults, and COW.
  */
 #define NAS_VM_READ  1U
 #define NAS_VM_WRITE 2U
 #define NAS_VM_EXEC  4U
 static inline int nas_vm_prot_supported(uint64_t prot) {
-    return prot && !(prot & ~7ULL) &&
-           !((prot & NAS_VM_WRITE) && (prot & NAS_VM_EXEC));
-}
-/* Internal already-authorized PTE transitions may preserve an ELF segment
- * overlap's legacy W+X boundary page during fork/COW. User mmap/mprotect
- * must continue to call nas_vm_prot_supported() and reject W+X. */
-static inline int nas_pte_prot_supported(uint64_t prot) {
     return prot && !(prot & ~7ULL);
+}
+/* Internal leaf transitions have the same valid nonempty Linux protection
+ * combinations; zero represents an absent rather than readable leaf. */
+static inline int nas_pte_prot_supported(uint64_t prot) {
+    return nas_vm_prot_supported(prot);
 }
 #endif

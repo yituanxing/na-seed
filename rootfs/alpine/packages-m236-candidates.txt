@@ -1,0 +1,8 @@
+# Original, signed Alpine v3.23 APK requests in all three architectures.
+# Each requested package is absent from the physical Alpine stage rootfs.
+fossil
+libdeflate-utils
+dfu-util
+ofarc
+ofhash
+xmlsec

@@ -1,0 +1,85 @@
+name: NaSeed dual VirtIO-MMIO + lwIP Alpine Ncat wire (RV64 and ARM64 QEMU)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  real-virtio-mmio-net:
+    name: Native ${{ matrix.port }} two MMIO NICs + DHCP + Alpine Ncat TCP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify upstream protocol source and narrow guest probe
+        run: |
+          set -eu
+          test "$(git -C third_party/lwip rev-parse HEAD)" = \
+            77dcd25a72509eb83f72b033d219b1d40cd8eb95
+          for script in scripts/probe-lwip-virtio-wire-multiarch.sh \
+                        scripts/probe-riscv64-busybox-matrix.sh \
+                        scripts/probe-aarch64-busybox-matrix.sh \
+                        scripts/stage-m141-prebuilt.sh tests/m141-system-run.sh; do
+            sh -n "$script"
+          done
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF { n++ } END {print n+0}' scripts/lwip-wire-cases.tsv)" -eq 1
+          grep -Fq M141_SYSTEM_NCAT_WIRE_PASS scripts/lwip-wire-cases.tsv
+      - name: Install native QEMU and signed Alpine staging dependencies
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+                      'cpio:cpio' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'qemu-riscv64:qemu-user'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64" ;;
+          esac
+          test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Boot two real MMIO NICs, obtain two DHCP leases and read host HTTP
+        timeout-minutes: 35
+        run: sh scripts/probe-lwip-virtio-wire-multiarch.sh ${{ matrix.port }}
+      - name: Preserve signed Alpine, guest serial and actual network frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwip-virtio-mmio-wire-${{ matrix.port }}
+          path: |
+            build/external/m141-batch/${{ matrix.port }}/apk-install.log
+            build/external/m141-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/m141-batch/${{ matrix.port }}/*.sha256
+            build/external/m141-batch/${{ matrix.port }}/host-http.log
+            build/external/m141-batch/${{ matrix.port }}/virtio-wire.pcap
+            build/port-riscv64/full/matrix-source/m141-batch.clean.log
+            build/port-riscv64/full/matrix-source/m141-batch.serial.log
+            build/port-aarch64/full/matrix-source/m141-batch.clean.log
+            build/port-aarch64/full/matrix-source/m141-batch.serial.log
+          if-no-files-found: ignore

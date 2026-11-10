@@ -73,6 +73,32 @@ static bool image_phdr(const struct elf_image *image, const struct elf_hdr *h,
     return nas_elf_image_read(image,
         h->phoff + (uint64_t)index * sizeof(*out), out, sizeof(*out));
 }
+bool nas_elf_interpreter_path(const struct elf_image *image,
+    uint16_t machine, char *path, unsigned capacity, bool *has_interpreter) {
+    if (!path || capacity < 2 || !has_interpreter) return false;
+    path[0] = 0;
+    *has_interpreter = false;
+    struct elf_hdr h;
+    if (!nas_elf_image_open(image, machine, true, ELF_MAX_LOADS, &h))
+        return false;
+    for (unsigned i = 0; i < h.phnum; i++) {
+        struct elf_phdr p;
+        if (!image_phdr(image, &h, i, &p)) return false;
+        if (p.type != ELF_INTERP) continue;
+        /* Exactly one bounded absolute, NUL-terminated pathname. Avoid
+         * interpreting untrusted binary bytes as a C string or allowing
+         * an embedded NUL to select a different VFS inode. */
+        if (*has_interpreter || p.filesz < 2 || p.filesz > capacity ||
+            !checked(p.offset, p.filesz, image->size) ||
+            !nas_elf_image_read(image, p.offset, path, p.filesz) ||
+            path[0] != '/' || path[p.filesz - 1] != 0)
+            return false;
+        for (uint64_t j = 1; j + 1 < p.filesz; j++)
+            if (path[j] == 0) return false;
+        *has_interpreter = true;
+    }
+    return true;
+}
 bool nas_elf_segments_load(const struct elf_image *image,
     const struct nas_elf_segment_policy *opt,
     const struct nas_elf_segment_ops *ops,
@@ -104,7 +130,7 @@ bool nas_elf_segments_load(const struct elf_image *image,
         const struct elf_phdr *p = &ph;
         if (p->type == ELF_INTERP) {
             uint8_t name[256];
-            if (p->filesz > sizeof(name) ||
+            if (result.has_interp || p->filesz > sizeof(name) ||
                 !checked(p->offset, p->filesz, image->size) ||
                 !nas_elf_image_read(image, p->offset, name, p->filesz) ||
                 !same_text(name, p->filesz, opt->interpreter))

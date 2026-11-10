@@ -1,0 +1,116 @@
+name: NaSeed M242 original Alpine same-QEMU reboot three ISA
+
+# Every source push automatically starts the physical double-boot oracle.
+# A host restart or two independent QEMU processes are never acceptance.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m242-original-alpine-physical-reboot.yml'
+      - 'scripts/probe-m242-alpine-reboot.sh'
+      - 'scripts/probe-m241-alpine-poweroff.sh'
+      - 'scripts/m242-alpine-reboot-uart.py'
+      - 'scripts/m242-verify-reboot-disk.py'
+      - 'scripts/test-m242-alpine-reboot-uart.py'
+      - 'scripts/run.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'kernel/init/main.c'
+      - 'kernel/platform/platform.h'
+      - 'kernel/platform/qemu_debug_exit.c'
+      - 'kernel/platform/riscv64.c'
+      - 'kernel/platform/aarch64.c'
+      - 'Makefile'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-alpine-physical-reboot:
+    name: Single QEMU same-process original Alpine reboot / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Strict two-boot parser unit tests and legacy poweroff contract
+        run: |
+          set -eu
+          sh -n scripts/probe-m242-alpine-reboot.sh scripts/probe-m241-alpine-poweroff.sh scripts/run.sh
+          python3 -m py_compile scripts/m242-alpine-reboot-uart.py scripts/m242-verify-reboot-disk.py
+          python3 scripts/test-m242-alpine-reboot-uart.py
+          sh scripts/check-m241-original-alpine-shutdown.sh
+      - name: Install native QEMU, ext4 and signed Alpine staging dependencies
+        timeout-minutes: 18
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Restore previously proven three-ISA Limine firmware seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: SAME QEMU two authentic Alpine logins, physical reboot, disk readback
+        timeout-minutes: 38
+        env:
+          NAS_M242_DIAG_SECONDS: '400'
+          NAS_M242_QEMU_TIMEOUT: '445'
+        run: sh scripts/probe-m242-alpine-reboot.sh ${{ matrix.port }}
+      - name: Preserve both raw boots and disk persistence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m242-same-qemu-original-alpine-reboot-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m242-*.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m241-*.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m241-*.serial.log
+            build/busybox-source-parity-x86/m193-batch.clean.log
+            build/busybox-source-parity-x86/m193-batch.serial.log
+            build/port-riscv64/full/matrix-source/m193-batch.clean.log
+            build/port-riscv64/full/matrix-source/m193-batch.serial.log
+            build/port-aarch64/full/matrix-source/m193-batch.clean.log
+            build/port-aarch64/full/matrix-source/m193-batch.serial.log
+          if-no-files-found: warn
+          retention-days: 7

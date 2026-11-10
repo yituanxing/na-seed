@@ -63,7 +63,8 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
         save.fpu_state[i]=t->arch.fpu_state[i];
     /* Linux AMD64's 128-byte red zone must be preserved for an
      * asynchronous signal even when a register-only leaf is interrupted. */
-    uint64_t sp=save.resume_user_rsp;
+    uint64_t interrupted_sp=save.resume_user_rsp;
+    uint64_t sp=nas_signal_handler_stack_top(t,interrupted_sp,flags);
     if(sp<128+512+440+24 || sp>=USER_LIMIT)return false;
     uint64_t fpaddr=(sp-128-512)&~UINT64_C(15);
     uint64_t frameaddr=((fpaddr-sizeof(struct x86_rt_sigframe))&
@@ -72,6 +73,9 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
     uf.pretcode=restorer;
     uf.uc.flags=0x6; /* UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS */
     uf.uc.sigmask=t->blocked_signals;
+    uf.uc.stack.sp=t->signal_stack_sp;
+    uf.uc.stack.size=t->signal_stack_size;
+    uf.uc.stack.flags=nas_signal_altstack_flags(t,interrupted_sp);
     uf.uc.sc.gpr[0]=regs[5];  /* r8 */
     uf.uc.sc.gpr[1]=regs[6];  /* r9 */
     uf.uc.sc.gpr[2]=regs[4];  /* r10 */
@@ -145,4 +149,8 @@ uint64_t nas_arch_signal_sigreturn(uint64_t *frame) {
 bool nas_arch_signal_install_trampoline(void) {
     /* x86-64 libc's SA_RESTORER supplies its executable return path. */
     return true;
+}
+
+uint64_t nas_arch_signal_min_altstack(void) {
+    return 2048; /* Linux x86-64 MINSIGSTKSZ */
 }

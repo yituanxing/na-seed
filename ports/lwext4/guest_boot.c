@@ -2,6 +2,9 @@
  * This is an opt-in source-level capability, never a replacement for the
  * common VFS or userspace syscall route. Build for all supported ISAs. */
 #include "guest_vfs.h"
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+#include "../../kernel/fs/broker.h"
+#endif
 #include "../../kernel/fs/lookup.h"
 #include "../../kernel/fs/vfs.h"
 #include "../../kernel/errno.h"
@@ -9,6 +12,12 @@
 #include <limine.h>
 #include <stdint.h>
 #include <stdbool.h>
+#ifdef NAS_ENABLE_M179_FS_IRQ
+#include "../../kernel/mm/heap.h"
+#include "../../kernel/task/kthread.h"
+#include "../../kernel/panic.h"
+#include "../uboot/async_blk.h"
+#endif
 #ifdef NAS_ENABLE_VIRTIO_BLK
 #include "../../kernel/block/device.h"
 #include "../../kernel/block/partition.h"
@@ -44,6 +53,24 @@ static void partition_device_name(char name[32],
 
 extern const struct limine_file *nas_module(uint64_t index);
 extern void nas_print(const char *);
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+extern void nas_dec(uint64_t);
+static void m191_boot_fail(const char *phase,int code) {
+    nas_print("[M191 ROOT FAIL] ");nas_print(phase);
+    nas_print(" code=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+}
+#endif
+static bool boot_shutdown_failed(const char *stage,int code) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    nas_print("[LWEXT4 SHUTDOWN ERROR] ");nas_print(stage);
+    nas_print(" errno=");nas_dec((uint64_t)(code<0?-code:code));
+    nas_print("\n");
+#else
+    (void)stage;(void)code;
+#endif
+    return false;
+}
 static struct nas_lwext4_mount boot_mount;
 
 static bool ext4_module(const struct limine_file *file) {
@@ -73,6 +100,11 @@ bool nas_lwext4_guest_boot_mount(void) {
         }
     }
     if(file) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        /* The persistent Alpine root must be backed by a real partition.
+         * A Limine RAM image cannot satisfy the reboot-persistence gate. */
+        return false;
+#endif
         bool ram_rw=ephemeral_rw_module(file);
         int rc=nas_lwext4_ramdisk_mount_mode(&boot_mount,"limine-ext4",
                                              "limine-ext4-dev","/mnt",
@@ -87,7 +119,12 @@ bool nas_lwext4_guest_boot_mount(void) {
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
         int disks=nas_platform_virtio_blk_probe();
-        if(disks<0)return false;
+        if(disks<0) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("virtio-probe",disks);
+#endif
+            return false;
+        }
         unsigned found=0;
         char chosen_disk[16]={0};
         unsigned chosen_partition_index=0;
@@ -97,7 +134,12 @@ bool nas_lwext4_guest_boot_mount(void) {
             char block_name[]="virtio0";
             block_name[6]=(char)('0'+i);
             struct nas_block_device *block=nas_block_get(block_name);
-            if(!block)return false;
+            if(!block) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+                m191_boot_fail("block-device-lookup",i);
+#endif
+                return false;
+            }
             bool whole_ext4=physical_ext4_at(block,0);
             if(whole_ext4) {
                 if(found++) {nas_block_put(block);return false;}
@@ -127,7 +169,14 @@ bool nas_lwext4_guest_boot_mount(void) {
             }
             nas_block_put(block);
         }
-        if(!found)return true; /* legitimate boot without ext4 disk */
+        if(!found) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("ext4-superblock-not-found",disks);
+            return false; /* selected external root is mandatory */
+#else
+            return true; /* legitimate boot without ext4 disk */
+#endif
+        }
         const char *selected_device=chosen_disk;
         static char partition_name[32];
         if(chosen_partition_index) {
@@ -135,21 +184,43 @@ bool nas_lwext4_guest_boot_mount(void) {
                                   chosen_partition_index);
             int rc=nas_partition_attach(&boot_partition,partition_name,
                                         chosen_disk,&chosen_extent,false);
-            if(rc)return false;
+            if(rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+                m191_boot_fail("partition-attach",rc);
+#endif
+                return false;
+            }
             boot_partition_attached=true;
             selected_device=partition_name;
         }
-        if(nas_lwext4_device_mount(&boot_mount,selected_device,
-                                   "virtio-ext4","/mnt",chosen_writable)) {
+        const char *target=
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            "/";
+#else
+            "/mnt";
+#endif
+        int mount_rc=nas_lwext4_device_mount(&boot_mount,selected_device,
+                                           "virtio-ext4",target,chosen_writable);
+        if(mount_rc) {
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+            m191_boot_fail("lwext4-device-mount",mount_rc);
+#endif
             if(boot_partition_attached) {
                 (void)nas_partition_detach(&boot_partition);
                 boot_partition_attached=false;
             }
             return false;
         }
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        /* The M191 build switch now also hosts signed Debian/glibc root
+         * programs. Keep its old acceptance marker for Alpine regressions,
+         * and provide a distribution-neutral physical root observation. */
+        nas_print("[ROOTFS] physical ext4 root registered at /\n");
+        nas_print("[M191 ROOT] physical Alpine ext4 registered at /\n");
+#endif
         nas_print(chosen_partition_index ?
-            "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted at /mnt\n" :
-            "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted at /mnt\n");
+            "[LWEXT4 GUEST] real GPT/MBR partition ext4 disk mounted\n" :
+            "[LWEXT4 GUEST] real external VirtIO-Blk ext4 disk mounted\n");
         if(!boot_mount.mount.read_only)
             nas_print("[VIRTIO-BLK] persistent block device write+flush enabled\n");
 #else
@@ -159,7 +230,13 @@ bool nas_lwext4_guest_boot_mount(void) {
     char path[256];
     struct nas_fs_node node;
     /* Same VFS pathwalk whether the provider owns a RAM module or real disk. */
-    if(nas_fs_lookup_node("/mnt",true,&node,path) || !node.is_dir ||
+    const char *mounted_path=
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+        "/";
+#else
+        "/mnt";
+#endif
+    if(nas_fs_lookup_node(mounted_path,true,&node,path) || !node.is_dir ||
        !node.filesystem || strcmp(node.filesystem->name,"lwext4"))
         return false;
 
@@ -183,18 +260,276 @@ bool nas_lwext4_guest_boot_mount(void) {
  * after fsync and block-cache flush; QEMU termination is not an unmount. */
 bool nas_lwext4_guest_boot_shutdown(void) {
     if (!boot_mount.mounted || boot_mount.mount.read_only) return true;
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    /* Original OpenRC mounts real runtime tmpfs (such as /run), which
+     * retains parent/covered root Dentries even after PID1 and its shell
+     * exit. Quiescence has already closed every File and cwd owner here. */
+    int rc=nas_vfs_shutdown_runtime_tmpfs();
+    if(rc)return boot_shutdown_failed("runtime tmpfs teardown",rc);
+    rc=nas_vfs_shutdown_external_root_pseudos();
+    if(rc)return boot_shutdown_failed("pseudo-mount teardown",rc);
+#endif
     /* A read-only image cannot have dirty metadata to commit and some
      * upstream read-only close paths refuse redundant writeback. Only a
      * writable filesystem requires final ext4 superblock commit. */
-    if (nas_lwext4_unmount(&boot_mount)) return false;
+    int unmount_rc=nas_lwext4_unmount(&boot_mount);
+    if(unmount_rc)return boot_shutdown_failed("root ext4 unmount",unmount_rc);
 #ifdef NAS_ENABLE_VIRTIO_BLK
     /* The mounted filesystem has dropped its BlockDevice reference.
      * Only NOW may the partition release its parent physical device. */
     if(boot_partition_attached) {
-        if(nas_partition_detach(&boot_partition))return false;
+        int detach_rc=nas_partition_detach(&boot_partition);
+        if(detach_rc)return boot_shutdown_failed("partition detach",detach_rc);
         boot_partition_attached=false;
     }
 #endif
     nas_print("[LWEXT4 GUEST] clean upstream unmount and durable flush\n");
     return true;
 }
+
+#ifdef NAS_ENABLE_M179_FS_IRQ
+/* M179: the *same* upstream lwext4+VFS pipeline as boot ext4, now on a
+ * second physical VirtIO-BLK partition whose BlockDevice may park the
+ * owning kernel C frame until an actual hardware IRQ completes its DMA.
+ * The entire mount/test/unmount lifetime stays in ONE kernel worker. In
+ * particular, exposing ordinary user open/create/stat on this mount before
+ * an M180 control-plane broker would enter that blocking driver on a user
+ * Task stack, so VFS rejects foreign access via mount.worker_io. */
+#define M179_SEED_BYTES 8192U
+#define M179_WRITE_BYTES 12288U
+#define M179_BLOCK_BYTES 4096U
+enum m179_state { M179_DORMANT, M179_SPAWNED, M179_RUNNING,
+                  M179_PASSED, M179_FAILED };
+static enum m179_state m179_state;
+static struct nas_kthread_handle m179_worker;
+static struct nas_lwext4_mount m179_mount;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+enum m180_state { M180_DORMANT, M180_SPAWNED, M180_MOUNTED,
+                  M180_UNMOUNTING, M180_UNMOUNTED };
+static enum m180_state m180_state;
+static struct nas_kthread_handle m180_worker;
+static bool m180_shutdown_requested;
+#endif
+static const char m179_seed_header[]="M179_HOST_EXT4_SEED";
+static const char m179_write_header[]="M179_GUEST_EXT4_WRITE";
+
+bool nas_lwext4_async_worker_current(void) {
+    if((m179_state==M179_RUNNING || m179_state==M179_PASSED) &&
+       nas_kthread_is_current(m179_worker))return true;
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    return (m180_state==M180_SPAWNED || m180_state==M180_MOUNTED ||
+            m180_state==M180_UNMOUNTING) &&
+           nas_kthread_is_current(m180_worker);
+#else
+    return false;
+#endif
+}
+bool nas_lwext4_async_runtime_passed(void) {
+    return m179_state==M179_PASSED;
+}
+/* The same kernel image may boot without the independent IRQ-backed disk.
+ * DORMANT means no filesystem worker/fixture was armed on THIS boot, not a
+ * worker that has failed or is still waiting for its durable flush. */
+bool nas_lwext4_async_runtime_armed(void) {
+    return m179_state!=M179_DORMANT;
+}
+static uint8_t m179_expected_byte(uint64_t offset,bool guest) {
+    const char *header=guest?m179_write_header:m179_seed_header;
+    size_t header_length=guest?sizeof(m179_write_header):
+                               sizeof(m179_seed_header);
+    if(offset<header_length)return (uint8_t)header[offset];
+    uint64_t fill=offset-header_length;
+    return (uint8_t)((fill*31U+(guest?43U:17U))&255U);
+}
+static bool m179_bytes_match(const uint8_t *bytes,uint64_t start,
+                             uint64_t count,bool guest) {
+    for(uint64_t i=0;i<count;i++)
+        if(bytes[i]!=m179_expected_byte(start+i,guest))return false;
+    return true;
+}
+static void m179_print_stats(const struct nas_async_blk_stats *before,
+                              const struct nas_async_blk_stats *after) {
+    nas_print("[M179 FS IRQ WORKER STATS] request_submitted=");
+    nas_dec(after->submitted-before->submitted);
+    nas_print(" request_completed=");
+    nas_dec(after->completed-before->completed);
+    nas_print(" irq_ack=");nas_dec(after->irq_ack-before->irq_ack);
+    nas_print(" deferred=");nas_dec(after->deferred-before->deferred);
+    nas_print(" fallback_poll=");
+    nas_dec(after->fallback_poll-before->fallback_poll);
+    nas_print(" waited=");
+    nas_dec(after->worker_waits-before->worker_waits);
+    nas_print("\n");
+}
+static bool m179_verified_ext4(void) {
+    struct nas_async_blk_stats before={0},after={0};
+    nas_async_blk_get_stats(&before);
+    int rc=nas_async_blk_register_block_device();
+    if(rc)return false;
+    const char *partition=nas_async_blk_mountable_partition();
+    if(!partition || strcmp(partition,"async-fixturep1"))return false;
+    m179_mount.worker_io_mount=true;
+    rc=nas_lwext4_device_mount(&m179_mount,partition,"m179-ext4-dev",
+                                "/async",true);
+    if(rc)return false;
+    bool okay=false;
+    uint8_t *buffer=nas_heap_alloc(M179_BLOCK_BYTES);
+    if(!buffer)goto Done;
+    struct nas_fs_node inode={0};
+    rc=nas_vfs_lookup("/async/host-seed.bin",&inode);
+    if(rc || inode.size!=M179_SEED_BYTES)goto DoneBuffer;
+    if(nas_vfs_node_pin(&inode))goto DoneBuffer;
+    for(uint64_t off=0;off<M179_SEED_BYTES;off+=M179_BLOCK_BYTES) {
+        int64_t got=nas_vfs_read_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(got!=M179_BLOCK_BYTES ||
+           !m179_bytes_match(buffer,off,M179_BLOCK_BYTES,false)) {
+            (void)nas_vfs_node_unpin(&inode);
+            goto DoneBuffer;
+        }
+    }
+    if(nas_vfs_node_unpin(&inode))goto DoneBuffer;
+    rc=nas_vfs_create("/async/guest-write.bin",0644);
+    /* M190's next real kernel boot retains this same ext4 partition.
+     * Only our own deterministic fixture inode may already exist; still
+     * overwrite, fsync, reopen, and compare every byte. Never turn other
+     * errors into a false M179 worker PASS. */
+    if(rc && rc!=-EEXIST)goto DoneBuffer;
+    rc=nas_vfs_lookup("/async/guest-write.bin",&inode);
+    if(rc || nas_vfs_node_pin(&inode))goto DoneBuffer;
+    for(uint64_t off=0;off<M179_WRITE_BYTES;off+=M179_BLOCK_BYTES) {
+        for(unsigned i=0;i<M179_BLOCK_BYTES;i++)
+            buffer[i]=m179_expected_byte(off+i,true);
+        int64_t wrote=nas_vfs_write_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(wrote!=M179_BLOCK_BYTES) {
+            (void)nas_vfs_node_unpin(&inode);
+            goto DoneBuffer;
+        }
+    }
+    int synced=nas_vfs_sync(&inode);
+    int released=nas_vfs_node_unpin(&inode);
+    if(synced || released)goto DoneBuffer;
+    /* Fresh VFS pathname/inode resolution, not an aliased dirty source
+     * buffer: prove the vendor filesystem can reopen the physical bytes. */
+    rc=nas_vfs_lookup("/async/guest-write.bin",&inode);
+    if(rc || nas_vfs_node_size(&inode)!=M179_WRITE_BYTES ||
+       nas_vfs_node_pin(&inode))goto DoneBuffer;
+    okay=true;
+    for(uint64_t off=0;off<M179_WRITE_BYTES;off+=M179_BLOCK_BYTES) {
+        int64_t got=nas_vfs_read_at(&inode,off,buffer,M179_BLOCK_BYTES);
+        if(got!=M179_BLOCK_BYTES ||
+           !m179_bytes_match(buffer,off,M179_BLOCK_BYTES,true)) {
+            okay=false;
+            break;
+        }
+    }
+    if(nas_vfs_node_unpin(&inode))okay=false;
+DoneBuffer:
+    if(!nas_heap_free(buffer))okay=false;
+Done:
+    /* The final journal/superblock flush is part of the proof. An fsync
+     * without ext4_umount is NOT an ext4 filesystem clean-shutdown oracle. */
+    if(nas_lwext4_unmount(&m179_mount))okay=false;
+    nas_async_blk_get_stats(&after);
+    m179_print_stats(&before,&after);
+    if(after.submitted<=before.submitted ||
+       after.completed<=before.completed ||
+       after.irq_ack<=before.irq_ack ||
+       after.deferred<=before.deferred ||
+       after.worker_waits<=before.worker_waits ||
+       after.fallback_poll!=before.fallback_poll)okay=false;
+    return okay;
+}
+static void m179_worker_entry(void *argument) {
+    (void)argument;
+    if(m179_state!=M179_SPAWNED)
+        nas_fail("M179 worker started without exactly-once ownership");
+    m179_state=M179_RUNNING;
+    if(!m179_verified_ext4()) {
+        m179_state=M179_FAILED;
+        nas_fail("M179 real ext4 IRQ-backed worker mount/read/write/fsync/umount failed");
+    }
+    m179_state=M179_PASSED;
+    nas_print("[M179 FS IRQ WORKER PASS]\n");
+    nas_print("[M179] real lwext4 VFS 8KiB host read + "
+              "12KiB durable guest write/reopen; BlockRequest IRQ and clean unmount\n");
+}
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+/* M179's original independent disk oracle must finish AND cleanly unmount
+ * before M180 may attach its user-facing instance. Start the latter after
+ * M179 PASS, independently of user requests: pathname traversal must see
+ * the newly published /async mount before it can know to queue an openat. */
+static void m180_worker_entry(void *argument) {
+    (void)argument;
+    if(m179_state!=M179_PASSED || m180_state!=M180_SPAWNED ||
+       !nas_kthread_is_current(m180_worker))
+        nas_fail("M180 filesystem worker started without exclusive owner");
+    struct nas_async_blk_stats before={0},after={0};
+    nas_async_blk_get_stats(&before);
+    const char *partition=nas_async_blk_mountable_partition();
+    if(!partition || strcmp(partition,"async-fixturep1"))
+        nas_fail("M180 original physical ext4 partition unavailable");
+    m179_mount.worker_io_mount=true;
+    int rc=nas_lwext4_device_mount(&m179_mount,partition,"m179-ext4-dev",
+                                    "/async",true);
+    if(rc)nas_fail("M180 persistent IRQ-backed lwext4 remount failed");
+    m180_state=M180_MOUNTED;
+    nas_print("[M180 FS USER IRQ] remounted /async in sole filesystem worker\n");
+    /* One serialized VFS executor. Its own C stack parks on real DMA IRQ;
+     * a blocked userspace syscall has an entirely different Task stack. */
+    nas_fs_broker_serve();
+    m180_state=M180_UNMOUNTING;
+    if(nas_lwext4_unmount(&m179_mount))
+        nas_fail("M180 final ext4 unmount/durable flush failed");
+    nas_async_blk_get_stats(&after);
+    struct nas_fs_broker_stats broker={0};
+    nas_fs_broker_get_stats(&broker);
+    nas_print("[M180 FS USER IRQ STATS] submitted=");
+    nas_dec(broker.submitted);
+    nas_print(" started=");nas_dec(broker.started);
+    nas_print(" completed=");nas_dec(broker.completed);
+    nas_print(" detached=");nas_dec(broker.detached);
+    nas_print(" abandoned=");nas_dec(broker.abandoned);
+    nas_print(" peak_queued=");nas_dec(broker.peak_queued);
+    nas_print(" broker_submitted=");nas_dec(broker.submitted);
+    nas_print(" broker_completed=");nas_dec(broker.completed);
+    nas_print(" task_parked=");nas_dec(broker.task_parked);
+    nas_print(" task_woken=");nas_dec(broker.task_woken);
+    nas_print(" request_submitted=");nas_dec(after.submitted-before.submitted);
+    nas_print(" request_completed=");nas_dec(after.completed-before.completed);
+    nas_print(" irq_ack=");nas_dec(after.irq_ack-before.irq_ack);
+    nas_print(" deferred=");nas_dec(after.deferred-before.deferred);
+    nas_print(" fallback_poll=");
+    nas_dec(after.fallback_poll-before.fallback_poll);
+    nas_print(" worker_waited=");nas_dec(after.worker_waits-before.worker_waits);
+    nas_print("\n[M180 FS USER IRQ] clean unmount and durable flush\n");
+    m180_state=M180_UNMOUNTED;
+}
+bool nas_lwext4_m180_runtime_ready(void) {
+    return m179_state==M179_PASSED && !m180_shutdown_requested &&
+           m180_state==M180_MOUNTED;
+}
+void nas_lwext4_m180_shutdown_request(void) {
+    m180_shutdown_requested=true;
+    nas_fs_broker_request_shutdown();
+}
+bool nas_lwext4_m180_shutdown_complete(void) {
+    if(m179_state!=M179_PASSED)return false;
+    return m180_state==M180_UNMOUNTED &&
+           nas_fs_broker_shutdown_complete();
+}
+#endif
+void nas_lwext4_async_runtime_step(void) {
+    if(m179_state==M179_DORMANT && nas_async_blk_fixture_ready()) {
+        if(!nas_kthread_spawn(m179_worker_entry,NULL,&m179_worker))
+            nas_fail("M179 cannot reserve owned filesystem kernel worker");
+        m179_state=M179_SPAWNED;
+    }
+#ifdef NAS_ENABLE_M180_FS_USER_IRQ
+    if(m179_state==M179_PASSED && m180_state==M180_DORMANT) {
+        if(!nas_kthread_spawn(m180_worker_entry,NULL,&m180_worker))
+            nas_fail("M180 cannot reserve persistent filesystem worker");
+        m180_state=M180_SPAWNED;
+    }
+#endif
+}
+#endif

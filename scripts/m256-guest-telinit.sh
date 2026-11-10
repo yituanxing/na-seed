@@ -1,0 +1,23 @@
+#!/usr/bin/dash
+# The original Debian sysvinit waits for sysinit to finish before actions
+# in the default runlevel. Check actual guest-created service and FIFO first.
+set -eu
+exec </dev/console >/dev/console 2>&1
+n=0
+while [ ! -p /run/initctl ] || [ ! -f /var/tmp/m255-sysvinit/respawn ]; do
+    n=$((n + 1))
+    if [ "$n" -ge 30 ]; then
+        /usr/bin/printf '%s\n' '[M256 INITCTL FAIL] guest FIFO or respawn missing after 30 polls'
+        exit 88
+    fi
+    /usr/bin/sleep 1
+done
+# The respawn shell persists its marker just before execing original Debian
+# sleep. Give that real ELF handoff a scheduling boundary before runlevel 3
+# terminates all runlevel-2 services.
+/usr/bin/sleep 1
+/usr/bin/printf '%s\n' '[M256 INITCTL] original PID1 FIFO is an actual named pipe'
+# A successful runlevel transition may terminate this runlevel-2 process
+# before telinit returns. The authoritative result is PID1's switch marker
+# plus its runlevel-3 inittab action, not a post-telinit shell print.
+/usr/sbin/telinit 3

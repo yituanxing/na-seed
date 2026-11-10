@@ -18,6 +18,13 @@
 #define TMP_FILE_CAP (TMP_PAGE_SIZE * (uint64_t)TMP_PAGE_ENTRIES * TMP_INDEX_ROOT_ENTRIES)
 
 struct nas_tmp_dentry;
+/* Runtime tmpfs mount owns its own resource accounting. The historical
+ * bootfs-backed /tmp and anonymous memfd keep their existing shared pool. */
+struct nas_tmp_quota {
+    uint64_t max_pages, used_pages;
+    uint64_t max_inodes, used_inodes;
+    bool strict_atime;
+};
 /* A directory maintains its own ordered child chain and a per-directory
  * forward readdir cursor. Namespace mutations invalidate the cached cursor;
  * callers may still seek to any ordinal and receive the correct entry. */
@@ -28,9 +35,16 @@ struct nas_tmp_directory {
 
 struct nas_tmp_file {
     bool used, is_dir;
+    /* An independent tmpfs superblock root is not a named dentry. */
+    bool is_mount_root;
+    struct nas_tmp_quota *quota; /* stable until the last VFS mount lease */
     uint32_t nlink; /* directory-entry references, not open FD references */
     uint64_t ino; /* stable object identity, never derived from a pathname */
     uint64_t index_root; /* physical address of optional 512-entry root frame */
+    /* Inode-owned allocation watermark; sparse size growth never advances it.
+     * FIEMAP_EXTENT_LAST must not repeatedly scan the remainder of a file. */
+    uint64_t highest_allocated_data_page_plus_one;
+    uint64_t xattr_frame; /* optional inode-owned packed extended-attribute frame */
     uint64_t size;
     uint64_t atime_ns, mtime_ns, ctime_ns; /* UNIX realtime nanoseconds */
     uint32_t mode;
@@ -62,6 +76,10 @@ struct nas_tmp_dentry {
 };
 const struct nas_tmp_dentry *tmp_child_entry_inode(const void *parent,unsigned index);
 const void *tmp_dir_parent_inode(const void *directory);
+/* Live tmpfs directory stat size comes from the namespace's sole child list.
+ * The /tmp root borrows its inode from bootfs and has separate child state. */
+uint64_t tmp_directory_stat_size(const struct nas_tmp_file *directory);
+uint64_t tmp_root_directory_stat_size(void);
 struct nas_tmp_file *tmp_create_at(const void *parent,const char *name,bool dir,uint32_t mode);
 /* Only S_IFSOCK is currently supported. The published inode already has
  * its final type bits; failures return NULL without publishing a dentry. */
@@ -74,10 +92,15 @@ int tmp_link_at(const void *old_parent,const char *old_name,
                 const void *new_parent,const char *new_name);
 int tmp_symlink_at(const void *parent,const char *name,const char *target);
 struct nas_tmp_file *tmp_inode_alloc(bool dir,uint32_t mode);
+struct nas_tmp_file *tmp_inode_alloc_quota(bool dir,uint32_t mode,
+                                          struct nas_tmp_quota *quota);
+/* Called only after VFS successfully detaches the corresponding mount. */
+int tmp_destroy_mount_root(struct nas_tmp_file *root);
 void tmp_inode_link(struct nas_tmp_file *file);
 void tmp_inode_unlink(struct nas_tmp_file *file);
 void tmp_inode_discard(struct nas_tmp_file *file);
 void tmp_inode_touch(struct nas_tmp_file *file);
+void tmp_inode_access(struct nas_tmp_file *file);
 /* A successful namespace edit modifies its containing directory, not merely
  * the inserted/unlinked child. The /tmp root borrows a bootfs inode and
  * therefore keeps its own mutable timestamp state behind this provider. */
@@ -99,11 +122,35 @@ int64_t tmp_read_at(const struct nas_tmp_file *file, uint64_t offset,
                     uint8_t *dst, uint64_t count);
 int64_t tmp_write_at(struct nas_tmp_file *file, uint64_t offset,
                      const uint8_t *src, uint64_t count);
+/* Acquire a second owner ref to the existing sparse-file data frame for
+ * direct MAP_SHARED PTE ownership. Offset is page-aligned and must be
+ * below live i_size; the inode retains its own storage-frame reference. */
+int tmp_acquire_shared_page(struct nas_tmp_file *file,uint64_t offset,
+                            uint64_t *pa_owned);
+/* Query an existing inode-owned data frame without creating one. */
+int tmp_page_resident(const struct nas_tmp_file *file,uint64_t offset);
+int tmp_touch_shared(struct nas_tmp_file *file);
 void tmp_truncate(struct nas_tmp_file *file);
 int tmp_resize(struct nas_tmp_file *file,uint64_t size);
+int tmp_preallocate(struct nas_tmp_file *file,uint64_t offset,
+                    uint64_t length,unsigned mode);
 int tmp_utimens(struct nas_tmp_file *file, uint64_t access_ns,
                 uint64_t modified_ns, bool set_access, bool set_modified);
 
 int tmp_chmod(struct nas_tmp_file *file, uint64_t mode);
 int tmp_chown(struct nas_tmp_file *file,uint32_t uid,uint32_t gid);
+/* A bounded, compact per-inode user.* namespace, stored with the inode and
+ * released only after its final unlink AND VFS File/Path lease. */
+int tmp_setxattr(struct nas_tmp_file *file,const char *name,
+                 const uint8_t *value,uint64_t size,unsigned flags);
+int64_t tmp_getxattr(const struct nas_tmp_file *file,const char *name,
+                     uint8_t *value,uint64_t capacity);
+int64_t tmp_listxattr(const struct nas_tmp_file *file,
+                      uint8_t *names,uint64_t capacity);
+int tmp_removexattr(struct nas_tmp_file *file,const char *name);
+/* Returns 1 for an allocated logical extent, 0 at the end, negative errno.
+ * RAM physical frames are NEVER exposed as on-disk physical offsets. */
+int tmp_fiemap_next(const struct nas_tmp_file *file,uint64_t start,
+                    uint64_t end,uint64_t *logical,uint64_t *length,
+                    bool *last);
 #endif

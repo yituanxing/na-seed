@@ -1,0 +1,55 @@
+name: NaSeed M256 original Debian sysvinit native initctl/runlevel diagnostic
+
+# One native system QEMU boot per ISA. Real signed Debian PID1 mounts /run
+# tmpfs via a separate setup helper, receives SIGUSR1, then consumes signed
+# telinit's runlevel change through a genuine named FIFO. NOT poweroff PASS.
+on:
+  push:
+    branches:
+      - naseed-app-batch2
+      - feat/m256-debian-initctl-20261110
+    paths:
+      - '.github/workflows/m256-debian-initctl.yml'
+      - '.github/workflows/m252-debian-text-tools-ext4.yml'
+      - 'scripts/m256-*'
+      - 'tests/m256-*'
+      - 'scripts/m255-*'
+      - 'tests/m255-*'
+      - 'scripts/m252-*'
+      - 'scripts/m251-*'
+      - 'scripts/m248-*'
+      - 'scripts/m245-*'
+      - 'scripts/native-*'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'kernel/boot_image.c'
+      - 'kernel/init/**'
+      - 'kernel/task/**'
+      - 'kernel/fs/**'
+      - 'kernel/mm/**'
+      - 'kernel/syscall/**'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/fd.h'
+      - 'kernel/pipe.c'
+      - 'kernel/pipe.h'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/virtio_blk*'
+      - 'ports/lwext4/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-debian-initctl:
+    uses: ./.github/workflows/m252-debian-text-tools-ext4.yml
+    with:
+      m254_shell: false
+      m255_init: false
+      m256_initctl: true

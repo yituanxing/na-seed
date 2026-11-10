@@ -1,0 +1,12 @@
+# Debian 13 trixie *binary* package pins. SHA256 and Size are obtained from
+# the architecture-specific, Debian-keyring-authenticated APT Packages index.
+# arch<TAB>package<TAB>exact_version
+amd64	coreutils	9.7-3
+amd64	libc6	2.41-12+deb13u4
+amd64	dash	0.5.12-12
+arm64	coreutils	9.7-3
+arm64	libc6	2.41-12+deb13u4
+arm64	dash	0.5.12-12
+riscv64	coreutils	9.7-3
+riscv64	libc6	2.41-12+deb13u4
+riscv64	dash	0.5.12-12

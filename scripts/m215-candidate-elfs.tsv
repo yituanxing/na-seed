@@ -1,0 +1,8 @@
+package	elf_path	family	probe
+# Strict five-ELF subset of M213's still-unaccepted original signed candidates.
+# New native QEMU proof must attest first+reopen, unique SHA and APK ownership.
+iproute2	sbin/genl	network	generic-netlink-family-discovery
+util-linux-misc	bin/pipesz	pipe	pipe-capacity-set-and-readback
+util-linux-misc	usr/bin/setpgid	process	child-process-group-transition
+util-linux-misc	usr/bin/waitpid	process	child-exit-status-observation
+util-linux-misc	usr/bin/isosize	filesystem	iso9660-size-fixture

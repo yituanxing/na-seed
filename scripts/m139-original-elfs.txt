@@ -1,0 +1,21 @@
+# Exactly 20 historically unused original native ELF executables.
+usr/bin/fc-cat
+usr/bin/fc-conflist
+usr/bin/fc-pattern
+usr/bin/fc-query
+usr/bin/fc-validate
+usr/bin/pnmpad
+usr/bin/pnmconvol
+usr/bin/pnmhisteq
+usr/bin/ppmtoxpm
+usr/bin/ppmtotga
+usr/bin/tgatoppm
+usr/bin/chrt
+usr/bin/setsid
+bin/mountpoint
+usr/bin/fincore
+usr/bin/ul
+usr/bin/mcookie
+usr/bin/certtool
+usr/bin/psktool
+usr/bin/gpgconf

@@ -1,0 +1,143 @@
+name: NaSeed M250 interactive original Debian glibc dash physical ext4 UART
+
+# M249 first proved signed Debian ELF as direct physical-ext4 PID1. M250 now
+# proves the distinctly marked static transport launcher on ext4 acquires
+# TIOCSCTTY then execve()s original dynamic Debian dash -i as SAME PID1.
+# The only PASS is native system-QEMU UART commands + clean ext4 fsck.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m250-debian-interactive-ext4.yml'
+      - 'scripts/m250-*'
+      - 'tests/m250-*'
+      - 'scripts/m249-*'
+      - 'scripts/m248-*'
+      - 'scripts/m193-*'
+      - 'scripts/native-qemu-target.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/native-source-qemu.sh'
+      - 'scripts/run.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'kernel/boot_image.c'
+      - 'kernel/init/main.c'
+      - 'kernel/fs/**'
+      - 'kernel/task/**'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/virtio_blk*'
+      - 'ports/lwext4/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-debian-dash-tty:
+    name: Original signed Debian glibc dash -i via real UART / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Reject static design regressions and command-echo fake PASS
+        run: |
+          set -eu
+          sh -n scripts/m250-probe-debian-interactive.sh
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          for p in sorted(Path('scripts').glob('m250-*.py')):
+              ast.parse(p.read_text(encoding='utf-8'), filename=str(p))
+          PY
+          python3 -B tests/m250-debian-interactive-host.py
+          python3 -B tests/m249-debian-ext4-host.py
+          python3 -B tests/m248-debian-multiarch-host.py
+          sh scripts/check-m191-pid1-quiesce.sh
+      - name: Install signed Debian and native QEMU/cross-GCC tools
+        timeout-minutes: 16
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'xorriso:xorriso' \
+                      'mformat:mtools' 'sgdisk:gdisk' 'curl:curl' \
+                      'python3:python3' 'dpkg-deb:dpkg' 'apt-cache:apt' \
+                      'mke2fs:e2fsprogs' 'e2fsck:e2fsprogs' 'debugfs:e2fsprogs'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg || \
+            missing="$missing debian-archive-keyring"
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -s /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -s /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf"
+              command -v gcc >/dev/null || missing="$missing gcc"
+              ;;
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -s /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || \
+                missing="$missing qemu-efi-riscv64"
+              command -v riscv64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-riscv64-linux-gnu"
+              test -s /usr/riscv64-linux-gnu/include/bits/wordsize.h || \
+                missing="$missing libc6-dev-riscv64-cross"
+              ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -s /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || \
+                missing="$missing qemu-efi-aarch64"
+              command -v aarch64-linux-gnu-gcc >/dev/null || \
+                missing="$missing gcc-aarch64-linux-gnu"
+              test -s /usr/aarch64-linux-gnu/include/bits/wordsize.h || \
+                missing="$missing libc6-dev-arm64-cross"
+              ;;
+            *) echo 'Unreviewed M250 native QEMU port' >&2; exit 2 ;;
+          esac
+          test -s /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+      - name: Restore pinned working multi-ISA Limine seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Genuine ext4 PID1 CTTY then interactive signed Debian/glibc dash
+        timeout-minutes: 32
+        run: sh scripts/m250-probe-debian-interactive.sh ${{ matrix.port }}
+      - name: Preserve original source proofs, real UART, full disk validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m250-signed-debian-interactive-ext4-${{ matrix.port }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            build/m250-debian-interactive/${{ matrix.port }}/source/manifest.json
+            build/m250-debian-interactive/${{ matrix.port }}/*.tsv
+            build/m250-debian-interactive/${{ matrix.port }}/*.log
+            build/port-*/full/matrix-source/m250-batch.clean.log
+            build/port-*/full/matrix-source/m250-batch.serial.log
+            build/busybox-source-parity-x86/m250-batch.clean.log
+            build/busybox-source-parity-x86/m250-batch.serial.log

@@ -44,7 +44,15 @@ int main(void) {
                                  NAS_PORT_BLOCK_SECTORS,&upstream)==0);
     struct nas_block_device *dev=nas_block_get("ported");
     assert(dev==&port.block);
+    /* A partition is an existing lifetime owner BEFORE a physical hot-
+     * remove request. It cannot open a new parent after remove begins. */
+    struct nas_partition_view view={0};
+    struct nas_partition_extent extent={.first_lba=2,.sectors=12};
+    assert(nas_partition_attach(&view,"ported-part","ported",&extent,false)==0);
+    struct nas_block_device *part=nas_block_get("ported-part");
+    assert(part==&view.block);
     assert(nas_port_block_detach(&port)==-EBUSY);
+    assert(port.block.removing && nas_block_get("ported")==NULL);
     assert(nas_block_read(dev,1,5,buffer)==0);
     assert(b.reads==3 && !memcmp(buffer,disk+512,2560));
     memset(buffer,0xc7,2048);
@@ -53,11 +61,6 @@ int main(void) {
     assert(nas_block_flush(dev)==0 && b.flushes==1);
     /* The independent upstream driver adapter shares the same partition
      * ownership/offset semantics, not a second registry or FS shim. */
-    struct nas_partition_view view={0};
-    struct nas_partition_extent extent={.first_lba=2,.sectors=12};
-    assert(nas_partition_attach(&view,"ported-part","ported",&extent,false)==0);
-    struct nas_block_device *part=nas_block_get("ported-part");
-    assert(part==&view.block);
     assert(nas_block_read(part,1,2,buffer)==0);
     assert(!memcmp(buffer,disk+3*512,1024));
     assert(nas_block_flush(part)==0 && b.flushes==2);
@@ -74,6 +77,7 @@ int main(void) {
     b.fail=0;
     nas_block_put(dev);
     assert(nas_port_block_detach(&port)==0);
+    assert(!port.block.removing);
     assert(nas_block_get("ported")==NULL);
     b.mode=0;b.reads=0;b.writes=0;
     assert(nas_port_block_attach(&port,"ported",&b,16,512,3,false,

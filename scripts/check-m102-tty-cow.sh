@@ -4,6 +4,7 @@ mkdir -p build/m102-tty-cow
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
     -ffunction-sections -fdata-sections -Wl,--gc-sections -I scripts/m89-test-include -I kernel \
     scripts/test-m102-tty-cow.c kernel/fs/file_io.c kernel/drivers/tty.c \
+    kernel/drivers/display/fbdev.c \
     kernel/drivers/tty_ldisc.c -o build/m102-tty-cow/host
 build/m102-tty-cow/host
 for arch in riscv64 aarch64; do

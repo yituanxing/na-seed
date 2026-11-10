@@ -1,0 +1,2 @@
+# Target files are exclusively test data/oracles; real ELF files come from APK.
+tests/m113-batch-run.sh	tests/m113-batch-run.sh

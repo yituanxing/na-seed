@@ -1,0 +1,3 @@
+# Dedicated native-runner M201 case: genuine original Alpine init from ext4;
+# M201's authenticated UART controller and physical QMP own its acceptance.
+m201-fbi	cpio	 	-	-	/sbin/init

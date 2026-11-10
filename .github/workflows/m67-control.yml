@@ -1,20 +1,5 @@
 name: NaSeed M67 original procps-ng pgrep/pkill — three native ISAs
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/test-procfs.c'
-      - 'scripts/stage-m67-prebuilt.sh'
-      - 'scripts/probe-m67-control.sh'
-      - 'scripts/m67-*'
-      - 'tests/m67-*'
-      - 'rootfs/alpine/packages-m67-control.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m67-control.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

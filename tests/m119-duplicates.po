@@ -1,0 +1,11 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: NaSeed M119 duplicates\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "M119_REPEAT"
+msgstr "repeat_m119"
+
+msgid "M119_REPEAT"
+msgstr "repeat_m119"

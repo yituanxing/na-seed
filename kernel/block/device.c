@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 static struct nas_block_device *registered[NAS_BLOCK_DEVICE_LIMIT];
+static uint64_t next_incarnation=1;
 
 static bool sector_size_valid(uint32_t n) {
     return n >= 512U && n <= 4096U && !(n & (n - 1U));
@@ -16,8 +17,15 @@ int nas_block_register(struct nas_block_device *dev) {
         dev->sectors > UINT64_MAX / dev->sector_bytes ||
         (!dev->read_only && !dev->ops->write))
         return -EINVAL;
-    if (dev->registered || dev->refs)
+    /* One devfs/sysfs basename per registered device, including nested
+     * partition symlinks. Keep every generated path and uevent in 256 bytes. */
+    if (!strcmp(dev->name,".") || !strcmp(dev->name,"..") ||
+        strchr(dev->name,'/'))return -EINVAL;
+    if(strlen(dev->name)>95U)return -ENAMETOOLONG;
+    if (dev->registered || dev->removing || dev->refs)
         return -EBUSY;
+    if (!next_incarnation || next_incarnation >= (UINT64_C(1)<<48))
+        return -ENOSPC;
     unsigned vacant = NAS_BLOCK_DEVICE_LIMIT;
     for (unsigned n = 0; n < NAS_BLOCK_DEVICE_LIMIT; ++n) {
         if (registered[n] && !strcmp(registered[n]->name, dev->name))
@@ -28,7 +36,14 @@ int nas_block_register(struct nas_block_device *dev) {
     if (vacant == NAS_BLOCK_DEVICE_LIMIT)
         return -ENOSPC;
     registered[vacant] = dev;
+    dev->rdev=(NAS_BLOCK_MAJOR<<8)|vacant;
+    dev->incarnation=next_incarnation++;
     dev->registered = true;
+    return 0;
+}
+int nas_block_begin_remove(struct nas_block_device *dev) {
+    if (!dev || !dev->registered) return -ENODEV;
+    dev->removing = true;
     return 0;
 }
 int nas_block_unregister(struct nas_block_device *dev) {
@@ -38,6 +53,7 @@ int nas_block_unregister(struct nas_block_device *dev) {
         if (registered[n] == dev) {
             registered[n] = NULL;
             dev->registered = false;
+            dev->removing = false;
             return 0;
         }
     }
@@ -47,10 +63,21 @@ struct nas_block_device *nas_block_get(const char *name) {
     if (!name) return NULL;
     for (unsigned n = 0; n < NAS_BLOCK_DEVICE_LIMIT; ++n) {
         struct nas_block_device *dev = registered[n];
-        if (dev && dev->registered && !strcmp(name, dev->name)) {
+        if (dev && dev->registered && !dev->removing &&
+            !strcmp(name, dev->name)) {
+            /* A wrapped pin count could allow removal of live storage. */
+            if (dev->refs == UINT32_MAX) return NULL;
             ++dev->refs;
             return dev;
         }
+    }
+    return NULL;
+}
+struct nas_block_device *nas_block_at(unsigned ordinal) {
+    for(unsigned i=0;i<NAS_BLOCK_DEVICE_LIMIT;i++) {
+        struct nas_block_device *dev=registered[i];
+        if(!dev || !dev->registered)continue;
+        if(!ordinal--)return dev;
     }
     return NULL;
 }

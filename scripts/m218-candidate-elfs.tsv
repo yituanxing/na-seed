@@ -1,0 +1,4 @@
+package	elf_path	family	probe
+# New M218 candidate, not accepted until real signed first/reopen QEMU proof.
+# The original Alpine iproute2 ifstat must observe actual changing NIC stats.
+iproute2	sbin/ifstat	network	live-interface-counter-delta

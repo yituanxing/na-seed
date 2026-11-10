@@ -10,6 +10,7 @@
 #include "../kernel/arch/linux_fcntl_abi.h"
 #include "../kernel/fs/path_request.h"
 #include "../kernel/arch/mmu.h"
+#include "../kernel/mm/heap.h"
 
 static int rootless,root_refs,cwd_refs,fd_refs;
 static char root_dentry,cwd_dentry,fd_dentry;
@@ -135,11 +136,32 @@ int main(void) {
     setup();
     assert(nas_fs_kernel_path_begin((uint64_t)-99,"file",&req)==-EBADF);
     assert(nas_fs_kernel_path_begin((uint64_t)-100,"",&req)==-ENOENT);
-    char at_limit[257];memset(at_limit,'x',256);at_limit[256]=0;
-    assert(nas_fs_kernel_path_begin((uint64_t)-100,at_limit,&req)==-ENAMETOOLONG);
+    char at_limit[NAS_VFS_WALK_PATH_LIMIT+1];
+    memset(at_limit,'x',NAS_VFS_WALK_PATH_LIMIT);
+    at_limit[NAS_VFS_WALK_PATH_LIMIT]=0;
+    /* 255 stays inline, 256 switches to one owned heap allocation. */
     at_limit[255]=0;
     assert(!nas_fs_kernel_path_begin((uint64_t)-100,at_limit,&req));
+    assert(req.pathname==req.inline_path);
     nas_fs_path_end(&req);no_leak();
+    at_limit[255]='x';at_limit[256]=0;
+    assert(!nas_fs_kernel_path_begin((uint64_t)-100,at_limit,&req));
+    assert(req.pathname!=req.inline_path && strlen(req.pathname)==256);
+    char *owned=req.pathname;
+    nas_fs_path_end(&req);
+    assert(!req.pathname && !nas_heap_free(owned));
+    no_leak();
+    /* Linux PATH_MAX means 4095 content bytes plus the terminating NUL. */
+    at_limit[256]='x';at_limit[NAS_VFS_WALK_PATH_LIMIT-1]=0;
+    assert(!nas_fs_kernel_path_begin((uint64_t)-100,at_limit,&req));
+    assert(req.pathname!=req.inline_path &&
+           strlen(req.pathname)==NAS_VFS_WALK_PATH_LIMIT-1);
+    owned=req.pathname;
+    nas_fs_path_end(&req);no_leak();
+    assert(!req.pathname && !nas_heap_free(owned));
+    at_limit[NAS_VFS_WALK_PATH_LIMIT-1]='x';
+    assert(nas_fs_kernel_path_begin((uint64_t)-100,at_limit,&req)==-ENAMETOOLONG);
+    assert(!req.pathname);no_leak();
 
     setup();
     assert(nas_fs_user_path_begin((uint64_t)-100,USER_LIMIT,&req)==-EFAULT);
@@ -148,15 +170,38 @@ int main(void) {
     assert(!nas_fs_user_path_begin((uint64_t)-100,
                    (uint64_t)(uintptr_t)"/tmp/guest",&req));
     assert(!strcmp(req.pathname,"/tmp/guest"));
+    assert(req.pathname==req.inline_path);
     nas_fs_path_end(&req);no_leak();
-    char too_long[257];memset(too_long,'z',256);too_long[256]=0;
-    assert(nas_fs_user_path_begin((uint64_t)-100,
-                   (uint64_t)(uintptr_t)too_long,&req)==-ENAMETOOLONG);
+    char too_long[NAS_VFS_WALK_PATH_LIMIT+1];
+    memset(too_long,'z',NAS_VFS_WALK_PATH_LIMIT);
+    too_long[NAS_VFS_WALK_PATH_LIMIT]=0;
     too_long[255]=0;
     assert(!nas_fs_user_path_begin((uint64_t)-100,
                    (uint64_t)(uintptr_t)too_long,&req));
+    assert(req.pathname==req.inline_path);
     assert(strlen(req.pathname)==255);
     nas_fs_path_end(&req);no_leak();
-    puts("[PATH REQUEST HOST PASS] absolute dirfd ignored; rootless relative File; O_PATH; ownership; invalid paths");
+    too_long[255]='z';too_long[256]=0;
+    assert(!nas_fs_user_path_begin((uint64_t)-100,
+                   (uint64_t)(uintptr_t)too_long,&req));
+    assert(req.pathname!=req.inline_path && strlen(req.pathname)==256);
+    owned=req.pathname;
+    nas_fs_path_end(&req);
+    assert(!req.pathname && !nas_heap_free(owned));
+    no_leak();
+    too_long[256]='z';too_long[NAS_VFS_WALK_PATH_LIMIT-1]=0;
+    assert(!nas_fs_user_path_begin((uint64_t)-100,
+                   (uint64_t)(uintptr_t)too_long,&req));
+    assert(req.pathname!=req.inline_path &&
+           strlen(req.pathname)==NAS_VFS_WALK_PATH_LIMIT-1);
+    owned=req.pathname;
+    nas_fs_path_end(&req);
+    assert(!req.pathname && !nas_heap_free(owned));
+    no_leak();
+    too_long[NAS_VFS_WALK_PATH_LIMIT-1]='z';
+    assert(nas_fs_user_path_begin((uint64_t)-100,
+                   (uint64_t)(uintptr_t)too_long,&req)==-ENAMETOOLONG);
+    assert(!req.pathname);no_leak();
+    puts("[PATH REQUEST HOST PASS] root/dirfd anchors; inline/heap ownership; 255/256/4095/4096 path boundaries");
     return 0;
 }

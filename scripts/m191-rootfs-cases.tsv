@@ -1,0 +1,5 @@
+# M191: real, independently attached Alpine ext4 is `/`, not a CPIO payload.
+# Columns: case-id<TAB>module-mode<TAB>argv-tail<TAB>exact-stdout<TAB>evidence<TAB>entry
+# The CPIO is a separately staged rescue boot module only.  The kernel's
+# M191 root-source log and original /etc/alpine-release must prove ext4 `/`.
+m191-batch	cpio	sh -c "test -x /sbin/init && test -s /etc/apk/world && cat /etc/alpine-release"	3.23.7	-	/bin/busybox

@@ -9,17 +9,38 @@
  * stay in the callers. Two endpoint slots have independent refcounts.
  */
 #define NAS_PIPE_COUNT 32
+/* Linux PIPE_BUF is independent of the adjustable ring capacity. */
 #define NAS_PIPE_CAP 4096U
+#define NAS_PIPE_MAX_CAP (1024U * 1024U)
 
 /* Bind two already-reserved open-description slots; no user addresses. */
 int nas_pipe_create(unsigned read_slot, unsigned write_slot);
+/* A named FIFO has one byte ring per live mount+inode incarnation. Different
+ * open descriptions attach independent reader/writer ends; dup/fork remain
+ * accounted once through their shared File slot. access=0/R,1/W,2/RW.
+ * Nonblocking writers without readers fail ENXIO before publication. */
+int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
+                          unsigned slot,unsigned access,bool nonblock);
 /* A Unix stream socketpair is two opposing pipe channels with the same two
  * refcounted open descriptions. Both endpoints support read and write. */
 int nas_pipe_create_socketpair(unsigned first_slot, unsigned second_slot);
+/* Socket-only half close; dup/fork aliases share one endpoint state. */
+int nas_pipe_socket_shutdown(unsigned slot,unsigned how);
+bool nas_pipe_socket_read_shutdown(unsigned slot);
+bool nas_pipe_socket_write_shutdown(unsigned slot);
 void nas_pipe_release_description(unsigned slot);
 /* Return the opposing receive-description of a connected AF_UNIX stream.
  * Used for genuine SCM_RIGHTS delivery, never a process-local FD number. */
 int nas_pipe_peer_slot(unsigned writing_slot);
+
+/* Linux F_{GET,SET}PIPE_SZ operate on the pipe object, not on an FD alias.
+ * Both read and write description slots observe the same byte capacity.
+ * SET rounds to a power-of-two page multiple (4 KiB..1 MiB), preserves
+ * unread bytes, and returns the installed capacity or negative errno.
+ * The caller must reject non-pipe descriptors (in particular sockets).
+ */
+int64_t nas_pipe_capacity(unsigned slot);
+int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested);
 
 /* Readiness reports also include EOF (read side) and the EPIPE condition
  * (write side) so a blocked syscall can resume to return the real result.
@@ -28,6 +49,8 @@ bool nas_pipe_read_ready(unsigned slot);
 bool nas_pipe_write_ready(unsigned slot);
 bool nas_pipe_poll_readable(unsigned slot);
 bool nas_pipe_poll_writable(unsigned slot);
+/* EOF is independently observable as POLLHUP even with events=0. */
+bool nas_pipe_read_hup(unsigned slot);
 
 /* Preflight returns available/accepted byte count or negative errno.
  * Caller owns user-memory validation and transfers bytes before commit.

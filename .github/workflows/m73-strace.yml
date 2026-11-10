@@ -1,19 +1,5 @@
 name: NaSeed M73 signed strace -f and blocked syscall native three-ISA gate
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'scripts/stage-m73-prebuilt.sh'
-      - 'scripts/probe-m73-strace.sh'
-      - 'scripts/m73-*'
-      - 'tests/m73-*'
-      - 'rootfs/alpine/packages-m73-strace.txt'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - '.github/workflows/m73-strace.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

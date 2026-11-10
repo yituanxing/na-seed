@@ -9,10 +9,17 @@
 #include "../kernel/task.h"
 #include "../kernel/errno.h"
 #include "../kernel/drivers/tty.h"
+#include "../kernel/drivers/core/chrdev.h"
+
+int nas_chrdev_node_register(struct nas_chrdev_node *node) {
+    (void)node;return 0;
+}
 #include "../kernel/drivers/tty_ldisc.h"
 
 static struct nas_task owner={.pid=41,.sid=41,.pgid=41};
 struct nas_task *nas_current_task=&owner;
+void nas_vt_init(void) {}
+int nas_vt_chrdev_init(void) {return 0;}
 static const uint8_t *rx;
 static unsigned rx_remaining;
 void nas_putchar(char c){(void)c;}

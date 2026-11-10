@@ -57,6 +57,55 @@ static struct nas_posix_timer *timer_ref(uint64_t id){
     if(id>=NAS_POSIX_TIMERS || !timer_owner()->timers[id].used)return 0;
     return &timer_owner()->timers[id];
 }
+/* Legacy interval timers are independent of timer_create(2)'s timer-ID
+ * namespace. ITIMER_REAL is a single monotonic deadline per signal group:
+ * SIGALRM is process-directed, and all threads observe one replacement. */
+static uint64_t itimer_real_snapshot(const struct nas_signal_group *group,
+                                     uint64_t out){
+    uint64_t now=nas_arch_monotonic_ns();
+    uint64_t left=group->itimer_real_armed &&
+        group->itimer_real_deadline_ns>now ?
+        group->itimer_real_deadline_ns-now:0;
+    /* Linux LP64 itimerval: interval.tv_sec, interval.tv_usec,
+     * value.tv_sec, value.tv_usec; round remaining ns UP to a usec. */
+    uint64_t interval=group->itimer_real_interval_ns;
+    uint64_t val[4]={interval/NAS_NSEC_PER_SEC,
+        (interval%NAS_NSEC_PER_SEC)/1000U,
+        left/NAS_NSEC_PER_SEC,
+        ((left%NAS_NSEC_PER_SEC)+999U)/1000U};
+    if(val[3]==1000000U){val[2]++;val[3]=0;}
+    return nas_user_write_bytes(out,(const uint8_t *)val,sizeof(val))?
+        0:(uint64_t)-EFAULT;
+}
+uint64_t nas_time_getitimer(uint64_t which,uint64_t out){
+    if(which!=0)return (uint64_t)-EINVAL; /* ITIMER_REAL only */
+    if(!out)return (uint64_t)-EFAULT;
+    return itimer_real_snapshot(nas_current_task->signal_group,out);
+}
+uint64_t nas_time_setitimer(uint64_t which,uint64_t value,uint64_t old){
+    if(which!=0)return (uint64_t)-EINVAL;
+    /* Linux accepts a NULL new value as a disarm. */
+    uint64_t wire[4]={0};
+    if(value && !nas_user_read_bytes(value,(uint8_t *)wire,sizeof(wire)))
+        return (uint64_t)-EFAULT;
+    if((int64_t)wire[0]<0 || (int64_t)wire[1]<0 || wire[1]>=1000000U ||
+       (int64_t)wire[2]<0 || (int64_t)wire[3]<0 || wire[3]>=1000000U)
+        return (uint64_t)-EINVAL;
+    uint64_t interval,start;
+    if(!nas_time_duration_ns(wire[0],wire[1]*1000U,&interval) ||
+       !nas_time_duration_ns(wire[2],wire[3]*1000U,&start))
+        return (uint64_t)-EINVAL;
+    struct nas_signal_group *group=nas_current_task->signal_group;
+    if(old){
+        uint64_t rc=itimer_real_snapshot(group,old);
+        if((int64_t)rc<0)return rc;
+    }
+    group->itimer_real_interval_ns=interval;
+    group->itimer_real_armed=start!=0;
+    group->itimer_real_deadline_ns=start?
+        nas_time_add_deadline(nas_arch_monotonic_ns(),start):0;
+    return 0;
+}
 static uint64_t timer_snapshot(const struct nas_posix_timer *t,uint64_t out){
     uint64_t now;
     if(!timer_now(t->clockid,&now))return (uint64_t)-EOPNOTSUPP;
@@ -145,8 +194,17 @@ bool nas_time_timers_armed(void){
         const struct nas_task *p=nas_task_at(i);
         if(!p || !p->pid || p->state==NAS_TASK_FREE ||
            p->state==NAS_TASK_ZOMBIE || p->is_thread)continue;
+        if(p->signal_group && p->signal_group->itimer_real_armed)return true;
         for(unsigned j=0;j<NAS_POSIX_TIMERS;j++)
             if(p->timers[j].used && p->timers[j].armed)return true;
+    }
+    /* A leader may exit while CLONE_THREAD workers still own the ITIMER.
+     * Its signal-group deadline remains live until the last member exits. */
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++){
+        const struct nas_task *p=nas_task_at(i);
+        if(p && p->pid && p->state!=NAS_TASK_FREE &&
+           p->state!=NAS_TASK_ZOMBIE && p->signal_group &&
+           p->signal_group->itimer_real_armed)return true;
     }
     return false;
 }
@@ -175,8 +233,49 @@ void nas_time_timers_tick(void){
             if(dst && dst->state!=NAS_TASK_FREE &&
                dst->state!=NAS_TASK_ZOMBIE &&
                dst->tgid==p->tgid &&
-               p->sighand->actions[t->signum][0]!=1)
-                dst->pending_signals|=1ULL<<(t->signum-1);
+               p->sighand->actions[t->signum][0]!=1) {
+                /* SIGEV_SIGNAL is process-directed; SIGEV_THREAD_ID is
+                 * explicitly TID-directed. Their pending domains must not
+                 * collapse just because the timer lives on the leader. */
+                if(t->notify==4)dst->pending_signals|=1ULL<<(t->signum-1);
+                else if(p->signal_group)
+                    p->signal_group->pending|=1ULL<<(t->signum-1);
+            }
         }
+    }
+    /* One firing per process, even with N runnable sibling threads. The
+     * signal-group is the existing shared SIGALRM pending owner; this does
+     * not invent a separate signal queue or duplicate signals per TID. */
+    uint64_t now=nas_arch_monotonic_ns();
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++){
+        struct nas_task *p=nas_task_at(i);
+        if(!p || !p->pid || p->state==NAS_TASK_FREE ||
+           p->state==NAS_TASK_ZOMBIE || !p->signal_group)continue;
+        bool first=true;
+        for(unsigned k=0;k<i;k++){
+            const struct nas_task *q=nas_task_at(k);
+            if(q && q->pid && q->state!=NAS_TASK_FREE &&
+               q->state!=NAS_TASK_ZOMBIE &&
+               q->signal_group==p->signal_group){first=false;break;}
+        }
+        if(!first)continue;
+        struct nas_signal_group *group=p->signal_group;
+        if(!group->itimer_real_armed ||
+           now<group->itimer_real_deadline_ns)continue;
+        if(!group->itimer_real_interval_ns)group->itimer_real_armed=false;
+        else {
+            uint64_t missed=(now-group->itimer_real_deadline_ns)/
+                group->itimer_real_interval_ns;
+            uint64_t steps=missed+1;
+            if(steps>(UINT64_MAX-group->itimer_real_deadline_ns)/
+                      group->itimer_real_interval_ns)
+                group->itimer_real_armed=false;
+            else group->itimer_real_deadline_ns+=
+                     steps*group->itimer_real_interval_ns;
+        }
+        /* SIG_IGN discards expirations; blocked signals still remain in
+         * the shared pending domain until a thread unblocks them. */
+        if(p->sighand->actions[14][0]!=1)
+            group->pending|=1ULL<<(14-1); /* SIGALRM */
     }
 }

@@ -52,6 +52,8 @@ case "$profile" in
            package_list=rootfs/alpine/packages-native-busybox.txt ;;
     sqlite) work="build/external/m57-native-sqlite/$port"
             package_list=rootfs/alpine/packages-native-busybox.txt ;;
+    m191-rootfs) work="build/external/m191-alpine-rootfs/$port"
+            package_list=rootfs/alpine/packages-m191-rootfs.txt ;;
     *) echo "[ALPINE] unknown profile $profile" >&2; exit 2 ;;
 esac
 root="$work/rootfs"
@@ -67,7 +69,8 @@ packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$package_list")"
 # Alpine repository signing keys are ARCH-SPECIFIC. The amd64 container's
 # keyring correctly verifies amd64 but rejects the arm64/riscv64 indexes.
 # Obtain the official target release's keys, verify its minirootfs digest,
-# extract ONLY the public keys, then continue with signed APK installation.
+# and continue with signed APK installation. Historical CPIO profiles use
+# only its keys; M191 retains the complete official root filesystem.
 release=3.23.7
 name="alpine-minirootfs-$release-$arch.tar.gz"
 cache="build/deps/m38-alpine-release/$arch"
@@ -82,8 +85,15 @@ curl -fLsS --retry 2 --connect-timeout 10 --max-time 30 \
     -o "$cache/$name.sha256" "$url.sha256"
 ( cd "$cache" && sha256sum -c "$name.sha256" )
 # GNU tar --no-anchored permits both 'etc/...' and './etc/...' layouts.
-tar -xzf "$cache/$name" -C "$root" \
-    --wildcards --no-anchored 'etc/apk/keys/*'
+if [ "$profile" = m191-rootfs ]; then
+    # Preserve packaged UID/GID/mode/symlink metadata for mke2fs -d. The
+    # historic CPIO profiles intentionally remain host-user-owned instead.
+    sudo tar -xzf "$cache/$name" -C "$root" --numeric-owner
+    sudo chown 0:0 "$root"
+else
+    tar -xzf "$cache/$name" -C "$root" \
+        --wildcards --no-anchored 'etc/apk/keys/*'
+fi
 test -n "$(find "$root/etc/apk/keys" -name '*.pub' -print -quit)"
 # The *real Ninja* package (not a Samurai alias) lives in signed Alpine
 # community. Only the CMake workload needs this additional official index.
@@ -114,6 +124,16 @@ if ! docker run --rm --volume "$target:/target" \
     exit 1
 fi
 echo "[M38 APK PASS] signed distro packages installed: $port"
+if [ "$profile" = m191-rootfs ]; then
+    # No CPIO and no test sources: this profile is the distro's real `/`.
+    # In particular, do not chown signed package files to the host user.
+    test -s "$root/etc/alpine-release"
+    test -s "$root/etc/apk/world"
+    test -n "$(find "$root/etc/apk/keys" -name '*.pub' -print -quit)"
+    printf '%s\n' "$packages" > "$work/requested-packages.txt"
+    echo "[M191 ALPINE ROOT TREE] $port official $release minirootfs + signed APK base/OpenRC"
+    exit 0
+fi
 sudo chown -R "$(id -u):$(id -g)" "$root"
 mkdir -p "$root/tmp" "$root/tests"
 # Common, read-only guest timing and CPU occupancy helpers for original

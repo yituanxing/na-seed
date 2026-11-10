@@ -1,12 +1,28 @@
 #!/bin/sh
 # Exercise real compiled VFS dispatch, symlink walk and inode I/O contracts.
 set -eu
+. scripts/vfs-host-sources.sh
 mkdir -p build/vfs-provider
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
-  scripts/test-vfs-provider.c kernel/fs/vfs.c kernel/fs/vfs_providers.c \
-  kernel/fs/lookup.c kernel/lib/string.c kernel/mm/heap.c \
+  scripts/test-vfs-provider.c $NAS_VFS_HOST_SOURCES \
   -o build/vfs-provider/test
 build/vfs-provider/test
+# Real registered disks and partitions must be reflected in both devfs and
+# the Linux sysfs block-class topology, never in image-specific mock files.
+sh scripts/check-sysfs-block.sh
+# memfd_create validates Linux arguments then asks for a pathless mounted
+# tmpfs inode. Provider tests above prove last-pin orphan reclamation and
+# removable mount EBUSY without ever creating a temporary namespace name.
+cc -std=gnu11 -O2 -Wall -Wextra -Werror \
+  scripts/test-memfd.c -o build/vfs-provider/test-memfd
+build/vfs-provider/test-memfd
+# memfd must remain pathless: a future cleanup cannot silently reintroduce
+# O_CREAT/unlink or a synthetic private-name registry alongside VFS ownership.
+if grep -Eq 'nas_fs_open_path\(|nas_vfs_unlink\(|\.naseed-memfd-|memfd_next_id' \
+    kernel/fs/memfd.c; then
+  echo '[VFS FAIL] superseded pathname-backed memfd creation returned' >&2
+  exit 1
+fi
 # A deleted duplicate mount-inode owner is an architectural invariant:
 # positive Dentry/Path handles BOTH covered and parent mount lifetimes.
 # Never reintroduce covered_pinned / parent_pinned in another refactor.
@@ -39,7 +55,8 @@ if grep -Eq 'nas_vfs_directory_path|\.directory_path=' \
 fi
 if command -v clang >/dev/null 2>&1; then
   for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
-    for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/lookup.c; do
+    for source in kernel/fs/vfs.c kernel/fs/vfs_providers.c kernel/fs/devfs.c \
+                  kernel/drivers/core/chrdev.c kernel/fs/lookup.c; do
       clang --target="$target" -std=c11 -Wall -Wextra -Werror \
         -ffreestanding -fno-builtin -I kernel -fsyntax-only "$source"
     done

@@ -4,14 +4,14 @@
 #include <stdbool.h>
 #include "vfs.h"
 
-/* A Linux pathname and its independently owned lookup anchors. The syscall
- * layer copies userspace once, then hands these stable identities to namei.
+/* A Linux PATH_MAX pathname and its independently owned lookup anchors.
+ * Common short names stay inline; longer names use heap storage owned by
+ * nas_fs_path_end(), not a 4-KiB allocation on the kernel syscall stack.
  * A relative lookup starts from the original cwd/open File, never its old
- * spelling. Absolute lookups ignore dirfd, as Linux requires. The 256-byte
- * copy limit is interim until namei receives a non-stack PATH_MAX workspace.
- */
+ * spelling. Absolute lookups ignore dirfd, as Linux requires. */
 struct nas_fs_path_request {
-    char pathname[256];
+    char *pathname;
+    char inline_path[256];
     struct nas_vfs_path start;
     struct nas_vfs_path root;
 };

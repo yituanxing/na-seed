@@ -1,0 +1,114 @@
+name: NaSeed M241 original Alpine native poweroff RV64 ARM64
+
+# The x86 M241 native QEMU + persisted disk proof already passed. Reuse
+# the same physical ext4/OpenRC contract on the remaining two ISAs without
+# replaying the expensive M240 SSH-PTY multi-boot matrix each edit.
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/m241-original-alpine-poweroff-ports.yml'
+      - 'scripts/probe-m241-alpine-poweroff.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/build-lwext4-guest.sh'
+      - 'scripts/m241-alpine-poweroff-uart.py'
+      - 'scripts/m241-verify-poweroff-disk.py'
+      - 'kernel/platform/riscv64.c'
+      - 'kernel/platform/aarch64.c'
+      - 'kernel/init/main.c'
+      - 'kernel/init/main.h'
+      - 'kernel/task/signal.c'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/fs/vfs.h'
+      - 'kernel/fs/vfs_providers.c'
+      - 'kernel/syscall/reboot_policy.h'
+      - 'kernel/syscall/dispatch.c'
+      - 'ports/lwext4/guest_boot.c'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  poweroff-ports:
+    name: One original Alpine native QEMU / ${{ matrix.port }} poweroff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Validate shared shutdown contracts and one-boot UART oracle
+        run: |
+          set -eu
+          sh -n scripts/probe-m241-alpine-poweroff.sh scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh
+          python3 -m py_compile scripts/m241-alpine-poweroff-uart.py scripts/m241-verify-poweroff-disk.py
+          python3 scripts/test-m241-alpine-poweroff-uart.py
+          sh scripts/check-m241-original-alpine-shutdown.sh
+      - name: Install native QEMU, ext4 and original Alpine signed-staging dependencies
+        timeout-minutes: 18
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            riscv64)
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Restore previously verified three-ISA Limine firmware seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Original Alpine init UART, guest poweroff and post-QEMU physical ext4 readback
+        timeout-minutes: 38
+        env:
+          NAS_M241_DIAG_SECONDS: '260'
+          NAS_M241_QEMU_TIMEOUT: '260'
+        run: sh scripts/probe-m241-alpine-poweroff.sh ${{ matrix.port }}
+      - name: Preserve raw physical serial and nonce evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m241-original-alpine-native-poweroff-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m241-*.log
+            build/port-riscv64/full/matrix-source/m193-batch.clean.log
+            build/port-riscv64/full/matrix-source/m193-batch.serial.log
+            build/port-aarch64/full/matrix-source/m193-batch.clean.log
+            build/port-aarch64/full/matrix-source/m193-batch.serial.log
+          if-no-files-found: warn
+          retention-days: 7

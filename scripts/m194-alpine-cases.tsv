@@ -1,0 +1,3 @@
+# M194: original Alpine PID1/OpenRC and password-authenticated interactive
+# shell on the physical ext4 root.  The login controller owns acceptance.
+m194-batch	cpio	 	-	-	/sbin/init

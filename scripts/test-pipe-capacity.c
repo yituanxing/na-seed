@@ -1,0 +1,170 @@
+/* Host execution of NaSeed's actual pipe ring, heap and OpenFile lifetime.
+ * This is not a mocked fcntl oracle: the dispatch ABI is separately compiled
+ * on x86-64, AArch64 and RV64 by check-three-isa-core.py.
+ */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include "../kernel/errno.h"
+#include "../kernel/fd.h"
+#include "../kernel/pipe.h"
+
+struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+void nas_print(const char *message) { (void)message; }
+void nas_dec(uint64_t value) { (void)value; }
+
+static void write_pattern(unsigned slot, unsigned count, unsigned seed) {
+    assert(nas_pipe_write_amount(slot,count,true)==(int64_t)count);
+    for (unsigned i=0;i<count;i++)
+        nas_pipe_write_byte(slot,i,(uint8_t)((seed+i)%251));
+    nas_pipe_write_commit(slot,count);
+}
+static void read_pattern(unsigned slot, unsigned count, unsigned seed) {
+    assert(nas_pipe_read_amount(slot,count,true)==(int64_t)count);
+    for (unsigned i=0;i<count;i++)
+        assert(nas_pipe_read_byte(slot,i)==(uint8_t)((seed+i)%251));
+    nas_pipe_read_commit(slot,count);
+}
+static void check_pipe_capacity(void) {
+    nas_open_files[10].refcount=2; /* two dup/fork aliases of read endpoint */
+    nas_open_files[11].refcount=1;
+    assert(nas_pipe_create(10,11)==0);
+    assert(nas_pipe_capacity(10)==NAS_PIPE_CAP);
+    assert(nas_pipe_capacity(11)==NAS_PIPE_CAP);
+    assert(nas_pipe_capacity(12)==-EBADF);
+    assert(nas_pipe_set_capacity(11,-1)==-EINVAL);
+    assert(nas_pipe_set_capacity(11,0)==NAS_PIPE_CAP);
+    assert(nas_pipe_set_capacity(10,2500)==NAS_PIPE_CAP);
+    /* The 1 MiB request cannot fit in the 1 MiB bootstrap arena once heap
+     * metadata is counted. Without a grow provider this is transactional. */
+    assert(nas_pipe_set_capacity(11,NAS_PIPE_MAX_CAP)==-ENOMEM);
+    assert(nas_pipe_capacity(10)==NAS_PIPE_CAP);
+
+    write_pattern(11,3000,0);
+    read_pattern(10,2000,0);
+    write_pattern(11,3000,3000); /* wrap around 4 KiB original ring */
+    assert(nas_pipe_set_capacity(10,5000)==8192);
+    assert(nas_pipe_capacity(11)==8192);
+    assert(nas_pipe_set_capacity(10,NAS_PIPE_MAX_CAP+1)==-EPERM);
+    read_pattern(10,1000,2000);
+    read_pattern(10,3000,3000); /* growth preserved wrapped FIFO bytes */
+
+    write_pattern(11,7000,6010);
+    assert(nas_pipe_set_capacity(11,4096)==-EBUSY);
+    assert(nas_pipe_capacity(10)==8192);
+    read_pattern(10,3000,6010);
+    assert(nas_pipe_set_capacity(10,1)==4096);
+    assert(nas_pipe_capacity(11)==4096);
+    read_pattern(10,4000,9010); /* shrink preserved all remaining data */
+
+    /* PIPE_BUF stays 4 KiB even after ring growth to 8 KiB. */
+    assert(nas_pipe_set_capacity(11,7000)==8192);
+    write_pattern(11,8092,10010);
+    assert(nas_pipe_poll_writable(11));
+    assert(nas_pipe_write_amount(11,101,true)==-EAGAIN);
+    assert(nas_pipe_write_amount(11,4096,true)==-EAGAIN);
+    assert(nas_pipe_write_amount(11,4097,true)==100);
+    for (unsigned i=0;i<100;i++)
+        nas_pipe_write_byte(11,i,(uint8_t)((18102U+i)%251));
+    nas_pipe_write_commit(11,100);
+    assert(!nas_pipe_poll_writable(11));
+    assert(nas_pipe_write_amount(11,1,true)==-EAGAIN);
+    read_pattern(10,8092,10010);
+    read_pattern(10,100,18102);
+    assert(nas_pipe_write_ready(11));
+
+    /* Dup/Fork closes one alias but the OpenFile endpoint survives. */
+    nas_open_files[10].refcount=1;
+    assert(nas_pipe_capacity(10)==8192);
+    nas_open_files[10].refcount=0;
+    nas_pipe_release_description(10);
+    assert(nas_pipe_write_amount(11,1,true)==-EPIPE);
+    nas_open_files[11].refcount=0;
+    nas_pipe_release_description(11);
+    assert(nas_pipe_capacity(11)==-EBADF);
+
+    /* Recycled pipe slot must not retain the previous heap-backed capacity. */
+    nas_open_files[10].refcount=nas_open_files[11].refcount=1;
+    assert(nas_pipe_create(10,11)==0);
+    assert(nas_pipe_capacity(10)==NAS_PIPE_CAP);
+    write_pattern(11,256,42);
+    read_pattern(10,256,42);
+    nas_open_files[10].refcount=nas_open_files[11].refcount=0;
+    nas_pipe_release_description(10);
+    nas_pipe_release_description(11);
+}
+static void check_socketpair_stream(void) {
+    nas_open_files[30].refcount=nas_open_files[31].refcount=1;
+    assert(nas_pipe_create_socketpair(30,31)==0);
+    assert(nas_pipe_capacity(30)==-EBADF);
+    assert(nas_pipe_capacity(31)==-EBADF);
+    assert(nas_pipe_set_capacity(30,8192)==-EBADF);
+    assert(nas_socket_write_amount(30,5000,true)==NAS_PIPE_CAP);
+    write_pattern(30,4000,17);
+    /* Unlike pipe writes, stream writes can make short progress <= PIPE_BUF. */
+    assert(nas_socket_write_amount(30,4096,true)==96);
+    read_pattern(31,4000,17);
+    assert(nas_pipe_socket_shutdown(30,1)==0);
+    assert(nas_pipe_read_amount(31,1,true)==0);
+    nas_open_files[30].refcount=nas_open_files[31].refcount=0;
+    nas_pipe_release_description(30);
+    nas_pipe_release_description(31);
+}
+static void check_named_fifo(void) {
+    /* One physical inode, three independently opened File descriptions.
+     * Opening the FIFO writer without readers must not fake a connection. */
+    assert(nas_pipe_named_attach(7,101,41,1,true)==-ENXIO);
+    assert(nas_pipe_named_attach(7,101,41,1,false)==-EOPNOTSUPP);
+    assert(nas_pipe_named_attach(7,101,40,0,false)==-EOPNOTSUPP);
+    assert(nas_pipe_capacity(41)==-EBADF);
+    assert(nas_pipe_named_attach(7,101,40,0,true)==0);
+    nas_open_files[40].refcount=2; /* dup() shared OpenFile reference */
+    assert(nas_pipe_read_amount(40,1,true)==0); /* no writer: EOF */
+    assert(nas_pipe_named_attach(7,101,41,1,true)==0);
+    nas_open_files[41].refcount=1;
+    assert(nas_pipe_read_amount(40,1,true)==-EAGAIN);
+    write_pattern(41,257,71);
+    assert(nas_pipe_poll_readable(40));
+    read_pattern(40,257,71);
+    assert(nas_pipe_named_attach(7,101,42,2,true)==0);
+    nas_open_files[42].refcount=1;
+    write_pattern(42,16,113);
+    read_pattern(40,16,113);
+    /* A separate FIFO inode must never receive old FIFO data. */
+    assert(nas_pipe_named_attach(7,102,43,2,true)==0);
+    nas_open_files[43].refcount=1;
+    write_pattern(43,9,222);
+    assert(nas_pipe_read_amount(40,1,true)==-EAGAIN);
+    read_pattern(43,9,222);
+    /* Closing just one reader/writer does not destroy the named byte ring. */
+    nas_open_files[41].refcount=0;
+    nas_pipe_release_description(41);
+    write_pattern(42,8,23);
+    read_pattern(40,8,23);
+    nas_open_files[40].refcount=1;
+    assert(nas_pipe_poll_writable(42));
+    nas_open_files[40].refcount=0;
+    nas_pipe_release_description(40);
+    /* RDWR keeps its own reader alive, per Linux O_RDWR FIFO semantics. */
+    write_pattern(42,8,41);
+    read_pattern(42,8,41);
+    nas_open_files[42].refcount=0;
+    nas_pipe_release_description(42);
+    nas_open_files[43].refcount=0;
+    nas_pipe_release_description(43);
+    assert(nas_pipe_capacity(42)==-EBADF);
+    /* Same inode can be reopened after final close without stale bytes. */
+    assert(nas_pipe_named_attach(7,101,44,2,true)==0);
+    nas_open_files[44].refcount=1;
+    assert(nas_pipe_read_amount(44,1,true)==-EAGAIN);
+    nas_open_files[44].refcount=0;
+    nas_pipe_release_description(44);
+}
+int main(void) {
+    check_pipe_capacity();
+    check_socketpair_stream();
+    check_named_fifo();
+    puts("[PIPE CAPACITY HOST PASS] ring grow/shrink, wrapped FIFO, pipe atomicity, socket stream, named FIFO, OpenFile lifetime");
+    return 0;
+}

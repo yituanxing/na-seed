@@ -1,38 +1,5 @@
 name: NaSeed M58/M59/M60 original prebuilt terminal suite — three native ISAs
 on:
-  pull_request:
-    paths:
-      - 'tests/m58-*'
-      - 'tests/m59-*'
-      - 'tests/m60-*'
-      - 'scripts/m58-runtime-cases.tsv'
-      - 'scripts/m59-worktree-cases.tsv'
-      - 'scripts/m60-terminal-cases.tsv'
-      - 'scripts/probe-m58-runtime.sh'
-      - 'scripts/probe-m59-worktree.sh'
-      - 'scripts/probe-m60-terminals.sh'
-      - 'scripts/stage-m58-prebuilt.sh'
-      - 'scripts/stage-m59-prebuilt.sh'
-      - 'scripts/stage-m60-prebuilt.sh'
-      - 'scripts/stage-alpine-prebuilt-overlay.sh'
-      - 'scripts/prebuilt-profile-catalog.tsv'
-      - 'scripts/check-prebuilt-profile-catalog.py'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-native-qemu-target.py'
-      - 'scripts/m58-original-elfs.txt'
-      - 'scripts/m58-rootfs-copies.tsv'
-      - 'scripts/m59-original-elfs.txt'
-      - 'scripts/m59-rootfs-copies.tsv'
-      - 'scripts/m60-original-elfs.txt'
-      - 'scripts/m60-rootfs-copies.tsv'
-      - 'scripts/probe-x86-busybox-parity.sh'
-      - 'scripts/probe-riscv64-busybox-matrix.sh'
-      - 'scripts/probe-aarch64-busybox-matrix.sh'
-      - 'rootfs/alpine/packages-m58-runtime.txt'
-      - 'rootfs/alpine/packages-m59-worktree.txt'
-      - 'rootfs/alpine/packages-m60-terminal.txt'
-      - 'kernel/**'
-      - '.github/workflows/m58-original-runtime.yml'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

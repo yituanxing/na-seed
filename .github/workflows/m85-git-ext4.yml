@@ -1,21 +1,5 @@
 name: NaSeed M85 original Git durable ext4 repository three-ISA two-boot acceptance
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/m85-git-ext4.yml'
-      - 'scripts/m85-*'
-      - 'scripts/stage-m85-*'
-      - 'scripts/probe-m85-*'
-      - 'scripts/check-m85-*'
-      - 'scripts/native-source-qemu.sh'
-      - 'scripts/native-qemu-target.sh'
-      - 'scripts/check-ext4-fsck-clean.sh'
-      - 'scripts/check-lwext4-ramdisk.sh'
-      - 'scripts/ci-ubuntu-mirror.sh'
-      - 'rootfs/alpine/**'
-      - 'tests/m85-*'
-      - 'kernel/**'
-      - 'ports/**'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

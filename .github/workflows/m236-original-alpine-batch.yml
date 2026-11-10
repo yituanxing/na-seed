@@ -1,0 +1,106 @@
+name: NaSeed M236 seven original signed Alpine ELF physical two-boot QEMU
+
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m236-original-alpine-batch.yml'
+      - 'rootfs/alpine/packages-m236-candidates.txt'
+      - 'scripts/m236-*'
+      - 'scripts/test-m236-*'
+      - 'scripts/probe-m236-alpine-batch.sh'
+      - 'scripts/run-m236-local.sh'
+      - 'scripts/inventory-m141-signed-apks.sh'
+      - 'scripts/check-m141-candidates.py'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'tests/m205-software-workload.sh'
+      - 'tests/m236-software-workload.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  amd64-first:
+    name: M236 AMD64 strict seven unique original ELF pilot, two genuine QEMUs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Signed original Alpine cohort, first and second AMD64 native QEMU
+        timeout-minutes: 105
+        env:
+          NAS_M236_PUBLIC_SECONDS: '4400'
+          NAS_M236_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M236_REOPEN_SECONDS: '1200'
+        run: sh scripts/run-m236-local.sh --native amd64
+      - name: Preserve signed APK census, both QEMUs, native semantics and physical ext4 SHA proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m236-original-real-alpine-amd64
+          path: |
+            build/external/m236-candidate-inventory/amd64/candidates.tsv
+            build/external/m236-candidate-inventory/amd64/apk-install.log
+            build/external/m236-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m236-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m236-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m236-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/amd64/m236-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  rv64-arm64-after-amd64:
+    name: M236 ${{ matrix.port }} exact seven original ELF two-boot native QEMU
+    needs: amd64-first
+    if: ${{ needs.amd64-first.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Signed original Alpine cohort, first and second target-native QEMU
+        timeout-minutes: 105
+        env:
+          NAS_M236_PUBLIC_SECONDS: '4400'
+          NAS_M236_PUBLIC_QEMU_TIMEOUT: '4500'
+          NAS_M236_REOPEN_SECONDS: '1200'
+        run: sh scripts/run-m236-local.sh --native '${{ matrix.port }}'
+      - name: Preserve signed APK census, both QEMUs, native semantics and physical ext4 SHA proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m236-original-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m236-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m236-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m236-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m236-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,262 @@
+name: NaSeed M197/M204 original Alpine software compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      compat_cohort:
+        description: 'Run M204 discovery instead of the M197-only workload'
+        type: boolean
+        required: false
+        default: false
+      fast_replay:
+        description: 'M204 ONLY: replay a verified prior clean-second-QEMU disk (not fresh public acceptance)'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m197-alpine-software-cohort.yml'
+      - '.github/actions/naseed-limine-seed/**'
+      - 'scripts/m197-*'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'tests/m197-*'
+      - 'scripts/m204-*'
+      - 'scripts/probe-m204-alpine-compat-cohort.sh'
+      - 'tests/m204-*'
+      - 'scripts/m194-alpine-uart.py'
+      - 'scripts/m195-alpine-disk-check.py'
+      - 'scripts/m196-public-wire-check.py'
+      - 'scripts/m196-alpine-uart.py'
+      - 'scripts/probe-m191-alpine-root.sh'
+      - 'scripts/m191-alpine-root-disk.py'
+      - 'ports/lwip/network_boot*'
+      - 'ports/lwip/include/lwipopts.h'
+      - 'ports/lwip/socket_port.c'
+      - 'ports/lwip/netconn_bridge.*'
+      - 'ports/uboot/**'
+      - 'kernel/fs/procfs*'
+      - 'kernel/fs/socket_syscall*'
+      - 'kernel/drivers/virtio/**'
+      - 'kernel/platform/**'
+      - 'kernel/time/**'
+      - 'rootfs/alpine/**'
+      # New independent M23x signed-software candidates have their own native
+      # workflows; candidate-only manifests must not replay M197/M204 QEMU.
+      - '!rootfs/alpine/packages-m23*-candidates.txt'
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-public-software:
+    name: Official Alpine APK functional and durable QEMU boot / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify live DHCP DNS, official Alpine trust and host application oracles
+        run: |
+          set -eu
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          bash -n tests/m197-software-workload.sh
+          python3 -m py_compile scripts/m197-alpine-stage.py \
+            scripts/m197-alpine-uart.py scripts/m197-alpine-disk-check.py \
+            scripts/test-m197-alpine-host.py
+          python3 scripts/test-m197-alpine-host.py
+          sh -n scripts/probe-m204-alpine-compat-cohort.sh
+          sh -n tests/m204-software-workload.sh
+          python3 scripts/test-m204-alpine-host.py
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m196-public-wire.py
+          python3 scripts/test-m196-alpine-host.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          mkdir -p build/lwip-foundation
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin \
+            -I kernel -DNAS_ENABLE_LWIP=1 scripts/test-procfs.c \
+            kernel/fs/procfs.c kernel/uts.c kernel/lib/string.c \
+            -o build/lwip-foundation/test-m197-procfs
+          build/lwip-foundation/test-m197-procfs
+          python3 - <<'PY'
+          from pathlib import Path
+          def rows(path):
+              return [line for line in Path(path).read_text().splitlines()
+                      if line and not line.startswith('#')]
+          assert rows('scripts/m197-alpine-cases.tsv') == [
+              'm197-batch\tcpio\t \t-\t-\t/sbin/init']
+          reopened = rows('scripts/m197-alpine-reopen-cases.tsv')
+          assert len(reopened) == 1 and reopened[0].startswith('m197-batch\tcpio\tsh -c')
+          assert 'M197_PUBLIC_ALPINE_SOFTWARE_2026' in reopened[0]
+          assert '--reopen' in reopened[0] and '/bin/bash' in reopened[0]
+          print('[M197 HOST GATE PASS] public WAN, four original binaries, live DNS and durable applications')
+          PY
+      - name: Install native QEMU and official Alpine staging tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            amd64)
+              command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
+              test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+              test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf" ;;
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+              test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+              test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
+          esac
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+          command -v sudo
+      - name: Restore immutable three-ISA proven Limine before native boot
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Inspect prior verified checkpoint (download only for manual replay)
+        id: m204_restore
+        if: github.event_name == 'push' || inputs.compat_cohort
+        uses: actions/cache/restore@v4
+        with:
+          # Full cold-push acceptance only checks existence: do not spend
+          # bandwidth restoring 256MiB that the strict path never uses.
+          lookup-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.fast_replay }}
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.reopen.serial.log
+      - name: Run public Alpine compatibility cohort with independent QEMU reboot
+        timeout-minutes: 73
+        run: |
+          # A branch push is the current compatibility acceptance; avoid a
+          # second, manually dispatched full-QEMU run for the same commit.
+          # Keep the M197-only lane available on explicit workflow_dispatch.
+          if [ '${{ inputs.fast_replay }}' = 'true' ] && [ '${{ inputs.compat_cohort }}' != 'true' ]; then
+            echo '[M204 FAIL] fast replay requires the M204 compatibility cohort' >&2
+            exit 2
+          fi
+          if [ '${{ github.event_name }}' = 'push' ] || [ '${{ inputs.compat_cohort }}' = 'true' ]; then
+          # Every push remains the full original signed HTTPS cold two-boot
+          # gate. Checkpoint capture is an extra verified output only.
+            export NAS_M204_CAPTURE_CHECKPOINT=1
+            if [ '${{ github.event_name }}' = 'workflow_dispatch' ] && \
+               [ '${{ inputs.fast_replay }}' = 'true' ]; then
+              export NAS_M204_FAST_REPLAY=1
+            fi
+            sh scripts/probe-m204-alpine-compat-cohort.sh ${{ matrix.port }}
+          else
+            sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
+          fi
+      - name: Locate freshly verified cold second-boot disk for future manual ABI replay
+        if: always()
+        id: m204_checkpoint_ready
+        shell: bash
+        run: |
+          evidence=build/external/m191-alpine-rootfs/${{ matrix.port }}
+          if test -f "$evidence/m204-checkpoint.fresh" && \
+             test -s "$evidence/m204-first-checkpoint.img" && \
+             test -s "$evidence/m204-first-checkpoint.json" && \
+             test -s "$evidence/m204-first-checkpoint.serial.log" && \
+             test -s "$evidence/m204-first-checkpoint.pcap" && \
+             test -s "$evidence/m204-first-checkpoint.reopen.serial.log"; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save verified second-clean-boot checkpoint (never an unverified or replayed disk)
+        # GitHub cache keys are immutable. A later ABI-only push must not
+        # fail because the prior signed/rootfs-identical disk is already cached.
+        if: always() && steps.m204_checkpoint_ready.outputs.ready == 'true' && steps.m204_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.reopen.serial.log
+      - name: Summarize actual M204 per-package evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          port = '${{ matrix.port }}'
+          path = Path('build/external/m191-alpine-rootfs') / port / 'm204-compat-report.json'
+          if path.exists():
+              report = json.loads(path.read_text())
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  is_replay = (path.parent / 'm204-replay-mode.txt').exists()
+                  print('**Verified prior clean-second-boot checkpoint REPLAY; current kernel QEMU reboot. '
+                        'Not fresh current-commit APK/HTTPS installation proof.**' if is_replay else
+                        '**Full cold public-HTTPS installation and independent two-QEMU-boot evidence.**',
+                        file=summary)
+                  if is_replay:
+                      print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} verified prior installs + fresh current-kernel replay", file=summary)
+                  else:
+                      print(f"### M204 {port}: {report['newly_installed_full_pass']}/{report['total']} full PASS", file=summary)
+                  print(f"Preexisting: {report['preexisting']} | Acceptance: discovery only", file=summary)
+                  print('| Package | APK install | Functional | Reboot |', file=summary)
+                  print('|---|---|---|---|', file=summary)
+                  for item in report['software']:
+                      print(f"| {item['package']} | {item['install']} | {item['functional']} | {item['reopen']} |", file=summary)
+          PY
+      - name: Preserve public DNS TLS, QEMU and application persistence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m197-public-alpine-software-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-runner.log
+            build/busybox-source-parity-x86/m197-batch.clean.log
+            build/busybox-source-parity-x86/m197-batch.serial.log
+            build/port-riscv64/full/matrix-source/m197-batch.clean.log
+            build/port-riscv64/full/matrix-source/m197-batch.serial.log
+            build/port-aarch64/full/matrix-source/m197-batch.clean.log
+            build/port-aarch64/full/matrix-source/m197-batch.serial.log
+          if-no-files-found: ignore

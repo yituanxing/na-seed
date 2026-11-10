@@ -1,0 +1,4 @@
+# Same exact M174 signed CPIO and PID1 ELF; only opt into the existing
+# compositor's terminal-capable m187 argument after the shared preflight.
+# id mode args expected evidence entry
+m187-vt100	cpio	m187	M187_DESKTOP_PASS	-	/usr/bin/naseed-m174-devfs-launch

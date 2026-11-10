@@ -117,6 +117,31 @@ nas_x86_timer_isr:
     call nas_signal_user_return
     jmp nas_x86_iret_restore
 
+/* PCI INTx from Q35's explicitly routed ICH9 PIRQ -> PIC IRQ11.
+ * A device IRQ must neither construct a synthetic Task frame nor run the
+ * timer's preemption path: preserve the full original GPR + hardware IRET
+ * frame for either CPL3 or an interrupted CPL0 idle continuation. */
+.global nas_x86_pic_device_isr
+nas_x86_pic_device_isr:
+    cld
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
+    pushq %r11
+    pushq %rcx
+    pushq %r9
+    pushq %r8
+    pushq %r10
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rax
+    call nas_x86_pic_device_irq
+    jmp nas_x86_iret_restore
+
 
 /* Real userspace #BP and #PF enter with two words (vector,error)
  * prepended to the hardware IRET frame. Save exactly the same 15 GPRs

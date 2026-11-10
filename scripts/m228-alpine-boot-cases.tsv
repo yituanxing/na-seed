@@ -1,0 +1,2 @@
+# Both real QEMU boots use the unmodified signed Alpine PID1 on physical ext4.
+m197-batch	cpio	 	-	-	/sbin/init

@@ -1,0 +1,200 @@
+name: NaSeed M223 original signed HTTP wget aria2c lighttpd two QEMUs
+
+# One deliberate workflow trigger; shared M197/M205 edits never replay M218-222.
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/m223-http-alpine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  http-original-amd64:
+    name: Original Alpine HTTP host random GET PCAP 2 QEMUs / amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Require strict HTTP host/PCAP/disk static negatives and ISA boundaries
+        run: |
+          set -eu
+          python3 scripts/test-m223-http-host.py
+          python3 scripts/m223-ext4-symlink-diagnostic.py --self-test
+          python3 scripts/test-m222-ssh-host.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          sh scripts/check-lwip-socket-abi.sh
+      - name: Install x86 QEMU, ext4 and original official Alpine tools
+        timeout-minutes: 18
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'qemu-system-x86_64:qemu-system-x86' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          test -f /usr/share/OVMF/OVMF_CODE_4M.fd || \
+            test -f /usr/share/OVMF/OVMF_CODE.fd || missing="$missing ovmf"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Reproduce cert-hash long symlink allocation and prove clean ext4 remount
+        timeout-minutes: 8
+        run: sh scripts/check-lwext4-symlink-fsck.sh
+      - name: Verify three signed exact x86 native ELF hashes and offline closure
+        timeout-minutes: 18
+        run: |
+          set -eu
+          sh scripts/inventory-m141-signed-apks.sh amd64 m223
+          tsv=build/external/m223-candidate-inventory/amd64/candidates.tsv
+          awk -F '\t' 'NR > 1 {n++; if ($3 != "NATIVE_ELF" || length($4) != 64 || $4 ~ /[^0-9a-f]/) bad++}
+            END {if (n != 3 || bad) exit 1}' "$tsv"
+      - name: Two x86 original Alpine QEMUs host HTTP 200 full-body PCAP physical ext4
+        timeout-minutes: 75
+        env:
+          NAS_M223_PUBLIC_QEMU_TIMEOUT: '3300'
+          NAS_M223_PUBLIC_SECONDS: '3150'
+          NAS_M223_REOPEN_SECONDS: '1100'
+        run: sh scripts/probe-m223-alpine-pilot.sh amd64
+      - name: Preserve only signed SHA original UART host GET logs and two actual PCAPs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m223-original-http-amd64
+          path: |
+            build/external/m223-candidate-inventory/amd64/candidates.tsv
+            build/external/m223-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m223-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m223-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m223-ext4-symlink-diagnostic.log
+            build/external/m191-alpine-rootfs/amd64/m223-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m223-first-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+
+  http-original-cross:
+    name: Original Alpine HTTP host random GET PCAP 2 QEMUs / ${{ matrix.port }}
+    needs: [http-original-amd64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [riscv64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Require HTTP host/PCAP/disk static negatives and ISA boundaries
+        run: |
+          set -eu
+          python3 scripts/test-m223-http-host.py
+          python3 scripts/m223-ext4-symlink-diagnostic.py --self-test
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+      - name: Install cross GCC QEMU native ELF ext4 and official Alpine signer
+        timeout-minutes: 20
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          missing=''
+          for spec in 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+                      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' \
+                      'debugfs:e2fsprogs' 'e2fsck:e2fsprogs' \
+                      'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+                      'curl:curl' 'python3:python3' 'openssl:openssl'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          case '${{ matrix.port }}' in
+            riscv64)
+              command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
+              command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
+              test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
+              command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
+              test -f /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd || missing="$missing qemu-efi-riscv64" ;;
+            arm64)
+              command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
+              command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
+              test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+              test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
+              command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
+              test -f /usr/share/AAVMF/AAVMF_CODE.fd || \
+                test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64" ;;
+          esac
+          test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu"
+          if [ -n "$missing" ]; then
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+          command -v docker
+      - name: Verify three exact native ISA signed original ELF SHA and closure
+        timeout-minutes: 20
+        run: |
+          set -eu
+          sh scripts/inventory-m141-signed-apks.sh '${{ matrix.port }}' m223
+          tsv='build/external/m223-candidate-inventory/${{ matrix.port }}/candidates.tsv'
+          awk -F '\t' 'NR > 1 {n++; if ($3 != "NATIVE_ELF" || length($4) != 64 || $4 ~ /[^0-9a-f]/) bad++}
+            END {if (n != 3 || bad) exit 1}' "$tsv"
+      - name: Two native cross Alpine QEMUs randomized host HTTP and true PCAP/ext4
+        timeout-minutes: 110
+        env:
+          NAS_M223_PUBLIC_QEMU_TIMEOUT: '4850'
+          NAS_M223_PUBLIC_SECONDS: '4700'
+          NAS_M223_REOPEN_SECONDS: '1600'
+        run: sh scripts/probe-m223-alpine-pilot.sh '${{ matrix.port }}'
+      - name: Preserve only original signed SHA UART host GET logs PCAP and JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m223-original-http-${{ matrix.port }}
+          path: |
+            build/external/m223-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m223-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m223-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-ext4-symlink-diagnostic.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn

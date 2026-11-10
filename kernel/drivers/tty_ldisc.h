@@ -8,6 +8,27 @@
 struct nas_ldisc { uint8_t bytes[NAS_LDISC_CAPACITY]; unsigned used,pos; bool ready,eof; };
 enum nas_ldisc_event { NAS_LDISC_OK, NAS_LDISC_SIGNAL_INT, NAS_LDISC_SIGNAL_QUIT, NAS_LDISC_SIGNAL_STOP };
 typedef void (*nas_ldisc_echo_fn)(void *context, uint8_t byte);
+/* One outstanding read/readv belongs to a Task.  The line discipline only
+ * decides byte thresholds and deadlines; Task retains the timer and the
+ * OpenFile owner.  Physical UART and PTY consumers use the same policy. */
+struct nas_ldisc_wait_clock {
+    bool *active;
+    uint64_t *deadline_ns;
+    unsigned *observed_bytes;
+};
+uint64_t nas_ldisc_noncanon_budget(const struct nas_termios *termios,
+                                  uint64_t requested,unsigned available,
+                                  bool nonblock,bool expired);
+bool nas_ldisc_noncanon_poll(const struct nas_termios *termios,
+                            unsigned available);
+void nas_ldisc_noncanon_wait_start(const struct nas_termios *termios,
+                                  unsigned available,
+                                  struct nas_ldisc_wait_clock clock,
+                                  uint64_t now_ns);
+bool nas_ldisc_noncanon_wait_ready(const struct nas_termios *termios,
+                                  unsigned available,uint64_t requested,
+                                  struct nas_ldisc_wait_clock clock,
+                                  uint64_t now_ns);
 void nas_ldisc_reset(struct nas_ldisc *ld);
 /* Pure ISIG classification BEFORE CR/NL input mappings. Callers may
  * inspect a control byte even when ICANON is off or a line is already ready.
