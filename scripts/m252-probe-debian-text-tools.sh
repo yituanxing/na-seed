@@ -16,12 +16,26 @@ case "$port" in
 esac
 . scripts/native-qemu-target.sh
 
+# M254 adds a guest-launched Debian shell lifecycle workload *inside the same
+# M252 native QEMU boot*, preserving every signed M252 command and disk oracle.
+case "${NAS_ENABLE_M254_DEBIAN_SHELL:-0}" in
+    0) m254_shell=0 ;;
+    1) m254_shell=1 ;;
+    *) echo '[M252/M254 FAIL] invalid shell lifecycle toggle' >&2; exit 2 ;;
+esac
+
 for tool in python3 apt-get apt-cache dpkg-deb readelf cpio cmp sha256sum \
     mke2fs e2fsck debugfs sudo xorriso sgdisk mformat mmd mcopy "$cc"; do
     command -v "$tool" >/dev/null || { echo "[M252 FAIL] missing $tool" >&2; exit 1; }
 done
 
-work="build/m252-debian-text-tools/$port"
+if [ "$m254_shell" = 1 ]; then
+    work="build/m254-debian-shell/$port"
+    case_id=m254-shell
+else
+    work="build/m252-debian-text-tools/$port"
+    case_id=m252-batch
+fi
 root="$work/rootfs"
 disk="$PWD/$work/m252-debian-root.img"
 manifest="$work/source/manifest.json"
@@ -73,6 +87,10 @@ printf '%s\n' M251-EXT4-INPUT > "$root/etc/m251-input"
 printf '%s\n' '#!/usr/bin/dash' 'exit 0' > "$root/etc/m252-init.sh"
 chmod 755 "$root/etc/m252-init.sh"
 printf '%s\n' M252-EXT4-INPUT > "$root/etc/m252-input"
+if [ "$m254_shell" = 1 ]; then
+    cp scripts/m254-guest-workload.sh "$root/etc/m254-guest-workload.sh"
+    chmod 755 "$root/etc/m254-guest-workload.sh"
+fi
 
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m250-debian-tty-launch.c -o "$root/sbin/m250-tty-launch"
@@ -84,6 +102,9 @@ fi
 python3 scripts/m251-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra"
 python3 scripts/m252-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra" "$extra"
 sudo python3 scripts/m252-debian-ext4-disk.py prepare "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
+if [ "$m254_shell" = 1 ]; then
+    sudo python3 scripts/m254-debian-ext4-disk.py before "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
+fi
 sudo chown "$(id -u):$(id -g)" "$disk"
 test -r "$disk" && test -w "$disk" || {
     echo '[M252 FAIL] real ext4 disk inaccessible to unprivileged QEMU' >&2
@@ -101,7 +122,6 @@ if cpio -it --quiet < "$rescue/rootfs.cpio" | grep -Eq \
     exit 1
 fi
 
-case_id=m252-batch
 case_file="$work/m252-cases.tsv"
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$case_id" cpio --console - - /sbin/m250-tty-launch > "$case_file"
@@ -116,6 +136,9 @@ export BUSYBOX_PARITY_CASE="$case_id" BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST="$case_file"
 export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M252_QEMU_TIMEOUT:-300}
+if [ "$m254_shell" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M254_QEMU_TIMEOUT:-420}
+fi
 export NAS_SYSCALL_TRACE=1
 
 if [ "$port" = amd64 ]; then
@@ -132,8 +155,13 @@ fifo="$PWD/$work/m252-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/$case_id.serial.log"
 runner_log="$PWD/$work/m252-runner.log"
-echo "[M252 NATIVE $label] authenticated original Debian grep/sed/find over real UART/ext4"
-python3 scripts/m252-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
+if [ "$m254_shell" = 1 ]; then
+    echo "[M254 NATIVE $label] original Debian multi-process dash script + M252 signed ELF on physical ext4"
+    python3 scripts/m254-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
+else
+    echo "[M252 NATIVE $label] authenticated original Debian grep/sed/find over real UART/ext4"
+    python3 scripts/m252-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
+fi
 
 log="$logs/$case_id.clean.log"
 test -s "$log"
@@ -149,4 +177,8 @@ if grep -Fq '[FAIL]' "$log"; then
     echo '[M252 FAIL] native QEMU serial has explicit failure' >&2; exit 1
 fi
 sudo python3 scripts/m252-debian-ext4-disk.py after "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
+if [ "$m254_shell" = 1 ]; then
+    sudo python3 scripts/m254-debian-ext4-disk.py after "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
+    echo "[M254 ORIGINAL DEBIAN SHELL LIFECYCLE EXT4 REAL $label QEMU PASS] signed dash script, multi-process wait, pipe, host disk oracle"
+fi
 echo "[M252 ORIGINAL DEBIAN TEXT TOOLS EXT4 REAL $label QEMU PASS] three new signed ELF, live UART commands, clean fsck and durable disk readback"

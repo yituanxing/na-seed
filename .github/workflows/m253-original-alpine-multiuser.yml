@@ -5,7 +5,7 @@ name: NaSeed M253 upstream Alpine real nonroot SSH DAC same-QEMU reboot
 on:
   workflow_dispatch:
   push:
-    branches: [feat/m253-alpine-nonroot-dac]
+    branches: [feat/m253-alpine-nonroot-dac, naseed-app-batch2, feat/m254-255-alpine-debian-20261110]
     paths:
       - '.github/workflows/m253-original-alpine-multiuser.yml'
       - 'kernel/fs/**'

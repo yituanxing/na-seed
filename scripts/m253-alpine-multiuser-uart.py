@@ -29,6 +29,7 @@ DATA_VALUE = "M253-NONROOT-REAL-DAC-PERSISTED"
 ROOT_SECRET = "/root/m253-private/secret"
 FIRST_ACK = HOME + "/m253-first-user-ssh.ok"
 SECOND_ACK = HOME + "/m253-second-user-ssh.ok"
+APP_WITNESS = HOME + "/m253-signed-apk-app.json"
 FIRST_VALUE = "M253_NONROOT_SSH_FIRST_OK_20261109"
 SECOND_VALUE = "M253_NONROOT_SSH_SECOND_OK_20261109"
 SALT = "M253-PRIVATE-ROOT-SECRET-20261109"
@@ -52,6 +53,18 @@ def pid1_eperm():
     return as_user("result=$(LC_ALL=C kill -0 1 2>&1); status=$?; "
                    "test \"$status\" -ne 0 && "
                    "printf \"%s\\n\" \"$result\" | grep -qi \"Operation not permitted\"")
+
+def nonroot_apk_probe(check_app=False):
+    # These are the ORIGINAL public-APK-installed musl ELF, not BusyBox applets.
+    cmd = ("test -x /usr/bin/jq && test -x /usr/bin/tree && "
+           "test \"$(printf '%s\\n' " + shlex.quote('{"uid":1101}') +
+           " | /usr/bin/jq -r .uid)\" = 1101 && "
+           "/usr/bin/tree " + HOME + " | /bin/busybox grep -q m253-nonroot-data.txt")
+    if check_app:
+        cmd += (" && /usr/bin/jq -e " +
+                shlex.quote('.user == "m253user" and .uid == 1101 and .program == "jq"') +
+                " " + APP_WITNESS + " >/dev/null")
+    return as_user(cmd)
 
 FIRST_COMMANDS = m244.FIRST_COMMANDS + (
     step("missing=0; for app in addgroup adduser chpasswd su id chmod chown stat; do "
@@ -80,6 +93,9 @@ FIRST_COMMANDS = m244.FIRST_COMMANDS + (
                  "test \"$(/bin/busybox stat -c %u:%g " + DATA + ")\" = " + UID + ":" + UID) +
          " && test \"$(/bin/busybox stat -c %u:%g " + DATA + ")\" = " + UID + ":" + UID,
          "M253_NONROOT_WRITE_RC=0", "unprivileged process creates persistent ext4 inode"),
+    step(nonroot_apk_probe(),
+         "M253_NONROOT_SIGNED_APK_RC=0",
+         "original newly apk-installed musl ELF jq/tree work as UID1101"),
     step(deny_as_user("cat " + ROOT_SECRET) + " && " +
          pid1_eperm() + " && " +
          deny_as_user("touch /root/m253-forbidden") + " && " +
@@ -129,6 +145,10 @@ SECOND_COMMANDS = m244.SECOND_COMMANDS + (
          "test ! -e /root/m253-forbidden-reboot && "
          "test \"$(/bin/busybox stat -c %u:%g " + DATA + ")\" = " + UID + ":" + UID,
          "M253_SECOND_NONROOT_DAC_RC=0", "rebooted nonroot read succeeds, root DAC still denied"),
+    step(nonroot_apk_probe(check_app=True) + " && " +
+         "test \"$(/bin/busybox stat -c %u:%g:%a " + APP_WITNESS + ")\" = " + UID + ":" + UID + ":600",
+         "M253_SECOND_NONROOT_APK_RC=0",
+         "rebooted UID1101 executes signed musl jq/tree and persistent app JSON"),
     ("printf 'M253_SECOND_USER_SSH_READY\\n'\r",
      "M253_SECOND_USER_SSH_READY", "original Dropbear again accepts true nonroot SSH"),
     step("i=0; while [ ! -f " + SECOND_ACK + " ] && [ \"$i\" -lt 220 ]; do "

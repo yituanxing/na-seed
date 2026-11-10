@@ -5,6 +5,8 @@ name: NaSeed M252 signed Debian glibc grep sed find physical ext4 UART
 # through native three-ISA QEMU, physical ext4 and a live interactive UART.
 on:
   push:
+    # Integration branches enter this same three-ISA job through M254's
+    # workflow_call, avoiding a second redundant QEMU boot per ISA.
     branches: [na-alpine-direct-use]
     paths:
       - '.github/workflows/m252-debian-text-tools-ext4.yml'
@@ -38,6 +40,13 @@ on:
       - 'kernel/drivers/virtio_blk*'
       - 'ports/lwext4/**'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      m254_shell:
+        description: 'Extend M252 real QEMU boot with original Debian dash child lifecycle and ext4 oracle'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,6 +82,7 @@ jobs:
           PY
           python3 -B tests/m252-debian-provenance-host.py
           python3 -B tests/m252-debian-uart-host.py
+          python3 -B tests/m254-debian-shell-host.py
           python3 -B tests/m251-debian-provenance-host.py
           python3 -B tests/m251-debian-uart-host.py
           python3 -B tests/m250-debian-interactive-host.py
@@ -140,6 +150,8 @@ jobs:
           github-token: ${{ github.token }}
       - name: Verify and execute three original Debian ELF on NaSeed physical ext4
         timeout-minutes: 35
+        env:
+          NAS_ENABLE_M254_DEBIAN_SHELL: ${{ inputs.m254_shell && '1' || '0' }}
         run: sh scripts/m252-probe-debian-text-tools.sh ${{ matrix.port }}
       - name: Retain signed provenance, UART evidence, unmount and disk readback
         if: always()
@@ -154,7 +166,16 @@ jobs:
             build/m252-debian-text-tools/${{ matrix.port }}/m252-extra.json
             build/m252-debian-text-tools/${{ matrix.port }}/*.tsv
             build/m252-debian-text-tools/${{ matrix.port }}/*.log
+            build/m254-debian-shell/${{ matrix.port }}/source/manifest.json
+            build/m254-debian-shell/${{ matrix.port }}/m251-extra.json
+            build/m254-debian-shell/${{ matrix.port }}/m252-extra.json
+            build/m254-debian-shell/${{ matrix.port }}/*.tsv
+            build/m254-debian-shell/${{ matrix.port }}/*.log
             build/port-*/full/matrix-source/m252-batch.clean.log
             build/port-*/full/matrix-source/m252-batch.serial.log
+            build/port-*/full/matrix-source/m254-shell.clean.log
+            build/port-*/full/matrix-source/m254-shell.serial.log
             build/busybox-source-parity-x86/m252-batch.clean.log
             build/busybox-source-parity-x86/m252-batch.serial.log
+            build/busybox-source-parity-x86/m254-shell.clean.log
+            build/busybox-source-parity-x86/m254-shell.serial.log

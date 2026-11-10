@@ -30,6 +30,7 @@ ACK={
 USER="m253user"
 UID=1101
 DATA="/home/m253user/m253-nonroot-data.txt"
+APP="/home/m253user/m253-signed-apk-app.json"
 ROOT_SECRET="/root/m253-private/secret"
 
 def receipt(path,phase):
@@ -42,7 +43,9 @@ def receipt(path,phase):
        "ssh_identity":"m253user@127.0.0.1",
        "effective_uid":1101,"effective_gid":1101,
        "public_key_only":True,"verified_root_dac_denial":True,
-       "verified_nonroot_ext4_write":True,"session_count":1,"pty_allocated":True,
+       "verified_nonroot_ext4_write":True,
+       "verified_signed_apk_musl_nonroot":True,
+       "session_count":1,"pty_allocated":True,
        "guest_ssh_ack_path":ACK[phase][0],
        "guest_ssh_ack_sha256":hashlib.sha256(ACK[phase][1]).hexdigest(),
     }
@@ -106,7 +109,7 @@ def verify(port,signed_root,disk,first,second,pcap):
     m230=sibling("m230-dropbear-disk-check.py","naseed_m253_m230_packets")
     root=signed_root.resolve(strict=True)
     physical=disk.resolve(strict=True)
-    for path in ("/home/m253user","/etc/shadow",DATA,*[p[0] for p in ACK.values()]):
+    for path in ("/home/m253user","/etc/shadow",DATA,APP,*[p[0] for p in ACK.values()]):
         # The pristine upstream Alpine DOES normally contain /etc/shadow.
         if path=="/etc/shadow":
             continue
@@ -135,12 +138,15 @@ def verify(port,signed_root,disk,first,second,pcap):
             raise ValueError("M253 original Alpine shadow lacks active nonroot account")
         if read(DATA)!=b"M253-NONROOT-REAL-DAC-PERSISTED\n":
             raise ValueError("M253 nonroot data not committed to real ext4")
+        if read(APP)!=b'{"user":"m253user","uid":1101,"program":"jq"}\n':
+            raise ValueError("M253 real SSH nonroot original APK jq output did not survive reboot")
         if read(ROOT_SECRET)!=b"M253-PRIVATE-ROOT-SECRET-20261109\n":
             raise ValueError("M253 root-only secret changed")
         assert_inode(part,"/home/m253user",UID,UID,"700","directory")
         assert_inode(part,"/home/m253user/.ssh",UID,UID,"700","directory")
         assert_inode(part,"/home/m253user/.ssh/authorized_keys",UID,UID,"600","regular")
         assert_inode(part,DATA,UID,UID,"600","regular")
+        assert_inode(part,APP,UID,UID,"600","regular")
         assert_inode(part,"/root/m253-private",0,0,"700","directory")
         assert_inode(part,ROOT_SECRET,0,0,"600","regular")
         if read("/home/m253user/.ssh/authorized_keys")!=read("/root/.ssh/authorized_keys"):
@@ -155,7 +161,8 @@ def verify(port,signed_root,disk,first,second,pcap):
     print("[M253 ORIGINAL ALPINE MULTIUSER+DAC+SSH+EXT4 PASS] "+port+
           " inherited signed native M244; true uid1101 su, original "
           "Dropbear nonroot host SSH PTY both epochs, denied root DAC "
-          "operations, physical ext4 persistent nonroot-owned inodes")
+          "operations, original signed jq/tree musl ELF as nonroot both "
+          "epochs, physical ext4 persistent nonroot-owned inodes")
 
 if __name__=="__main__":
     if len(sys.argv)!=7:

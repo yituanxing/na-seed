@@ -1,0 +1,52 @@
+name: NaSeed M254 signed Debian glibc shell lifecycle physical ext4 UART
+
+# M254 reuses the M252 provenance/QEMU/FS checks and adds one original Debian
+# dash child script with asynchronous pipe/wait and post-shutdown disk oracle.
+# It performs ONE native system-QEMU boot per ISA, not M252 then M254 boots.
+on:
+  push:
+    branches:
+      - naseed-app-batch2
+      - feat/m254-255-alpine-debian-20261110
+      - feat/m253-alpine-nonroot-dac
+    paths:
+      - '.github/workflows/m254-debian-shell-lifecycle.yml'
+      - '.github/workflows/m252-debian-text-tools-ext4.yml'
+      - 'scripts/m254-*'
+      - 'tests/m254-*'
+      - 'scripts/m252-*'
+      - 'scripts/m251-*'
+      - 'scripts/m250-*'
+      - 'scripts/m249-*'
+      - 'scripts/m248-*'
+      - 'scripts/m245-*'
+      - 'scripts/native-*'
+      - 'scripts/run.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'kernel/boot_image.c'
+      - 'kernel/arch/linux_stat_abi.h'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/syscall/**'
+      - 'kernel/init/**'
+      - 'kernel/fs/**'
+      - 'kernel/task/**'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/virtio_blk*'
+      - 'ports/lwext4/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  original-debian-shell-lifecycle:
+    uses: ./.github/workflows/m252-debian-text-tools-ext4.yml
+    with:
+      m254_shell: true

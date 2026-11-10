@@ -28,6 +28,8 @@ TARGET="m253user@127.0.0.1"
 READY={"first":b"M253_FIRST_USER_SSH_READY","reopen":b"M253_SECOND_USER_SSH_READY"}
 ACK={"first":("/home/m253user/m253-first-user-ssh.ok","M253_NONROOT_SSH_FIRST_OK_20261109"),
      "reopen":("/home/m253user/m253-second-user-ssh.ok","M253_NONROOT_SSH_SECOND_OK_20261109")}
+APP="/home/m253user/m253-signed-apk-app.json"
+APP_QUERY="'.user == \"m253user\" and .uid == 1101 and .program == \"jq\"'"
 
 def user_target(argv):
     if len(argv)<3 or argv[-2]!="root@127.0.0.1":
@@ -54,11 +56,25 @@ def user_pty(phase,args,nonce,deadline):
 
 def ack_command(phase):
     path,value=ACK[phase]
+    # Prove that a normal SSH user can read APK's signed package DB and run
+    # dynamically linked, newly downloaded musl tree/jq across physical reboot.
+    # M243's original root-owned first boot installed both; M244's physical
+    # disk verifier authenticates their APK origin and unchanged package DB.
+    app=("test ! -e "+APP+"; "
+         "/usr/bin/jq -cn --arg user m253user --argjson uid 1101 "
+         "'{user:$user,uid:$uid,program:\"jq\"}' > "+APP+".pending; "
+         "chmod 0600 "+APP+".pending; "
+         "/bin/busybox mv "+APP+".pending "+APP) if phase=="first" else (
+         "test -s "+APP+"; /usr/bin/jq -e "+APP_QUERY+" "+APP+" >/dev/null")
     return ("set -e; umask 077; "
             "test \"$(id -u)\" = 1101; test \"$(id -g)\" = 1101; "
             "test \"$HOME\" = /home/m253user; "
             "test \"$(/bin/busybox stat -c %u:%g /home/m253user/m253-nonroot-data.txt)\" = 1101:1101; "
             "grep -qxF M253-NONROOT-REAL-DAC-PERSISTED /home/m253user/m253-nonroot-data.txt; "
+            "apk info -e jq >/dev/null; apk info -e tree >/dev/null; "
+            "test -x /usr/bin/jq; test -x /usr/bin/tree; "
+            "/usr/bin/tree /home/m253user | /bin/busybox grep -q m253-nonroot-data.txt; "
+            +app+"; "
             "if cat /root/m253-private/secret >/dev/null 2>&1; then exit 90; fi; "
             "if touch /root/m253-host-ssh-breach >/dev/null 2>&1; then exit 91; fi; "
             "test ! -e "+path+"; "
@@ -94,6 +110,7 @@ def user_epoch(phase,args,client_sha,first):
       "ssh_identity":TARGET,"effective_uid":1101,"effective_gid":1101,
       "public_key_only":True,"verified_root_dac_denial":True,
       "verified_nonroot_ext4_write":True,
+      "verified_signed_apk_musl_nonroot":True,
       "session_count":1,"sessions":[session],"pty_allocated":True,
       "client_pubkey_sha256":client_sha,"host_key_fingerprint":fingerprint,
       "guest_ssh_ack_path":ACK[phase][0],
