@@ -200,8 +200,18 @@ const char *nas_boot_prepare_vfs_root(const char *selected,
      * historical init entrypoints; do not label a Debian dash as Alpine. */
     nas_print("[ROOTFS] executable PID1 from mounted ext4: ");
     nas_print(selected);nas_print("\n");
-    if(strcmp(selected,"/bin/busybox")==0 ||
-       strcmp(selected,"/sbin/init")==0) {
+    /* /sbin/init exists in BOTH original Alpine (musl/BusyBox) and signed
+     * Debian (glibc/sysvinit-core).  This is a diagnostic ABI distinction,
+     * not proof of provenance: signed .deb hashes are checked by the host. */
+    bool debian_init = strcmp(selected,"/sbin/init")==0 && wants_loader &&
+        (strcmp(out->interpreter_path,"/lib64/ld-linux-x86-64.so.2")==0 ||
+         strcmp(out->interpreter_path,"/lib/ld-linux-riscv64-lp64d.so.1")==0 ||
+         strcmp(out->interpreter_path,"/lib/ld-linux-aarch64.so.1")==0);
+    if(debian_init) {
+        nas_print("[M255 ROOT] original Debian sysvinit PID1 from mounted ext4: ");
+        nas_print(selected);nas_print("\n");
+    } else if(strcmp(selected,"/bin/busybox")==0 ||
+              strcmp(selected,"/sbin/init")==0) {
         nas_print("[M191 ROOT] original Alpine PID1 from mounted ext4: ");
         nas_print(selected);nas_print("\n");
     }

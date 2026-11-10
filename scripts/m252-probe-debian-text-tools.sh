@@ -23,13 +23,25 @@ case "${NAS_ENABLE_M254_DEBIAN_SHELL:-0}" in
     1) m254_shell=1 ;;
     *) echo '[M252/M254 FAIL] invalid shell lifecycle toggle' >&2; exit 2 ;;
 esac
+case "${NAS_ENABLE_M255_DEBIAN_INIT:-0}" in
+    0) m255_init=0 ;;
+    1) m255_init=1 ;;
+    *) echo '[M255 FAIL] invalid original sysvinit toggle' >&2; exit 2 ;;
+esac
+[ "$m255_init" = 0 ] || [ "$m254_shell" = 0 ] || {
+    echo '[M255 FAIL] original sysvinit PID1 and M254 interactive dash PID1 are exclusive' >&2
+    exit 2
+}
 
 for tool in python3 apt-get apt-cache dpkg-deb readelf cpio cmp sha256sum \
     mke2fs e2fsck debugfs sudo xorriso sgdisk mformat mmd mcopy "$cc"; do
     command -v "$tool" >/dev/null || { echo "[M252 FAIL] missing $tool" >&2; exit 1; }
 done
 
-if [ "$m254_shell" = 1 ]; then
+if [ "$m255_init" = 1 ]; then
+    work="build/m255-debian-init/$port"
+    case_id=m255-init
+elif [ "$m254_shell" = 1 ]; then
     work="build/m254-debian-shell/$port"
     case_id=m254-shell
 else
@@ -41,6 +53,7 @@ disk="$PWD/$work/m252-debian-root.img"
 manifest="$work/source/manifest.json"
 m251extra="$work/m251-extra.json"
 extra="$work/m252-extra.json"
+m255extra="$work/m255-extra.json"
 mkdir -p "$work"
 python3 scripts/m248-fetch-debian-multiarch.py --arch "$port" --out "$work/source"
 source=$(cd "$work/source/sysroot" && pwd -P)
@@ -91,6 +104,9 @@ if [ "$m254_shell" = 1 ]; then
     cp scripts/m254-guest-workload.sh "$root/etc/m254-guest-workload.sh"
     chmod 755 "$root/etc/m254-guest-workload.sh"
 fi
+if [ "$m255_init" = 1 ]; then
+    python3 scripts/m255-debian-ext4-disk.py stage "$root"
+fi
 
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
     tests/m250-debian-tty-launch.c -o "$root/sbin/m250-tty-launch"
@@ -101,7 +117,15 @@ fi
 
 python3 scripts/m251-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra"
 python3 scripts/m252-debian-provenance.py prepare "$port" "$root" "$manifest" "$m251extra" "$extra"
+if [ "$m255_init" = 1 ]; then
+    python3 scripts/m255-debian-provenance.py prepare \
+        "$port" "$root" "$manifest" "$m251extra" "$extra" "$m255extra"
+fi
 sudo python3 scripts/m252-debian-ext4-disk.py prepare "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
+if [ "$m255_init" = 1 ]; then
+    sudo python3 scripts/m255-debian-ext4-disk.py "$port" "$root" "$disk" \
+        "$manifest" "$m251extra" "$extra" "$m255extra"
+fi
 if [ "$m254_shell" = 1 ]; then
     sudo python3 scripts/m254-debian-ext4-disk.py before "$port" "$root" "$disk" "$manifest" "$m251extra" "$extra"
 fi
@@ -123,8 +147,13 @@ if cpio -it --quiet < "$rescue/rootfs.cpio" | grep -Eq \
 fi
 
 case_file="$work/m252-cases.tsv"
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$case_id" cpio --console - - /sbin/m250-tty-launch > "$case_file"
+if [ "$m255_init" = 1 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$case_id" cpio ' ' - - /sbin/init > "$case_file"
+else
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$case_id" cpio --console - - /sbin/m250-tty-launch > "$case_file"
+fi
 export NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_M191_ALPINE_ROOT=1
 export NAS_ENABLE_RAMFS=0 NAS_ENABLE_LITTLEFS=0
 unset NAS_ENABLE_M179_FS_IRQ NAS_ENABLE_M180_FS_USER_IRQ
@@ -138,6 +167,8 @@ export NAS_ACCEPTANCE_QEMU_RAM=1024M
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M252_QEMU_TIMEOUT:-300}
 if [ "$m254_shell" = 1 ]; then
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M254_QEMU_TIMEOUT:-420}
+elif [ "$m255_init" = 1 ]; then
+    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M255_QEMU_TIMEOUT:-420}
 fi
 export NAS_SYSCALL_TRACE=1
 
@@ -155,7 +186,14 @@ fifo="$PWD/$work/m252-serial-input.fifo"
 export NAS_QEMU_SERIAL_FIFO="$fifo"
 serial="$PWD/$logs/$case_id.serial.log"
 runner_log="$PWD/$work/m252-runner.log"
-if [ "$m254_shell" = 1 ]; then
+if [ "$m255_init" = 1 ]; then
+    echo "[M255 NATIVE $label] signed ORIGINAL Debian sysvinit-core /sbin/init PID1, inittab sysinit/respawn"
+    python3 scripts/m255-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
+    # Diagnostic only: original sysvinit stays alive and final poweroff(2)
+    # remains unimplemented. Never invoke M252 post-shutdown ext4/PASS checks.
+    echo "[M255 ORIGINAL DEBIAN SYSVINIT NATIVE DIAGNOSTIC] $port: PID1/respawn observed; clean poweroff and durable ext4 NOT YET PASS"
+    exit 0
+elif [ "$m254_shell" = 1 ]; then
     echo "[M254 NATIVE $label] original Debian multi-process dash script + M252 signed ELF on physical ext4"
     python3 scripts/m254-debian-uart.py "$port" "$runner" "$serial" "$runner_log" "$fifo"
 else
