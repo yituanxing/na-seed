@@ -662,9 +662,9 @@ int nas_xhci_ro_close(struct nas_xhci_ro_session *s) {
         /* Failure must NOT release any DMA or allow BAR unmap. */
         int rc = quiesce(s);
         if (rc) return rc;
-        s->may_dma = false;
         rc = nas_dma_lease_disarm_after_quiesce(&s->lease);
         if (rc) return rc;
+        s->may_dma = false;
     }
     for (unsigned i = 0; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
         if (s->pages[i].cpu) {

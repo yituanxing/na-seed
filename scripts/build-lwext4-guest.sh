@@ -86,6 +86,13 @@ for source in $sources; do
         }
         virt_flags="$virt_flags -DNAS_ENABLE_H9_QEMU_AHCI_USERLAND=1"
     fi
+    if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; then
+        [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] || {
+            echo '[H11 LWEXT4 BUILD FAIL] USB Alpine root requires lwext4' >&2
+            exit 1
+        }
+        virt_flags="$virt_flags -DNAS_ENABLE_H11_QEMU_XHCI_USERLAND=1"
+    fi
     clang --target="$triple" $archflags $virt_flags -std=c11 -O2 -ffreestanding \
         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
         -Werror=implicit-function-declaration -Werror=incompatible-pointer-types \
@@ -110,8 +117,9 @@ else
             nas_vfs_shutdown_external_root_pseudos|nas_vfs_shutdown_runtime_tmpfs)
                 [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
                                          [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
-                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ]; } || {
-                    echo '[LWEXT4 KERNEL LINK FAIL] external root pseudo-unmount without M191/H8/H9 opt-in' >&2
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] external root pseudo-unmount without M191/H8/H9/H11 opt-in' >&2
                     exit 1
                 } ;;
             # M179 is kernel-only: these are actual common-kernel worker,
@@ -120,8 +128,9 @@ else
                 [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] ||
                                          [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
                                          [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
-                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ]; } || {
-                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191/H8/H9' >&2
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191/H8/H9/H11' >&2
                     exit 1
                 } ;;
             nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt)

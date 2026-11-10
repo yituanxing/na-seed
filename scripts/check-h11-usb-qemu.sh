@@ -47,6 +47,7 @@ fi
 for required in \
     '[H11 XHCI BAR QUALIFIED]' \
     '[H11 USB BLOCK ATTACHED] name=usb0 read-only' \
+    '[H11 USB BOOT CONTINUE]' \
     '[H11 USB ROOT MOUNTED] / read-only source=usb0' \
     '[H11 USB PT_INTERP] /lib/ld-musl-x86_64.so.1' \
     '[EXEC] replaced process with lwext4 ELF: /bin/busybox' \
