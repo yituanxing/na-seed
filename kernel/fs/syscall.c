@@ -31,6 +31,9 @@
 #include "../drivers/input/core.h"
 #include "input_chrdev.h"
 #endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+#include "usb_serial_chrdev.h"
+#endif
 #include "io.h"
 #include "mode.h"
 #include "syscall.h"
@@ -1495,6 +1498,18 @@ static const struct nas_file_ops ops_evdev={
     .release=nas_input_chrdev_release
 };
 #endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+static const struct nas_file_ops ops_usb_serial={
+    .read_plan=nas_usb_serial_chrdev_read_plan,
+    .read=nas_usb_serial_chrdev_read,
+    .write=nas_usb_serial_chrdev_write,
+    .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
+    .poll_description=nas_usb_serial_chrdev_poll,
+    .ioctl=nas_usb_serial_chrdev_ioctl,
+    .release=nas_usb_serial_chrdev_release
+};
+#endif
 static const struct nas_file_ops *const ops_by_kind[]={
     [FD_UART]=&ops_uart,[FD_TTY]=&ops_tty,[FD_NULL]=&ops_null,
     [FD_VT]=&ops_vt,
@@ -1506,6 +1521,9 @@ static const struct nas_file_ops *const ops_by_kind[]={
     defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
     defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
     [FD_EVDEV]=&ops_evdev,
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    [FD_USB_SERIAL]=&ops_usb_serial,
 #endif
     [FD_ARCHIVE]=&ops_vfs_regular,[FD_DIR]=&ops_vfs_dir,
     [FD_PIPE_R]=&ops_pipe_read,[FD_PIPE_W]=&ops_pipe_write,

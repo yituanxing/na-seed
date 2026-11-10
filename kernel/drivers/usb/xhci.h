@@ -54,7 +54,13 @@ enum nas_xhci_ro_debug_stage {
     NAS_XHCI_STAGE_HID_CONFIGURE_EP,
     NAS_XHCI_STAGE_HID_ARM,
     NAS_XHCI_STAGE_HID_READY,
-    NAS_XHCI_STAGE_HID_POLL
+    NAS_XHCI_STAGE_HID_POLL,
+    NAS_XHCI_STAGE_FTDI_DESCRIPTOR,
+    NAS_XHCI_STAGE_FTDI_VENDOR_INIT,
+    NAS_XHCI_STAGE_FTDI_READY,
+    NAS_XHCI_STAGE_FTDI_ARM_IN,
+    NAS_XHCI_STAGE_FTDI_POLL_IN,
+    NAS_XHCI_STAGE_FTDI_BULK_OUT
 };
 /* H14: two independent root-port HID endpoints share one xHC, command/event
  * ring and slot-owner lifetime. A second bounded H6 lease pins three pages:
@@ -112,6 +118,11 @@ struct nas_xhci_ro_session {
     bool hid_mode;
     bool hid_pending;
     bool dual_mode;
+    bool ftdi_mode;
+    bool ftdi_pending;
+    uint64_t ftdi_in_trb_bus;
+    uint8_t ftdi_rx_buffer[62];
+    uint8_t ftdi_rx_offset, ftdi_rx_len;
     uint8_t dual_current;
     uint8_t dual_max_ports;
     uint8_t dual_missing_protocol; /* 1 keyboard or 2 mouse if dual open fails */
@@ -193,5 +204,32 @@ int nas_xhci_dual_hid_poll_keyboard(struct nas_xhci_ro_session *,
 int nas_xhci_dual_hid_poll_mouse(struct nas_xhci_ro_session *,
                                  uint8_t report[4]);
 int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *);
+
+/* H15 QEMU usb-serial FT232BM ONLY (0403:6001, FF/FF/FF, FS).
+ * Uses one isolated xHC + the original seven-page H6 DMA lease; never
+ * coexists with H11 MSC or H12-H14 HID modes. EP0 vendor init configures
+ * 115200 8N1. Bulk IN is a single armed 64-byte transfer and strips its
+ * mandatory two-byte FTDI modem status prefix. Bulk OUT accepts up to 64B;
+ * the platform owns user-facing chunking and any receive FIFO.
+ * A failed open still requires ftdi_close() before PCI BAR teardown.
+ */
+int nas_xhci_ftdi_open(const struct nas_xhci_io *,
+                       const struct nas_dma_provider *,
+                       struct nas_xhci_ro_session *);
+/* Strictly nonblocking: 0 means 1..62 user bytes copied and *received
+ * set accordingly; -EAGAIN means no data ready and *received=0. Any
+ * other negative result is a real transport fault. No synthetic data.
+ */
+int nas_xhci_ftdi_poll_in(struct nas_xhci_ro_session *, uint8_t *destination,
+                          uint32_t capacity, uint32_t *received);
+/* One real completed USB Bulk OUT packet, size 1..64 bytes, else errno.
+ * Caller splits larger writes; pending IN completions are demultiplexed.
+ */
+int nas_xhci_ftdi_write(struct nas_xhci_ro_session *, const uint8_t *source,
+                        uint32_t bytes);
+/* HCHalted must precede DMA disarm/free/BAR teardown; if halt fails the
+ * DMA leases remain pinned and close can be retried.
+ */
+int nas_xhci_ftdi_close(struct nas_xhci_ro_session *);
 
 #endif

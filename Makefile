@@ -161,6 +161,18 @@ $(error H14 dual HID cannot share H9-H13 or VirtIO Input hardware profiles)
 endif
 CFLAGS += -DNAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1
 endif
+# H15: one Q35 xHCI FT232BM USB-serial. Original signed Alpine on
+# immutable H8-derived NVMe ext4 executes BusyBox stty/head/printf over
+# dynamically published /dev/ttyUSB0 (USB Bulk IN/OUT, not boot UART).
+ifeq ($(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND),1)
+ifneq ($(NAS_ENABLE_H8_QEMU_ALPINE_ROOT)$(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY)$(NAS_ENABLE_LWEXT4),111)
+$(error H15 FTDI requires H8 original signed Alpine ext4 root, H2 PCI discovery and lwext4)
+endif
+ifneq ($(filter 1,$(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) $(NAS_ENABLE_H10_QEMU_E1000_USERLAND) $(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) $(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND) $(NAS_ENABLE_VIRTIO_INPUT)),)
+$(error H15 isolated USB serial cannot share H9-H14 or VirtIO Input hardware profiles)
+endif
+CFLAGS += -DNAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -444,6 +456,18 @@ hw-h14-iso: hw-h14-kernel
 	sh scripts/stage-h14-dual-hid-alpine.sh
 	sh scripts/build-h14-dual-hid-iso.sh
 
+# H15: USB Bulk-IN/Bulk-OUT FT232BM, original signed Alpine BusyBox.
+hw-h15-host-check: hw-h14-host-check
+	sh scripts/check-h15-ftdi-host.sh
+
+hw-h15-kernel:
+	$(MAKE) OUT=build/h15-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND=1 kernel
+
+hw-h15-iso: hw-h15-kernel
+	$(MAKE) OUT=build/h15-qemu-only build/h15-qemu-only/deps/limine-binary/BOOTX64.EFI
+	sh scripts/stage-h15-ftdi-alpine.sh
+	sh scripts/build-h15-ftdi-iso.sh
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
@@ -487,6 +511,10 @@ ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h14_dual_hid.c \
   kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c \
   kernel/drivers/usb/hid_boot_mouse.c
+endif
+ifeq ($(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND),1)
+H0_HW_SRCS += kernel/platform/x86_h15_ftdi.c \
+  kernel/drivers/usb/xhci.c kernel/fs/usb_serial_chrdev.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw

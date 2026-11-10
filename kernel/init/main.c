@@ -34,6 +34,10 @@
 #ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
 #include "../platform/x86_h14_dual_hid.h"
 #endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+#include "../platform/x86_h15_ftdi.h"
+#include "../fs/usb_serial_chrdev.h"
+#endif
 #ifdef NAS_ENABLE_LWEXT4
 extern bool nas_lwext4_guest_boot_mount(void);
 extern bool nas_lwext4_guest_boot_shutdown(void);
@@ -163,6 +167,14 @@ static void deferred_h14_usb_dual(void *context) {
         nas_fail("H14 xHCI dual HID poll failed");
 }
 #endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+static void deferred_h15_ftdi_serial(void *context) {
+    (void)context;
+    /* Real xHCI Bulk-IN polling only; bounded per scheduler slice. */
+    if(nas_x86_h15_ftdi_poll(8U)<0)
+        nas_fail("H15 real FTDI USB Bulk-IN poll failed");
+}
+#endif
 static void init_deferred_services(void) {
     int rc=0;
 #ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
@@ -199,6 +211,11 @@ static void init_deferred_services(void) {
     rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
                                    deferred_h14_usb_dual,NULL);
     if(rc)nas_fail("deferred dual USB HID service registration failed");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    rc=nas_sched_register_deferred(NAS_SCHED_BEFORE_WORKERS,
+                                    deferred_h15_ftdi_serial,NULL);
+    if(rc)nas_fail("deferred FT232BM USB-serial RX registration failed");
 #endif
 #if defined(NAS_ENABLE_M179_FS_IRQ) || defined(NAS_ENABLE_EXTERNAL_EXT4_BOOT_ROOT)
     /* PID1 success requires the real filesystem worker's durable shutdown. */
@@ -264,6 +281,11 @@ static void nas_init_finish_success(void) {
     if(nas_x86_h14_dual_hid_shutdown())
         nas_fail("H14 USB Keyboard+Mouse/evdev or xHCI DMA/BAR shutdown failed");
     nas_print("[H14 DUAL USERLAND SHUTDOWN] event0/event1 closed, xHCI halted\n");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    if(nas_x86_h15_ftdi_shutdown())
+        nas_fail("H15 FTDI ttyUSB0 still open or xHCI DMA/BAR shutdown failed");
+    nas_print("[H15 FTDI USERLAND SHUTDOWN] original BusyBox stty/head/printf closed, real xHCI FTDI quiesced\n");
 #endif
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
     if(nas_x86_h11_usb_shutdown())
@@ -555,6 +577,12 @@ void nas_init_userspace(void) {
 #ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
     if(nas_x86_h14_dual_hid_publish_input())
         nas_fail("H14 two USB HID evdev publications after class init failed");
+#endif
+#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    /* Publish only the actually enumerated FT232BM class node, after
+     * base character-device bootstrap and before original BusyBox starts. */
+    if(nas_usb_serial_chrdev_publish())
+        nas_fail("H15 real FTDI ttyUSB0 class publication failed");
 #endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts
      * before user syscalls begin using the same continuation mechanism. */

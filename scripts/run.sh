@@ -462,6 +462,74 @@ if [ "${NAS_QEMU_H14_DUAL_HID_USERLAND:-0}" = 1 ] ||
         fi
     fi
 fi
+# H15: real Q35 xHCI/FT232BM USB-serial, not the console UART.
+# Exactly one positive, no-USB-serial, or no-xHCI image is permitted; all
+# three retain the same immutable signed original Alpine NVMe root.
+if [ "${NAS_QEMU_H15_USB_SERIAL_USERLAND:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H15_NO_USB_SERIAL:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H15_NO_XHCI:-0}" = 1 ]; then
+    h15_modes=0
+    for var in NAS_QEMU_H15_USB_SERIAL_USERLAND NAS_QEMU_H15_NO_USB_SERIAL NAS_QEMU_H15_NO_XHCI; do
+        eval 'value=${'"$var"'-0}'
+        [ "$value" = 0 ] || h15_modes=$((h15_modes + 1))
+    done
+    [ "$h15_modes" -eq 1 ] &&
+    [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_NET_PCAP:-}" ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] &&
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H9_AHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_E1000:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_NO_E1000:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_USB_POSITIVE:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_NO_MEDIA:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_NO_XHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_NO_USB_KBD:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_NO_XHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_USB_MOUSE_USERLAND:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_USB_MOUSE_MISSING:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_XHCI_MISSING:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H14_DUAL_HID_USERLAND:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H14_NO_USB_KBD:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H14_NO_USB_MOUSE:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H14_NO_XHCI:-0}" = 0 ] || {
+        echo '[H15 QEMU FAIL] USB serial cannot share other hardware profiles' >&2
+        exit 2
+    }
+    h15_image=build/h15-qemu-only/h15-alpine.ext4
+    test -s "$h15_image" && [ ! -L "$h15_image" ] &&
+    test -s build/h15-qemu-only/h15-media-before.sha256 &&
+    (cd build/h15-qemu-only && sha256sum -c h15-media-before.sha256 >/dev/null) &&
+    [ "$(stat -c '%a' "$h15_image")" = 444 ] || {
+        echo '[H15 QEMU FAIL] original signed Alpine NVMe media absent or modified' >&2
+        exit 2
+    }
+    set -- "$@" -nic none \
+        -drive "if=none,id=naseed_h15_disk,format=raw,file=$h15_image,readonly=on" \
+        -device nvme,id=naseed_h15_nvme,serial=naseedh15,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h15_disk,nsid=1
+    if [ "${NAS_QEMU_H15_NO_XHCI:-0}" != 1 ]; then
+        set -- "$@" -device qemu-xhci,id=naseed_h15_xhci,bus=pcie.0,addr=0x4
+        if [ "${NAS_QEMU_H15_USB_SERIAL_USERLAND:-0}" = 1 ]; then
+            [ -n "${NAS_QEMU_H15_FTDI_SOCKET:-}" ] || {
+                echo '[H15 QEMU FAIL] positive USB serial requires host Unix socket' >&2
+                exit 2
+            }
+            set -- "$@" \
+                -chardev "socket,id=naseed_h15_wire,path=$NAS_QEMU_H15_FTDI_SOCKET,server=on,wait=off" \
+                -device usb-serial,id=naseed_h15_ftdi,chardev=naseed_h15_wire,bus=naseed_h15_xhci.0,port=1
+        fi
+    fi
+fi
 # H6 fail-closed acceptance: two controllers with zero namespaces and zero
 # backing drives. The guest may enumerate both via read-only PCI config, but
 # must refuse write-capable NVMe initialization before touching either BAR or

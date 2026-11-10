@@ -67,6 +67,9 @@
 #define XHCI_EVENT_TRBS 256U
 #define XHCI_DCBAA_ERST_OFF 2048U
 #define XHCI_PAYLOAD_MAX 4096U
+#define XHCI_FTDI_PACKET_BYTES 64U
+#define XHCI_FTDI_HEADER_BYTES 2U
+#define XHCI_FTDI_IN_OFFSET 128U
 
 enum xhci_page_index {
     XHCI_P_DCBAA,
@@ -1183,7 +1186,7 @@ int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *s) {
 static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
                          void *buffer, uint32_t bytes) {
     if (!s || !s->ready || s->hid_mode || s->dual_mode ||
-        s->io_active || !buffer ||
+        s->ftdi_mode || s->io_active || !buffer ||
         !bytes || bytes > XHCI_PAYLOAD_MAX) return -EINVAL;
     uint8_t dci = in ? s->bulk_in_dci : s->bulk_out_dci;
     unsigned which = in ? 3U : 2U; /* EP ring IDs 2/3 */
@@ -1255,5 +1258,331 @@ int nas_xhci_hid_close(struct nas_xhci_ro_session *s) {
 }
 int nas_xhci_hid_mouse_close(struct nas_xhci_ro_session *s) {
     if (!s || !s->hid_mode || s->hid_protocol != 2U) return -EINVAL;
+    return nas_xhci_ro_close(s);
+}
+
+/*
+ * H15 FT232BM: a deliberately narrow, non-BOT QEMU USB serial transport.
+ * Vendor/product, interface and BOTH endpoint addresses must match QEMU's
+ * hw/usb/dev-serial.c. A BOT MSC or a HID device cannot enter this mode.
+ * The serial device owns an independent xHC/controller lifetime, not an
+ * endpoint on an H11 or H14 controller already in use.
+ */
+static int ftdi_descriptors(struct nas_xhci_ro_session *s) {
+    uint8_t device[18], header[9], config[512];
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_DESCRIPTOR;
+    int rc = control_request(s, 0x80U, 6U, 0x0100U, 0U,
+                             sizeof(device), device);
+    if (rc) return rc;
+    if (device[0] != 18U || device[1] != 1U ||
+        device[7] != 8U || device[8] != 0x03U ||
+        device[9] != 0x04U || device[10] != 0x01U ||
+        device[11] != 0x60U || device[17] != 1U)
+        return -ENODEV; /* 0403:6001, one configuration, EP0 8B. */
+    rc = control_request(s, 0x80U, 6U, 0x0200U, 0U,
+                         sizeof(header), header);
+    if (rc) return rc;
+    if (header[0] != 9U || header[1] != 2U ||
+        header[4] != 1U || header[5] != 1U)
+        return -ENODEV;
+    uint16_t total = le16(header + 2U);
+    if (total < 32U || total > sizeof(config)) return -ENODEV;
+    zero_bytes(config, sizeof(config));
+    rc = control_request(s, 0x80U, 6U, 0x0200U, 0U, total, config);
+    if (rc) return rc;
+    if (config[0] != 9U || config[1] != 2U ||
+        le16(config + 2U) != total || config[4] != 1U ||
+        config[5] != 1U) return -ENODEV;
+    bool iface_found = false, iface_active = false;
+    bool in_found = false, out_found = false;
+    unsigned interfaces = 0U, endpoints = 0U;
+    for (uint32_t off = 0; off + 2U <= total;) {
+        uint8_t length = config[off], type = config[off + 1U];
+        if (length < 2U || off + length > total) return -ENODEV;
+        if (type == 4U) {
+            if (length < 9U) return -ENODEV;
+            ++interfaces;
+            /* Reject arbitrary vendor interfaces, alternate settings and
+             * QEMU usb-braille (whose interface/VID differ from usb-serial).
+             */
+            iface_active = !iface_found && config[off + 2U] == 0U &&
+                           config[off + 3U] == 0U &&
+                           config[off + 4U] == 2U &&
+                           config[off + 5U] == 0xffU &&
+                           config[off + 6U] == 0xffU &&
+                           config[off + 7U] == 0xffU;
+            if (iface_active) {
+                iface_found = true;
+                s->interface_number = 0U;
+            }
+        } else if (type == 5U && iface_active) {
+            if (length < 7U) return -ENODEV;
+            uint8_t ep = config[off + 2U];
+            uint16_t packet = le16(config + off + 4U) & 0x07ffU;
+            ++endpoints;
+            if ((config[off + 3U] & 3U) != 2U ||
+                packet != XHCI_FTDI_PACKET_BYTES) return -ENODEV;
+            if (ep == 0x81U && !in_found) {
+                in_found = true;
+            } else if (ep == 0x02U && !out_found) {
+                out_found = true;
+            } else {
+                return -ENODEV;
+            }
+        }
+        off += length;
+    }
+    if (!iface_found || interfaces != 1U || endpoints != 2U ||
+        !in_found || !out_found || s->port_speed != 1U)
+        return -ENODEV; /* Full Speed QEMU FT232BM only. */
+    s->bulk_in_dci = 3U;  /* endpoint 1 IN */
+    s->bulk_out_dci = 4U; /* endpoint 2 OUT */
+    s->max_packet_in = XHCI_FTDI_PACKET_BYTES;
+    s->max_packet_out = XHCI_FTDI_PACKET_BYTES;
+    return control_request(s, 0U, 9U, 1U, 0U, 0U, NULL);
+}
+
+/* QEMU FT232BM vendor OUT: RESET, 115200baud divisor26, 8N1, DTR+RTS.
+ * These are requests with zero data stages and EP0 STATUS completion.
+ */
+static int ftdi_vendor_setup(struct nas_xhci_ro_session *s) {
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_VENDOR_INIT;
+    int rc = control_request(s, 0x40U, 0U, 0U, 0U, 0U, NULL);
+    if (rc) return rc;
+    rc = control_request(s, 0x40U, 3U, 0x001aU, 0U, 0U, NULL);
+    if (rc) return rc;
+    rc = control_request(s, 0x40U, 4U, 0x0008U, 0U, 0U, NULL);
+    if (rc) return rc;
+    return control_request(s, 0x40U, 1U, 0x0303U, 0U, 0U, NULL);
+}
+
+static int ftdi_arm_bulk_in(struct nas_xhci_ro_session *s) {
+    if (!s || !s->ftdi_mode || !s->ready ||
+        s->ftdi_pending || s->ftdi_rx_len ||
+        s->bulk_in_dci != 3U) return -EINVAL;
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_ARM_IN;
+    zero_bytes(page_cpu(s, XHCI_P_PAYLOAD) + XHCI_FTDI_IN_OFFSET,
+               XHCI_FTDI_PACKET_BYTES);
+    int rc = dma_sync(s, XHCI_P_PAYLOAD, XHCI_FTDI_IN_OFFSET,
+                      XHCI_FTDI_PACKET_BYTES, NAS_DMA_FROM_DEVICE);
+    if (rc) return rc;
+    struct xhci_trb trb;
+    zero_bytes(&trb, sizeof(trb));
+    trb.parameter = page_bus(s, XHCI_P_PAYLOAD) + XHCI_FTDI_IN_OFFSET;
+    trb.status = XHCI_FTDI_PACKET_BYTES;
+    trb.control = XHCI_TRB_TYPE(XHCI_TRB_NORMAL) | XHCI_TRB_IOC;
+    uint64_t trb_bus = 0U;
+    rc = ring_enqueue(s, 3U, &trb, &trb_bus);
+    if (rc) return rc;
+    s->ftdi_in_trb_bus = trb_bus;
+    s->ftdi_pending = true;
+    rc = ring_doorbell(s, s->slot_id, s->bulk_in_dci);
+    if (rc) {
+        /* The enqueued TRB may already be visible to the controller.
+         * Retain its pending owner until explicit quiescence/close. */
+        return rc;
+    }
+    return 0;
+}
+
+static int ftdi_event_port(struct nas_xhci_ro_session *s) {
+    uint32_t portsc = 0U;
+    if (io_read(s, s->portsc_offset, &portsc)) return -EIO;
+    s->debug_portsc = portsc;
+    return (portsc & (XHCI_PORT_CCS | XHCI_PORT_PED)) ==
+           (XHCI_PORT_CCS | XHCI_PORT_PED) ? 0 : -ENODEV;
+}
+
+/* Accept exactly the previously queued FTDI IN TRB. The xHCI transfer
+ * event residual is relative to its requested 64B, not the user bytes.
+ * Both successful and short packet completions are legal for usb-serial.
+ * QEMU always puts two status bytes BEFORE up to 62 user bytes.
+ */
+static int ftdi_receive_event(struct nas_xhci_ro_session *s,
+                              const struct xhci_trb *event) {
+    if (!s->ftdi_pending || s->ftdi_rx_len ||
+        ((event->control >> 10) & 63U) != XHCI_EVENT_TRANSFER ||
+        (event->parameter & ~0xFULL) != s->ftdi_in_trb_bus ||
+        ((event->control >> 16) & 31U) != s->bulk_in_dci ||
+        ((event->control >> 24) & 255U) != s->slot_id)
+        return -EIO;
+    uint32_t completion = (event->status >> 24) & 255U;
+    uint32_t residual = event->status & 0xffffffU;
+    s->debug_completion_code = completion;
+    s->debug_event_type = XHCI_EVENT_TRANSFER;
+    if (completion != XHCI_CC_SHORT_PACKET &&
+        completion != XHCI_CC_SUCCESS) return -EIO;
+    if (residual > XHCI_FTDI_PACKET_BYTES) return -EMSGSIZE;
+    uint32_t actual = XHCI_FTDI_PACKET_BYTES - residual;
+    if (actual < XHCI_FTDI_HEADER_BYTES) return -EMSGSIZE;
+    if (dma_sync(s, XHCI_P_PAYLOAD, XHCI_FTDI_IN_OFFSET,
+                 XHCI_FTDI_PACKET_BYTES, NAS_DMA_FROM_DEVICE))
+        return -EIO;
+    const uint8_t *packet = page_cpu(s, XHCI_P_PAYLOAD) +
+                            XHCI_FTDI_IN_OFFSET;
+    if (!(packet[0] & 1U)) return -EIO; /* QEMU modem status sentinel */
+    /* THRE/TEMT (0x60) are ordinary FTDI UART status flags; QEMU
+     * currently reports 0. Real line errors (OE/PE/FE/BI) are not data.
+     */
+    if (packet[1] & 0x1eU) return -EIO;
+    s->ftdi_pending = false;
+    s->ftdi_in_trb_bus = 0U;
+    s->ftdi_rx_offset = 0U;
+    s->ftdi_rx_len = (uint8_t)(actual - XHCI_FTDI_HEADER_BYTES);
+    if (s->ftdi_rx_len)
+        copy_bytes(s->ftdi_rx_buffer, packet + XHCI_FTDI_HEADER_BYTES,
+                   s->ftdi_rx_len);
+    return 0;
+}
+
+int nas_xhci_ftdi_open(const struct nas_xhci_io *io,
+                       const struct nas_dma_provider *dma,
+                       struct nas_xhci_ro_session *s) {
+    if (!io || !dma || !s || !io->read32 || !io->write32 ||
+        io->mmio_bytes < 0x1000U || s->io || s->lease.held)
+        return -EINVAL;
+    s->io = io;
+    s->dma = dma;
+    s->ftdi_mode = true;
+    s->debug_stage = NAS_XHCI_STAGE_DMA;
+    int rc = nas_dma_lease_begin(&s->lease, dma);
+    if (rc) return rc;
+    for (unsigned i = 0U; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
+        rc = nas_dma_lease_alloc_page(&s->lease, &s->pages[i]);
+        if (rc) return rc;
+    }
+    rc = run_controller(s);
+    if (rc) return rc;
+    rc = setup_context(s);
+    if (rc) return rc;
+    rc = ftdi_descriptors(s);
+    if (rc) return rc;
+    rc = configure_bulk_endpoints(s);
+    if (rc) return rc;
+    rc = ftdi_vendor_setup(s);
+    if (rc) return rc;
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_READY;
+    s->ready = true;
+    return ftdi_arm_bulk_in(s);
+}
+
+/* One bounded event dequeue; FTDI NAK is an ordinary no-data state,
+ * not a synthetic empty user packet. Neither busy wait nor timeout here.
+ */
+int nas_xhci_ftdi_poll_in(struct nas_xhci_ro_session *s, uint8_t *dst,
+                          uint32_t capacity, uint32_t *received) {
+    if (!received) return -EINVAL;
+    *received = 0U;
+    if (!s || !dst || capacity == 0U || !s->ready ||
+        !s->ftdi_mode || s->hid_mode || s->dual_mode ||
+        s->io_active) return -EINVAL;
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_POLL_IN;
+    if (s->ftdi_rx_len) {
+        uint32_t count = s->ftdi_rx_len;
+        if (count > capacity) count = capacity;
+        copy_bytes(dst, s->ftdi_rx_buffer + s->ftdi_rx_offset, count);
+        s->ftdi_rx_offset = (uint8_t)(s->ftdi_rx_offset + count);
+        s->ftdi_rx_len = (uint8_t)(s->ftdi_rx_len - count);
+        if (!s->ftdi_rx_len) s->ftdi_rx_offset = 0U;
+        *received = count;
+        return 0;
+    }
+    if (!s->ftdi_pending) {
+        int rc = ftdi_arm_bulk_in(s);
+        return rc ? rc : -EAGAIN;
+    }
+    for (unsigned skipped = 0U; skipped < 4U; ++skipped) {
+        struct xhci_trb event;
+        int rc = event_next(s, &event);
+        if (rc) return rc;
+        uint32_t kind = (event.control >> 10) & 63U;
+        if (kind == XHCI_EVENT_PORT_STATUS) {
+            rc = ftdi_event_port(s);
+            if (rc) return rc;
+            continue;
+        }
+        rc = ftdi_receive_event(s, &event);
+        if (rc) return rc;
+        if (!s->ftdi_rx_len) {
+            rc = ftdi_arm_bulk_in(s);
+            return rc ? rc : -EAGAIN;
+        }
+        uint32_t count = s->ftdi_rx_len;
+        if (count > capacity) count = capacity;
+        copy_bytes(dst, s->ftdi_rx_buffer, count);
+        s->ftdi_rx_offset = (uint8_t)count;
+        s->ftdi_rx_len = (uint8_t)(s->ftdi_rx_len - count);
+        if (!s->ftdi_rx_len) s->ftdi_rx_offset = 0U;
+        *received = count;
+        return 0;
+    }
+    return -EAGAIN;
+}
+
+int nas_xhci_ftdi_write(struct nas_xhci_ro_session *s,
+                        const uint8_t *source, uint32_t bytes) {
+    if (!s || !s->ready || !s->ftdi_mode ||
+        s->hid_mode || s->dual_mode || s->io_active ||
+        !source || bytes == 0U || bytes > XHCI_FTDI_PACKET_BYTES)
+        return -EINVAL;
+    s->io_active = true;
+    s->debug_stage = NAS_XHCI_STAGE_FTDI_BULK_OUT;
+    copy_bytes(page_cpu(s, XHCI_P_PAYLOAD), source, bytes);
+    int rc = dma_sync(s, XHCI_P_PAYLOAD, 0U, bytes, NAS_DMA_TO_DEVICE);
+    uint64_t trb_bus = 0U;
+    if (!rc) {
+        struct xhci_trb trb;
+        zero_bytes(&trb, sizeof(trb));
+        trb.parameter = page_bus(s, XHCI_P_PAYLOAD);
+        trb.status = bytes;
+        trb.control = XHCI_TRB_TYPE(XHCI_TRB_NORMAL) | XHCI_TRB_IOC;
+        rc = ring_enqueue(s, 2U, &trb, &trb_bus);
+    }
+    if (!rc) rc = ring_doorbell(s, s->slot_id, s->bulk_out_dci);
+    if (!rc) {
+        rc = -ETIMEDOUT;
+        for (uint32_t tick = 0U; tick < XHCI_POLL_LIMIT; ++tick) {
+            struct xhci_trb event;
+            int next = event_next(s, &event);
+            if (next == -EAGAIN) continue;
+            if (next) { rc = next; break; }
+            uint32_t kind = (event.control >> 10) & 63U;
+            if (kind == XHCI_EVENT_PORT_STATUS) {
+                next = ftdi_event_port(s);
+                if (next) { rc = next; break; }
+                continue;
+            }
+            if (kind != XHCI_EVENT_TRANSFER ||
+                ((event.control >> 24) & 255U) != s->slot_id) {
+                rc = -EIO;
+                break;
+            }
+            if (((event.control >> 16) & 31U) == s->bulk_in_dci) {
+                next = ftdi_receive_event(s, &event);
+                if (next) { rc = next; break; }
+                continue;
+            }
+            if ((event.parameter & ~0xFULL) != trb_bus ||
+                ((event.control >> 16) & 31U) != s->bulk_out_dci) {
+                rc = -EIO;
+                break;
+            }
+            uint32_t code = (event.status >> 24) & 255U;
+            uint32_t residual = event.status & 0xffffffU;
+            s->debug_completion_code = code;
+            s->debug_event_type = kind;
+            rc = code != XHCI_CC_SUCCESS ? -EIO :
+                 residual != 0U ? -EMSGSIZE : 0;
+            break;
+        }
+    }
+    s->io_active = false;
+    return rc;
+}
+
+int nas_xhci_ftdi_close(struct nas_xhci_ro_session *s) {
+    if (!s || !s->ftdi_mode) return -EINVAL;
+    /* H11's close performs the verified HCHalted gate, then H6 DMA
+     * disarm/lease free and zeroes the complete session. */
     return nas_xhci_ro_close(s);
 }
