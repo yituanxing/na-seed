@@ -22,6 +22,13 @@
 #include "random.h"
 #include "mm/user_space.h"
 #include "init/main.h"
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+#if !defined(__x86_64__)
+#error "H0 physical PC discovery currently supports only x86-64"
+#endif
+#include "platform/firmware_acpi.h"
+#include "platform/x86_h0_pci.h"
+#endif
 
 /*
  * NaSeed M0: Limine handoff + real COM1 UART + physical frame bitmap.
@@ -63,12 +70,94 @@ USED_REQUEST static volatile struct limine_executable_cmdline_request cmdline_re
 USED_REQUEST static volatile struct limine_framebuffer_request fb_req = {
     .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0
 };
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+/* Limine base revision 6 returns an HHDM-mapped virtual RSDP pointer.
+ * Firmware tables are parsed read-only; this request never starts AML or
+ * probes a disk, PCI BAR, interrupt controller, or power-management port. */
+USED_REQUEST static volatile struct limine_rsdp_request h0_rsdp_req = {
+    .id = LIMINE_RSDP_REQUEST_ID, .revision = 0
+};
+#endif
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t requests_start[] = LIMINE_REQUESTS_START_MARKER;
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
 const struct limine_file *nas_user_module(void);
+
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+static bool h0_acpi_memory_type(uint64_t type) {
+    return type==LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+           type==LIMINE_MEMMAP_ACPI_NVS ||
+           type==LIMINE_MEMMAP_RESERVED_MAPPED;
+}
+
+/* ACPI contents are never trusted to identify an accessible address. Every
+ * physical read is checked against the Limine memory map before HHDM access.
+ * Requiring a single contiguous allowed descriptor safely rejects ambiguous
+ * firmware maps and any physical MMIO or ordinary RAM address. */
+static size_t h0_acpi_mapped_extent(uint64_t physical, size_t requested) {
+    if (!mmap_req.response || !requested ||
+        physical>UINT64_MAX-(uint64_t)requested)return 0;
+    for(uint64_t i=0;i<mmap_req.response->entry_count;i++) {
+        const struct limine_memmap_entry *entry=mmap_req.response->entries[i];
+        if(!entry || !h0_acpi_memory_type(entry->type) ||
+           physical<entry->base || physical-entry->base>=entry->length)
+            continue;
+        uint64_t available=entry->length-(physical-entry->base);
+        if(available<requested)return 0;
+        return available>4096U ? 4096U : (size_t)available;
+    }
+    return 0;
+}
+
+static const void *h0_acpi_physical_map(void *context,uint64_t physical,
+                                        size_t bytes) {
+    (void)context;
+    if(!h0_acpi_mapped_extent(physical,bytes))return NULL;
+    uint64_t hhdm=nas_hhdm_offset();
+    if(physical>UINTPTR_MAX-hhdm)return NULL;
+    return (const void *)(uintptr_t)(physical+hhdm);
+}
+
+static void h0_acpi_diagnostic(void) {
+    nas_print("[H0] read-only firmware discovery (no driver binding)\n");
+    if(!h0_rsdp_req.response || !h0_rsdp_req.response->address) {
+        nas_print("[H0 ACPI] no Limine RSDP response\n");
+        return;
+    }
+    uint64_t virtual_address=(uint64_t)(uintptr_t)h0_rsdp_req.response->address;
+    uint64_t hhdm=nas_hhdm_offset();
+    if(virtual_address<hhdm) {
+        nas_print("[H0 ACPI] RSDP not in Limine HHDM\n");
+        return;
+    }
+    uint64_t physical=virtual_address-hhdm;
+    size_t available=h0_acpi_mapped_extent(physical,20U);
+    if(!available) {
+        nas_print("[H0 ACPI] RSDP outside allowed firmware memory\n");
+        return;
+    }
+    struct nas_acpi_discovery acpi={0};
+    if(nas_acpi_probe(h0_rsdp_req.response->address,available,
+                      h0_acpi_physical_map,NULL,&acpi)) {
+        nas_print("[H0 ACPI] invalid/inaccessible tables; no MMIO mapped\n");
+        return;
+    }
+    nas_print("[H0 ACPI] XSDT=");nas_dec(acpi.used_xsdt);
+    nas_print(" tables=");nas_dec(acpi.table_count);
+    nas_print(" MADT=");nas_dec(acpi.madt_present);
+    nas_print(" MCFG windows=");nas_dec(acpi.mcfg_count);
+    nas_print("\n");
+    for(unsigned i=0;i<acpi.mcfg_count;i++) {
+        nas_print("[H0 MCFG] ECAM=");nas_hex(acpi.mcfg[i].ecam_base);
+        nas_print(" segment=");nas_dec(acpi.mcfg[i].segment);
+        nas_print(" buses=");nas_dec(acpi.mcfg[i].bus_start);
+        nas_print("..");nas_dec(acpi.mcfg[i].bus_end);
+        nas_print("\n");
+    }
+}
+#endif
 
 #ifndef NASEED_PORT_M0
 /* HHDM translates physically adjacent frames into one contiguous arena.
@@ -146,6 +235,9 @@ void kmain(void) {
         }
     }
     if(!fb_ready)nas_print("[FB] no usable firmware framebuffer\n");
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+    else nas_h0_serial_enable_framebuffer();
+#endif
 #endif
     uint64_t before = nas_free_frames();
     nas_print("[MM] available frames=");
@@ -159,6 +251,14 @@ void kmain(void) {
     }
     nas_print("[PASS] M0 memory allocator\n");
     nas_print("[PASS] M0 boot / serial / memory\n");
+#ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+    h0_acpi_diagnostic();
+    struct nas_pci_scan_stats h0_pci_stats={0};
+    if(nas_x86_h0_pci_inventory(&h0_pci_stats))
+        nas_print("[H0 PCI] legacy config read failed; no drivers bound\n");
+    nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
+    nas_arch_halt();
+#endif
 #ifndef NASEED_PORT_M0
     nas_heap_set_grow_callback(grow_heap_from_frames,NULL);
     bool entropy_ready = entropy_req.response &&

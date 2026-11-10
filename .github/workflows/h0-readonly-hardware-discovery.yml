@@ -1,0 +1,48 @@
+name: NaSeed H0 read-only firmware and PCI discovery
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h0-readonly-hardware-discovery.yml'
+      - 'kernel/kernel.c'
+      - 'kernel/drivers/core/pci_scan.*'
+      - 'kernel/drivers/serial.*'
+      - 'kernel/platform/firmware_acpi.*'
+      - 'kernel/platform/x86_h0_pci.*'
+      - 'scripts/check-h0-acpi-host.sh'
+      - 'scripts/check-pci-scan.sh'
+      - 'scripts/test-pci-scan.c'
+      - 'tests/h0-acpi-host.c'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h0-hardware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  read-only-host-and-x86-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require pinned freestanding build tools
+        run: |
+          command -v clang
+          command -v ld.lld
+          command -v cc
+      - name: ACPI table and PCI topology fail-closed host tests
+        run: make hw-h0-host-check
+      - name: Build isolated H0 kernel with real Limine RSDP handoff
+        run: make hw-h0-kernel
+      - name: Check x86-64 ELF and H0 symbols
+        run: |
+          readelf -h build/h0-hardware/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          nm build/h0-hardware/kernel.elf | grep -q ' nas_acpi_probe$'
+          nm build/h0-hardware/kernel.elf | grep -q ' nas_pci_scan_root$'
+          nm build/h0-hardware/kernel.elf | grep -q ' nas_x86_h0_pci_inventory$'
