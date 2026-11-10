@@ -53,7 +53,10 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Reusable jobs inherit the caller's github.workflow name. Give this inner
+  # gate a distinct group or GitHub cancels M254 before creating any job as a
+  # self-deadlock between caller and callee.
+  group: ${{ github.workflow }}-${{ github.ref }}-m252-native-worker
   cancel-in-progress: false
 
 jobs:
