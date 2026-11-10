@@ -103,6 +103,17 @@ for source in $sources; do
 done
 ld.lld -m "$emulation" -r $objects -o "$out/lwext4_guest.o"
 readelf -h "$out/lwext4_guest.o" | grep -q 'Type:.*REL'
+if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; then
+    # A missing #if around guest_boot.c's physical USB mount once left the
+    # kernel's H11 PCI driver running but silently skipped ext4 / entirely.
+    # Check the actual compiled TU, not the source text or build flags.
+    guest_boot_object="$out/ports_lwext4_guest_boot.c.o"
+    nm -u "$guest_boot_object" | grep -Eq '[[:space:]]U[[:space:]]+nas_block_get$' || {
+        echo '[H11 LWEXT4 BUILD FAIL] compiled guest_boot.c never references physical BlockDevice' >&2
+        exit 1
+    }
+    sh scripts/check-h11-usb-guest-boot-guard.sh "$out/lwext4_guest.o"
+fi
 undefined="$(nm -u "$out/lwext4_guest.o" | awk 'NF {print $NF}' | sort -u)"
 if [ "$mode" = closed ]; then
     if [ -n "$undefined" ]; then

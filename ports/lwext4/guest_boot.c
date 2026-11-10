@@ -136,7 +136,8 @@ bool nas_lwext4_guest_boot_mount(void) {
     } else {
 #if defined(NAS_ENABLE_VIRTIO_BLK) || \
     defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
         /* Bus/transport discovery happens below the FS, not via a
          * syscall/backend-specific path. The EFI ESP is also VirtIO-Blk
          * but is FAT; select the *actual ext4 superblock* from each disk. */
@@ -359,7 +360,8 @@ bool nas_lwext4_guest_boot_mount(void) {
 bool nas_lwext4_guest_boot_shutdown(void) {
     if (!boot_mount.mounted) return true;
 #if !defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) && \
-    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    !defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) && \
+    !defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     /* Legacy Limine readonly boot modules are kept for the kernel lifetime.
      * H7 must drop its physical NVMe filesystem lease before controller
      * shutdown and therefore executes the full readonly unmount below. */
@@ -382,7 +384,8 @@ bool nas_lwext4_guest_boot_shutdown(void) {
     if(unmount_rc)return boot_shutdown_failed("root ext4 unmount",unmount_rc);
 #if defined(NAS_ENABLE_VIRTIO_BLK) || \
     defined(NAS_ENABLE_H7_QEMU_NVME_USERLAND) || \
-    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND)
+    defined(NAS_ENABLE_H9_QEMU_AHCI_USERLAND) || \
+    defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND)
     /* The mounted filesystem has dropped its BlockDevice reference.
      * Only NOW may the partition release its parent physical device. */
     if(boot_partition_attached) {

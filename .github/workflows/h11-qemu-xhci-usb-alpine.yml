@@ -76,6 +76,7 @@ jobs:
           sh -n scripts/check-h11-no-usb-media-qemu.sh
           sh -n scripts/check-h11-no-xhci-qemu.sh
           sh -n scripts/check-h11-usb-host.sh
+          sh -n scripts/check-h11-usb-guest-boot-guard.sh
           sh -n scripts/build-lwext4-guest.sh
           sh -n scripts/run.sh
           make hw-h11-host-check
@@ -84,6 +85,7 @@ jobs:
         run: |
           set -eu
           make hw-h11-iso
+          sh scripts/check-h11-usb-guest-boot-guard.sh build/h11-qemu-only/lwext4_guest.o
           readelf -h build/h11-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
           (cd build/h11-qemu-only && sha256sum -c h11-media-before.sha256)
           sha256sum -c build/h11-qemu-only/h11-original-alpine-elfs.sha256
