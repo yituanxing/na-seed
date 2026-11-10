@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Prepare freestanding build tools
         run: |
           if ! command -v ld.lld >/dev/null 2>&1; then
