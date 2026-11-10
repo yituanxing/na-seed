@@ -81,6 +81,8 @@ struct nas_xhci_ro_session {
     uint8_t bulk_out_dci, bulk_in_dci;
     uint8_t hid_in_dci;
     uint8_t hid_interval;
+    uint8_t hid_protocol;
+    uint8_t hid_report_bytes;
     uint16_t hid_packet;
     uint64_t hid_trb_bus;
     bool may_dma;
@@ -139,5 +141,16 @@ int nas_xhci_hid_poll(struct nas_xhci_ro_session *, uint8_t report[8]);
  * On failure, PCI BAR and all DMA memory remain pinned for retry.
  */
 int nas_xhci_hid_close(struct nas_xhci_ro_session *);
+
+/* H13: same isolated xHCI lifetime, but ONLY USB Boot Mouse protocol
+ * class/subclass/protocol 03/01/02 and QEMU's exact four-byte relative
+ * mouse report (buttons, signed X/Y, signed wheel). Separate from H12:
+ * one controller session still owns exactly one USB root-port device.
+ */
+int nas_xhci_hid_mouse_open(const struct nas_xhci_io *,
+                             const struct nas_dma_provider *,
+                             struct nas_xhci_ro_session *);
+int nas_xhci_hid_mouse_poll(struct nas_xhci_ro_session *, uint8_t report[4]);
+int nas_xhci_hid_mouse_close(struct nas_xhci_ro_session *);
 
 #endif

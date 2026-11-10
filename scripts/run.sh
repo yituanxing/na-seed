@@ -311,7 +311,10 @@ if [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" = 1 ] ||
     [ "${NAS_QEMU_H10_NO_E1000:-0}" = 0 ] &&
     [ "${NAS_QEMU_H11_USB_POSITIVE:-0}" = 0 ] &&
     [ "${NAS_QEMU_H11_NO_MEDIA:-0}" = 0 ] &&
-    [ "${NAS_QEMU_H11_NO_XHCI:-0}" = 0 ] || {
+    [ "${NAS_QEMU_H11_NO_XHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_USB_MOUSE_USERLAND:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_USB_MOUSE_MISSING:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H13_XHCI_MISSING:-0}" = 0 ] || {
         echo '[H12 QEMU FAIL] isolated USB HID mode forbids other input, network and storage profiles' >&2
         exit 2
     }
@@ -331,6 +334,61 @@ if [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" = 1 ] ||
         set -- "$@" -device qemu-xhci,id=naseed_h12_xhci,bus=pcie.0,addr=0x4
         if [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" = 1 ]; then
             set -- "$@" -device usb-kbd,id=naseed_h12_kbd,bus=naseed_h12_xhci.0
+        fi
+    fi
+fi
+# H13: independent Q35 xHCI + Boot Mouse, real USB relative motion and
+# mouse button transitions, original signed Alpine evtest from NVMe ext4.
+# No QEMU touchscreen/VirtIO Input, no H11 USB storage, no H12 keyboard.
+if [ "${NAS_QEMU_H13_USB_MOUSE_USERLAND:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H13_USB_MOUSE_MISSING:-0}" = 1 ] ||
+   [ "${NAS_QEMU_H13_XHCI_MISSING:-0}" = 1 ]; then
+    h13_modes=0
+    for var in NAS_QEMU_H13_USB_MOUSE_USERLAND NAS_QEMU_H13_USB_MOUSE_MISSING NAS_QEMU_H13_XHCI_MISSING; do
+        eval 'value=${'"$var"'-0}'
+        [ "$value" = 0 ] || h13_modes=$((h13_modes + 1))
+    done
+    [ "$h13_modes" -eq 1 ] &&
+    [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_USER:-0}" = 0 ] &&
+    [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 0 ] &&
+    [ -z "${NAS_VIRTIO_NET_PCAP:-}" ] &&
+    [ -z "${NAS_VIRTIO_BLK_IMAGE:-}" ] &&
+    [ -z "${NAS_QEMU_ASYNC_BLK_IMAGE:-}" ] &&
+    [ "${NAS_QEMU_H2_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H4_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H5_PCI_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H6_TWO_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H7_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H8_NVME:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H9_AHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_E1000:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H10_NO_E1000:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_USB_POSITIVE:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_NO_MEDIA:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H11_NO_XHCI:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_NO_USB_KBD:-0}" = 0 ] &&
+    [ "${NAS_QEMU_H12_NO_XHCI:-0}" = 0 ] || {
+        echo '[H13 QEMU FAIL] isolated USB Mouse forbids other input, network or storage modes' >&2
+        exit 2
+    }
+    h13_image=build/h13-qemu-only/h13-alpine.ext4
+    test -s "$h13_image" && [ ! -L "$h13_image" ] &&
+    test -s build/h13-qemu-only/h13-media-before.sha256 &&
+    (cd build/h13-qemu-only && sha256sum -c h13-media-before.sha256 >/dev/null) &&
+    [ "$(stat -c '%a' "$h13_image")" = 444 ] || {
+        echo '[H13 QEMU FAIL] signed Alpine+evtest NVMe media absent or modified' >&2
+        exit 2
+    }
+    set -- "$@" -nic none \
+        -drive "if=none,id=naseed_h13_disk,format=raw,file=$h13_image,readonly=on" \
+        -device nvme,id=naseed_h13_nvme,serial=naseedh13,bus=pcie.0,addr=0x5 \
+        -device nvme-ns,drive=naseed_h13_disk,nsid=1
+    if [ "${NAS_QEMU_H13_XHCI_MISSING:-0}" != 1 ]; then
+        set -- "$@" -device qemu-xhci,id=naseed_h13_xhci,bus=pcie.0,addr=0x4
+        if [ "${NAS_QEMU_H13_USB_MOUSE_USERLAND:-0}" = 1 ]; then
+            set -- "$@" -device usb-mouse,id=naseed_h13_mouse,bus=naseed_h13_xhci.0
         fi
     fi
 fi
@@ -361,7 +419,8 @@ if [ "${NAS_QEMU_VIRTIO_GPU:-0}" = 1 ]; then
 elif [ "${NAS_QEMU_RAMFB:-0}" = 1 ]; then
     set -- "$@" -vga none -device ramfb
 elif [ -n "${NAS_QEMU_QMP_SOCKET:-}" ] &&
-     [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" != 1 ]; then
+     [ "${NAS_QEMU_H12_USB_KBD_POSITIVE:-0}" != 1 ] &&
+     [ "${NAS_QEMU_H13_USB_MOUSE_USERLAND:-0}" != 1 ]; then
     echo 'NAS_QEMU_QMP_SOCKET requires a real graphics device' >&2
     exit 2
 fi

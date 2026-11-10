@@ -22,6 +22,9 @@
 #ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
 #include "x86_h12_hid.h"
 #endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+#include "x86_h13_mouse.h"
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -69,6 +72,11 @@ struct h1_context {
     bool h12_candidate_found;
     struct nas_pci_function_info h12_candidate;
     struct nas_pci_resources h12_candidate_resources;
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    bool h13_candidate_found;
+    struct nas_pci_function_info h13_candidate;
+    struct nas_pci_resources h13_candidate_resources;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -194,6 +202,13 @@ static int h1_compare_function(void *context,
             h1->h12_candidate_resources=resources;
         }
 #endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+        if(!h1->h13_candidate_found) {
+            h1->h13_candidate_found=true;
+            h1->h13_candidate=*function;
+            h1->h13_candidate_resources=resources;
+        }
+#endif
     }
 #ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
     /* H10 qualifies only the explicit 82540EM QEMU fixture, never the
@@ -279,6 +294,19 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
     if(nas_x86_h12_hid_bind(&h1.h12_candidate,
                             &h1.h12_candidate_resources)) {
         nas_print("[H12 HID FAIL] required QEMU USB Boot Keyboard unavailable\n");
+        return -ENODEV;
+    }
+#endif
+#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
+    /* Enumerate the entire PCI bus before opening real USB mouse DMA.
+     * A missing/ambiguous xHC must never reach an evdev publisher. */
+    if(h1.h2_xhci!=1U || !h1.h13_candidate_found) {
+        nas_print("[H13 MOUSE FAIL] required unique QEMU xHCI absent or ambiguous\n");
+        return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
+    }
+    if(nas_x86_h13_mouse_bind(&h1.h13_candidate,
+                              &h1.h13_candidate_resources)) {
+        nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable\n");
         return -ENODEV;
     }
 #endif

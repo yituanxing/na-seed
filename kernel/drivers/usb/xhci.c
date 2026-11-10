@@ -528,12 +528,12 @@ static int configure_bulk_endpoints(struct nas_xhci_ro_session *s) {
                    XHCI_CMD_CONFIGURE_EP, s->slot_id, NULL);
 }
 
-/* Boot keyboard devices are exclusively enumerated in their own H12
+/* Boot HID devices are exclusively enumerated in their own H12/H13
  * controller session: do not turn H11's BOT-only lifetime into a shared
  * multi-device stack. The same control ring, xHC commands and leased DMA
- * buffers are reused, with an Interrupt-IN endpoint instead of BOT bulk.
+ * buffers are reused, with one Interrupt-IN endpoint instead of BOT bulk.
  */
-static int read_hid_boot_keyboard_descriptors(struct nas_xhci_ro_session *s) {
+static int read_hid_boot_descriptors(struct nas_xhci_ro_session *s) {
     uint8_t device[18];
     s->debug_stage = NAS_XHCI_STAGE_HID_GET_DEVICE_DESC;
     int rc = control_request(s, 0x80U, 6U, 0x100U, 0,
@@ -562,12 +562,12 @@ static int read_hid_boot_keyboard_descriptors(struct nas_xhci_ro_session *s) {
         if (type == 2U && length >= 9U) {
             config_value = config[off + 5U];
         } else if (type == 4U && length >= 9U) {
-            bool boot_keyboard = config[off + 3U] == 0U &&
+            bool boot_hid = config[off + 3U] == 0U &&
                                  config[off + 4U] >= 1U &&
                                  config[off + 5U] == 3U &&
                                  config[off + 6U] == 1U &&
-                                 config[off + 7U] == 1U;
-            selected_interface = boot_keyboard && !found_hid;
+                                 config[off + 7U] == s->hid_protocol;
+            selected_interface = boot_hid && !found_hid;
             if (selected_interface) {
                 found_hid = true;
                 s->interface_number = config[off + 2U];
@@ -580,7 +580,7 @@ static int read_hid_boot_keyboard_descriptors(struct nas_xhci_ro_session *s) {
             if ((address & 0x80U) && (address & 15U) >= 1U &&
                 (address & 15U) <= 7U &&
                 (config[off + 3U] & 3U) == 3U &&
-                max_packet >= 8U && max_packet <= 1024U &&
+                max_packet >= s->hid_report_bytes && max_packet <= 1024U &&
                 binterval >= 1U) {
                 endpoint = address;
                 packet = max_packet;
@@ -608,8 +608,9 @@ static int read_hid_boot_keyboard_descriptors(struct nas_xhci_ro_session *s) {
     s->debug_stage = NAS_XHCI_STAGE_HID_SET_CONFIG;
     rc = control_request(s, 0U, 9U, config_value, 0, 0, NULL);
     if (rc) return rc;
-    /* HID class SET_PROTOCOL(0) selects the actual standard 8-byte
-     * Boot Keyboard report, independent of the report descriptor format.
+    /* HID class SET_PROTOCOL(0) selects Boot protocol. QEMU's keyboard
+     * uses an exact 8-byte report; QEMU's Boot Mouse uses 4 bytes.
+     * Never interpret an arbitrary report descriptor as a Boot device.
      */
     s->debug_stage = NAS_XHCI_STAGE_HID_SET_PROTOCOL;
     return control_request(s, 0x21U, 0x0bU, 0,
@@ -644,14 +645,16 @@ static int configure_hid_interrupt_endpoint(struct nas_xhci_ro_session *s) {
 
 static int hid_arm_interrupt_in(struct nas_xhci_ro_session *s) {
     if (s->hid_pending || !s->hid_in_dci) return -EINVAL;
+    const uint8_t bytes = s->hid_report_bytes ? s->hid_report_bytes : 8U;
+    if (bytes != 4U && bytes != 8U) return -EINVAL;
     s->debug_stage = NAS_XHCI_STAGE_HID_ARM;
-    zero_bytes(page_cpu(s, XHCI_P_PAYLOAD), 8U);
-    if (dma_sync(s, XHCI_P_PAYLOAD, 0, 8U, NAS_DMA_FROM_DEVICE))
+    zero_bytes(page_cpu(s, XHCI_P_PAYLOAD), bytes);
+    if (dma_sync(s, XHCI_P_PAYLOAD, 0, bytes, NAS_DMA_FROM_DEVICE))
         return -EIO;
     struct xhci_trb transfer;
     zero_bytes(&transfer, sizeof(transfer));
     transfer.parameter = page_bus(s, XHCI_P_PAYLOAD);
-    transfer.status = 8U;
+    transfer.status = bytes;
     transfer.control = XHCI_TRB_TYPE(XHCI_TRB_NORMAL) | XHCI_TRB_IOC;
     uint64_t trb_bus;
     int rc = ring_enqueue(s, 2U, &transfer, &trb_bus);
@@ -767,15 +770,20 @@ int nas_xhci_ro_open(const struct nas_xhci_io *io,
     return 0;
 }
 
-int nas_xhci_hid_open(const struct nas_xhci_io *io,
-                      const struct nas_dma_provider *dma,
-                      struct nas_xhci_ro_session *s) {
+static int hid_open_mode(const struct nas_xhci_io *io,
+                         const struct nas_dma_provider *dma,
+                         struct nas_xhci_ro_session *s,
+                         uint8_t protocol, uint8_t report_bytes) {
     if (!io || !dma || !s || !io->read32 || !io->write32 ||
-        io->mmio_bytes < 0x1000U || s->io || s->lease.held)
+        io->mmio_bytes < 0x1000U || s->io || s->lease.held ||
+        (protocol != 1U && protocol != 2U) ||
+        (report_bytes != 8U && report_bytes != 4U))
         return -EINVAL;
     s->io = io;
     s->dma = dma;
     s->hid_mode = true;
+    s->hid_protocol = protocol;
+    s->hid_report_bytes = report_bytes;
     s->debug_stage = NAS_XHCI_STAGE_DMA;
     int rc = nas_dma_lease_begin(&s->lease, dma);
     if (rc) return rc;
@@ -787,7 +795,7 @@ int nas_xhci_hid_open(const struct nas_xhci_io *io,
     if (rc) return rc;
     rc = setup_context(s);
     if (rc) return rc;
-    rc = read_hid_boot_keyboard_descriptors(s);
+    rc = read_hid_boot_descriptors(s);
     if (rc) return rc;
     rc = configure_hid_interrupt_endpoint(s);
     if (rc) return rc;
@@ -797,12 +805,30 @@ int nas_xhci_hid_open(const struct nas_xhci_io *io,
     return 0;
 }
 
-int nas_xhci_hid_poll(struct nas_xhci_ro_session *s, uint8_t report[8]) {
+int nas_xhci_hid_open(const struct nas_xhci_io *io,
+                      const struct nas_dma_provider *dma,
+                      struct nas_xhci_ro_session *s) {
+    return hid_open_mode(io,dma,s,1U,8U);
+}
+int nas_xhci_hid_mouse_open(const struct nas_xhci_io *io,
+                            const struct nas_dma_provider *dma,
+                            struct nas_xhci_ro_session *s) {
+    return hid_open_mode(io,dma,s,2U,4U);
+}
+
+static int hid_poll_mode(struct nas_xhci_ro_session *s, uint8_t *report,
+                         uint8_t protocol, uint8_t bytes) {
     if (!s || !report || !s->ready || !s->hid_mode ||
         !s->hid_pending || s->io_active) return -EINVAL;
+    /* The zero defaults preserve the isolated H12 host fixture's legacy
+     * directly constructed session; real open() always sets both fields. */
+    const uint8_t actual_protocol = s->hid_protocol ? s->hid_protocol : 1U;
+    const uint8_t actual_bytes = s->hid_report_bytes ? s->hid_report_bytes : 8U;
+    if (actual_protocol != protocol || actual_bytes != bytes)
+        return -EINVAL;
     s->debug_stage = NAS_XHCI_STAGE_HID_POLL;
     /* A single controller-event dequeue is nonblocking. Port change
-     * events are bounded and never masquerade as a keyboard report.
+     * events are bounded and never masquerade as a HID report.
      */
     for (unsigned skipped = 0; skipped < 4U; ++skipped) {
         struct xhci_trb event;
@@ -830,16 +856,22 @@ int nas_xhci_hid_poll(struct nas_xhci_ro_session *s, uint8_t report[8]) {
         if (completion == XHCI_CC_SHORT_PACKET || residual != 0U)
             return -EMSGSIZE;
         if (completion != XHCI_CC_SUCCESS) return -EIO;
-        rc = dma_sync(s, XHCI_P_PAYLOAD, 0, 8U, NAS_DMA_FROM_DEVICE);
+        rc = dma_sync(s, XHCI_P_PAYLOAD, 0, bytes, NAS_DMA_FROM_DEVICE);
         if (rc) return -EIO;
         uint8_t received[8];
-        copy_bytes(received, page_cpu(s, XHCI_P_PAYLOAD), 8U);
+        copy_bytes(received, page_cpu(s, XHCI_P_PAYLOAD), bytes);
         rc = hid_arm_interrupt_in(s);
         if (rc) return rc;
-        copy_bytes(report, received, sizeof(received));
+        copy_bytes(report, received, bytes);
         return 0;
     }
     return -EAGAIN;
+}
+int nas_xhci_hid_poll(struct nas_xhci_ro_session *s, uint8_t report[8]) {
+    return hid_poll_mode(s,report,1U,8U);
+}
+int nas_xhci_hid_mouse_poll(struct nas_xhci_ro_session *s, uint8_t report[4]) {
+    return hid_poll_mode(s,report,2U,4U);
 }
 static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
                          void *buffer, uint32_t bytes) {
@@ -909,6 +941,10 @@ int nas_xhci_ro_close(struct nas_xhci_ro_session *s) {
 }
 
 int nas_xhci_hid_close(struct nas_xhci_ro_session *s) {
-    if (!s || !s->hid_mode) return -EINVAL;
+    if (!s || !s->hid_mode || s->hid_protocol == 2U) return -EINVAL;
+    return nas_xhci_ro_close(s);
+}
+int nas_xhci_hid_mouse_close(struct nas_xhci_ro_session *s) {
+    if (!s || !s->hid_mode || s->hid_protocol != 2U) return -EINVAL;
     return nas_xhci_ro_close(s);
 }
