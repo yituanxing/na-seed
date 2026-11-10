@@ -1,0 +1,89 @@
+name: NaSeed H2 read-only PCI resource and NVMe candidate
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h2-readonly-pci-resource-inventory.yml'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/drivers/core/pci_resources.*'
+      - 'kernel/platform/pci_ecam.*'
+      - 'kernel/kernel.c'
+      - 'tests/h2-pci-resource-host.c'
+      - 'scripts/check-h2-pci-resource-host.sh'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h2-resource-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h2-pci-nvme-resource-uefi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding build and QEMU NVMe tools
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0/H1/H2 safe firmware, ECAM, PCI BAR and capabilities fixtures
+        run: make hw-h2-host-check
+      - name: Build full isolated H2 kernel and verify discovery code
+        run: |
+          make hw-h2-kernel
+          readelf -h build/h2-hardware/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          nm build/h2-hardware/kernel.elf > build/h2-hardware/h2-symbols.txt
+          grep -q ' nas_pci_resources_probe$' build/h2-hardware/h2-symbols.txt
+          grep -q ' nas_x86_h1_ecam_verify$' build/h2-hardware/h2-symbols.txt
+      - name: QEMU UEFI actual PCI BAR and NVMe controller metadata inventory
+        timeout-minutes: 5
+        run: |
+          make hw-h2-iso
+          set +e
+          NAS_QEMU_H2_NVME=1 timeout 50s sh scripts/run.sh build/h2-hardware/naseed.iso > build/h2-hardware/h2-qemu-uefi-serial.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            tail -90 build/h2-hardware/h2-qemu-uefi-serial.log
+            exit "$rc"
+          fi
+          tail -110 build/h2-hardware/h2-qemu-uefi-serial.log
+          grep -Fq '[H1 ECAM VERIFIED]' build/h2-hardware/h2-qemu-uefi-serial.log
+          grep -Fq '[H2 PCI RESOURCE VERIFIED] NVMe=1' build/h2-hardware/h2-qemu-uefi-serial.log
+          grep -Fq '[H2 NVME CANDIDATE] discovered; no controller writes/DMA' build/h2-hardware/h2-qemu-uefi-serial.log
+          grep -Fq '[H0 COMPLETE] firmware inventory only; no physical disk I/O' build/h2-hardware/h2-qemu-uefi-serial.log
+      - name: Preserve H2 PCIe resource serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-x86-qemu-pci-nvme-candidate-serial
+          path: build/h2-hardware/h2-qemu-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve H2 safe UEFI ISO for offline review
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-x86-readonly-uefi-iso
+          path: build/h2-hardware/naseed.iso
+          if-no-files-found: error

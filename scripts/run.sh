@@ -37,6 +37,12 @@ fi
 if [ -n "$nas_qemu_netdev_capture" ]; then
     set -- "$@" -object "$nas_qemu_netdev_capture"
 fi
+# H2 resource inventory: a controller without any namespace/drive. The guest
+# may read PCI configuration metadata but cannot touch a host or guest disk.
+# Normal QEMU profiles are unchanged unless explicitly opted in.
+if [ "${NAS_QEMU_H2_NVME:-0}" = 1 ]; then
+    set -- "$@" -device nvme,id=naseed_h2_nvme,serial=naseedh2
+fi
 # Real QEMU input devices, separate from the serial console and RAMFB.
 # The default headless device profile remains unchanged.
 if [ "${NAS_QEMU_INPUT_OPTIN:-0}" = 1 ]; then

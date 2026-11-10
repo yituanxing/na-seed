@@ -46,6 +46,12 @@ $(error NAS_ENABLE_H1_ECAM_DISCOVERY requires the read-only H0 discovery profile
 endif
 CFLAGS += -DNAS_ENABLE_H1_ECAM_DISCOVERY=1
 endif
+ifeq ($(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY),1)
+ifneq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
+$(error NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY requires the read-only H1 ECAM profile)
+endif
+CFLAGS += -DNAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1
+endif
 # Opt-in, generic Linux syscall tracing for focused real-program diagnoses.
 # Normal kernel and multi-ISA builds are unaffected.
 ifeq ($(NAS_SYSCALL_TRACE),1)
@@ -124,6 +130,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 .PHONY: all iso kernel smoke run clean bash-iso bash-probe debian-probe debian-bash-probe debian-busybox-probe alpine-fetch alpine-probe alpine-argv-probe alpine-fs-probe alpine-archive-probe alpine-selector-probe ash-diagnostic ash-execve-probe ash-fork-probe ash-pipes-probe ash-lifecycle-probe ash-symlinks-probe ash-tmp-probe ash-tree-probe ash-rename-probe ash-fds-probe ash-paths-probe path-abi-probe ash-pipe-backend-probe boot-handoff-probe ash-resources-probe shebang-abi-probe preflight
 .PHONY: hw-h0-host-check hw-h0-kernel hw-h0-iso
 .PHONY: hw-h1-host-check hw-h1-kernel hw-h1-iso
+.PHONY: hw-h2-host-check hw-h2-kernel hw-h2-iso
 all: iso
 iso: $(ISO)
 kernel: $(KERNEL)
@@ -150,12 +157,24 @@ hw-h1-kernel:
 hw-h1-iso:
 	$(MAKE) OUT=build/h1-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 iso
 
+hw-h2-host-check: hw-h1-host-check
+	sh scripts/check-h2-pci-resource-host.sh
+
+hw-h2-kernel:
+	$(MAKE) OUT=build/h2-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 kernel
+
+hw-h2-iso:
+	$(MAKE) OUT=build/h2-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 iso
+
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
 H0_HW_SRCS := kernel/platform/firmware_acpi.c \
  kernel/drivers/core/pci_scan.c kernel/platform/x86_h0_pci.c
 ifeq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
 H0_HW_SRCS += kernel/platform/pci_ecam.c kernel/platform/x86_h1_ecam.c
+endif
+ifeq ($(NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY),1)
+H0_HW_SRCS += kernel/drivers/core/pci_resources.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
 define nas_compile_h0_hw

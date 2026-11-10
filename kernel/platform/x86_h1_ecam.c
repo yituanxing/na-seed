@@ -4,6 +4,9 @@
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/serial.h"
 #include "../errno.h"
+#ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
+#include "../drivers/core/pci_resources.h"
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -21,6 +24,11 @@ struct h1_context {
     struct h1_page pages[H1_MAX_CONFIG_PAGES];
     unsigned mapped;
     unsigned verified;
+#ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
+    unsigned h2_nvme;
+    unsigned h2_ahci;
+    unsigned h2_xhci;
+#endif
     struct nas_pci_ecam_host host;
 };
 
@@ -70,6 +78,38 @@ static int h1_compare_function(void *context,
         (uint8_t)(class_reg>>16)!=function->subclass ||
         (uint8_t)(class_reg>>8)!=function->programming_interface)
         return -EIO;
+#ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
+    /* Resource metadata is NOT a mapped BAR or a driver-ready bus object.
+     * The H2 kernel never probes apertures, mutates PCI Command or binds. */
+    const struct nas_pci_config_reader ecam_reader={
+        &h1->host,nas_pci_ecam_scan_read32
+    };
+    struct nas_pci_resources resources={0};
+    if(nas_pci_resources_probe(&ecam_reader,function,&resources) ||
+       h1->host.read_faults)return -EIO;
+    nas_print("[H2 PCI RESOURCE] bus=");nas_dec(function->bus);
+    nas_print(" slot=");nas_dec(function->slot);
+    nas_print(" function=");nas_dec(function->function);
+    nas_print(" BAR metadata=");nas_dec(resources.bar_count);
+    nas_print(" caps=");nas_dec(resources.cap_count);
+    nas_print(" unqualified (no driver bind)\n");
+    for(unsigned i=0;i<resources.bar_count;i++) {
+        const struct nas_pci_bar_desc *bar=&resources.bars[i];
+        nas_print("[H2 BAR] slot=");nas_dec(bar->index);
+        nas_print(" kind=");nas_dec(bar->kind);
+        nas_print(" base=");nas_hex(bar->base);
+        nas_print(" prefetch=");nas_dec(bar->prefetchable);
+        nas_print(" size=UNKNOWN\n");
+    }
+    if(function->class_code==0x01U && function->subclass==0x08U &&
+       function->programming_interface==0x02U) {
+        nas_print("[H2 NVME CANDIDATE] discovered; no controller writes/DMA\n");
+        ++h1->h2_nvme;
+    } else if(function->class_code==0x01U && function->subclass==0x06U &&
+              function->programming_interface==0x01U) ++h1->h2_ahci;
+    else if(function->class_code==0x0cU && function->subclass==0x03U &&
+            function->programming_interface==0x30U) ++h1->h2_xhci;
+#endif
     ++h1->verified;
     return 0;
 }
@@ -107,6 +147,12 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
     nas_dec(h1.verified);
     nas_print(" mapped RO/UC pages=");
     nas_dec(h1.mapped);
-    nas_print(" no BAR/DMA/IRQ access\n");
+    nas_print(" no BAR MMIO/DMA/IRQ access\n");
+#ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
+    nas_print("[H2 PCI RESOURCE VERIFIED] NVMe=");nas_dec(h1.h2_nvme);
+    nas_print(" AHCI=");nas_dec(h1.h2_ahci);
+    nas_print(" xHCI=");nas_dec(h1.h2_xhci);
+    nas_print(" PCI register writes=0 driver registrations=0\n");
+#endif
     return 0;
 }
