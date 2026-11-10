@@ -17,6 +17,12 @@ The isolated image is `build/h0-hardware/naseed.iso`. Never reuse the normal
 Limine x86-64 UEFI handoff and stops before Task/user-mode init, VirtIO,
 disk mounting, networking, IRQ setup, or writable platform reset.
 
+The H0 GitHub workflow also compiles the complete x86-64 kernel, creates an
+isolated UEFI ISO, and boots it with OVMF under QEMU **without a writable
+disk**. Only `[H0 ACPI]`, `[H0 PCI]`, and `[H0 COMPLETE]` serial evidence
+can pass this smoke gate. This is an emulated firmware handoff test; it is
+not evidence of a physical-machine boot.
+
 ## Physical test policy
 
 1. Boot only on a spare test PC from a removable boot device. Do not flash
