@@ -89,3 +89,10 @@ jobs:
           name: h0-x86-qemu-uefi-serial
           path: build/h0-hardware/h0-qemu-uefi-serial.log
           if-no-files-found: ignore
+      - name: Preserve bootable H0 ISO for offline spare-PC verification
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h0-x86-readonly-uefi-iso
+          path: build/h0-hardware/naseed.iso
+          if-no-files-found: error
