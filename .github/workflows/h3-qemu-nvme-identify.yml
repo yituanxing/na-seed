@@ -1,0 +1,75 @@
+name: NaSeed H3 QEMU-only NVMe admin Identify
+
+on:
+  push:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - '.github/workflows/h3-qemu-nvme-identify.yml'
+      - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/platform/x86_h3_nvme.*'
+      - 'kernel/platform/pci_ecam.*'
+      - 'kernel/drivers/core/pci_resources.*'
+      - 'kernel/drivers/nvme/**'
+      - 'kernel/kernel.c'
+      - 'tests/h3-*.c'
+      - 'scripts/check-h3-*.sh'
+      - 'scripts/run.sh'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h3-nvme-identify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  h3-qemu-controller-identify-uefi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Prepare freestanding tools and NVMe-capable QEMU
+        run: |
+          missing=''
+          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
+                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
+            bin=${spec%%:*}; pkg=${spec#*:}
+            command -v "$bin" >/dev/null || missing="$missing $pkg"
+          done
+          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
+             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
+            missing="$missing ovmf"
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
+          fi
+      - name: H0-H3 host checks
+        run: make hw-h3-host-check
+      - name: Build isolated H3 NVMe admin Identify image
+        run: |
+          make hw-h3-kernel
+          readelf -h build/h3-qemu-only/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          make hw-h3-iso
+      - name: QEMU UEFI real NVMe controller admin Identify completion
+        timeout-minutes: 5
+        run: sh scripts/check-h3-nvme-identify-qemu.sh build/h3-qemu-only/naseed.iso build/h3-qemu-only/h3-qemu-uefi-serial.log
+      - name: Preserve H3 NVMe Identify serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-x86-qemu-nvme-admin-identify-serial
+          path: build/h3-qemu-only/h3-qemu-uefi-serial.log
+          if-no-files-found: ignore
+      - name: Preserve H3 controller-only UEFI ISO
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h3-x86-qemu-nvme-identify-uefi-iso
+          path: build/h3-qemu-only/naseed.iso
+          if-no-files-found: error

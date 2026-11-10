@@ -284,12 +284,21 @@ void kmain(void) {
         nas_print("[H0 PCI] legacy config read failed; no drivers bound\n");
 #ifdef NAS_ENABLE_H1_ECAM_DISCOVERY
     if(!h0_acpi_ok ||
-       nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL))
+       nas_x86_h1_ecam_verify(&h0_acpi,h1_ecam_mmio_allowed,NULL)) {
         nas_print("[H1 ECAM] unavailable or mismatch; no drivers bound\n");
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+        nas_print("[H3 NVME FAIL] required QEMU admin test failed\n");
+        nas_arch_halt();
+#endif
+    }
 #else
     (void)h0_acpi_ok;
 #endif
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    nas_print("[H3 COMPLETE] QEMU-only NVMe Identify; no namespace LBA I/O\n");
+#else
     nas_print("[H0 COMPLETE] firmware inventory only; no physical disk I/O\n");
+#endif
     nas_arch_halt();
 #endif
 #ifndef NASEED_PORT_M0

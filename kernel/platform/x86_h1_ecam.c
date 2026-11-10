@@ -7,6 +7,9 @@
 #ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
 #include "../drivers/core/pci_resources.h"
 #endif
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+#include "x86_h3_nvme.h"
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -28,6 +31,9 @@ struct h1_context {
     unsigned h2_nvme;
     unsigned h2_ahci;
     unsigned h2_xhci;
+#endif
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    unsigned h3_verified;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -103,8 +109,17 @@ static int h1_compare_function(void *context,
     }
     if(function->class_code==0x01U && function->subclass==0x08U &&
        function->programming_interface==0x02U) {
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+        nas_print("[H2 NVME CANDIDATE] discovered; H3 QEMU admin test follows\n");
+#else
         nas_print("[H2 NVME CANDIDATE] discovered; no controller writes/DMA\n");
+#endif
         ++h1->h2_nvme;
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+        if(h1->h3_verified ||
+           nas_x86_h3_nvme_identify(function,&resources))return -EIO;
+        ++h1->h3_verified;
+#endif
     } else if(function->class_code==0x01U && function->subclass==0x06U &&
               function->programming_interface==0x01U) ++h1->h2_ahci;
     else if(function->class_code==0x0cU && function->subclass==0x03U &&
@@ -143,6 +158,12 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         nas_print("[H1 ECAM] fail-closed: mapping, config or CF8 mismatch\n");
         return result ? result : -EIO;
     }
+#ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
+    if(h1.h3_verified!=1U) {
+        nas_print("[H3 NVME FAIL] expected exactly one QEMU NVMe Identify\n");
+        return -ENODEV;
+    }
+#endif
     nas_print("[H1 ECAM VERIFIED] CF8/ECAM identical functions=");
     nas_dec(h1.verified);
     nas_print(" mapped RO/UC pages=");
