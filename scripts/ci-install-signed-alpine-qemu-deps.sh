@@ -1,14 +1,15 @@
 #!/bin/sh
 # Shared host dependencies for original signed Alpine ELF QEMU batches.
 set -eu
-[ "$#" -eq 1 ] || exit 2
+[ "$#" -ge 1 ] || exit 2
 port=$1
+shift
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 sh scripts/ci-ubuntu-mirror.sh
 missing=''
 for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
             'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
-            'sgdisk:gdisk' 'qemu-riscv64:qemu-user'; do
+            'sgdisk:gdisk' 'qemu-riscv64:qemu-user' "$@"; do
   bin=${spec%%:*}; pkg=${spec#*:}
   command -v "$bin" >/dev/null || missing="$missing $pkg"
 done

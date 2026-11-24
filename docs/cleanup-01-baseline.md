@@ -27,3 +27,7 @@ Git ancestry divergence is not proof of missing functionality: squash, rebases a
 Next batches: classify workflows by Host/architecture, ABI/userland, distro, hardware, network and release/admin; share setup only when equivalent, then consolidate dispatch by test profile with retained provenance. Investigate divergent branch semantics before branch retirement. Audit kernel/ports cross-module ownership and remove redundant paths only with tests.
 
 New runtime results are not established by this document.
+
+## Second CI cleanup batch
+
+M109–M141 now all share the same signed-Alpine native QEMU host dependency setup. M119, M123 and M127 retain their additional host dependencies via explicit command:package arguments (gettext, e2fsprogs and ffmpeg respectively). Comparison normalized shell whitespace and line continuations, checked the common dependency set and compared the remaining shell body before replacing each setup step. Later workflow families with different setup logic were left unchanged. Test triggers, test commands, matrices, evidence and timeout settings remain intact. No new runtime acceptance is implied.
