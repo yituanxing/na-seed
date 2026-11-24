@@ -1,7 +1,6 @@
 /* H15 Linux USB serial character interface. Never a console TTY alias:
  * reads/writes cross real QEMU FT232BM xHCI Bulk-IN/Bulk-OUT endpoints. */
 #include "usb_serial_chrdev.h"
-#include "../platform/x86_h15_ftdi.h"
 #include "../drivers/core/chrdev.h"
 #include "../drivers/tty.h"
 #include "../drivers/serial.h"
@@ -20,18 +19,29 @@
 #define H15_LINUX_PARENB  UINT32_C(0x0100)
 
 static bool published;
+static const struct nas_usb_serial_backend *serial_backend;
+static bool backend_live(void) {
+    return published && serial_backend &&
+           serial_backend->ready(serial_backend->context);
+}
 static struct nas_termios termios;
 static struct nas_chrdev_node h15_node;
 static int h15_open(unsigned slot,unsigned unit) {
     if(slot>=NAS_OPEN_FILE_LIMIT || unit!=0U)return -EINVAL;
-    if(!published || !nas_x86_h15_ftdi_attached())return -ENODEV;
+    if(!backend_live())return -ENODEV;
     return 0;
 }
 static const struct nas_chrdev_provider h15_provider={
     .name="qemu-ft232bm-usb-serial",.open=h15_open
 };
-int nas_usb_serial_chrdev_publish(void) {
-    if(published || !nas_x86_h15_ftdi_attached())return -ENODEV;
+int nas_usb_serial_chrdev_publish(const struct nas_usb_serial_backend *device) {
+    if(published)return -EBUSY;
+    if(!device || !device->ready || !device->publication_pin ||
+       !device->publication_unpin || !device->rx_available ||
+       !device->flush_rx || !device->read || !device->write)return -EINVAL;
+    if(!device->ready(device->context))return -ENODEV;
+    int pinned=device->publication_pin(device->context);
+    if(pinned)return pinned;
     termios=(struct nas_termios){0};
     /* A real FT232BM is initialized by USB vendor requests in the
      * transport to 115200, 8 data bits, no parity and one stop bit.
@@ -50,7 +60,11 @@ int nas_usb_serial_chrdev_publish(void) {
         .provider=&h15_provider
     };
     int rc=nas_chrdev_node_register(&h15_node);
-    if(rc)return rc;
+    if(rc) {
+        device->publication_unpin(device->context);
+        return rc;
+    }
+    serial_backend=device;
     published=true;
     nas_print("[H15 USB SERIAL ATTACHED] /dev/ttyUSB0 FT232BM BUS_USB\n");
     return 0;
@@ -60,31 +74,37 @@ int nas_usb_serial_chrdev_unpublish(void) {
     /* Registry tracks one pin per shared File. Return EBUSY until original
      * BusyBox stty/head/printf close their real /dev/ttyUSB0 descriptors. */
     int rc=nas_chrdev_node_unregister(&h15_node);
-    if(!rc)published=false;
+    if(!rc) {
+        published=false;
+        serial_backend->publication_unpin(serial_backend->context);
+        serial_backend=NULL;
+    }
     return rc;
 }
 uint64_t nas_usb_serial_chrdev_read_plan(unsigned slot,uint64_t requested) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !published ||
-       !nas_x86_h15_ftdi_attached())return (uint64_t)-ENODEV;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !backend_live())return (uint64_t)-ENODEV;
     if(!requested)return 0;
-    return nas_x86_h15_ftdi_rx_count() ? requested:(uint64_t)-EAGAIN;
+    return serial_backend->rx_available(serial_backend->context) ?
+        requested:(uint64_t)-EAGAIN;
 }
 uint64_t nas_usb_serial_chrdev_read(unsigned slot,uint8_t *dst,uint64_t n) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !published)return (uint64_t)-ENODEV;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !backend_live())return (uint64_t)-ENODEV;
     if(n>1024U)n=1024U; /* single kernel-owned FS read buffer */
-    return (uint64_t)(int64_t)nas_x86_h15_ftdi_read(dst,(uint32_t)n);
+    return (uint64_t)(int64_t)serial_backend->read(serial_backend->context,
+                                                   dst,(uint32_t)n);
 }
 uint64_t nas_usb_serial_chrdev_write(unsigned slot,const uint8_t *src,
                                      uint64_t n) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !published)return (uint64_t)-ENODEV;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !backend_live())return (uint64_t)-ENODEV;
     if(n>1024U)n=1024U;
-    return (uint64_t)(int64_t)nas_x86_h15_ftdi_write(src,(uint32_t)n);
+    return (uint64_t)(int64_t)serial_backend->write(serial_backend->context,
+                                                    src,(uint32_t)n);
 }
 uint16_t nas_usb_serial_chrdev_poll(unsigned slot,uint16_t events) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !published ||
-       !nas_x86_h15_ftdi_attached())return 0x0018U; /* POLLERR|POLLHUP */
+    if(slot>=NAS_OPEN_FILE_LIMIT || !backend_live())return 0x0018U; /* POLLERR|POLLHUP */
     uint16_t result=events&0x0004U; /* POLLOUT */
-    if(nas_x86_h15_ftdi_rx_count())result|=events&0x0001U; /* POLLIN */
+    if(serial_backend->rx_available(serial_backend->context))
+        result|=events&0x0001U; /* POLLIN */
     return result;
 }
 void nas_usb_serial_chrdev_release(unsigned slot) {
@@ -96,7 +116,7 @@ uint64_t nas_usb_serial_chrdev_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     if(fd>=NAS_FD_LIMIT || !nas_current_task ||
        nas_current_task->fds->entries[fd].kind!=FD_USB_SERIAL)
         return (uint64_t)-EBADF;
-    if(!published || !nas_x86_h15_ftdi_attached())return (uint64_t)-ENODEV;
+    if(!backend_live())return (uint64_t)-ENODEV;
     switch((uint32_t)cmd) {
     case 0x5401U: /* TCGETS: exact 36-byte native Linux termios ABI */
         return nas_user_write_bytes(arg,(const uint8_t *)&termios,
@@ -117,11 +137,12 @@ uint64_t nas_usb_serial_chrdev_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
            (proposed.cflag&(H15_LINUX_CSTOPB|H15_LINUX_PARENB)))
             return (uint64_t)-EINVAL;
         termios=proposed;
-        if((uint32_t)cmd==0x5404U)nas_x86_h15_ftdi_rx_flush();
+        if((uint32_t)cmd==0x5404U)
+            serial_backend->flush_rx(serial_backend->context);
         return 0;
     }
     case 0x541bU: { /* FIONREAD/TIOCINQ: actual retained USB RX bytes */
-        uint32_t pending=nas_x86_h15_ftdi_rx_count();
+        uint32_t pending=serial_backend->rx_available(serial_backend->context);
         return nas_user_write_bytes(arg,(const uint8_t *)&pending,
                                     sizeof(pending))?0:(uint64_t)-EFAULT;
     }
@@ -132,7 +153,8 @@ uint64_t nas_usb_serial_chrdev_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     }
     case 0x540bU: /* TCFLSH; input side only has a bounded RX FIFO */
         if(arg>2U)return (uint64_t)-EINVAL;
-        if(arg==0U || arg==2U)nas_x86_h15_ftdi_rx_flush();
+        if(arg==0U || arg==2U)
+            serial_backend->flush_rx(serial_backend->context);
         return 0;
     case 0x5424U: { /* TIOCGETD: N_TTY discipline */
         uint32_t line=0U;

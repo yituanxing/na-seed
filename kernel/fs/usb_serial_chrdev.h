@@ -1,8 +1,9 @@
 #ifndef NASEED_USB_SERIAL_CHRDEV_H
 #define NASEED_USB_SERIAL_CHRDEV_H
 #include <stdint.h>
+#include "../drivers/usb/serial_backend.h"
 
-int nas_usb_serial_chrdev_publish(void);
+int nas_usb_serial_chrdev_publish(const struct nas_usb_serial_backend *backend);
 int nas_usb_serial_chrdev_unpublish(void);
 uint64_t nas_usb_serial_chrdev_read_plan(unsigned slot,uint64_t requested);
 uint64_t nas_usb_serial_chrdev_read(unsigned slot,uint8_t *dst,uint64_t n);

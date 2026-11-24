@@ -1,5 +1,6 @@
 #include "x86_h11_usb.h"
 #include "x86_h11_bar.h"
+#include "x86_qemu_hw_contract.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/usb/xhci.h"
 #include "../drivers/usb/msc.h"
@@ -35,31 +36,6 @@ static struct {
     struct nas_pci_mmio_claim claim;
 } h11_persistent;
 
-static bool h11_qemu_fw_cfg_signature(void) {
-    const uint16_t select_port=0x510U,data_port=0x511U;
-    static const char expected[4]={'Q','E','M','U'};
-    __asm__ volatile("outw %0,%1" :: "a"((uint16_t)0),"Nd"(select_port)
-                     :"memory");
-    for(unsigned i=0;i<sizeof(expected);i++) {
-        uint8_t ch=0;
-        __asm__ volatile("inb %1,%0" : "=a"(ch) : "Nd"(data_port)
-                         :"memory");
-        if(ch!=(uint8_t)expected[i])return false;
-    }
-    return true;
-}
-
-static void h11_pci_command_write(uint8_t bus,uint8_t slot,uint8_t function,
-                                  uint16_t command) {
-    const uint32_t address=UINT32_C(0x80000000)|((uint32_t)bus<<16)|
-        ((uint32_t)slot<<11)|((uint32_t)function<<8)|4U;
-    const uint16_t select=0xcf8U,data=0xcfcU;
-    __asm__ volatile("outl %0,%1" :: "a"(address),"Nd"(select):"memory");
-    /* PCI Status bits are write-one-to-clear. Never echo Status's upper
-     * half of config 0x04; write only original low 16-bit Command. */
-    __asm__ volatile("outl %0,%1" :: "a"((uint32_t)command),"Nd"(data)
-                     :"memory");
-}
 
 static int h11_read32(void *ctx,uint32_t off,uint32_t *value) {
     const uint64_t base=ctx?((const struct h11_mmio_mapping *)ctx)->base:0;
@@ -99,7 +75,7 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
        fn->function!=0U || fn->vendor_id!=0x1b36U ||
        fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
        fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !h11_qemu_fw_cfg_signature()) {
+       !nas_x86_qemu_fw_cfg_signature()) {
         nas_print("[H11 XHCI FAIL] unqualified QEMU xHCI function\n");
         return -ENODEV;
     }
@@ -149,7 +125,7 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
     nas_hex(bar->base);
     nas_print(" 16KiB UC/NX no IRQ\n");
     if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        h11_pci_command_write(fn->bus,fn->slot,fn->function,
+        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                               (uint16_t)(resources->command|UINT16_C(6)));
     h11_io=(struct nas_xhci_io){
         .context=&h11_mmio,.mmio_bytes=H11_XHCI_MMIO_BYTES,
@@ -185,7 +161,7 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
             if(!nas_pci_mmio_quiesced_unmap_release(
                 &h11_owner,&h11_persistent.claim,H11_XHCI_VIRT_BASE,true,
                 nas_arch_x86_unmap_device_pages))
-                h11_pci_command_write(fn->bus,fn->slot,fn->function,
+                nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                        resources->command);
         }
         h11_restore_interrupts(flags);
@@ -212,7 +188,7 @@ int nas_x86_h11_usb_shutdown(void) {
         &h11_owner,&h11_persistent.claim,H11_XHCI_VIRT_BASE,true,
         nas_arch_x86_unmap_device_pages);
     if(rc)return rc;
-    h11_pci_command_write(h11_persistent.bus,h11_persistent.slot,
+    nas_x86_qemu_pci_command_write(h11_persistent.bus,h11_persistent.slot,
                            h11_persistent.function,h11_persistent.command);
     h11_persistent.attached=false;
     nas_print("[H11 USB QUIESCED RELEASED] USB SCSI disk detached, xHC halted, 7 DMA pages freed, 4 BAR0 UC pages unmapped\n");

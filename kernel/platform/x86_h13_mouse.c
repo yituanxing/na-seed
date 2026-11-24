@@ -1,5 +1,6 @@
 #include "x86_h13_mouse.h"
 #include "x86_h11_bar.h"
+#include "x86_qemu_hw_contract.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/input/core.h"
 #include "../drivers/usb/hid_boot_mouse.h"
@@ -30,29 +31,6 @@ static struct {
     uint64_t reports;
 } h13_persistent;
 
-static bool h13_is_qemu(void) {
-    static const char expected[4]={'Q','E','M','U'};
-    const uint16_t select=0x510U,data=0x511U;
-    __asm__ volatile("outw %0,%1" :: "a"((uint16_t)0),"Nd"(select)
-                     :"memory");
-    for(unsigned i=0;i<sizeof(expected);i++) {
-        uint8_t value=0;
-        __asm__ volatile("inb %1,%0":"=a"(value):"Nd"(data):"memory");
-        if(value!=(uint8_t)expected[i])return false;
-    }
-    return true;
-}
-
-static void h13_pci_write_command(uint8_t bus,uint8_t slot,uint8_t function,
-                                  uint16_t command) {
-    const uint32_t address=UINT32_C(0x80000000)|((uint32_t)bus<<16)|
-        ((uint32_t)slot<<11)|((uint32_t)function<<8)|4U;
-    const uint16_t select=0xcf8U,data=0xcfcU;
-    __asm__ volatile("outl %0,%1"::"a"(address),"Nd"(select):"memory");
-    /* PCI status is W1C: only restore the saved command halfword. */
-    __asm__ volatile("outl %0,%1"::"a"((uint32_t)command),"Nd"(data)
-                     :"memory");
-}
 
 static int h13_read32(void *ctx,uint32_t offset,uint32_t *value) {
     const uint64_t base=ctx?((const struct h13_mmio_mapping*)ctx)->base:0;
@@ -85,7 +63,7 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
        fn->function!=0U || fn->vendor_id!=0x1b36U ||
        fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
        fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !h13_is_qemu()) {
+       !nas_x86_qemu_fw_cfg_signature()) {
         nas_print("[H13 MOUSE FAIL] unqualified QEMU PCI xHCI\n");
         return -ENODEV;
     }
@@ -131,7 +109,7 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
     nas_hex(bar->base);
     nas_print(" 16KiB UC/NX\n");
     if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        h13_pci_write_command(fn->bus,fn->slot,fn->function,
+        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                               (uint16_t)(resources->command|6U));
     h13_io=(struct nas_xhci_io){
         .context=&h13_mmio,.mmio_bytes=H13_XHCI_MMIO_BYTES,
@@ -150,7 +128,7 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
                        &h13_owner,&h13_persistent.claim,
                        H13_XHCI_VIRT_BASE,true,
                        nas_arch_x86_unmap_device_pages)) {
-            h13_pci_write_command(fn->bus,fn->slot,fn->function,
+            nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                    resources->command);
         }
         h13_restore_if(flags);
@@ -229,7 +207,7 @@ int nas_x86_h13_mouse_shutdown(void) {
         &h13_owner,&h13_persistent.claim,H13_XHCI_VIRT_BASE,true,
         nas_arch_x86_unmap_device_pages);
     if(rc)return rc;
-    h13_pci_write_command(h13_persistent.bus,h13_persistent.slot,
+    nas_x86_qemu_pci_command_write(h13_persistent.bus,h13_persistent.slot,
                            h13_persistent.function,
                            h13_persistent.original_command);
     h13_persistent.attached=false;

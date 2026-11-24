@@ -27,6 +27,9 @@ ARCH_MM = re.compile(r'^\s*#\s*include\s*["<][^">]*(?:'
 # Syscalls and device endpoints must not treat a physical-page alias as a
 # userspace access policy. Only MM and ISA page-table providers may resolve
 # raw aliases; the signal trampoline's resident mapping probe is special.
+USB_SERIAL_PLATFORM_LEAK = re.compile(
+    r'(?m)^\s*#\s*include\s*["<][^">]*platform/x86_h15_ftdi\.h[">]|'
+    r'\bnas_x86_h15_ftdi_[A-Za-z0-9_]+\s*\(')
 RAW_USER_ALIAS = re.compile(r'\bnas_mmu_user_(?:byte|writable)\s*\(')
 SIGNAL_TRAMPOLINE_PROBE = 'nas_mmu_user_byte(NAS_USER_SIGNAL_TRAMPOLINE)'
 TMPFS_TASK_DEPENDENCY = re.compile(
@@ -100,6 +103,8 @@ def function_body(source, name):
 def violations(path, source):
     """Return forbidden dependencies; SOURCE is text to allow mutation tests."""
     errors = []
+    if path == 'kernel/fs/usb_serial_chrdev.c' and USB_SERIAL_PLATFORM_LEAK.search(source):
+        errors.append('USB serial ABI adapter reached x86-specific hardware')
     if path in DRIVER_FILES and INCLUDE_DRIVER.search(source):
         errors.append('block/bus/driver core imported FS, Task, syscall or usercopy')
     if path in VFS_FILES:
@@ -132,7 +137,8 @@ def violations(path, source):
         code_only = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
         if TMPFS_TASK_DEPENDENCY.search(code_only):
             errors.append('tmpfs backend reaches into task CWD or task table')
-    if path in ('kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h'):
+    if path in ('kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h',
+                          'kernel/fs/usb_serial_chrdev.c'):
         if TMPFS_LEGACY_NAMES.search(source):
             errors.append('obsolete tmpfs absolute-path namespace API returned')
     if (path.startswith(('kernel/fs/', 'kernel/drivers/', 'kernel/task/')) and
@@ -165,13 +171,16 @@ def self_test():
         ('kernel/fs/tmp_namespace.c', 'fs->cwd[0] = 0;'),
         ('kernel/fs/tmp_namespace.c', 'tmp_find("/tmp/x");'),
         ('kernel/tmpfs.h', 'int tmp_rename(const char *, const char *);'),
+        ('kernel/fs/usb_serial_chrdev.c', '#include "../platform/x86_h15_ftdi.h"'),
+        ('kernel/fs/usb_serial_chrdev.c', 'nas_x86_h15_ftdi_read(buf, n);'),
     ]
     for path, source in examples:
         if not violations(path, source):
             raise SystemExit('[ARCH FAIL] self-test missed ' + path + ': ' + source)
     for path in FILES + ('kernel/fs/socket_syscall.c',
                          'kernel/drivers/pty.c', 'kernel/task/process.c',
-                         'kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h'):
+                         'kernel/fs/tmp_namespace.c', 'kernel/tmpfs.h',
+                          'kernel/fs/usb_serial_chrdev.c'):
         source = '/* no forbidden dependencies */\n#include <stdint.h>\n'
         source += ''.join('uint64_t ' + n + '(unsigned slot) { return slot; }\n'
                           for n in DATA_PLANE_PROVIDERS.get(path, ()))

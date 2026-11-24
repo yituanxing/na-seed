@@ -1,10 +1,11 @@
 #include "x86_h15_ftdi.h"
 #include "x86_h11_bar.h"
+#include "x86_qemu_hw_contract.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/usb/xhci.h"
 #include "../drivers/serial.h"
 #include "../drivers/port/dma.h"
-#include "../fs/usb_serial_chrdev.h"
+#include "../drivers/usb/serial_backend.h"
 #include "../errno.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,7 +24,7 @@ static struct nas_pci_mmio_owner h15_owner;
 static struct nas_xhci_io h15_io;
 static struct nas_xhci_ro_session h15_xhci;
 static struct {
-    bool attempted,attached;
+    bool attempted,attached,class_published;
     uint8_t bus,slot,function;
     uint16_t original_command;
     struct nas_pci_mmio_claim claim;
@@ -32,29 +33,6 @@ static struct {
     uint64_t bulk_in_bytes,bulk_out_bytes;
 } h15;
 
-static bool h15_is_qemu(void) {
-    static const char expected[4]={'Q','E','M','U'};
-    const uint16_t select=0x510U,data=0x511U;
-    __asm__ volatile("outw %0,%1" :: "a"((uint16_t)0),"Nd"(select)
-                     :"memory");
-    for(unsigned i=0;i<sizeof(expected);i++) {
-        uint8_t value=0;
-        __asm__ volatile("inb %1,%0":"=a"(value):"Nd"(data):"memory");
-        if(value!=(uint8_t)expected[i])return false;
-    }
-    return true;
-}
-
-static void h15_pci_write_command(uint8_t bus,uint8_t slot,
-                                  uint8_t function,uint16_t command) {
-    const uint32_t address=UINT32_C(0x80000000)|((uint32_t)bus<<16)|
-        ((uint32_t)slot<<11)|((uint32_t)function<<8)|4U;
-    const uint16_t select=0xcf8U,data=0xcfcU;
-    __asm__ volatile("outl %0,%1"::"a"(address),"Nd"(select):"memory");
-    /* PCI Status is W1C: restore only the saved Command halfword. */
-    __asm__ volatile("outl %0,%1"::"a"((uint32_t)command),"Nd"(data)
-                     :"memory");
-}
 static int h15_read32(void *ctx,uint32_t offset,uint32_t *value) {
     const uint64_t base=ctx?((const struct h15_mmio_mapping*)ctx)->base:0;
     if(!base || !value || (offset&3U) ||
@@ -80,7 +58,7 @@ static int h15_release_qualified_bar(void) {
     int rc=nas_pci_mmio_quiesced_unmap_release(
         &h15_owner,&h15.claim,H15_XHCI_VIRT_BASE,true,
         nas_arch_x86_unmap_device_pages);
-    if(!rc)h15_pci_write_command(h15.bus,h15.slot,h15.function,
+    if(!rc)nas_x86_qemu_pci_command_write(h15.bus,h15.slot,h15.function,
                                 h15.original_command);
     return rc;
 }
@@ -92,7 +70,7 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
        fn->function!=0U || fn->vendor_id!=0x1b36U ||
        fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
        fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !h15_is_qemu()) {
+       !nas_x86_qemu_fw_cfg_signature()) {
         nas_print("[H15 FTDI FAIL] unqualified QEMU PCI xHCI\n");
         return -ENODEV;
     }
@@ -138,7 +116,7 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
     nas_hex(bar->base);
     nas_print(" 16KiB UC/NX\n");
     if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        h15_pci_write_command(fn->bus,fn->slot,fn->function,
+        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                (uint16_t)(resources->command|6U));
     h15_io=(struct nas_xhci_io){
         .context=&h15_mmio,.mmio_bytes=H15_XHCI_MMIO_BYTES,
@@ -221,10 +199,9 @@ int nas_x86_h15_ftdi_write(const uint8_t *src,uint32_t bytes) {
 }
 int nas_x86_h15_ftdi_shutdown(void) {
     if(!h15.attached)return -ENODEV;
-    /* The class unpublish refuses live File pins before any DMA frees. */
-    int rc=nas_usb_serial_chrdev_unpublish();
-    if(rc)return rc;
-    rc=nas_xhci_ftdi_close(&h15_xhci);
+    /* Class publication pins the controller until no File owns its node. */
+    if(h15.class_published)return -EBUSY;
+    int rc=nas_xhci_ftdi_close(&h15_xhci);
     if(rc)return rc; /* Unsafe stop: keep MMIO BAR pinned. */
     rc=h15_release_qualified_bar();
     if(rc)return rc;
@@ -235,4 +212,44 @@ int nas_x86_h15_ftdi_shutdown(void) {
     nas_dec((unsigned)h15.bulk_out_bytes);
     nas_print("\n");
     return 0;
+}
+
+// One physical USB serial implementation, exported as a borrowed class port.
+// No Linux ABI, devfs, or FS back-reference belongs in this platform driver.
+static bool h15_port_ready(void *ctx) {
+    return ctx==&h15 && h15.attached;
+}
+static int h15_port_pin(void *ctx) {
+    if(ctx!=&h15 || !h15.attached)return -ENODEV;
+    if(h15.class_published)return -EBUSY;
+    h15.class_published=true;
+    return 0;
+}
+static void h15_port_unpin(void *ctx) {
+    if(ctx==&h15)h15.class_published=false;
+}
+static unsigned h15_port_available(void *ctx) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_rx_count() : 0U;
+}
+static void h15_port_flush(void *ctx) {
+    if(ctx==&h15)nas_x86_h15_ftdi_rx_flush();
+}
+static int h15_port_read(void *ctx,uint8_t *dst,uint32_t bytes) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_read(dst,bytes) : -ENODEV;
+}
+static int h15_port_write(void *ctx,const uint8_t *src,uint32_t bytes) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_write(src,bytes) : -ENODEV;
+}
+static const struct nas_usb_serial_backend h15_port={
+    .context=&h15,
+    .ready=h15_port_ready,
+    .publication_pin=h15_port_pin,
+    .publication_unpin=h15_port_unpin,
+    .rx_available=h15_port_available,
+    .flush_rx=h15_port_flush,
+    .read=h15_port_read,
+    .write=h15_port_write
+};
+const struct nas_usb_serial_backend *nas_x86_h15_ftdi_backend(void) {
+    return h15.attached ? &h15_port : NULL;
 }
