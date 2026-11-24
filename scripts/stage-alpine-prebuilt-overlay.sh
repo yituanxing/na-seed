@@ -100,10 +100,15 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 # binaries) to Alpine install scripts.  Our APK import intentionally uses
 # --no-scripts, so allow an explicitly named, profile-local HOST hook before
 # the one canonical rootfs archive is produced.  No code runs in NaSeed.
-host_hook="scripts/host-configure-$profile.sh"
-if test -f "$host_hook"; then
-    sh "$host_hook" "$port" "$root"
-fi
+case "$profile" in
+    m119-batch|m12[0-8]-batch)
+        sh scripts/host-configure-alpine-fixtures.sh "$port" "$root" "${profile%-batch}" ;;
+    *)
+        host_hook="scripts/host-configure-$profile.sh"
+        if test -f "$host_hook"; then
+            sh "$host_hook" "$port" "$root"
+        fi ;;
+esac
 
 while IFS= read -r program; do
     case "$program" in ''|'#'*) continue ;; esac

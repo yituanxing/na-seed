@@ -7,6 +7,8 @@ on:
       - 'scripts/check-three-isa-core.py'
       - 'scripts/check-prebuilt-profile-catalog.py'
       - 'scripts/check-native-qemu-target.py'
+      - 'scripts/host-configure-alpine-fixtures.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/probe-alpine-signed-batch.sh'
       - 'scripts/stage-alpine-signed-batch.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
@@ -69,7 +71,9 @@ jobs:
         run: python3 scripts/acceptance/test-batch-markers.py
 
       - name: Verify shared ELF admission and hashing gates
-        run: python3 scripts/acceptance/test-elf-admission.py
+        run: |
+          python3 scripts/acceptance/test-elf-admission.py
+          python3 scripts/acceptance/test-host-fixture-dispatch.py
 
       - name: Run all four real kernel-buffer Netlink protocol regressions
         run: sh scripts/check-netlink-providers.sh

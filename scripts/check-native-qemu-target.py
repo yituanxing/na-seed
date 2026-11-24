@@ -87,6 +87,13 @@ def catalog_probes() -> list[Path]:
     for path in (ROOT / "scripts").glob("probe-m*.sh"):
         stages = re.findall(r"sh scripts/stage-(m[0-9]+)-prebuilt\.sh", path.read_text())
         for milestone in stages:
+            # M170 deliberately boots the M168 rootfs with a distinct case
+            # manifest and independent QMP/serial proof.
+            if milestone == "m168" and path.name == "probe-m170-batch.sh":
+                source = path.read_text()
+                assert 'BUSYBOX_PARITY_MANIFEST=scripts/m170-batch-cases.tsv' in source
+                validate_probe(path, source)
+                continue
             assert found.get(milestone) == path, (
                 f"{path}: orphaned or duplicate {milestone} staging consumer"
             )

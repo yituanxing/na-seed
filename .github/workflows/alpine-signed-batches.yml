@@ -92,7 +92,11 @@ jobs:
           done
           case "$PROFILE" in
             m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128)
-              sh -n "scripts/host-configure-$PROFILE-batch.sh" ;;
+              if [ "$PROFILE" = m118 ]; then
+                sh -n scripts/host-configure-m118-batch.sh
+              else
+                sh -n scripts/host-configure-alpine-fixtures.sh
+              fi ;;
           esac
           if [ "$PROFILE" = m141 ]; then
             for script in tests/m141-dns-run.sh tests/m141-toolchain-run.sh tests/m141-system-run.sh; do
