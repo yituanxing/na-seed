@@ -15,6 +15,8 @@ count=0
 for f in $(find kernel -name '*.c' -type f | LC_ALL=C sort); do
     case "$f" in
       kernel/arch/*|kernel/platform/*) continue ;;
+      # Host libc/assert fixture, not a freestanding kernel TU.
+      kernel/drivers/display/fbdev_test.c) continue ;;
     esac
     clang $flags -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
       -fno-builtin -fno-stack-protector -fno-pic -fno-pie \

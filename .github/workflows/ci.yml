@@ -31,6 +31,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
           fetch-depth: 2
       - name: Check all PR workflows run submitted commits, not synthetic merge refs
         run: python3 scripts/check-ci-checkout-head.py
@@ -225,6 +226,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install x86 userland / QEMU dependencies
         timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
@@ -275,6 +277,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install x86 userland / QEMU dependencies
         timeout-minutes: 8
         run: sh scripts/ci-install-x86-deps.sh
@@ -319,6 +322,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install cross-build and UEFI/QEMU tools
         run: |
           sh scripts/ci-ubuntu-mirror.sh
@@ -370,6 +374,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install AArch64 UEFI/QEMU and cross-compiler tools
         run: |
           sh scripts/ci-ubuntu-mirror.sh
@@ -413,6 +418,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install only missing headless cross toolchain and QEMU
         timeout-minutes: 5
         run: |

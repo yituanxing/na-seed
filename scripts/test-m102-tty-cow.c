@@ -8,6 +8,7 @@
 #include <string.h>
 #include "../kernel/task.h"
 #include "../kernel/drivers/tty.h"
+#include "../kernel/drivers/vt.h"
 #include "../kernel/mm/usercopy.h"
 #include "../kernel/errno.h"
 #include "../kernel/fs/io.h"
@@ -26,6 +27,8 @@ static char userbuf[128];
 static bool user_logical_write=true,physical_write=false;
 static unsigned checks,bytes_written;
 static const char *rx;
+/* This fixture exercises UART TTY, not the independent graphics VT. */
+void nas_vt_init(void) {}
 void nas_putchar(char c){(void)c;}
 void nas_arch_console_putc(char c){(void)c;}
 bool nas_arch_console_has_rx(void){return true;}
