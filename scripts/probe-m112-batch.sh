@@ -5,7 +5,7 @@ set -eu
 [ "$#" -eq 1 ] || { echo 'usage: probe-m112-batch.sh amd64|riscv64|arm64' >&2; exit 2; }
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m112-prebuilt.sh "$port"
+sh scripts/stage-alpine-signed-batch.sh "$port" m112
 work="build/external/m112-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

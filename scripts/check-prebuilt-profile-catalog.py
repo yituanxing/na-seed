@@ -126,6 +126,17 @@ def validate_wrappers(profiles: set[str]) -> int:
         if not milestone or not profile.startswith(milestone.group(1) + "-"):
             fail(f"{path.name}: profile {profile} does not match milestone")
         wrappers[profile] = path.name
+    # Shared staging owns the profiles whose dedicated wrappers were retired.
+    shared = ROOT / "scripts/stage-alpine-signed-batch.sh"
+    for names in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=\d+; mode=[\w-]+ ;;$", shared.read_text(), re.M):
+        for name in names.split("|"):
+            profile = name + "-batch"
+            if profile in wrappers:
+                fail(f"{profile}: duplicate shared or dedicated stage owner")
+            probe = ROOT / f"scripts/probe-{name}-batch.sh"
+            if f'sh scripts/stage-alpine-signed-batch.sh "$port" {name}' not in probe.read_text():
+                fail(f"{profile}: probe does not use shared staging owner")
+            wrappers[profile] = shared.name
     if profiles != wrappers.keys():
         fail(f"catalog/wrapper mismatch: missing={sorted(wrappers.keys() - profiles)}, "
              f"orphan={sorted(profiles - wrappers.keys())}")

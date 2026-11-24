@@ -8,7 +8,7 @@ set -eu
 }
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m115-prebuilt.sh "$port"
+sh scripts/stage-alpine-signed-batch.sh "$port" m115
 work="build/external/m115-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

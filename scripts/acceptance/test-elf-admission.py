@@ -122,5 +122,52 @@ for script in sorted(scripts.glob("stage-m*-prebuilt.sh")):
         expected = re.search(r' (\d+) (count|unique|alias-path|alias-exec|contained-exec|contained-file|contained-elf|contained-exec-elf) M\d+$', call)
         assert expected and int(expected[1]) == len(entries), (script, call, len(entries))
     migrated += 1
+# Verify shared staging with the original per-profile counts and hash policy.
+shared = scripts / "stage-alpine-signed-batch.sh"
+subprocess.run(["sh", "-n", str(shared)], check=True)
+profiles = {}
+for names, count, mode in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=(\d+); mode=([\w-]+) ;;$", shared.read_text(), re.M):
+    for name in names.split("|"):
+        assert name not in profiles
+        profiles[name] = (int(count), mode)
+assert profiles == {f"m{n}": (21 if n == 110 else 15, "count" if n <= 115 else "unique")
+                    for n in range(109, 119)}
+for profile, (count, mode) in profiles.items():
+    entries = [x for x in manifests[profile + "-original-elfs.txt"] if x and not x.startswith("#")]
+    assert len(entries) == count, (profile, count, len(entries))
+
+# Host-only synthetic overlay; the production shared stage and hash helpers run.
+with tempfile.TemporaryDirectory() as d:
+    import shutil
+    cwd = Path(d)
+    (cwd / "scripts/acceptance").mkdir(parents=True)
+    shutil.copyfile(HASH, cwd / "scripts/acceptance/hash-original-elfs.sh")
+    shutil.copyfile(HISTORY, cwd / "scripts/acceptance/check-elf-history.sh")
+    (cwd / "scripts/stage-alpine-prebuilt-overlay.sh").write_text("#!/bin/sh\nexit 0\n")
+    for profile, (count, mode) in profiles.items():
+        work = cwd / "build/external" / (profile + "-batch") / "amd64"
+        root = work / "rootfs"
+        (root / "lib/apk/db").mkdir(parents=True)
+        (root / "lib/apk/db/installed").write_text("P:fixture\n")
+        (work / "rootfs.cpio").write_bytes(b"host fixture")
+        rows = [f"usr/bin/{profile}-{i}" for i in range(count)]
+        (root / "usr/bin").mkdir(parents=True)
+        for row in rows:
+            (root / row).write_bytes(row.encode())
+        (cwd / "scripts" / (profile + "-original-elfs.txt")).write_text("\n".join(rows) + "\n")
+        fixtures = {"m118": "m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so"}.get(profile, "").split()
+        for fixture in fixtures:
+            p = root / "tests" / fixture
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"fixture")
+        run(shared, "amd64", profile, cwd=cwd)
+        hashes = work / (profile + "-original-signed-elfs.sha256")
+        assert len(hashes.read_text().splitlines()) == count
+        if fixtures:
+            (root / "tests" / fixtures[0]).unlink()
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+    run(shared, "amd64", "m999", cwd=cwd, status=2)
+    run(shared, "unknown", "m109", cwd=cwd, status=2)
+migrated += len(profiles)
 assert migrated >= 52, migrated
 print(f"[ELF ADMISSION HOST PASS] {migrated} migrated scripts; exact path, count, hash and negative cases")
