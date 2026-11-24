@@ -1,0 +1,170 @@
+name: NaSeed native Debian glibc initial userspace x86
+on:
+  push:
+    branches: [na-alpine-direct-use]
+    paths:
+      - '.github/workflows/debian-native-x86.yml'
+      - 'docs/m245-*'
+      - 'docs/m246-*'
+      - 'docs/m247-*'
+      - 'kernel/arch/abi.h'
+      - 'kernel/boot_image.c'
+      - 'kernel/boot_image.h'
+      - 'kernel/init/main.c'
+      - 'kernel/mm/vm.c'
+      - 'kernel/task/elf.c'
+      - 'kernel/task/elf.h'
+      - 'kernel/task/elf_segments.c'
+      - 'kernel/task/elf_segments.h'
+      - 'kernel/task/exec.c'
+      - 'kernel/task/sched.c'
+      - 'scripts/fetch-busybox-fixture.sh'
+      - 'scripts/m245-*'
+      - 'scripts/m245-debian-versions.tsv'
+      - 'scripts/m245-fetch-debian-dynamic.py'
+      - 'scripts/m246-*'
+      - 'scripts/m247-*'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/stage-busybox-rootfs.sh'
+      - 'scripts/test-m86-txn.c'
+      - 'tests/m245-*'
+      - 'tests/m246-*'
+      - 'tests/m247-*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Signed Debian native acceptance profile
+        type: choice
+        required: true
+        options:
+          - m245
+          - m246
+          - m247
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.profile || 'push' }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    name: ${{ matrix.profile }} original signed Debian / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["m245","m246","m247"]') }}
+        port: [amd64]
+    env:
+      PROFILE: ${{ matrix.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - name: Select original native probe and evidence
+        id: profile
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m245)
+              echo "artifact=m245-debian-dynamic-glibc-amd64" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/m245-probe-debian-glibc.sh" >> "$GITHUB_OUTPUT"
+              {
+                echo 'paths<<NAS_EVIDENCE'
+                printf '%s\n' "build/m245-debian-dynamic-glibc/amd64/source/manifest.json" \
+                  "build/m245-debian-dynamic-glibc/amd64/m245-cases.tsv" \
+                  "build/busybox-source-parity-x86/m105-m245-debian-glibc.clean.log" \
+                  "build/busybox-source-parity-x86/m105-m245-debian-glibc.serial.log"
+                echo 'NAS_EVIDENCE'
+              } >> "$GITHUB_OUTPUT" ;;
+            m246)
+              echo "artifact=m246-debian-glibc-coreutils-amd64" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/m246-probe-debian-coreutils.sh" >> "$GITHUB_OUTPUT"
+              {
+                echo 'paths<<NAS_EVIDENCE'
+                printf '%s\n' "build/m246-debian-coreutils/amd64/source/manifest.json" \
+                  "build/m246-debian-coreutils/amd64/m246-cases.tsv" \
+                  "build/busybox-source-parity-x86/m105-m246-debian-coreutils.clean.log" \
+                  "build/busybox-source-parity-x86/m105-m246-debian-coreutils.serial.log"
+                echo 'NAS_EVIDENCE'
+              } >> "$GITHUB_OUTPUT" ;;
+            m247)
+              echo "artifact=m247-debian-glibc-dash-pid1-amd64" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/m247-probe-debian-dash-pid1.sh" >> "$GITHUB_OUTPUT"
+              {
+                echo 'paths<<NAS_EVIDENCE'
+                printf '%s\n' "build/m247-debian-dash-pid1/amd64/source/manifest.json" \
+                  "build/m247-debian-dash-pid1/amd64/dash/manifest.json" \
+                  "build/m247-debian-dash-pid1/amd64/m247-cases.tsv" \
+                  "build/busybox-source-parity-x86/m105-m247-debian-dash-pid1.clean.log" \
+                  "build/busybox-source-parity-x86/m105-m247-debian-dash-pid1.serial.log"
+                echo 'NAS_EVIDENCE'
+              } >> "$GITHUB_OUTPUT" ;;
+            *) exit 2 ;;
+          esac
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Fast no-network signed-index and guest-evidence negative contracts
+        if: matrix.profile == 'm245'
+        run: |
+          set -eu
+          python3 tests/m245-debian-dynamic-host.py
+          sh scripts/check-m86-txn.sh
+          sh -n scripts/m245-probe-debian-glibc.sh
+          python3 - <<'PY'
+          import ast
+          ast.parse(open('scripts/m245-fetch-debian-dynamic.py', encoding='utf-8').read())
+          PY
+      - name: Offline negative contracts and real kernel mmap policy
+        if: matrix.profile == 'm246'
+        run: |
+          set -eu
+          python3 -B tests/m245-debian-dynamic-host.py
+          python3 -B tests/m246-debian-coreutils-host.py
+          sh -n scripts/m246-probe-debian-coreutils.sh
+          sh scripts/check-m86-txn.sh
+      - name: Offline signed-source and genuine PID1 negative contracts
+        if: matrix.profile == 'm247'
+        run: |
+          set -eu
+          python3 -B tests/m245-debian-dynamic-host.py
+          python3 -B tests/m247-debian-dash-host.py
+          sh -n scripts/m247-probe-debian-dash-pid1.sh
+          python3 - <<'PY'
+          import ast
+          ast.parse(open('scripts/m247-fetch-debian-dash.py', encoding='utf-8').read())
+          PY
+          sh scripts/check-m86-txn.sh
+      - name: Install official signed Debian metadata + native x86 QEMU dependencies
+        timeout-minutes: 13
+        run: |
+          set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          sh scripts/ci-ubuntu-mirror.sh
+          sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+            -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+            debian-archive-keyring cmake g++ clang lld binutils cpio \
+            xorriso mtools curl python3 qemu-system-x86 ovmf
+          test -s /usr/share/keyrings/debian-archive-keyring.gpg
+          test -s /usr/share/OVMF/OVMF_CODE_4M.fd || test -s /usr/share/OVMF/OVMF_CODE.fd
+      - name: Restore pinned official working Limine seed
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Execute signed Debian in actual native system QEMU
+        timeout-minutes: 19
+        env:
+          PROBE: ${{ steps.profile.outputs.probe }}
+        run: sh "$PROBE" "$PORT"
+      - name: Preserve original source provenance and native guest evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: ${{ steps.profile.outputs.paths }}

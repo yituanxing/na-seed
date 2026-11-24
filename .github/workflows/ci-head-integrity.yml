@@ -25,6 +25,8 @@ on:
       - 'scripts/check-pt-directory.sh'
       - 'scripts/test-pt-directory.c'
       - 'scripts/acceptance/**'
+      - 'scripts/m25[0124]-debian-uart.py'
+      - 'tests/m25[0124]-debian-*-host.py'
       - 'scripts/probe-m*-batch.sh'
   workflow_dispatch:
 
@@ -81,6 +83,12 @@ jobs:
           /tmp/naseed-platform-none
           cc -std=c11 -O2 -Wall -Wextra -Werror -I third_party/unikraft/include -I ports/unikraft/include -DNAS_ENABLE_VIRTIO_BLK=1 -DNAS_ENABLE_VIRTIO_NET=1 -DNAS_ENABLE_VIRTIO_INPUT=1 -DNAS_ENABLE_VIRTIO_GPU=1 -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 scripts/test-platform-contracts.c -o /tmp/naseed-platform-all
           /tmp/naseed-platform-all
+
+      - name: Verify Debian UART profiles and shared transport contracts without native QEMU
+        run: |
+          python3 -B tests/m250-debian-interactive-host.py
+          python3 -B tests/m251-debian-uart-host.py
+          python3 -B tests/m252-debian-uart-host.py
 
       - name: Verify complete native Linux syscall decoder maps
         run: |

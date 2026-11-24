@@ -72,3 +72,12 @@ M172–M180 device and IRQ native acceptance now selects profiles in
 native QEMU; M179/M180 host ext4/nano setup and M180 FD/broker binaries
 remain. Per-profile timeouts, original probe scripts, exact artifact path
 sets and M179/M180 cancellation policy are retained.
+
+M245–M247 x86 and M249–M251 ext4 acceptance use two common native
+workflows, selecting the original profile on manual dispatch. Legacy
+`na-alpine-direct-use` pushes matching any original path filter run all
+profiles in the affected group, so no formerly required gate disappears.
+The current cleanup/main push regression is unchanged. M252 is already
+shared by M254–M257 and retains its existing reusable workflow interface.
+M250 owns the common UART transport for M251/M252; commands, original ELF
+exec evidence, interpreter thresholds and clean native exit remain distinct.
