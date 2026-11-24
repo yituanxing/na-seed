@@ -1,6 +1,8 @@
 #!/bin/sh
 # One real x86 native QEMU boot, exact signed APK binaries, independent HTTP oracle.
 set -eu
+port=amd64
+. scripts/native-qemu-target.sh
 [ "$#" -eq 0 ] || exit 2
 export NAS_ENABLE_LWIP=1
 export NAS_ENABLE_VIRTIO_NET=1
@@ -10,7 +12,7 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m143-http-cases.tsv
-sh scripts/stage-m143-prebuilt.sh amd64
+sh scripts/stage-m143-prebuilt.sh "$port"
 root=build/external/m143-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/m143-original-signed-elfs.sha256"
@@ -35,8 +37,8 @@ for attempt in 1 2 3 4 5; do
     sleep 1
 done
 [ "$ready" = true ] || { echo '[M143 FAIL] host server unavailable' >&2; exit 1; }
-sh scripts/probe-x86-busybox-parity.sh
-clean=build/busybox-source-parity-x86/m143-batch.clean.log
+sh "$runner"
+clean="$logs/m143-batch.clean.log"
 test -s "$clean"
 grep -Fq '[VIRTIO-NET] real modern PCI devices=1' "$clean"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$clean"

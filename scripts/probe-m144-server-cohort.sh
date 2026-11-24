@@ -1,11 +1,13 @@
 #!/bin/sh
 set -eu
+port=amd64
+. scripts/native-qemu-target.sh
 export NAS_ENABLE_LWIP=1 NAS_ENABLE_VIRTIO_NET=1 NAS_VIRTIO_NET_USER=1
 unset NAS_SYSCALL_TRACE # The production-style gate must not rely on debug tracing.
 export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=2048M BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m144-server-cases.tsv
-sh scripts/stage-m144-prebuilt.sh amd64
+sh scripts/stage-m144-prebuilt.sh "$port"
 root=build/external/m144-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/m144-original-elfs.sha256"
@@ -23,8 +25,8 @@ for attempt in 1 2 3 4 5; do
   sleep 1
 done
 [ "$ready" = true ]
-sh scripts/probe-x86-busybox-parity.sh
-clean=build/busybox-source-parity-x86/m144-batch.clean.log
+sh "$runner"
+clean="$logs/m144-batch.clean.log"
 test -s "$clean"
 grep -Fq '[LWIP DHCP BOUND] addr=10.0.2.' "$clean"
 for marker in M144_SIGNED_AB_PASS M144_SIGNED_NGINX_PASS \

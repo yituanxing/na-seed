@@ -63,6 +63,12 @@ def catalog_probes() -> list[Path]:
             dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
             stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
                      else f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}')
+            if milestone == "m174":
+                # The actual GUI/devfs stage extends the signed APK rootfs.
+                # Both edges are mandatory; do not replace it with bare APKs.
+                composite = ROOT / "scripts/stage-m174-devfs-software-gui.sh"
+                assert composite.read_text().count(stage) == 1, composite
+                stage = 'sh scripts/stage-m174-devfs-software-gui.sh "$port"'
             # Supplemental ISA-specific cohorts can share a milestone name.
             # Only the port-parameterized canonical staging consumer owns
             # the signed catalog row; supplemental probes are not duplicates.
