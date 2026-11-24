@@ -1,0 +1,308 @@
+name: NaSeed native device, IRQ and filesystem acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Device and IRQ acceptance profile
+        type: choice
+        required: true
+        options:
+          - m172
+          - m173
+          - m174
+          - m175
+          - m176
+          - m177
+          - m178
+          - m179
+          - m180
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: ${{ inputs.profile == 'm179' || inputs.profile == 'm180' }}
+
+jobs:
+  host-contract:
+    name: ${{ inputs.profile }} production host contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ contains(fromJSON('["m172","m173"]'), inputs.profile) && 12 || contains(fromJSON('["m174","m175"]'), inputs.profile) && 18 || contains(fromJSON('["m176","m177"]'), inputs.profile) && 23 || 25 }}
+    env:
+      PROFILE: ${{ inputs.profile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Install original filesystem host prerequisites
+        if: inputs.profile == 'm179' || inputs.profile == 'm180'
+        run: |
+          set -eu
+          missing=''
+          if ! command -v mke2fs >/dev/null ||
+             ! command -v debugfs >/dev/null ||
+             ! command -v e2fsck >/dev/null; then
+            missing="$missing e2fsprogs"
+          fi
+          if ! command -v nano >/dev/null; then
+            missing="$missing nano"
+          fi
+          if [ -n "$missing" ]; then
+            sh scripts/ci-ubuntu-mirror.sh
+            sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=30 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
+          fi
+      - name: Verify shared ISA boundaries and focused production device contracts
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m172)
+              sh -n scripts/check-m172-device-display.sh
+              ;;
+            m173)
+              sh -n scripts/check-m173-batch.sh
+              ;;
+          esac
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          case "$PROFILE" in
+            m172)
+              sh scripts/check-m172-device-display.sh
+              ;;
+            m173)
+              sh scripts/check-m173-batch.sh
+              ;;
+            m174)
+              sh scripts/check-m174-devfs.sh
+              sh scripts/m174-software-check-manifest.sh
+              sh -n scripts/stage-m174-devfs-software-gui.sh
+              sh -n scripts/probe-m174-batch.sh
+              ;;
+            m175)
+              sh scripts/check-m175-irq-core.sh
+              sh scripts/check-m166-input-port.sh
+              sh scripts/check-m174-devfs.sh
+              sh scripts/m174-software-check-manifest.sh
+              sh -n scripts/stage-m174-devfs-software-gui.sh
+              sh -n scripts/probe-m174-batch.sh
+              sh -n scripts/probe-m175-irq.sh
+              python3 -m py_compile scripts/m175-qmp-verify.py
+              ;;
+            m176)
+              sh scripts/check-m176-net-irq.sh
+              ;;
+            m177)
+              sh scripts/check-m177-gpu.sh
+              ;;
+            m178)
+              sh scripts/check-m178-blk-irq.sh
+              ;;
+            m179|m180)
+              sh scripts/check-m179-fs-irq.sh
+              sh scripts/m188-software-check-manifest.sh
+              sh scripts/check-m187-vt100.sh
+              sh scripts/check-m188-pty.sh
+              sh scripts/check-m189-session.sh
+              ;;
+            *) exit 2 ;;
+          esac
+          if [ "$PROFILE" = m180 ]; then
+            sh scripts/check-m190-durable.sh
+            sh -n scripts/probe-m180-fs-user.sh
+            python3 -m py_compile scripts/m180-ext4-fixture.py
+          fi
+      - name: Exercise in-kernel FD reservation with shared files, fork and dup
+        if: inputs.profile == 'm180'
+        run: |
+          set -eu
+          mkdir -p build/m180
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
+            scripts/test-fd-pending.c kernel/fd.c -o build/m180/test-fd-pending
+          build/m180/test-fd-pending
+      - name: Prove independent and cancelled filesystem broker request lifetimes
+        if: inputs.profile == 'm180'
+        run: |
+          set -eu
+          mkdir -p build/m180
+          gcc -std=c11 -O2 -Wall -Wextra -Werror \
+            -DNAS_ENABLE_M180_FS_USER_IRQ=1 \
+            -DNAS_ENABLE_M179_FS_IRQ=1 \
+            -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 \
+            scripts/test-m180-fs-broker.c kernel/fs/broker.c \
+            -o build/m180/test-fs-broker
+          build/m180/test-fs-broker
+
+  native-qemu:
+    name: ${{ inputs.profile }} genuine native device and IRQ / ${{ matrix.port }}
+    needs: host-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ contains(fromJSON('["m172","m173"]'), inputs.profile) && 80 || contains(fromJSON('["m174","m175"]'), inputs.profile) && 95 || 100 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ inputs.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - name: Select exact native probe and evidence paths
+        id: profile
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m172)
+              echo "artifact=m172-device-display-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m171-batch.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m173)
+              echo "artifact=m173-architecture-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m173-batch.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m174)
+              echo "artifact=m174-architecture-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m174-batch.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m175)
+              echo "artifact=m175-architecture-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m175-irq.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m176)
+              echo "artifact=m176-network-irq-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m176-net-irq.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m177)
+              echo "artifact=m177-real-gpu-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m177-gpu-2d.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m178)
+              echo "artifact=m178-real-async-block-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m178-blk-irq.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m179)
+              echo "artifact=m179-real-ext4-async-block-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m179-fs-irq.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            m180)
+              echo "artifact=m180-ring3-irq-ext4-$PORT" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-m180-fs-user.sh" >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 2 ;;
+          esac
+          {
+            echo 'paths<<NAS_EVIDENCE'
+            case "$PROFILE" in
+              m172)
+                printf '%s\n' "build/external/m168-batch/$PORT/m171-qmp-check.log" \
+                  "build/external/m168-batch/$PORT/m171-*.ppm" \
+                  "build/busybox-source-parity-x86/m171-batch.clean.log" \
+                  "build/busybox-source-parity-x86/m171-batch.serial.log" \
+                  "build/port-riscv64/full/matrix-source/m171-batch.clean.log" \
+                  "build/port-riscv64/full/matrix-source/m171-batch.serial.log" \
+                  "build/port-aarch64/full/matrix-source/m171-batch.clean.log" \
+                  "build/port-aarch64/full/matrix-source/m171-batch.serial.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m172|m173|m174|m175)
+                printf '%s\n' "build/external/m171-lvgl/$PORT/build.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m173)
+                printf '%s\n' "build/external/m168-batch/$PORT/m173-qmp-check.log" \
+                  "build/external/m168-batch/$PORT/m173-*.ppm" \
+                  "build/busybox-source-parity-x86/m173-batch.clean.log" \
+                  "build/busybox-source-parity-x86/m173-batch.serial.log" \
+                  "build/port-riscv64/full/matrix-source/m173-batch.clean.log" \
+                  "build/port-riscv64/full/matrix-source/m173-batch.serial.log" \
+                  "build/port-aarch64/full/matrix-source/m173-batch.clean.log" \
+                  "build/port-aarch64/full/matrix-source/m173-batch.serial.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m174|m175|m176|m177|m178|m179|m180)
+                printf '%s\n' "build/external/m174-software-batch/$PORT/m174-qmp-check.log" \
+                  "build/external/m174-software-batch/$PORT/m173-*.ppm" \
+                  "build/external/m174-software-batch/$PORT/m174-software-original-signed-elfs.sha256" \
+                  "build/busybox-source-parity-x86/m174-batch.clean.log" \
+                  "build/busybox-source-parity-x86/m174-batch.serial.log" \
+                  "build/port-riscv64/full/matrix-source/m174-batch.clean.log" \
+                  "build/port-riscv64/full/matrix-source/m174-batch.serial.log" \
+                  "build/port-aarch64/full/matrix-source/m174-batch.clean.log" \
+                  "build/port-aarch64/full/matrix-source/m174-batch.serial.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m174|m175|m176)
+                printf '%s\n' "build/external/m174-software-batch/$PORT/apk-install.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m176|m177|m178|m179|m180)
+                printf '%s\n' "build/external/m174-software-batch/$PORT/m176-host-http.log" \
+                  "build/external/m174-software-batch/$PORT/m176-wire.pcap"
+                ;;
+            esac
+            case "$PROFILE" in
+              m178|m179|m180)
+                printf '%s\n' "build/m178/async-blk/$PORT/independent-virtio-blk.img"
+                ;;
+            esac
+            case "$PROFILE" in
+              m179|m180)
+                printf '%s\n' "build/external/m174-software-batch/$PORT/m187-software-new-signed-elfs.sha256" \
+                  "build/external/m174-software-batch/$PORT/m188-software-new-signed-elfs.sha256" \
+                  "build/external/m174-software-batch/$PORT/m187-vt100-qmp-check.log" \
+                  "build/external/m174-software-batch/$PORT/m187-*.ppm" \
+                  "build/external/m174-software-batch/$PORT/m188-*.ppm" \
+                  "build/external/m174-software-batch/$PORT/m189-*.ppm" \
+                  "build/busybox-source-parity-x86/m187-vt100.serial.log" \
+                  "build/port-riscv64/full/matrix-source/m187-vt100.serial.log" \
+                  "build/port-aarch64/full/matrix-source/m187-vt100.serial.log"
+                ;;
+            esac
+            case "$PROFILE" in
+              m180)
+                printf '%s\n' "build/external/m174-software-batch/$PORT/m190-*.ppm" \
+                  "build/external/m174-software-batch/$PORT/m190-*-qmp-check.log" \
+                  "build/busybox-source-parity-x86/m190-*.serial.log" \
+                  "build/port-riscv64/full/matrix-source/m190-*.serial.log" \
+                  "build/port-aarch64/full/matrix-source/m190-*.serial.log"
+                ;;
+            esac
+            echo 'NAS_EVIDENCE'
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Install native cross toolchains, EFI and system QEMU
+        timeout-minutes: 18
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m172|m173|m174)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback --cross-cxx cmake:cmake g++:g++ mke2fs:e2fsprogs gcc:gcc
+              ;;
+            m175)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk gcc:gcc qemu-riscv64:qemu-user
+              ;;
+            m176|m177|m178|m179|m180)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk gcc:gcc qemu-riscv64:qemu-user curl:curl
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Execute real native device, original userland and host oracles
+        timeout-minutes: ${{ contains(fromJSON('["m172","m173"]'), inputs.profile) && 58 || contains(fromJSON('["m174","m175"]'), inputs.profile) && 72 || 78 }}
+        env:
+          PROBE: ${{ steps.profile.outputs.probe }}
+        run: sh "$PROBE" "$PORT"
+      - name: Preserve actual guest, physical device and original signed evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact }}
+          path: ${{ steps.profile.outputs.paths }}
+          if-no-files-found: ignore

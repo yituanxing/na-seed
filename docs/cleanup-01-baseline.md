@@ -66,3 +66,9 @@ manifest counts, uniqueness checks and native guest evidence remain intact.
 M166/M167/M168/M170/M171 desktop and input native probes are selected in
 `desktop-native.yml`; per-profile syntax/host gates, LVGL revision, compiler
 flags, three-ISA actual QEMU runs and signed/display evidence remain.
+
+M172–M180 device and IRQ native acceptance now selects profiles in
+`device-irq-native.yml`. Independent host gates still precede three-ISA
+native QEMU; M179/M180 host ext4/nano setup and M180 FD/broker binaries
+remain. Per-profile timeouts, original probe scripts, exact artifact path
+sets and M179/M180 cancellation policy are retained.
