@@ -73,3 +73,10 @@ jobs:
           /tmp/naseed-platform-none
           cc -std=c11 -O2 -Wall -Wextra -Werror -I third_party/unikraft/include -I ports/unikraft/include -DNAS_ENABLE_VIRTIO_BLK=1 -DNAS_ENABLE_VIRTIO_NET=1 -DNAS_ENABLE_VIRTIO_INPUT=1 -DNAS_ENABLE_VIRTIO_GPU=1 -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 scripts/test-platform-contracts.c -o /tmp/naseed-platform-all
           /tmp/naseed-platform-all
+
+      - name: Verify complete native Linux syscall decoder maps
+        run: |
+          for flags in '' '-DNAS_TEST_RV64' '-DNAS_TEST_ARM64'; do
+            cc -std=c11 -O2 -Wall -Wextra -Werror $flags scripts/test-linux-syscall-map.c -o /tmp/naseed-syscall-map
+            /tmp/naseed-syscall-map
+          done
