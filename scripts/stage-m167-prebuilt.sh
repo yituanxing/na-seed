@@ -11,23 +11,7 @@ case "$port" in
     arm64) machine='AArch64' ;;
 esac
 manifest=scripts/m167-original-elfs.txt
-count=0
-seen=' '
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    case "$seen" in *" $elf "*)
-        echo "[M167 STAGE FAIL] repeated ELF $elf" >&2; exit 1 ;;
-    esac
-    seen="$seen$elf "
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M167 STAGE FAIL] previously counted $elf" >&2
-            exit 1
-        fi
-    done
-    count=$((count + 1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M167 "$manifest" --count --distinct)
 [ "$count" -eq 3 ] || exit 1
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m167-batch
 work="build/external/m167-batch/$port"

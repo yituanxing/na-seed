@@ -5,16 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|arm64|riscv64) ;; *) exit 2 ;; esac
 
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for manifest in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$manifest" = scripts/m126-original-elfs.txt ] && continue
-        if grep -Fxq "$elf" "$manifest"; then
-            echo "[M126 DUPLICATE ORIGINAL ELF] $elf already in $manifest" >&2
-            exit 1
-        fi
-    done
-done < scripts/m126-original-elfs.txt
+sh scripts/acceptance/check-elf-history.sh M126 scripts/m126-original-elfs.txt
 
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m126-batch
 work="build/external/m126-batch/$port"

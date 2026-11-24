@@ -5,21 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 manifest=scripts/m159-original-elfs.txt
-count=0
-seen=' '
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    case "$seen" in *" $elf "*) echo "[M159 DUPLICATE ELF] $elf" >&2; exit 1 ;; esac
-    seen="$seen$elf "
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M159 HISTORICAL DUPLICATE] $elf in $old" >&2
-            exit 1
-        fi
-    done
-    count=$((count+1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M159 "$manifest" --count --distinct)
 [ "$count" -eq 30 ] || {
     echo "[M159 INVENTORY FAIL] require exactly 30 new native ELF paths, got $count" >&2
     exit 1

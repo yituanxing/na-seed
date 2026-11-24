@@ -5,16 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = scripts/m132-original-elfs.txt ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M132 DUPLICATE ORIGINAL ELF] $elf already used in $old" >&2
-            exit 1
-        fi
-    done
-done < scripts/m132-original-elfs.txt
+sh scripts/acceptance/check-elf-history.sh M132 scripts/m132-original-elfs.txt
 
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m132-batch
 work="build/external/m132-batch/$port"

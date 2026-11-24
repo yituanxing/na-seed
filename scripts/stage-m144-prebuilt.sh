@@ -2,17 +2,7 @@
 set -eu
 [ "$#" -eq 1 ] || exit 2
 case "$1" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
-count=0
-while IFS= read -r elf; do
-  case "$elf" in ''|'#'*) continue ;; esac
-  for old in scripts/m[0-9]*-original-elfs.txt; do
-    [ "$old" = scripts/m144-original-elfs.txt ] && continue
-    if grep -Fxq "$elf" "$old"; then
-      echo "[M144 DUPLICATE] $elf in $old" >&2; exit 1
-    fi
-  done
-  count=$((count+1))
-done < scripts/m144-original-elfs.txt
+count=$(sh scripts/acceptance/check-elf-history.sh M144 scripts/m144-original-elfs.txt --count)
 [ "$count" -eq 5 ]
 sh scripts/stage-alpine-prebuilt-overlay.sh "$1" m144-batch
 root=build/external/m144-batch/$1

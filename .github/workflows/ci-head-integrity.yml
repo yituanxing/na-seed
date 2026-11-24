@@ -45,3 +45,6 @@ jobs:
 
       - name: Verify shared native batch marker checker and every migrated manifest
         run: python3 scripts/acceptance/test-batch-markers.py
+
+      - name: Verify shared ELF admission and hashing gates
+        run: python3 scripts/acceptance/test-elf-admission.py

@@ -5,21 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 manifest=scripts/m151-original-elfs.txt
-count=0
-seen=' '
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    case "$seen" in *" $elf "*) echo "[M151 DUPLICATE PATH] $elf" >&2; exit 1 ;; esac
-    seen="$seen$elf "
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M151 HISTORICAL ELF DUPLICATE] $elf in $old" >&2
-            exit 1
-        fi
-    done
-    count=$((count+1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M151 "$manifest" --count --distinct)
 [ "$count" -eq 35 ] || {
     echo "[M151 STAGE FAIL] $count paths, require 35" >&2; exit 1;
 }

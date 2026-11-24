@@ -16,17 +16,5 @@ work="build/external/m116-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
 
-count=0
-while IFS= read -r guest_elf; do
-    case "$guest_elf" in ''|'#'*) continue ;; esac
-    sha256sum "$root/$guest_elf"
-    count=$((count + 1))
-done < scripts/m116-original-elfs.txt > "$work/m116-original-signed-elfs.sha256"
-
-unique_hashes=$(awk '{ print $1 }' "$work/m116-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique_hashes" -ne 15 ] ||
-   ! test -s "$work/m116-original-signed-elfs.sha256"; then
-    echo "[M116 HOST STAGE FAIL] $port expected 15 signed distinct native ELFs, got $count paths and $unique_hashes unique hashes" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m116-original-elfs.txt "$work/m116-original-signed-elfs.sha256" 15 unique M116
 echo "[M116 HOST STAGE PASS] $port 15 original signed Alpine 3.23 native ELF programs, zero guest compilation"

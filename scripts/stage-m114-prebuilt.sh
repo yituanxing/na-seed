@@ -15,15 +15,5 @@ work="build/external/m114-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
 
-count=0
-while IFS= read -r guest_elf; do
-    case "$guest_elf" in ''|'#'*) continue ;; esac
-    sha256sum "$root/$guest_elf"
-    count=$((count + 1))
-done < scripts/m114-original-elfs.txt > "$work/m114-original-signed-elfs.sha256"
-
-if [ "$count" -ne 15 ] || ! test -s "$work/m114-original-signed-elfs.sha256"; then
-    echo "[M114 HOST STAGE FAIL] $port expected 15 distinct original native ELF fingerprints, got $count" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m114-original-elfs.txt "$work/m114-original-signed-elfs.sha256" 15 count M114
 echo "[M114 HOST STAGE PASS] $port 15 original signed Alpine 3.23 native ELF applications, zero guest compilation"

@@ -5,18 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 manifest=scripts/m148-original-elfs.txt
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M148 HISTORICAL ELF DUPLICATE] $elf already in $old" >&2
-            exit 1
-        fi
-    done
-    count=$((count + 1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M148 "$manifest" --count)
 [ "$count" -eq 35 ] || { echo "[M148 STAGE FAIL] 35 expected ELF paths, got $count" >&2; exit 1; }
 
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m148-batch

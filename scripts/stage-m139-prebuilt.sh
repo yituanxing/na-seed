@@ -7,16 +7,7 @@ case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 
 # Historical ELF paths are append-only; neither earlier nor later batches
 # may silently count one M139 executable as a newly ported target.
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = scripts/m139-original-elfs.txt ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M139 DUPLICATE ORIGINAL ELF] $elf previously in $old" >&2
-            exit 1
-        fi
-    done
-done < scripts/m139-original-elfs.txt
+sh scripts/acceptance/check-elf-history.sh M139 scripts/m139-original-elfs.txt
 
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m139-batch
 work="build/external/m139-batch/$port"

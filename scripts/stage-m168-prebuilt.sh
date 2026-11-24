@@ -10,18 +10,7 @@ case "$port" in
     *) exit 2 ;;
 esac
 manifest=scripts/m168-original-elfs.txt
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for previous in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$previous" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$previous"; then
-            echo "[M168 STAGE FAIL] historically counted $elf" >&2
-            exit 1
-        fi
-    done
-    count=$((count+1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M168 "$manifest" --count)
 [ "$count" -eq 2 ] || exit 1
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m168-batch
 work="build/external/m168-batch/$port"

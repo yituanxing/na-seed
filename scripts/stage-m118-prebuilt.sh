@@ -16,16 +16,5 @@ for artifact in m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so; 
     test -s "$root/tests/$artifact" || exit 1
 done
 
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m118-original-elfs.txt > "$work/m118-original-signed-elfs.sha256"
-
-unique=$(awk '{ print $1 }' "$work/m118-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique" -ne 15 ]; then
-    echo "[M118 HOST STAGE FAIL] $port $count executables, $unique independent ELF hashes" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m118-original-elfs.txt "$work/m118-original-signed-elfs.sha256" 15 unique M118
 echo "[M118 HOST STAGE PASS] $port 15 independent signed elfutils native ELFs, host-only -g fixtures"

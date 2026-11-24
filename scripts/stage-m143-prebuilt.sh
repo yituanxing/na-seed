@@ -5,18 +5,7 @@ set -eu
 port=$1
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 manifest=scripts/m143-original-elfs.txt
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    for old in scripts/m[0-9]*-original-elfs.txt; do
-        [ "$old" = "$manifest" ] && continue
-        if grep -Fxq "$elf" "$old"; then
-            echo "[M143 HISTORICAL DUPLICATE] $elf already in $old" >&2
-            exit 1
-        fi
-    done
-    count=$((count + 1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M143 "$manifest" --count)
 [ "$count" -eq 3 ] || exit 1
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m143-batch
 root="build/external/m143-batch/$port"

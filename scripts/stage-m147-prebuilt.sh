@@ -4,17 +4,7 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 case "$1" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 manifest=scripts/m147-original-elfs.txt
-count=0
-while IFS= read -r elf; do
-  case "$elf" in ''|'#'*) continue ;; esac
-  for old in scripts/m[0-9]*-original-elfs.txt; do
-    [ "$old" = "$manifest" ] && continue
-    if grep -Fxq "$elf" "$old"; then
-      echo "[M147 HISTORICAL DUPLICATE] $elf in $old" >&2; exit 1
-    fi
-  done
-  count=$((count+1))
-done < "$manifest"
+count=$(sh scripts/acceptance/check-elf-history.sh M147 "$manifest" --count)
 [ "$count" -eq 29 ] || { echo "[M147 FAIL] inventory count=$count" >&2; exit 1; }
 sh scripts/stage-alpine-prebuilt-overlay.sh "$1" m147-batch
 root="build/external/m147-batch/$1"

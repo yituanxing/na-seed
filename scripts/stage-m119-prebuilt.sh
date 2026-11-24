@@ -13,15 +13,5 @@ test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
 test -s "$root/tests/m119-catalog.po" && test -s "$root/tests/m119-batch-run.sh"
 test -s "$root/tests/m119-catalog.mo"
 
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m119-original-elfs.txt > "$work/m119-original-signed-elfs.sha256"
-unique=$(awk '{ print $1 }' "$work/m119-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$count" -eq 15 ] && [ "$unique" -eq 15 ] || {
-    echo "[M119 STAGE FAIL] $port $count native ELF files, $unique unique SHA256" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m119-original-elfs.txt "$work/m119-original-signed-elfs.sha256" 15 unique M119
 echo "[M119 HOST STAGE PASS] $port 15 unique signed GNU gettext ELFs, no guest builds"
