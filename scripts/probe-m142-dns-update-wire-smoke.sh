@@ -15,7 +15,7 @@ export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m142-dns-update-cases.tsv
 
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/m141-original-signed-elfs.sha256"

@@ -42,7 +42,7 @@ jobs:
           for script in scripts/probe-lwip-virtio-wire-multiarch.sh \
                         scripts/probe-riscv64-busybox-matrix.sh \
                         scripts/probe-aarch64-busybox-matrix.sh \
-                        scripts/stage-m141-prebuilt.sh tests/m141-system-run.sh; do
+                        scripts/stage-alpine-signed-batch.sh tests/m141-system-run.sh; do
             sh -n "$script"
           done
           test "$(awk -F '\t' '$1 !~ /^#/ && NF { n++ } END {print n+0}' scripts/lwip-wire-cases.tsv)" -eq 1

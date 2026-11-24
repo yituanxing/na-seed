@@ -31,7 +31,7 @@ jobs:
           set -eu
           sh -n scripts/probe-lwip-ncat-smoke.sh
           sh -n scripts/probe-x86-busybox-parity.sh
-          sh -n scripts/stage-m141-prebuilt.sh
+          sh -n scripts/stage-alpine-signed-batch.sh
           test "$(awk -F '\t' '$1 !~ /^#/ && NF { count++ } END {print count+0}' scripts/lwip-ncat-cases.tsv)" -eq 1
           grep -Fq 'M141_SYSTEM_NCAT_LOOPBACK_PASS' scripts/lwip-ncat-cases.tsv
       - name: Install signed APK staging and x86 QEMU dependencies

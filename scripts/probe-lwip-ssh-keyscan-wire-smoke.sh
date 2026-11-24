@@ -21,7 +21,7 @@ command -v sshd >/dev/null || {
 command -v ssh-keygen >/dev/null || {
     echo '[LWIP SSH WIRE FAIL] host OpenSSH ssh-keygen unavailable' >&2; exit 1;
 }
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/usr/bin/ssh-keyscan"

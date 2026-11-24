@@ -16,7 +16,7 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m142-ssh-chain-cases.tsv
 
 command -v sshd >/dev/null
 command -v ssh-keygen >/dev/null
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 for elf in ssh scp sftp; do test -s "$root/rootfs/usr/bin/$elf"; done

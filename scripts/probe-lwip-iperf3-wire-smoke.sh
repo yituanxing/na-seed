@@ -18,7 +18,7 @@ command -v iperf3 >/dev/null || {
     echo '[LWIP IPERF WIRE FAIL] native host iperf3 missing' >&2
     exit 1
 }
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/usr/bin/iperf3"

@@ -13,7 +13,7 @@ export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/lwip-wire-cases.tsv
 
 # The guest runs an untouched Alpine binary; the host stages signed APKs.
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/usr/bin/ncat"

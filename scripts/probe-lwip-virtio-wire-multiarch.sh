@@ -21,7 +21,7 @@ export BUSYBOX_PARITY_MANIFEST=scripts/lwip-wire-cases.tsv
 # Signed Alpine originals are never recompiled, patched or replaced with
 # synthetic guest network clients. Build the kernel explicitly under the
 # opt-in flags; the generic matrix runner otherwise reuses an existing ELF.
-sh scripts/stage-m141-prebuilt.sh "$port"
+sh scripts/stage-alpine-signed-batch.sh "$port" m141
 root="build/external/m141-batch/$port"
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/usr/bin/ncat"

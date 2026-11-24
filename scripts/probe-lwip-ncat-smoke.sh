@@ -17,7 +17,7 @@ export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/lwip-ncat-cases.tsv
 
 # Preserve signed APK provenance and execute the unchanged original ELF.
-sh scripts/stage-m141-prebuilt.sh amd64
+sh scripts/stage-alpine-signed-batch.sh amd64 m141
 root=build/external/m141-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/usr/bin/ncat"
