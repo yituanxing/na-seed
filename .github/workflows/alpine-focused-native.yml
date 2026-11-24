@@ -7,7 +7,7 @@ on:
         description: Original native workload
         required: true
         type: choice
-        options: [m38, m39, m40, m41, m42, m43, m44, m45, m46, m47, m48, m49, m51, m52, m53, m54]
+        options: [m38, m39, m40, m41, m42, m43, m44, m45, m46, m47, m48, m49, m51, m52, m53, m54, m65, m66, m67, m69, m70, m79]
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
   cancel-in-progress: false
@@ -15,7 +15,7 @@ jobs:
   original:
     name: ${{ inputs.profile }} native QEMU / ${{ matrix.port }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ fromJSON('{"m38":40,"m39":40,"m40":40,"m41":40,"m42":40,"m43":40,"m44":40,"m45":40,"m46":40,"m47":40,"m48":40,"m49":40,"m51":45,"m52":45,"m53":50,"m54":60}')[inputs.profile] }}
+    timeout-minutes: ${{ fromJSON('{"m38":40,"m39":40,"m40":40,"m41":40,"m42":40,"m43":40,"m44":40,"m45":40,"m46":40,"m47":40,"m48":40,"m49":40,"m51":45,"m52":45,"m53":50,"m54":60,"m65":35,"m66":35,"m67":35,"m69":35,"m70":35,"m79":35}')[inputs.profile] }}
     strategy:
       fail-fast: false
       matrix:
@@ -189,17 +189,102 @@ jobs:
               build/busybox-source-parity-x86/m54-dev.clean.log
               build/port-riscv64/full/matrix-source/m54-dev.clean.log
               build/port-aarch64/full/matrix-source/m54-dev.clean.log" ;;
+            m65)
+              probe=scripts/probe-m65-procfs.sh
+              artifact=m65-procps
+              bootfs=0
+              evidence="build/external/m65-observe/$PORT/apk-install.log
+              build/external/m65-observe/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m65-procfs.clean.log
+              build/port-riscv64/full/matrix-source/m65-procfs.clean.log
+              build/port-aarch64/full/matrix-source/m65-procfs.clean.log" ;;
+            m66)
+              probe=scripts/probe-m66-monitor.sh
+              artifact=m66-procps
+              bootfs=0
+              evidence="build/external/m66-monitor/$PORT/apk-install.log
+              build/external/m66-monitor/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m66-monitor.clean.log
+              build/port-riscv64/full/matrix-source/m66-monitor.clean.log
+              build/port-aarch64/full/matrix-source/m66-monitor.clean.log" ;;
+            m67)
+              probe=scripts/probe-m67-control.sh
+              artifact=m67-control
+              bootfs=0
+              evidence="build/external/m67-control/$PORT/apk-install.log
+              build/external/m67-control/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m67-control.clean.log
+              build/port-riscv64/full/matrix-source/m67-control.clean.log
+              build/port-aarch64/full/matrix-source/m67-control.clean.log" ;;
+            m69)
+              probe=scripts/probe-m69-inspect.sh
+              artifact=m69-inspect
+              bootfs=0
+              evidence="build/external/m69-inspect/$PORT/apk-install.log
+              build/external/m69-inspect/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m69-inspect.clean.log
+              build/port-riscv64/full/matrix-source/m69-inspect.clean.log
+              build/port-aarch64/full/matrix-source/m69-inspect.clean.log" ;;
+            m70)
+              probe=scripts/probe-m70-vmfd.sh
+              artifact=m70-vmfd
+              bootfs=0
+              evidence="build/external/m70-vmfd/$PORT/apk-install.log
+              build/external/m70-vmfd/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m70-vmfd.clean.log
+              build/port-riscv64/full/matrix-source/m70-vmfd.clean.log
+              build/port-aarch64/full/matrix-source/m70-vmfd.clean.log" ;;
+            m79)
+              probe=scripts/probe-m79-workflow.sh
+              artifact=m79-workflow
+              bootfs=0
+              evidence="build/external/m39-packages/$PORT/apk-install.log
+              build/external/m79-workflow/$PORT/apk-install.log
+              build/external/m79-workflow/$PORT/requested-packages.txt
+              build/busybox-source-parity-x86/m79-workflow.clean.log
+              build/port-riscv64/full/matrix-source/m79-workflow.clean.log
+              build/port-aarch64/full/matrix-source/m79-workflow.clean.log" ;;
             *) exit 2 ;;
           esac
           test -f "$probe"
           printf 'probe=%s\nartifact=%s\nbootfs=%s\n' "$probe" "$artifact" "$bootfs" >> "$GITHUB_OUTPUT"
           {
             echo 'paths<<NASEED_PATHS'
-            printf '%s\n' "$evidence"
+            printf '%s\n' "$evidence" | sed 's/^[[:space:]]*//'
             echo NASEED_PATHS
           } >> "$GITHUB_OUTPUT"
       - name: Identify actual QEMU-tested commit
         run: git rev-parse HEAD
+      - name: Original procfs and process ownership host checks
+        if: contains(fromJSON('["m65","m66","m67","m69","m70"]'), inputs.profile)
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m65) guest=tests/m65-procfs-run.sh ;;
+            m66) guest=tests/m66-monitor-run.sh ;;
+            m67) guest=tests/m67-control-run.sh ;;
+            m69) guest=tests/m69-trace-prep-run.sh ;;
+            m70) guest=tests/m70-vmfd-run.sh ;;
+            *) exit 2 ;;
+          esac
+          for file in "scripts/stage-$PROFILE-prebuilt.sh" "${{ steps.profile.outputs.probe }}" "$guest"; do
+            sh -n "$file"
+          done
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
+          cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-procfs.c kernel/fs/procfs.c kernel/lib/string.c -o /tmp/nas-procfs-host
+          /tmp/nas-procfs-host
+      - name: Original integrated developer workflow host checks
+        if: inputs.profile == 'm79'
+        run: |
+          set -eu
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m79-prebuilt.sh scripts/probe-m79-workflow.sh tests/m79-workflow-run.sh
+          bash -n tests/m79-workflow.bash
+          python3 -m py_compile tests/m79-validate.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
       - name: Install native QEMU and boot tools
         if: inputs.profile != 'm42'
         timeout-minutes: 12
@@ -248,7 +333,7 @@ jobs:
         if: steps.profile.outputs.bootfs == '1'
         run: sh scripts/check-bootfs-scale.sh
       - name: Execute original native workload
-        timeout-minutes: ${{ fromJSON('{"m38":24,"m39":12,"m40":12,"m41":12,"m42":12,"m43":12,"m44":12,"m45":12,"m46":12,"m47":12,"m48":24,"m49":24,"m51":28,"m52":28,"m53":36,"m54":47}')[inputs.profile] }}
+        timeout-minutes: ${{ fromJSON('{"m38":24,"m39":12,"m40":12,"m41":12,"m42":12,"m43":12,"m44":12,"m45":12,"m46":12,"m47":12,"m48":24,"m49":24,"m51":28,"m52":28,"m53":36,"m54":47,"m65":24,"m66":24,"m67":24,"m69":24,"m70":24,"m79":24}')[inputs.profile] }}
         run: sh "${{ steps.profile.outputs.probe }}" "$PORT"
       - name: Preserve A014 genuine guest ownership-race serial evidence
         if: always() && inputs.profile == 'm42'

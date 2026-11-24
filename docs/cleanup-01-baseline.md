@@ -198,3 +198,8 @@ M38–M49 and M51–M54 individual manual diagnostics now select their original
 profile in `alpine-focused-native.yml`. The original probe paths, three ISAs,
 job/step limits, CPIO gates, M42 compiler/serial evidence and failure artifact
 paths are preserved; the grouped M50 workload matrix is unchanged.
+
+M65/M66/M67/M69/M70/M79 also select their original profiles in the focused
+native diagnostics workflow. Their real host procfs or developer-workflow
+checks execute before package setup and actual native QEMU; per-profile
+failure evidence is preserved.
