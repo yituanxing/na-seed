@@ -33,7 +33,10 @@ for pair in (('pamtojpeg2k', 'jpeg2ktopam'),
              ('pgmtosbig', 'sbigtopgm'), ('pnmtojbig', 'jbigtopnm')):
     assert all(p in apps and p in runner for p in pair)
 assert 'image_check "$out" "$work"' in runner
-assert 'sh scripts/host-configure-m163-batch.sh' in (
-    root / 'scripts/host-configure-m165-batch.sh').read_text()
+hook = (root / 'scripts/host-configure-alpine-fixtures.sh').read_text()
+assert 'm163|m165)' in hook
+overlay = (root / 'scripts/stage-alpine-prebuilt-overlay.sh').read_text()
+assert 'm163-batch|m165-batch|' in overlay
+assert 'sh scripts/host-configure-alpine-fixtures.sh "$port" "$root"' in overlay
 print('[M165 STATIC PASS] 30 historically new signed Alpine ELF, '
       'three actual JPEG2000/SBIG/JBIG round trips, shared PNM oracle')

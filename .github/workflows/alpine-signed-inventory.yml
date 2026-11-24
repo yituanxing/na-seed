@@ -47,11 +47,12 @@ jobs:
             *) exit 2 ;;
           esac
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
-          for script in scripts/stage-alpine-signed-batch.sh scripts/probe-alpine-signed-batch.sh "scripts/host-configure-$PROFILE-batch.sh" "tests/$PROFILE-batch-run.sh"; do
+          if [ "$PROFILE" = m159 ]; then hook=scripts/host-configure-m159-batch.sh; else hook=scripts/host-configure-alpine-fixtures.sh; fi
+          for script in scripts/stage-alpine-signed-batch.sh scripts/probe-alpine-signed-batch.sh "$hook" "tests/$PROFILE-batch-run.sh"; do
             sh -n "$script"
           done
           if [ "$PROFILE" = m165 ]; then
-            sh -n scripts/host-configure-m163-batch.sh
+            sh -n scripts/host-configure-alpine-fixtures.sh
           fi
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 "scripts/check-$PROFILE-inventory.py"

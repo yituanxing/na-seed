@@ -68,7 +68,37 @@ with tempfile.TemporaryDirectory() as d:
             run(port, root, profile, 0)
             assert (etc / "passwd").read_text() == "existing-account\n"
             assert (etc / "group").read_text() == "existing-group\n"
+    # Real deterministic image generation, with identical content in both profiles.
+    reference = {}
+    for profile in ("m163", "m165"):
+        for port in ("amd64", "riscv64", "arm64"):
+            root = f"build/external/{profile}-batch/{port}/rootfs"
+            (cwd / root).mkdir(parents=True)
+            run(port, root, profile, 0)
+            files = {p.name: p.read_bytes() for p in (cwd / root / "tests").iterdir()}
+            assert set(files) == {"m163-color.ppm", "m163-gray.pgm", "m163-bw.pbm", "m163-rgb.txt"}
+            assert files["m163-color.ppm"].startswith(b"P3\n8 8\n255\n")
+            assert files["m163-gray.pgm"].startswith(b"P2\n8 8\n255\n")
+            if reference:
+                assert files == reference
+            else:
+                reference = files
+    # Real host x86_64 static builds of the original input/desktop sources.
+    import shutil
+    shutil.copyfile(ROOT / "tests/m166-input-display.c", cwd / "tests/m166-input-display.c")
+    shutil.copytree(ROOT / "user/desktop", cwd / "user/desktop")
+    for profile, expected in (("m166", ["m166-input-display"]),
+                              ("m167", ["naseed-desktop", "naseed-image", "naseed-terminal"]),
+                              ("m168", ["naseed-desktop", "naseed-image", "naseed-terminal", "naseed-browser"])):
+        root = f"build/external/{profile}-batch/amd64/rootfs"
+        (cwd / root).mkdir(parents=True)
+        run("amd64", root, profile, 0)
+        directory = cwd / root / ("tests" if profile == "m166" else "usr/bin")
+        assert sorted(p.name for p in directory.iterdir()) == sorted(expected)
+        hashfile = "m166-test-application.sha256" if profile == "m166" else profile + "-native-applications.sha256"
+        subprocess.run(["sha256sum", "-c", str((cwd / root).parent / hashfile)], cwd=cwd, check=True)
+        run("amd64", "bad", profile, 2)
     run("invalid", "bad", "m120", 2)
     run("amd64", "bad", "m999", 2)
     run("amd64", "bad", "m126", 2)
-print("[HOST FIXTURE DISPATCH PASS] 15 profiles, three ISAs, missing-file and invalid input rejection")
+print("[HOST FIXTURE DISPATCH PASS] 20 profiles, real image fixtures and x86 static builds, missing-file and invalid input rejection")

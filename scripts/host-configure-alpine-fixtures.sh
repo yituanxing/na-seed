@@ -39,6 +39,70 @@ case "$profile" in
         [ -s "$root/etc/passwd" ] || printf 'root:x:0:0:root:/tmp:/bin/sh\n' > "$root/etc/passwd"
         [ -s "$root/etc/group" ] || printf 'root:x:0:\n' > "$root/etc/group"
         ;;
+    m163|m165)
+        [ "$root" = "build/external/$profile-batch/$port/rootfs" ] || exit 2
+        python3 - "$root/tests" <<'PY'
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1])
+target.mkdir(parents=True, exist_ok=True)
+target.joinpath('m163-color.ppm').write_bytes(
+    b'P3\n8 8\n255\n' + b''.join(
+        f'{x * 32} {y * 32} {(x + y) * 16}\n'.encode()
+        for y in range(8) for x in range(8)))
+target.joinpath('m163-gray.pgm').write_bytes(
+    b'P2\n8 8\n255\n' + b''.join(
+        f'{(x * 29 + y * 13) % 256}\n'.encode()
+        for y in range(8) for x in range(8)))
+target.joinpath('m163-bw.pbm').write_bytes(
+    b'P1\n8 8\n' + b''.join(
+        f'{(x + y) % 2}\n'.encode()
+        for y in range(8) for x in range(8)))
+target.joinpath('m163-rgb.txt').write_text(
+    '0 0 0 black\n255 255 255 white\n128 128 128 gray\n', encoding='ascii')
+PY
+for name in color.ppm gray.pgm bw.pbm rgb.txt; do
+    test -s "$root/tests/m163-$name"
+done
+        ;;
+    m166|m167|m168)
+        [ "$root" = "build/external/$profile-batch/$port/rootfs" ] || exit 2
+        case "$port" in
+            amd64) compiler=gcc; machine='Advanced Micro Devices X86-64' ;;
+            riscv64) compiler=riscv64-linux-gnu-gcc; machine='RISC-V' ;;
+            arm64) compiler=aarch64-linux-gnu-gcc; machine='AArch64' ;;
+        esac
+        command -v "$compiler" >/dev/null
+        verify_static() {
+            [ "$(od -An -tx1 -N4 "$1" | tr -d ' \n')" = 7f454c46 ] || exit 1
+            readelf -h "$1" | grep -Fq "$machine"
+            if readelf -l "$1" | grep -Fq INTERP; then
+                echo "[$profile APP FAIL] dynamic native application $1" >&2
+                exit 1
+            fi
+        }
+        if [ "$profile" = m166 ]; then
+            mkdir -p "$root/tests"
+            app="$root/tests/m166-input-display"
+            "$compiler" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+                tests/m166-input-display.c -o "$app"
+            verify_static "$app"
+            sha256sum "$app" > "$(dirname "$root")/m166-test-application.sha256"
+        else
+            mkdir -p "$root/usr/bin"
+            set -- naseed-desktop naseed-image naseed-terminal
+            if [ "$profile" = m168 ]; then set -- "$@" naseed-browser; fi
+            for app in "$@"; do
+                "$compiler" -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie \
+                    "user/desktop/$app.c" user/desktop/protocol.c user/desktop/text.c \
+                    -o "$root/usr/bin/$app"
+                verify_static "$root/usr/bin/$app"
+            done
+            for app in "$@"; do sha256sum "$root/usr/bin/$app"; done \
+                > "$(dirname "$root")/$profile-native-applications.sha256"
+        fi
+        ;;
     *) exit 2 ;;
 esac
 echo "[$profile HOST DATA PASS] $port independent fixtures generated on Linux host"
