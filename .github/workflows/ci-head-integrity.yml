@@ -9,6 +9,9 @@ on:
       - 'kernel/fs/**'
       - 'ports/lwip/socket_port.c'
       - 'scripts/check-file-readiness.sh'
+      - 'kernel/arch/**'
+      - 'scripts/check-pt-directory.sh'
+      - 'scripts/test-pt-directory.c'
   workflow_dispatch:
 
 permissions:
@@ -34,3 +37,6 @@ jobs:
 
       - name: Check sole OpenFile readiness interface and existing FD host regressions
         run: sh scripts/check-file-readiness.sh
+
+      - name: Exercise actual RV64 and ARM64 directory paths, including allocation rollback
+        run: sh scripts/check-pt-directory.sh
