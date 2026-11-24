@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/audit-cleanup-inventory.py'
       - '.github/workflows/cleanup-inventory.yml'
+      - 'scripts/acceptance/**'
+      - 'kernel/**'
   workflow_dispatch:
 permissions:
   contents: read

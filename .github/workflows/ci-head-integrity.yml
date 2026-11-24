@@ -13,6 +13,7 @@ on:
       - 'kernel/mm/**'
       - 'kernel/task/**'
       - 'scripts/check-netlink-providers.sh'
+      - 'scripts/test-netlink-*.c'
       - 'scripts/check-pt-directory.sh'
       - 'scripts/test-pt-directory.c'
       - 'scripts/acceptance/**'
@@ -29,7 +30,7 @@ concurrency:
 jobs:
   checkout-integrity:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,3 +55,11 @@ jobs:
 
       - name: Run all four real kernel-buffer Netlink protocol regressions
         run: sh scripts/check-netlink-providers.sh
+
+      - name: Check shared USB fixture and negative-observer shell entry points
+        run: sh scripts/acceptance/check-shared-usb-host.sh
+      - name: Run three original local host-only acceptance cohorts
+        run: |
+          sh scripts/run-m236-local.sh --host-only
+          sh scripts/run-m237-local.sh --host-only
+          sh scripts/run-m238-local.sh --host-only

@@ -10,6 +10,7 @@ on:
       - 'scripts/test-m238-*'
       - 'scripts/probe-m238-alpine-batch.sh'
       - 'scripts/run-m238-local.sh'
+      - 'scripts/acceptance/run-local-alpine-cohort.sh'
       - 'scripts/inventory-m141-signed-apks.sh'
       - 'scripts/check-m141-candidates.py'
       - 'scripts/probe-m197-alpine-software-cohort.sh'

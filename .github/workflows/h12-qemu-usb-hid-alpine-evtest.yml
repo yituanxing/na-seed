@@ -8,6 +8,9 @@ on:
     paths:
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_qemu_xhci.h'
+      - 'scripts/acceptance/stage-qemu-usb-alpine.sh'
+      - 'scripts/acceptance/build-qemu-usb-iso.sh'
+      - 'scripts/acceptance/qemu-negative-observer.sh'
       - 'kernel/platform/x86_qemu_hid_input.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h12-qemu-usb-hid-alpine-evtest.yml'
