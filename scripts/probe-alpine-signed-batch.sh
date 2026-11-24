@@ -74,7 +74,9 @@ if [ "$exec_proof" -eq 1 ]; then
     execs=0
     while IFS= read -r elf; do
         case "$elf" in ''|'#'*) continue ;; esac
-        grep -Fq "[EXEC] replaced process with CPIO ELF: /$elf" "$log" || {
+        # The kernel emits exactly one line ending with pending_exec.filename.
+        # A prefix (svn vs svnadmin) is not evidence of the requested ELF.
+        grep -Fxq "[EXEC] replaced process with CPIO ELF: /$elf" "$log" || {
             echo "[$label NATIVE QEMU FAIL] $port missing genuine exec /$elf" >&2
             exit 1
         }

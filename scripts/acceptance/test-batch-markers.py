@@ -149,6 +149,9 @@ cp fixture.log "$log"
             run_profile(profile, "amd64", evidence, status=1, fail_runner=True)
             if execs:
                 run_profile(profile, "amd64", entries + execs[1:] + special, status=1)
+                run_profile(profile, "amd64",
+                            entries + [execs[0] + "-different"] + execs[1:] + special,
+                            status=1)
             if special:
                 run_profile(profile, "amd64", evidence[:-1], status=1)
             migrated += 1
