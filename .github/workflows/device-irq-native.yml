@@ -154,11 +154,11 @@ jobs:
           case "$PROFILE" in
             m172)
               echo "artifact=m172-device-display-$PORT" >> "$GITHUB_OUTPUT"
-              echo "probe=scripts/probe-m171-batch.sh" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-native-desktop.sh" >> "$GITHUB_OUTPUT"
               ;;
             m173)
               echo "artifact=m173-architecture-$PORT" >> "$GITHUB_OUTPUT"
-              echo "probe=scripts/probe-m173-batch.sh" >> "$GITHUB_OUTPUT"
+              echo "probe=scripts/probe-native-desktop.sh" >> "$GITHUB_OUTPUT"
               ;;
             m174)
               echo "artifact=m174-architecture-$PORT" >> "$GITHUB_OUTPUT"
@@ -298,7 +298,12 @@ jobs:
         timeout-minutes: ${{ contains(fromJSON('["m172","m173"]'), inputs.profile) && 58 || contains(fromJSON('["m174","m175"]'), inputs.profile) && 72 || 78 }}
         env:
           PROBE: ${{ steps.profile.outputs.probe }}
-        run: sh "$PROBE" "$PORT"
+        run: |
+          case "$PROFILE" in
+            m172) sh "$PROBE" m171 "$PORT" ;;
+            m173) sh "$PROBE" m173 "$PORT" ;;
+            *) sh "$PROBE" "$PORT" ;;
+          esac
       - name: Preserve actual guest, physical device and original signed evidence
         if: always()
         uses: actions/upload-artifact@v4

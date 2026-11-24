@@ -33,6 +33,7 @@ on:
       - 'scripts/m25[0124]-debian-uart.py'
       - 'tests/m25[0124]-debian-*-host.py'
       - 'scripts/probe-m*-batch.sh'
+      - 'scripts/probe-native-desktop.sh'
   workflow_dispatch:
 
 permissions:

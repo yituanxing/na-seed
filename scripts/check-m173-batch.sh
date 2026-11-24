@@ -5,7 +5,7 @@
 set -eu
 for script in scripts/check-m173-batch.sh \
               scripts/stage-m173-dynamic-client.sh \
-              scripts/probe-m173-batch.sh; do
+              scripts/probe-native-desktop.sh; do
     sh -n "$script"
 done
 python3 -m py_compile scripts/m173-qmp-verify.py

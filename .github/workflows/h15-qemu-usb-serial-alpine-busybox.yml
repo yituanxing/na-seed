@@ -29,14 +29,13 @@ on:
       - 'ports/lwext4/**'
       - 'scripts/h15-*'
       - 'scripts/check-h15-*.sh'
-      - 'scripts/stage-h15-ftdi-alpine.sh'
-      - 'scripts/build-h15-ftdi-iso.sh'
       - 'scripts/stage-m166-prebuilt.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h15-ftdi.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'scripts/acceptance/check-qemu-usb-negative.sh'
   pull_request:
     branches:
       - feat/na-hw-h0-pci-20261110
@@ -95,12 +94,11 @@ jobs:
         timeout-minutes: 8
         run: |
           set -eu
-          sh -n scripts/stage-h15-ftdi-alpine.sh
+          sh -n scripts/acceptance/stage-qemu-usb-alpine.sh
           sh -n scripts/h15-guest-workload.sh
-          sh -n scripts/build-h15-ftdi-iso.sh
+          sh -n scripts/acceptance/build-qemu-usb-iso.sh
           sh -n scripts/check-h15-usb-serial-qemu.sh
-          sh -n scripts/check-h15-no-usb-serial-qemu.sh
-          sh -n scripts/check-h15-no-xhci-qemu.sh
+          sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/run.sh
           python3 -m py_compile scripts/h15-ftdi-socket-oracle.py
           sh -n scripts/check-h15-ftdi-host.sh
@@ -121,10 +119,10 @@ jobs:
         run: sh scripts/check-h15-usb-serial-qemu.sh
       - name: Negative REAL QEMU xHCI with no USB serial fail-closed and no Alpine guest execution
         timeout-minutes: 3
-        run: sh scripts/check-h15-no-usb-serial-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h15 no-usb-serial
       - name: Negative REAL QEMU without xHCI fail-closed and no Alpine guest execution
         timeout-minutes: 3
-        run: sh scripts/check-h15-no-xhci-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h15 no-xhci
       - name: Verify exact signed Alpine ELF and immutable ext4 media after actual positive and negatives
         if: success()
         run: |

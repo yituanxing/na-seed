@@ -59,6 +59,14 @@ def catalog_probes() -> list[Path]:
             assert not matches, f"{milestone}: duplicate dedicated native probe"
             path = ROOT / "scripts/probe-alpine-signed-batch.sh"
             stage = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
+        elif milestone in {"m166", "m167", "m168"}:
+            assert not matches, f"{milestone}: duplicate dedicated desktop probe"
+            path = ROOT / "scripts/probe-native-desktop.sh"
+            stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
+            assert f'{milestone}) {stage}; work="build/external/{milestone}-batch/$port" ;;' in path.read_text()
+            if milestone == "m168":
+                assert 'm170) sh scripts/stage-m168-prebuilt.sh "$port"; work="build/external/m168-batch/$port" ;;' in path.read_text()
+            assert 'BUSYBOX_PARITY_MANIFEST="scripts/$profile-batch-cases.tsv"' in path.read_text()
         else:
             dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
             stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
@@ -77,7 +85,7 @@ def catalog_probes() -> list[Path]:
                 f"{catalog}: {milestone} requires exactly one original probe, got {matches}"
             )
             path = matches[0]
-        assert path.read_text().count(stage) == 1, (
+        assert path.read_text().count(stage) == (2 if milestone == "m168" else 1), (
             f"{path}: missing or duplicate canonical staging call {stage}"
         )
         found[milestone] = path
@@ -87,13 +95,6 @@ def catalog_probes() -> list[Path]:
     for path in (ROOT / "scripts").glob("probe-m*.sh"):
         stages = re.findall(r"sh scripts/stage-(m[0-9]+)-prebuilt\.sh", path.read_text())
         for milestone in stages:
-            # M170 deliberately boots the M168 rootfs with a distinct case
-            # manifest and independent QMP/serial proof.
-            if milestone == "m168" and path.name == "probe-m170-batch.sh":
-                source = path.read_text()
-                assert 'BUSYBOX_PARITY_MANIFEST=scripts/m170-batch-cases.tsv' in source
-                validate_probe(path, source)
-                continue
             assert found.get(milestone) == path, (
                 f"{path}: orphaned or duplicate {milestone} staging consumer"
             )

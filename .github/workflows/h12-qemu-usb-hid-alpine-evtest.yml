@@ -30,8 +30,6 @@ on:
       - 'scripts/h12-*'
       - 'scripts/check-h12-*.sh'
       - 'tests/h12-*'
-      - 'scripts/stage-h12-usb-hid-alpine.sh'
-      - 'scripts/build-h12-usb-hid-iso.sh'
       - 'scripts/stage-m166-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
@@ -39,6 +37,8 @@ on:
       - 'limine-h12-usb-hid.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'scripts/acceptance/check-qemu-usb-negative.sh'
+      - 'scripts/acceptance/check-qemu-usb-hid.sh'
   workflow_dispatch:
 
 permissions:
@@ -83,12 +83,11 @@ jobs:
         timeout-minutes: 8
         run: |
           set -eu
-          sh -n scripts/stage-h12-usb-hid-alpine.sh
+          sh -n scripts/acceptance/stage-qemu-usb-alpine.sh
           sh -n scripts/h12-guest-workload.sh
-          sh -n scripts/build-h12-usb-hid-iso.sh
-          sh -n scripts/check-h12-usb-hid-qemu.sh
-          sh -n scripts/check-h12-no-usb-kbd-qemu.sh
-          sh -n scripts/check-h12-no-xhci-qemu.sh
+          sh -n scripts/acceptance/build-qemu-usb-iso.sh
+          sh -n scripts/acceptance/check-qemu-usb-hid.sh
+          sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/run.sh
           python3 -m py_compile scripts/h12-qmp-evtest.py
           make hw-h12-host-check
@@ -102,13 +101,13 @@ jobs:
           sha256sum -c build/h12-qemu-only/h12-original-alpine-elfs.sha256
       - name: REAL QEMU USB HID physical KEY_A down/up through original signed Alpine evtest
         timeout-minutes: 9
-        run: sh scripts/check-h12-usb-hid-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-hid.sh h12
       - name: Negative QEMU xHCI without usb-kbd refuses evtest input
         timeout-minutes: 3
-        run: sh scripts/check-h12-no-usb-kbd-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h12 no-usb-kbd
       - name: Negative QEMU with NO xHCI refuses evtest input
         timeout-minutes: 3
-        run: sh scripts/check-h12-no-xhci-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h12 no-xhci
       - name: Reverify immutable original Alpine/evtest NVMe ext4 SHA after genuine positive and negatives
         if: success()
         run: |

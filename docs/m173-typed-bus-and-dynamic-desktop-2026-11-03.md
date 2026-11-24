@@ -52,7 +52,7 @@ management or a Wayland desktop.
 
 Host command: `sh scripts/check-m173-batch.sh`.
 
-Native target command: `sh scripts/probe-m173-batch.sh amd64`, `riscv64` or
+Native target command: `sh scripts/probe-native-desktop.sh m173 amd64`, `riscv64` or
 `arm64`. The gate reuses the M171 signed Alpine overlay and pinned upstream
 LVGL. QMP operates actual VirtIO input and reads the physical QEMU display:
 

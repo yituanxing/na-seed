@@ -65,31 +65,31 @@ jobs:
           esac
           case "$PROFILE" in
             m166)
-              for script in scripts/check-m166-input-port.sh scripts/probe-m166-batch.sh scripts/stage-m166-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-x86-busybox-parity.sh scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh; do
+              for script in scripts/check-m166-input-port.sh scripts/probe-native-desktop.sh scripts/stage-m166-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-x86-busybox-parity.sh scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m166-qmp-verify.py
               ;;
             m167)
-              for script in scripts/check-m167-desktop.sh scripts/probe-m167-batch.sh scripts/stage-m167-prebuilt.sh scripts/host-configure-alpine-fixtures.sh; do
+              for script in scripts/check-m167-desktop.sh scripts/probe-native-desktop.sh scripts/stage-m167-prebuilt.sh scripts/host-configure-alpine-fixtures.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m167-qmp-verify.py
               ;;
             m168)
-              for script in scripts/probe-m168-batch.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh; do
+              for script in scripts/probe-native-desktop.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m167-qmp-verify.py scripts/m168-qmp-verify.py
               ;;
             m170)
-              for script in scripts/probe-m168-batch.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-m170-batch.sh; do
+              for script in scripts/probe-native-desktop.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m167-qmp-verify.py scripts/m168-qmp-verify.py scripts/m170-qmp-verify.py
               ;;
             m171)
-              for script in scripts/probe-m168-batch.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-m170-batch.sh scripts/probe-m171-batch.sh scripts/stage-m171-lvgl.sh scripts/host-configure-m171-lvgl.sh; do
+              for script in scripts/probe-native-desktop.sh scripts/stage-m168-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/stage-m171-lvgl.sh scripts/host-configure-m171-lvgl.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m167-qmp-verify.py scripts/m168-qmp-verify.py scripts/m170-qmp-verify.py scripts/m171-qmp-verify.py
@@ -139,7 +139,7 @@ jobs:
           esac
       - name: Execute actual desktop and input native QEMU profile
         timeout-minutes: 58
-        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+        run: sh scripts/probe-native-desktop.sh "$PROFILE" "$PORT"
       - name: Preserve original signed identity, guest serial and physical display evidence
         if: always()
         uses: actions/upload-artifact@v4

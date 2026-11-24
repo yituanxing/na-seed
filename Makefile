@@ -427,8 +427,8 @@ hw-h12-kernel:
 
 hw-h12-iso: hw-h12-kernel
 	$(MAKE) OUT=build/h12-qemu-only build/h12-qemu-only/deps/limine-binary/BOOTX64.EFI
-	sh scripts/stage-h12-usb-hid-alpine.sh
-	sh scripts/build-h12-usb-hid-iso.sh
+	sh scripts/acceptance/stage-qemu-usb-alpine.sh h12
+	sh scripts/acceptance/build-qemu-usb-iso.sh h12
 
 # H13 QEMU USB Boot Mouse: original signed Alpine evtest reports actual
 # REL_X/Y/WHEEL and BTN_LEFT transitions after independent QMP injection.
@@ -441,8 +441,8 @@ hw-h13-kernel:
 
 hw-h13-iso: hw-h13-kernel
 	$(MAKE) OUT=build/h13-qemu-only build/h13-qemu-only/deps/limine-binary/BOOTX64.EFI
-	sh scripts/stage-h13-usb-mouse-alpine.sh
-	sh scripts/build-h13-usb-mouse-iso.sh
+	sh scripts/acceptance/stage-qemu-usb-alpine.sh h13
+	sh scripts/acceptance/build-qemu-usb-iso.sh h13
 
 # H14: real single-controller/two-root-port xHCI HID and original evtest.
 hw-h14-host-check: hw-h13-host-check
@@ -453,8 +453,8 @@ hw-h14-kernel:
 
 hw-h14-iso: hw-h14-kernel
 	$(MAKE) OUT=build/h14-qemu-only build/h14-qemu-only/deps/limine-binary/BOOTX64.EFI
-	sh scripts/stage-h14-dual-hid-alpine.sh
-	sh scripts/build-h14-dual-hid-iso.sh
+	sh scripts/acceptance/stage-qemu-usb-alpine.sh h14
+	sh scripts/acceptance/build-qemu-usb-iso.sh h14
 
 # H15: USB Bulk-IN/Bulk-OUT FT232BM, original signed Alpine BusyBox.
 hw-h15-host-check: hw-h14-host-check
@@ -465,8 +465,8 @@ hw-h15-kernel:
 
 hw-h15-iso: hw-h15-kernel
 	$(MAKE) OUT=build/h15-qemu-only build/h15-qemu-only/deps/limine-binary/BOOTX64.EFI
-	sh scripts/stage-h15-ftdi-alpine.sh
-	sh scripts/build-h15-ftdi-iso.sh
+	sh scripts/acceptance/stage-qemu-usb-alpine.sh h15
+	sh scripts/acceptance/build-qemu-usb-iso.sh h15
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)

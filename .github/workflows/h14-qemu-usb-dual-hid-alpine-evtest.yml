@@ -31,8 +31,6 @@ on:
       - 'scripts/check-h14-*.sh'
       - 'tests/h14-*'
       - 'tests/h14-qemu-hid-shared-host.c'
-      - 'scripts/stage-h14-dual-hid-alpine.sh'
-      - 'scripts/build-h14-dual-hid-iso.sh'
       - 'scripts/stage-m166-prebuilt.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
@@ -40,6 +38,8 @@ on:
       - 'limine-h14-dual-hid.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'scripts/acceptance/check-qemu-usb-negative.sh'
+      - 'scripts/acceptance/check-qemu-usb-hid.sh'
   workflow_dispatch:
 
 permissions:
@@ -92,13 +92,11 @@ jobs:
         timeout-minutes: 8
         run: |
           set -eu
-          sh -n scripts/stage-h14-dual-hid-alpine.sh
+          sh -n scripts/acceptance/stage-qemu-usb-alpine.sh
           sh -n scripts/h14-guest-workload.sh
-          sh -n scripts/build-h14-dual-hid-iso.sh
-          sh -n scripts/check-h14-dual-hid-qemu.sh
-          sh -n scripts/check-h14-no-usb-kbd-qemu.sh
-          sh -n scripts/check-h14-no-usb-mouse-qemu.sh
-          sh -n scripts/check-h14-no-xhci-qemu.sh
+          sh -n scripts/acceptance/build-qemu-usb-iso.sh
+          sh -n scripts/acceptance/check-qemu-usb-hid.sh
+          sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/check-h14-dual-hid-host.sh
           sh -n scripts/check-h14-xhci-host.sh
           sh -n scripts/run.sh
@@ -114,16 +112,16 @@ jobs:
           sha256sum -c build/h14-qemu-only/h14-original-alpine-elfs.sha256
       - name: REAL one xHCI concurrent keyboard+mouse, KEY_A then REL_X/Y BTN_LEFT through original signed Alpine evtest plus BusyBox/Lua/jq/SQLite
         timeout-minutes: 9
-        run: sh scripts/check-h14-dual-hid-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-hid.sh h14
       - name: Negative QEMU xHCI without usb-kbd refuses signed original evtest input
         timeout-minutes: 3
-        run: sh scripts/check-h14-no-usb-kbd-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h14 no-usb-kbd
       - name: Negative QEMU xHCI without usb-mouse refuses signed original evtest input
         timeout-minutes: 3
-        run: sh scripts/check-h14-no-usb-mouse-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h14 no-usb-mouse
       - name: Negative QEMU with NO xHCI refuses evtest input
         timeout-minutes: 3
-        run: sh scripts/check-h14-no-xhci-qemu.sh
+        run: sh scripts/acceptance/check-qemu-usb-negative.sh h14 no-xhci
       - name: Reverify immutable original Alpine/evtest NVMe ext4 SHA after genuine positive and negatives
         if: success()
         run: |
