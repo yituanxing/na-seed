@@ -1,6 +1,5 @@
 #include "x86_h15_ftdi.h"
-#include "x86_h11_bar.h"
-#include "x86_qemu_hw_contract.h"
+#include "x86_qemu_xhci.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/usb/xhci.h"
 #include "../drivers/serial.h"
@@ -16,65 +15,24 @@
 #define H15_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 #define H15_RX_CAP 1024U
 
-static struct nas_x86_qemu_mmio h15_mmio={H15_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
-static struct nas_pci_mmio_owner h15_owner;
-static struct nas_xhci_io h15_io;
+static struct nas_x86_qemu_xhci h15_hw={.mmio={H15_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES}};
 static struct nas_xhci_ro_session h15_xhci;
 static struct {
-    bool attempted,attached,class_published;
-    uint8_t bus,slot,function;
-    uint16_t original_command;
-    struct nas_pci_mmio_claim claim;
+    bool attached,class_published;
     uint8_t rx[H15_RX_CAP];
     unsigned rx_head,rx_count;
     uint64_t bulk_in_bytes,bulk_out_bytes;
 } h15;
 
-static int h15_release_qualified_bar(void) {
-    int rc=nas_pci_mmio_quiesced_unmap_release(
-        &h15_owner,&h15.claim,H15_XHCI_VIRT_BASE,true,
-        nas_arch_x86_unmap_device_pages);
-    if(!rc)nas_x86_qemu_pci_command_write(h15.bus,h15.slot,h15.function,
-                                h15.original_command);
-    return rc;
-}
-
 int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
                           const struct nas_pci_resources *resources) {
-    if(!fn || !resources)return -EINVAL;
-    if(h15.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
-        nas_print("[H15 FTDI FAIL] unqualified QEMU PCI xHCI\n");
-        return -ENODEV;
-    }
-    h15.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
-    if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
-        nas_print("[H15 FTDI FAIL] xHCI MEM64 BAR0 outside Q35 whitelist\n");
-        return -ENODEV;
-    }
-    struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_map_bar(&h15_owner,resources,bar,
-                                H15_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
-                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
-                                &claim,&flags);
+    int rc=nas_x86_qemu_xhci_prepare(&h15_hw,fn,resources,&flags,
+        "[H15 FTDI FAIL] unqualified QEMU PCI xHCI\n",
+        "[H15 FTDI FAIL] xHCI MEM64 BAR0 outside Q35 whitelist\n",
+        "[H15 FTDI BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64="," 16KiB UC/NX\n");
     if(rc)return rc;
-    h15.claim=claim;
-    h15.bus=fn->bus;
-    h15.slot=fn->slot;
-    h15.function=fn->function;
-    h15.original_command=resources->command;
-    nas_print("[H15 FTDI BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64=");
-    nas_hex(bar->base);
-    nas_print(" 16KiB UC/NX\n");
-    if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                               (uint16_t)(resources->command|6U));
-    h15_io=(struct nas_xhci_io){
-        .context=&h15_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
-    };
-    rc=nas_xhci_ftdi_open(&h15_io,&nas_dma_qemu_coherent,&h15_xhci);
+    rc=nas_xhci_ftdi_open(&h15_hw.io,&nas_dma_qemu_coherent,&h15_xhci);
     if(rc) {
         nas_print("[H15 FTDI FAIL DIAG] stage=");
         nas_dec((unsigned)h15_xhci.debug_stage);
@@ -83,7 +41,7 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
         nas_print("\n");
         if(nas_xhci_ftdi_close(&h15_xhci)) {
             nas_print("[H15 FTDI PINNED] xHC halt unproven, keep DMA/BAR\n");
-        } else if(h15_release_qualified_bar()) {
+        } else if(nas_x86_qemu_xhci_release(&h15_hw)) {
             nas_print("[H15 FTDI PINNED] BAR unmap/release failed\n");
         }
         nas_x86_qemu_restore_if(flags);
@@ -155,7 +113,7 @@ int nas_x86_h15_ftdi_shutdown(void) {
     if(h15.class_published)return -EBUSY;
     int rc=nas_xhci_ftdi_close(&h15_xhci);
     if(rc)return rc; /* Unsafe stop: keep MMIO BAR pinned. */
-    rc=h15_release_qualified_bar();
+    rc=nas_x86_qemu_xhci_release(&h15_hw);
     if(rc)return rc;
     h15.attached=false;
     nas_print("[H15 FTDI QUIESCED RELEASED] ttyUSB0 retired, xHC HCHalted, 7 DMA pages freed, 4 BAR0 UC pages unmapped; IN=");

@@ -1,6 +1,5 @@
 #include "x86_h11_usb.h"
-#include "x86_h11_bar.h"
-#include "x86_qemu_hw_contract.h"
+#include "x86_qemu_xhci.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/usb/xhci.h"
 #include "../drivers/usb/msc.h"
@@ -20,17 +19,12 @@
  */
 #define H11_XHCI_VIRT_BASE UINT64_C(0xfffffe8001600000)
 
-static struct nas_x86_qemu_mmio h11_mmio={H11_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
-static struct nas_pci_mmio_owner h11_owner;
-static struct nas_xhci_io h11_io;
+static struct nas_x86_qemu_xhci h11_hw={.mmio={H11_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES}};
 static struct nas_xhci_ro_session h11_xhci;
 static struct nas_usb_msc_ro_session h11_msc;
 static struct nas_port_block h11_block;
 static struct {
-    bool attempted,attached;
-    uint8_t bus,slot,function;
-    uint16_t command;
-    struct nas_pci_mmio_claim claim;
+    bool attached;
 } h11_persistent;
 
 static int64_t h11_block_read(void *backend,uint64_t lba,uint32_t sectors,
@@ -43,40 +37,13 @@ static const struct nas_port_block_ops h11_block_ops={.read=h11_block_read};
 
 int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
                          const struct nas_pci_resources *resources) {
-    if(!fn || !resources)return -EINVAL;
-    if(h11_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
-        nas_print("[H11 XHCI FAIL] unqualified QEMU xHCI function\n");
-        return -ENODEV;
-    }
-    h11_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
-    if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
-        nas_print("[H11 XHCI FAIL] unqualified 64-bit BAR0 (fixed 16KiB QEMU aperture)\n");
-        return -ENODEV;
-    }
-    struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_map_bar(&h11_owner,resources,bar,
-                                H11_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
-                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
-                                &claim,&flags);
+    int rc=nas_x86_qemu_xhci_prepare(&h11_hw,fn,resources,&flags,
+        "[H11 XHCI FAIL] unqualified QEMU xHCI function\n",
+        "[H11 XHCI FAIL] unqualified 64-bit BAR0 (fixed 16KiB QEMU aperture)\n",
+        "[H11 XHCI BAR QUALIFIED] QEMU 00:04.0 1b36:000d BAR0 MEM64="," 16KiB UC/NX no IRQ\n");
     if(rc)return rc;
-    h11_persistent.claim=claim;
-    h11_persistent.bus=fn->bus;
-    h11_persistent.slot=fn->slot;
-    h11_persistent.function=fn->function;
-    h11_persistent.command=resources->command;
-    nas_print("[H11 XHCI BAR QUALIFIED] QEMU 00:04.0 1b36:000d BAR0 MEM64=");
-    nas_hex(bar->base);
-    nas_print(" 16KiB UC/NX no IRQ\n");
-    if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                              (uint16_t)(resources->command|UINT16_C(6)));
-    h11_io=(struct nas_xhci_io){
-        .context=&h11_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
-    };
-    rc=nas_xhci_ro_open(&h11_io,&nas_dma_qemu_coherent,&h11_xhci);
+    rc=nas_xhci_ro_open(&h11_hw.io,&nas_dma_qemu_coherent,&h11_xhci);
     if(!rc)rc=nas_usb_msc_ro_open(&h11_xhci,&h11_msc);
     if(!rc && (h11_msc.sector_bytes!=512U || h11_msc.sectors<16384U))
         rc=-EOPNOTSUPP;
@@ -103,11 +70,7 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
         if(nas_xhci_ro_close(&h11_xhci)) {
             nas_print("[H11 XHCI PINNED] controller stop unproven, retain DMA and BAR\n");
         } else {
-            if(!nas_pci_mmio_quiesced_unmap_release(
-                &h11_owner,&h11_persistent.claim,H11_XHCI_VIRT_BASE,true,
-                nas_arch_x86_unmap_device_pages))
-                nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                                       resources->command);
+            (void)nas_x86_qemu_xhci_release(&h11_hw);
         }
         nas_x86_qemu_restore_if(flags);
         nas_print("[H11 USB FAIL] required QEMU USB Mass Storage unavailable\n");
@@ -129,12 +92,8 @@ int nas_x86_h11_usb_shutdown(void) {
     if(rc)return rc;
     rc=nas_xhci_ro_close(&h11_xhci);
     if(rc)return rc; /* Crucial: no BAR release if controller still DMA. */
-    rc=nas_pci_mmio_quiesced_unmap_release(
-        &h11_owner,&h11_persistent.claim,H11_XHCI_VIRT_BASE,true,
-        nas_arch_x86_unmap_device_pages);
+    rc=nas_x86_qemu_xhci_release(&h11_hw);
     if(rc)return rc;
-    nas_x86_qemu_pci_command_write(h11_persistent.bus,h11_persistent.slot,
-                           h11_persistent.function,h11_persistent.command);
     h11_persistent.attached=false;
     nas_print("[H11 USB QUIESCED RELEASED] USB SCSI disk detached, xHC halted, 7 DMA pages freed, 4 BAR0 UC pages unmapped\n");
     return 0;

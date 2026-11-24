@@ -1,6 +1,5 @@
 #include "x86_h13_mouse.h"
-#include "x86_h11_bar.h"
-#include "x86_qemu_hw_contract.h"
+#include "x86_qemu_xhci.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/input/core.h"
 #include "../drivers/usb/hid_boot_mouse.h"
@@ -14,56 +13,24 @@
  * The original signed Alpine evtest binary is loaded from immutable NVMe. */
 #define H13_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 
-static struct nas_x86_qemu_mmio h13_mmio={H13_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
-static struct nas_pci_mmio_owner h13_owner;
-static struct nas_xhci_io h13_io;
+static struct nas_x86_qemu_xhci h13_hw={.mmio={H13_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES}};
 static struct nas_xhci_ro_session h13_xhci;
 static struct nas_usb_hid_boot_mouse h13_report_state;
 static struct nas_input_device h13_input;
 static struct {
-    bool attempted,attached,input_published;
-    uint8_t bus,slot,function;
-    uint16_t original_command;
-    struct nas_pci_mmio_claim claim;
+    bool attached,input_published;
     uint64_t reports;
 } h13_persistent;
 
 int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
                            const struct nas_pci_resources *resources) {
-    if(!fn || !resources)return -EINVAL;
-    if(h13_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
-        nas_print("[H13 MOUSE FAIL] unqualified QEMU PCI xHCI\n");
-        return -ENODEV;
-    }
-    h13_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
-    if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
-        nas_print("[H13 MOUSE FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n");
-        return -ENODEV;
-    }
-    struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_map_bar(&h13_owner,resources,bar,
-                                H13_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
-                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
-                                &claim,&flags);
+    int rc=nas_x86_qemu_xhci_prepare(&h13_hw,fn,resources,&flags,
+        "[H13 MOUSE FAIL] unqualified QEMU PCI xHCI\n",
+        "[H13 MOUSE FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n",
+        "[H13 MOUSE BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64="," 16KiB UC/NX\n");
     if(rc)return rc;
-    h13_persistent.claim=claim;
-    h13_persistent.bus=fn->bus;
-    h13_persistent.slot=fn->slot;
-    h13_persistent.function=fn->function;
-    h13_persistent.original_command=resources->command;
-    nas_print("[H13 MOUSE BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64=");
-    nas_hex(bar->base);
-    nas_print(" 16KiB UC/NX\n");
-    if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                              (uint16_t)(resources->command|6U));
-    h13_io=(struct nas_xhci_io){
-        .context=&h13_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
-    };
-    rc=nas_xhci_hid_mouse_open(&h13_io,&nas_dma_qemu_coherent,&h13_xhci);
+    rc=nas_xhci_hid_mouse_open(&h13_hw.io,&nas_dma_qemu_coherent,&h13_xhci);
     if(rc) {
         nas_print("[H13 MOUSE FAIL DIAG] stage=");
         nas_dec((unsigned)h13_xhci.debug_stage);
@@ -72,12 +39,8 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
         nas_print("\n");
         if(nas_xhci_hid_mouse_close(&h13_xhci)) {
             nas_print("[H13 MOUSE PINNED] xHC halt unproven: DMA/BAR retained\n");
-        } else if(!nas_pci_mmio_quiesced_unmap_release(
-                       &h13_owner,&h13_persistent.claim,
-                       H13_XHCI_VIRT_BASE,true,
-                       nas_arch_x86_unmap_device_pages)) {
-            nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                                   resources->command);
+        } else {
+            (void)nas_x86_qemu_xhci_release(&h13_hw);
         }
         nas_x86_qemu_restore_if(flags);
         nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable\n");
@@ -151,13 +114,8 @@ int nas_x86_h13_mouse_shutdown(void) {
     }
     int rc=nas_xhci_hid_mouse_close(&h13_xhci);
     if(rc)return rc;
-    rc=nas_pci_mmio_quiesced_unmap_release(
-        &h13_owner,&h13_persistent.claim,H13_XHCI_VIRT_BASE,true,
-        nas_arch_x86_unmap_device_pages);
+    rc=nas_x86_qemu_xhci_release(&h13_hw);
     if(rc)return rc;
-    nas_x86_qemu_pci_command_write(h13_persistent.bus,h13_persistent.slot,
-                           h13_persistent.function,
-                           h13_persistent.original_command);
     h13_persistent.attached=false;
     nas_print("[H13 MOUSE QUIESCED RELEASED] event0 retired, xHC halted, seven DMA pages freed, 4 BAR0 UC pages unmapped\n");
     return 0;

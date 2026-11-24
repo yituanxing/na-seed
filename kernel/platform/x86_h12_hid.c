@@ -1,6 +1,5 @@
 #include "x86_h12_hid.h"
-#include "x86_h11_bar.h"
-#include "x86_qemu_hw_contract.h"
+#include "x86_qemu_xhci.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/input/core.h"
 #include "../drivers/usb/hid_boot.h"
@@ -16,56 +15,24 @@
  * The H8 original signed Alpine root continues over NVMe. */
 #define H12_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 
-static struct nas_x86_qemu_mmio h12_mmio={H12_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
-static struct nas_pci_mmio_owner h12_owner;
-static struct nas_xhci_io h12_io;
+static struct nas_x86_qemu_xhci h12_hw={.mmio={H12_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES}};
 static struct nas_xhci_ro_session h12_xhci;
 static struct nas_usb_hid_boot_keyboard h12_report_state;
 static struct nas_input_device h12_input;
 static struct {
-    bool attempted,attached,input_published;
-    uint8_t bus,slot,function;
-    uint16_t original_command;
-    struct nas_pci_mmio_claim claim;
+    bool attached,input_published;
     uint64_t reports;
 } h12_persistent;
 
 int nas_x86_h12_hid_bind(const struct nas_pci_function_info *fn,
                          const struct nas_pci_resources *resources) {
-    if(!fn || !resources)return -EINVAL;
-    if(h12_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
-        nas_print("[H12 HID FAIL] unqualified QEMU PCI xHCI\n");
-        return -ENODEV;
-    }
-    h12_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
-    if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
-        nas_print("[H12 HID FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n");
-        return -ENODEV;
-    }
-    struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_map_bar(&h12_owner,resources,bar,
-                                H12_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
-                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
-                                &claim,&flags);
+    int rc=nas_x86_qemu_xhci_prepare(&h12_hw,fn,resources,&flags,
+        "[H12 HID FAIL] unqualified QEMU PCI xHCI\n",
+        "[H12 HID FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n",
+        "[H12 HID BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64="," 16KiB UC/NX\n");
     if(rc)return rc;
-    h12_persistent.claim=claim;
-    h12_persistent.bus=fn->bus;
-    h12_persistent.slot=fn->slot;
-    h12_persistent.function=fn->function;
-    h12_persistent.original_command=resources->command;
-    nas_print("[H12 HID BAR QUALIFIED] QEMU 00:04.0 1b36:000d MEM64=");
-    nas_hex(bar->base);
-    nas_print(" 16KiB UC/NX\n");
-    if((resources->command&UINT16_C(6))!=UINT16_C(6))
-        nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                              (uint16_t)(resources->command|6U));
-    h12_io=(struct nas_xhci_io){
-        .context=&h12_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
-    };
-    rc=nas_xhci_hid_open(&h12_io,&nas_dma_qemu_coherent,&h12_xhci);
+    rc=nas_xhci_hid_open(&h12_hw.io,&nas_dma_qemu_coherent,&h12_xhci);
     if(rc) {
         /* Do not release the BAR if a failed HCHalt still permits DMA.
          * Input publication never occurs on an incomplete USB open. */
@@ -76,12 +43,8 @@ int nas_x86_h12_hid_bind(const struct nas_pci_function_info *fn,
         nas_print("\n");
         if(nas_xhci_hid_close(&h12_xhci)) {
             nas_print("[H12 HID PINNED] xHC halt unproven: DMA/BAR retained\n");
-        } else if(!nas_pci_mmio_quiesced_unmap_release(
-                       &h12_owner,&h12_persistent.claim,
-                       H12_XHCI_VIRT_BASE,true,
-                       nas_arch_x86_unmap_device_pages)) {
-            nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
-                                   resources->command);
+        } else {
+            (void)nas_x86_qemu_xhci_release(&h12_hw);
         }
         nas_x86_qemu_restore_if(flags);
         nas_print("[H12 HID FAIL] required QEMU USB Boot Keyboard unavailable\n");
@@ -163,13 +126,8 @@ int nas_x86_h12_hid_shutdown(void) {
     }
     int rc=nas_xhci_hid_close(&h12_xhci);
     if(rc)return rc; /* Keep 7 DMA leases and BAR if xHC won't halt. */
-    rc=nas_pci_mmio_quiesced_unmap_release(
-        &h12_owner,&h12_persistent.claim,H12_XHCI_VIRT_BASE,true,
-        nas_arch_x86_unmap_device_pages);
+    rc=nas_x86_qemu_xhci_release(&h12_hw);
     if(rc)return rc;
-    nas_x86_qemu_pci_command_write(h12_persistent.bus,h12_persistent.slot,
-                           h12_persistent.function,
-                           h12_persistent.original_command);
     h12_persistent.attached=false;
     nas_print("[H12 HID QUIESCED RELEASED] event0 retired, xHC halted, seven DMA pages freed, 4 BAR0 UC pages unmapped\n");
     return 0;
