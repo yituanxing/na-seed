@@ -74,10 +74,13 @@ def validate_manifests(profile: str, packages: Path, elfs: Path, copies: Path) -
         source, destination = fields
         guest_path(source, profile)
         guest_path(destination, profile, "tests/")
-        if not (source.startswith("tests/") or source.startswith("build/")):
-            fail(f"{profile}: copy source must be a test or generated artifact: {source}")
-        if source.startswith("tests/"):
+        if source == elfs.relative_to(ROOT).as_posix():
+            # Stage the canonical inventory without committing a second guest copy.
+            within_repo(source, "scripts", profile)
+        elif source.startswith("tests/"):
             within_repo(source, "tests", profile)
+        elif not source.startswith("build/"):
+            fail(f"{profile}: copy source must be a test, canonical ELF manifest or generated artifact: {source}")
         if destination in destinations:
             fail(f"{profile}: duplicate guest copy destination: {destination}")
         destinations.add(destination)

@@ -32,7 +32,7 @@ jobs:
           test "$(awk '$1 !~ /^#/ && NF {print $0}' scripts/m152-original-elfs.txt | sort -u | wc -l)" -eq 35
           test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m152-network-cases.tsv)" -eq 1
           test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m152-rootfs-copies.tsv)" -eq 2
-          test "$(grep -v '^#' scripts/m152-original-elfs.txt)" = "$(grep -v '^#' tests/m152-original-elfs.txt)"
+          grep -Fxq "$(printf 'scripts/m152-original-elfs.txt\ttests/m152-original-elfs.txt')" scripts/m152-rootfs-copies.tsv
           grep -q '^m152-batch[[:space:]]' scripts/prebuilt-profile-catalog.tsv
           for elf in $(grep -v '^#' scripts/m152-original-elfs.txt); do
             for old in scripts/m[0-9]*-original-elfs.txt; do

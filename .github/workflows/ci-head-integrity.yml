@@ -4,6 +4,11 @@ on:
     paths:
       - '.github/workflows/**'
       - 'scripts/check-ci-checkout-head.py'
+      - 'scripts/check-three-isa-core.py'
+      - 'scripts/check-prebuilt-profile-catalog.py'
+      - 'scripts/prebuilt-profile-catalog.tsv'
+      - 'scripts/*-rootfs-copies.tsv'
+      - 'rootfs/alpine/packages-*.txt'
       - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
       - 'scripts/check-ci-alpine-deps.py'
       - 'kernel/fs/**'
@@ -40,6 +45,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check every PR job uses submitted source, never synthetic merge
         run: python3 scripts/check-ci-checkout-head.py
+
+      - name: Validate canonical signed APK profile manifests
+        run: python3 scripts/check-prebuilt-profile-catalog.py
 
       - name: Check shared Alpine dependency installer without apt or network
         run: python3 scripts/check-ci-alpine-deps.py

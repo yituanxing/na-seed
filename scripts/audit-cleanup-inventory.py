@@ -147,4 +147,38 @@ for path in paths:
             raise SystemExit(f"retired interface still referenced: {path}: {name}")
 print("[RETIRED KERNEL API PASS]",len(retired))
 
+
+# Whole-tree path/basename reference index, including docs and build metadata.
+# Dynamic shell paths, glob-selected fixtures, includes and external callers
+# require independent review even if both literal reference columns are empty.
+by_name = defaultdict(list)
+for path in paths:
+    by_name[path.name].append(path)
+path_set = {path.as_posix(): path for path in paths}
+references = defaultdict(set)
+basename_refs = defaultdict(set)
+for owner in paths:
+    file = ROOT / owner
+    if not file.is_file() or file.is_symlink():
+        continue
+    try:
+        content = file.read_text()
+    except UnicodeDecodeError:
+        continue
+    for token in set(re.findall(r"[A-Za-z0-9_./-]+", content)):
+        token = token.removeprefix("./").removeprefix("/")
+        target = path_set.get(token)
+        if target is not None and target != owner:
+            references[target].add(owner.as_posix())
+        for target in by_name.get(token, ()):
+            if target != owner:
+                basename_refs[target].add(owner.as_posix())
+report = ROOT / "build" / "cleanup-references.tsv"
+report.parent.mkdir(parents=True, exist_ok=True)
+with report.open("w") as out:
+    out.write("path\tliteral_path_owners\tliteral_basename_owners\n")
+    for path in sorted(paths):
+        out.write(f"{path}\t{','.join(sorted(references[path]))}\t{','.join(sorted(basename_refs[path]))}\n")
+print("REFERENCE INVENTORY", len(paths), "paths; literal references only:", report.relative_to(ROOT))
+
 print("[CLEANUP INVENTORY PASS] read-only candidate scan, not proof of removable code")

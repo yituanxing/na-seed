@@ -1,0 +1,132 @@
+name: NaSeed native Alpine signed software batches
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Original signed ELF acceptance batch
+        type: choice
+        required: true
+        options:
+          - m109
+          - m110
+          - m111
+          - m112
+          - m113
+          - m114
+          - m115
+          - m116
+          - m117
+          - m118
+          - m119
+          - m120
+          - m121
+          - m122
+          - m123
+          - m124
+          - m125
+          - m126
+          - m127
+          - m128
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  signed-original-software:
+    name: ${{ inputs.profile }} original signed Alpine ELF / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.profile == 'm109' && 50 || 60 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ inputs.profile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate signed catalog, target and profile-specific host contracts
+        id: profile
+        timeout-minutes: 3
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m109|m110|m111|m112|m113|m114|m115|m116|m117|m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128) ;;
+            *) exit 2 ;;
+          esac
+          for script in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-$PROFILE-prebuilt.sh scripts/probe-$PROFILE-batch.sh tests/$PROFILE-batch-run.sh; do
+            sh -n "$script"
+          done
+          case "$PROFILE" in
+            m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128)
+              sh -n "scripts/host-configure-$PROFILE-batch.sh" ;;
+          esac
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-native-qemu-target.py
+          python3 scripts/check-three-isa-core.py
+          case "$PROFILE" in
+            m111)
+              sh scripts/check-m111-getrusage.sh
+              sh scripts/check-a005-cross-mm.sh ;;
+            m124)
+              sh scripts/check-m86-txn.sh
+              sh scripts/check-vfs-provider.sh ;;
+          esac
+          case "$PROFILE" in
+            m120) suffix=libtiff-batch ;;
+            m121) suffix=pdf-batch ;;
+            m122) suffix=netpbm-batch ;;
+            m123|m124|m128) suffix=filesystem-batch ;;
+            m125) suffix=netpbm-image-batch ;;
+            m126) suffix=groff-text-batch ;;
+            m127) suffix=audio-batch ;;
+            *) suffix=original-elf-batch ;;
+          esac
+          echo "artifact=$PROFILE-signed-$suffix" >> "$GITHUB_OUTPUT"
+      - name: Install original signed APK staging and native QEMU tools
+        timeout-minutes: 12
+        env:
+          PORT: ${{ matrix.port }}
+        run: |
+          set -eu
+          set -- "$PORT"
+          case "$PROFILE" in
+            m119) set -- "$@" msgfmt:gettext ;;
+            m123) set -- "$@" mke2fs:e2fsprogs ;;
+            m127) set -- "$@" ffmpeg:ffmpeg ;;
+          esac
+          sh scripts/ci-install-signed-alpine-qemu-deps.sh "$@"
+      - name: Execute original ELF functional batch in one native QEMU guest
+        timeout-minutes: ${{ inputs.profile == 'm109' && 35 || 45 }}
+        env:
+          PORT: ${{ matrix.port }}
+        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+      - name: Preserve signed package and native guest PASS evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact }}-pass-${{ matrix.port }}
+          path: |
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/apk-install.log
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/${{ inputs.profile }}-batch.clean.log
+            build/port-riscv64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+            build/port-aarch64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+          if-no-files-found: error
+      - name: Preserve failed native guest and signed rootfs evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact || inputs.profile }}-fail-${{ matrix.port }}
+          path: |
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/apk-install.log
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/rootfs.cpio
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/${{ inputs.profile }}-batch.clean.log
+            build/port-riscv64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+            build/port-aarch64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+          if-no-files-found: ignore

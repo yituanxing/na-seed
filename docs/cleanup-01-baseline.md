@@ -31,3 +31,14 @@ New runtime results are not established by this document.
 ## Second CI cleanup batch
 
 M109–M141 now all share the same signed-Alpine native QEMU host dependency setup. M119, M123 and M127 retain their additional host dependencies via explicit command:package arguments (gettext, e2fsprogs and ffmpeg respectively). Comparison normalized shell whitespace and line continuations, checked the common dependency set and compared the remaining shell body before replacing each setup step. Later workflow families with different setup logic were left unchanged. Test triggers, test commands, matrices, evidence and timeout settings remain intact. No new runtime acceptance is implied.
+
+## Manual native workflow consolidation
+
+M72–M76 now use `debugger-native.yml` with the original profile selection,
+three native ISAs, ptrace host gates and failure evidence. M109–M128 now use
+`alpine-signed-batches.yml` with profile-specific prerequisites, original
+timeouts and distinct signed ELF/guest acceptance probes. Historical manual
+entry names are retired, not the underlying tests. The normal push-triggered
+userspace regression remains unchanged. The M152 ELF inventory has one source
+file, with the same guest copy destination and exact admission checks.
+No historical native result is promoted to the new head.
