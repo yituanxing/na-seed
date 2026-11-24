@@ -130,11 +130,15 @@ for names, count, mode in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=(\d+); mod
     for name in names.split("|"):
         assert name not in profiles
         profiles[name] = (int(count), mode)
-assert profiles == {f"m{n}": (21 if n == 110 else 15, "count" if n <= 115 else "unique")
-                    for n in range(109, 119)}
+assert profiles == {f"m{n}": (21 if n == 110 else 15, "count" if n <= 115 else "unique" if n <= 123 else "alias-path")
+                    for n in range(109, 129)}
 for profile, (count, mode) in profiles.items():
     entries = [x for x in manifests[profile + "-original-elfs.txt"] if x and not x.startswith("#")]
     assert len(entries) == count, (profile, count, len(entries))
+    if int(profile[1:]) >= 121:
+        name = profile + "-original-elfs.txt"
+        conflict = any(x in rows for x in entries for k, rows in manifests.items() if k != name)
+        run(HISTORY, profile.upper(), "scripts/" + name, cwd=ROOT, status=int(conflict))
 
 # Host-only synthetic overlay; the production shared stage and hash helpers run.
 with tempfile.TemporaryDirectory() as d:
@@ -148,24 +152,58 @@ with tempfile.TemporaryDirectory() as d:
         work = cwd / "build/external" / (profile + "-batch") / "amd64"
         root = work / "rootfs"
         (root / "lib/apk/db").mkdir(parents=True)
-        (root / "lib/apk/db/installed").write_text("P:fixture\n")
+        packages = {
+            "m124": "util-linux-misc", "m125": "netpbm", "m126": "groff",
+            "m127": "wavpack vorbis-tools speex-tools flac lame mpg123",
+            "m128": "exfatprogs squashfs-tools squashfs-tools-ng blkid wipefs",
+        }.get(profile, "fixture").split()
+        installed = root / "lib/apk/db/installed"
+        installed.write_text("".join(f"P:{p}\n" for p in packages))
         (work / "rootfs.cpio").write_bytes(b"host fixture")
         rows = [f"usr/bin/{profile}-{i}" for i in range(count)]
         (root / "usr/bin").mkdir(parents=True)
         for row in rows:
             (root / row).write_bytes(row.encode())
         (cwd / "scripts" / (profile + "-original-elfs.txt")).write_text("\n".join(rows) + "\n")
-        fixtures = {"m118": "m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so"}.get(profile, "").split()
+        fixtures = {
+            "m118": "m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so",
+            "m119": "m119-catalog.po m119-batch-run.sh m119-catalog.mo",
+            "m120": "m120-color.ppm m120-inverted.ppm m120-gray.pgm m120-gray.raw",
+            "m121": "m121-original.pdf m121-invalid.pdf m121-attachment.txt",
+            "m122": " ".join("m122-" + x for x in "original.ppm red.ppm blue.ppm black.pbm white.pgm flipped.ppm cropped.ppm inverted.ppm red-channel.pgm red8.ppm red31.ppm red-blue.ppm original.png invalid.ppm".split()),
+            "m123": "m123-ext2.img m123-empty-ext.img m123-empty-fat.img",
+            "m124": "m124-empty-minix.img m124-empty-swap.img m124-cramfs-source/hello.txt m124-look-words.txt",
+        }.get(profile, "").split()
         for fixture in fixtures:
             p = root / "tests" / fixture
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"fixture")
+        if profile == "m126":
+            for resource in ("font", "tmac"):
+                p = root / "usr/share/groff/1.23.0" / resource / "fixture"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"fixture")
         run(shared, "amd64", profile, cwd=cwd)
         hashes = work / (profile + "-original-signed-elfs.sha256")
         assert len(hashes.read_text().splitlines()) == count
         if fixtures:
-            (root / "tests" / fixtures[0]).unlink()
+            p = root / "tests" / fixtures[0]
+            p.unlink()
             run(shared, "amd64", profile, cwd=cwd, status=1)
+            p.write_bytes(b"fixture")
+        if profile == "m126":
+            (root / "usr/share/groff/1.23.0/font/fixture").unlink()
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            (root / "usr/share/groff/1.23.0/font/fixture").write_bytes(b"fixture")
+        if int(profile[1:]) >= 124:
+            installed.write_text("P:wrong-package\n")
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            installed.write_text("".join(f"P:{p}\n" for p in packages))
+        if int(profile[1:]) >= 121:
+            collision = cwd / "scripts/m999-original-elfs.txt"
+            collision.write_text(rows[0] + "\n")
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            collision.unlink()
     run(shared, "amd64", "m999", cwd=cwd, status=2)
     run(shared, "unknown", "m109", cwd=cwd, status=2)
 migrated += len(profiles)

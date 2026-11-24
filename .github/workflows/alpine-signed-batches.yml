@@ -87,7 +87,7 @@ jobs:
           esac
           echo "artifact=$PROFILE-signed-$suffix" >> "$GITHUB_OUTPUT"
           case "$PROFILE" in
-            m109|m11[0-8]) stage=scripts/stage-alpine-signed-batch.sh ;;
+            m109|m11[0-9]|m12[0-8]) stage=scripts/stage-alpine-signed-batch.sh ;;
             *) stage="scripts/stage-$PROFILE-prebuilt.sh" ;;
           esac
           for script in scripts/stage-alpine-prebuilt-overlay.sh "$stage" scripts/probe-$PROFILE-batch.sh tests/$PROFILE-batch-run.sh; do
