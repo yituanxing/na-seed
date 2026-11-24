@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the actual installer with isolated firmware, tools and apt logs."""
 from pathlib import Path
-import os
 import subprocess
 import tempfile
 
@@ -18,7 +17,7 @@ ARM_FALLBACK = "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
 IPXE = "/usr/lib/ipxe/qemu/efi-virtio.rom"
 
 def check(port, *, present=(), absent=(), firmware=None, extra=(),
-          fallback=False, expected=(), expect_failure=False):
+          fallback=False, cross=None, expected=(), expect_failure=False):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bins = root / "bin"
@@ -48,6 +47,8 @@ def check(port, *, present=(), absent=(), firmware=None, extra=(),
         args = ["/bin/sh", str(copy), port]
         if fallback:
             args.append("--arm64-efi-fallback")
+        if cross:
+            args.append('--cross-' + cross)
         args.extend(extra)
         result = subprocess.run(args, cwd=root, env={"PATH": str(bins),
                                 "APT_LOG": str(log)}, capture_output=True, text=True)
@@ -75,4 +76,20 @@ check("arm64", fallback=True, extra=("mke2fs:e2fsprogs", "openssl:openssl"),
       present=("mke2fs",), expected=("openssl",))
 check("amd64", absent=("docker",), expect_failure=True)
 check("invalid", expect_failure=True)
+check("amd64", fallback=True, cross="cxx")
+for port, arch, pkg in (("riscv64", "riscv64", "riscv64"),
+                        ("arm64", "aarch64", "arm64")):
+    gcc = arch + "-linux-gnu-gcc"
+    gxx = arch + "-linux-gnu-g++"
+    headers = "/usr/" + arch + "-linux-gnu/include/bits/wordsize.h"
+    libc = "/usr/" + arch + "-linux-gnu/lib/libc.a"
+    check(port, fallback=True, cross="c",
+          expected=("gcc-" + arch + "-linux-gnu", "libc6-dev-" + pkg + "-cross"))
+    check(port, fallback=True, cross="cxx", present=(gcc,),
+          firmware=(FW[port], headers),
+          expected=("g++-" + arch + "-linux-gnu", "libc6-dev-" + pkg + "-cross"))
+    check(port, fallback=True, cross="cxx", present=(gcc, gxx),
+          firmware=(FW[port], headers, libc))
+    check(port, fallback=True, cross="c", present=(gcc,),
+          firmware=(FW[port], headers, libc))
 print("[CI DEPS PASS] three ISAs, firmware alternatives, extra packages, failure paths")
