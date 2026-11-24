@@ -226,12 +226,8 @@ static int release_owned_dma(struct async_block *b) {
      * the stable driver instance and every DMA page remain pinned. */
     int rc=nas_irq_unbind(&b->irq);
     if(rc)return rc;
-    if(b->ring.active || b->ring.dma_page.cpu) {
-        rc=nas_vring_queue_close(&b->ring);
-        if(rc)return rc;
-    } else if(b->transport.ops && b->transport.ops->reset) {
-        b->transport.ops->reset(b->transport.context);
-    }
+    rc=nas_vring_queue_close_or_reset(&b->ring,&b->transport);
+    if(rc)return rc;
     for(unsigned i=0;i<BLK_SLOTS;i++) {
         if(b->slots[i].header.cpu) {
             rc=nas_dma_free_page(b->transport.dma,&b->slots[i].header);

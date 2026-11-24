@@ -49,12 +49,6 @@ struct in_instance {
 };
 static struct in_instance *instances[NAS_OPEN_FILE_LIMIT];
 static uint32_t next_cookie;
-static bool same_inode(const struct nas_fs_node *a,
-                       const struct nas_fs_node *b) {
-    return a->mount==b->mount && a->mount_id==b->mount_id &&
-           a->filesystem==b->filesystem && a->inode==b->inode &&
-           a->ino==b->ino;
-}
 static int fd_instance(uint64_t fd,unsigned *slot) {
     if(fd>=NAS_FD_LIMIT ||
        nas_current_task->fds->entries[fd].kind!=FD_INOTIFY)return -EBADF;
@@ -155,7 +149,7 @@ uint64_t nas_inotify_add_watch(uint64_t fd,uint64_t user_path,uint64_t mask) {
     for(unsigned i=0;i<IN_WATCH_MAX;i++) {
         struct in_watch *watch=&in->watch[i];
         if(!watch->used) {if(!free_watch)free_watch=watch;continue;}
-        if(!same_inode(&watch->identity,&node))continue;
+        if(!nas_fs_node_same_identity(&watch->identity,&node))continue;
         if(mask&IN_MASK_CREATE)return (uint64_t)-EEXIST;
         const uint32_t events=(uint32_t)mask&IN_ALL_EVENTS;
         watch->mask=(mask&IN_MASK_ADD)?
@@ -238,7 +232,7 @@ static void publish(const struct nas_fs_node *node,const char *name,
         if(!in)continue;
         for(unsigned i=0;i<IN_WATCH_MAX;i++) {
             struct in_watch *w=&in->watch[i];
-            if(!w->used || !same_inode(&w->identity,node) ||
+            if(!w->used || !nas_fs_node_same_identity(&w->identity,node) ||
                !(w->mask&mask))continue;
             queue_event(in,w->wd,mask|(isdir?NAS_IN_ISDIR:0U),cookie,
                         child?name:NULL);
@@ -263,7 +257,7 @@ void nas_inotify_erase_node(const struct nas_fs_node *node) {
         if(!in)continue;
         for(unsigned i=0;i<IN_WATCH_MAX;i++) {
             struct in_watch *w=&in->watch[i];
-            if(!w->used || !same_inode(&w->identity,node))continue;
+            if(!w->used || !nas_fs_node_same_identity(&w->identity,node))continue;
             queue_event(in,w->wd,NAS_IN_DELETE_SELF,0,NULL);
             queue_event(in,w->wd,NAS_IN_IGNORED,0,NULL);
             *w=(struct in_watch){0};

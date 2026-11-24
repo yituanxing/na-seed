@@ -850,12 +850,6 @@ static const struct nas_fs_node *mount_covered_inode(
     if(!slot || !slot->covered_path.dentry)return NULL;
     return &slot->covered_path.dentry->node;
 }
-static bool same_vnode(const struct nas_fs_node *a,
-                       const struct nas_fs_node *b) {
-    return a->mount==b->mount && a->mount_id==b->mount_id &&
-           a->ino==b->ino && a->inode==b->inode &&
-           a->filesystem==b->filesystem;
-}
 /* Watchers receive inode events and their parent directories receive child
  * names. Enumerate VFS's already-owned positive Dentries; no additional
  * path walk, inode pin or syscall-layer event hooks are necessary. Hardlinks
@@ -865,7 +859,7 @@ static void inotify_emit_inode_and_parents(const struct nas_fs_node *node,
     nas_inotify_emit_node(node,event);
     for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
         if(!d->detached && d->parent && !d->parent->detached &&
-           same_vnode(&d->node,node))
+           nas_fs_node_same_identity(&d->node,node))
             nas_inotify_emit_child(&d->parent->node,d->name,
                                    event,0,node->is_dir);
 }
@@ -917,7 +911,7 @@ static struct nas_vfs_dentry *dentry_find(struct nas_vfs_dentry *parent,
         if(d->parent==parent && !strcmp(d->name,name) &&
            d->node.mount_id==node->mount_id &&
            d->node.mount==node->mount) {
-            if(same_vnode(&d->node,node))return d;
+            if(nas_fs_node_same_identity(&d->node,node))return d;
             dentry_detach(d);
         }
         d=next;
@@ -990,7 +984,7 @@ int nas_vfs_path_bind(const struct nas_fs_node *inode,
     } else if(rc!=-ENOENT)return rc;
     if(length==1) {
         if(!current)return -ENOENT;
-        if(!same_vnode(&current->node,inode)) {
+        if(!nas_fs_node_same_identity(&current->node,inode)) {
             (void)dentry_put(current);return -ESTALE;
         }
     } else {
@@ -1035,7 +1029,7 @@ int nas_vfs_path_bind(const struct nas_fs_node *inode,
             if(current)(void)dentry_put(current);
             return rc;
         }
-        if(!current || !same_vnode(&current->node,inode)) {
+        if(!current || !nas_fs_node_same_identity(&current->node,inode)) {
             if(current)(void)dentry_put(current);
             return -ESTALE;
         }
@@ -1600,7 +1594,7 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
         if(!rc && ancestor_of_mounted_child(&target))rc=-EBUSY;
         if(!rc && flags==2ULL && victim.is_dir &&
            dentry_contains(target.dentry,old_parent->dentry))rc=-EINVAL;
-        if(!rc && same_vnode(&source_node,&victim) && flags<=2ULL) {
+        if(!rc && nas_fs_node_same_identity(&source_node,&victim) && flags<=2ULL) {
             /* POSIX rename of two hard links to the SAME inode is a
              * namespace no-op, including an EXCHANGE of identical inodes.
              * Do not rekey one Dentry when both names already exist. */

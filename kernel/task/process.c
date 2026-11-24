@@ -340,6 +340,25 @@ void nas_process_child_tid_first_dispatch(void) {
                       (uint8_t)(tid>>16),(uint8_t)(tid>>24)};
     (void)nas_user_write_bytes(set_addr,value,sizeof(value));
 }
+/* Both execve and exit_group retire the noncaller, nonleader Tasks with
+ * their shared old MM active. Keep exit_group's early futex cancellation;
+ * execve's original ordering cancels the waiter inside nas_task_release. */
+void nas_process_release_siblings(struct nas_task *caller,
+                                  struct nas_task *leader,bool cancel_first) {
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        struct nas_task *peer=nas_task_at(i);
+        if(peer==caller || peer==leader || peer->state==NAS_TASK_FREE ||
+           peer->tgid!=leader->tgid)continue;
+        if(!peer->is_thread)proc_fail(cancel_first ?
+            "exit_group crossed process boundary":"execve crossed process boundary");
+        if(cancel_first)nas_futex_wait_cancel(peer);
+        nas_process_robust_exit(peer);
+        nas_process_clear_tid_for_exit(peer);
+        peer->state=NAS_TASK_ZOMBIE;
+        peer->resume_valid=false;
+        nas_task_release(peer);
+    }
+}
 /* execve succeeds atomically at the old-VM cleanup boundary. Threads
  * that did not request exec cease to exist; unlike exit_group, we DO
  * NOT signal the parent, close inherited files or create wait4 zombies.
@@ -350,20 +369,7 @@ void nas_process_exec_quiesce_siblings(void) {
     struct nas_task *leader=caller->group_leader;
     if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
         proc_fail("execve thread-group owner invalid");
-    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-        struct nas_task *peer=nas_task_at(i);
-        if(peer==caller || peer==leader ||
-           peer->state==NAS_TASK_FREE || peer->tgid!=leader->tgid)
-            continue;
-        if(!peer->is_thread)proc_fail("execve crossed process boundary");
-        nas_process_robust_exit(peer);
-        nas_process_clear_tid_for_exit(peer);
-        peer->state=NAS_TASK_ZOMBIE;
-        peer->resume_valid=false;
-        /* release cancels the kernel wait entry, resets pending syscall
-         * state and drops this Task's MM/files/sighand/FS references. */
-        nas_task_release(peer);
-    }
+    nas_process_release_siblings(caller,leader,false);
     if(caller!=leader) {
         /* The original leader is replaced by this worker. It is NEVER
          * exposed as a zombie to parent wait4 during execve. */

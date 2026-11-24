@@ -214,9 +214,7 @@ bool nas_fs_mmap_matches(struct nas_mapped_file *file,
                          const struct nas_fs_node *node) {
     if(!file || !file->refs || !node)return false;
     const struct nas_fs_node *mine=&file->node;
-    return mine->mount==node->mount && mine->mount_id==node->mount_id &&
-           mine->filesystem==node->filesystem && mine->ino==node->ino &&
-           mine->inode==node->inode;
+    return nas_fs_node_same_identity(mine,node);
 }
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length) {

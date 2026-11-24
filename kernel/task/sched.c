@@ -166,19 +166,7 @@ void nas_sched_thread_group_exit(uint32_t code,uint32_t signum) {
     struct nas_task *leader=caller->group_leader;
     if(!leader || leader->tgid!=caller->tgid || leader->is_thread)
         sched_fail("exit_group invalid thread group owner");
-    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
-        struct nas_task *peer=nas_task_at(slot);
-        if(peer==caller || peer==leader || peer->tgid!=leader->tgid ||
-           peer->state==NAS_TASK_FREE)continue;
-        if(!peer->is_thread) sched_fail("exit_group crossed process boundary");
-        nas_futex_wait_cancel(peer);
-        nas_process_robust_exit(peer);
-        nas_process_clear_tid_for_exit(peer);
-        peer->state=NAS_TASK_ZOMBIE;
-        peer->resume_valid=false;
-        /* release owns its queued-wait cancellation and wait reset. */
-        nas_task_release(peer);
-    }
+    nas_process_release_siblings(caller,leader,true);
     if(caller!=leader) {
         nas_process_robust_exit(caller);
         nas_process_clear_tid_on_exit();

@@ -228,12 +228,8 @@ static int release_dma(struct gpu_device *g) {
     int rc=nas_irq_unbind(&g->irq);
     if(rc)return rc;
     /* A failed split-ring init can own a page without ever being active. */
-    if(g->control.active || g->control.dma_page.cpu) {
-        rc=nas_vring_queue_close(&g->control);
-        if(rc)return rc;
-    }else if(g->transport.ops && g->transport.ops->reset) {
-        g->transport.ops->reset(g->transport.context);
-    }
+    rc=nas_vring_queue_close_or_reset(&g->control,&g->transport);
+    if(rc)return rc;
     /* Scan the WHOLE stable array, not pixel_pages/entry_pages: M184 DMA
      * allocation may fail validation AND then fail rollback, leaving the
      * failing slot owned despite no successful-count increment. */

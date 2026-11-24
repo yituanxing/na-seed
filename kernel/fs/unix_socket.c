@@ -191,12 +191,6 @@ int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
     sockets[slot].owner_pid=(uint32_t)nas_current_task->tgid;
     return 0;
 }
-static bool same_inode(const struct nas_fs_node *a,
-                       const struct nas_fs_node *b) {
-    return a->mount==b->mount && a->mount_id==b->mount_id &&
-           a->filesystem==b->filesystem && a->inode==b->inode &&
-           a->ino==b->ino;
-}
 int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target) {
     if(slot>=NAS_OPEN_FILE_LIMIT || sockets[slot].state!=SOCK_NEW)
         return -EISCONN;
@@ -209,7 +203,7 @@ int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target) {
         if(sockets[i].state!=SOCK_LISTEN || !sockets[i].bound.dentry)continue;
         struct nas_fs_node bound={0};
         if(nas_vfs_path_node(&sockets[i].bound,&bound))continue;
-        if(same_inode(&bound,&node)) {
+        if(nas_fs_node_same_identity(&bound,&node)) {
             listener=i;break;
         }
     }

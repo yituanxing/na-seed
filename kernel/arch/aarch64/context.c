@@ -3,6 +3,7 @@
 #include "context.h"
 extern void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame);
 #include "../arch.h"
+#include "../trap_common.h"
 #include "../mmu.h"
 #include "../../task.h"
 #include "../../syscall/dispatch.h"
@@ -62,16 +63,9 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
         live=frame;
         nas_arch_save_user_frame(tracee,0);
         nas_arch_save_fpu(tracee);
-        bool traced=nas_ptrace_user_exception(tracee,NAS_SIGTRAP,
-                                      (esr>>26)==0x3cULL?1:2,
-                                      frame->elr_el1,frame->sp_el0,
-                                      frame->elr_el1);
-        if(!traced)nas_sched_thread_group_exit(0,NAS_SIGTRAP);
-        /* A tracer stop wakes its blocked wait loop; untraced BRK instead
-         * terminates the offending thread group before scheduling. */
-        uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-        frame->x[0]=resumed;
-        nas_signal_user_return((uint64_t *)(void *)frame);
+        nas_arch_finish_user_exception(tracee,NAS_SIGTRAP,(esr>>26)==0x3cULL?1:2,
+            frame->elr_el1,frame->sp_el0,frame->elr_el1,
+            (uint64_t *)(void *)frame,&frame->x[0]);
         live=0;
         return;
     }
@@ -87,13 +81,9 @@ void nas_arm_full_trap_c(struct nas_arm_trap_frame *frame) {
             nas_arch_save_fpu(tracee);
             uint64_t signal_addr=exception.kind==NAS_EXC_ILLEGAL ?
                                  frame->elr_el1 : far;
-            bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
-                         outcome.si_code,frame->elr_el1,frame->sp_el0,
-                         signal_addr);
-            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
-            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-            frame->x[0]=resumed;
-            nas_signal_user_return((uint64_t *)(void *)frame);
+            nas_arch_finish_user_exception(tracee,outcome.signo,outcome.si_code,
+                frame->elr_el1,frame->sp_el0,signal_addr,
+                (uint64_t *)(void *)frame,&frame->x[0]);
             live=0;
             return;
         }

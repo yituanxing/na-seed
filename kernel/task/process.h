@@ -35,6 +35,8 @@ void nas_process_robust_exit(struct nas_task *thread);
  * no other CPU may run a sibling before old page-table destruction.
  * Does not touch the thread-group leader's task slot: exec.c adopts it. */
 void nas_process_exec_quiesce_siblings(void);
+void nas_process_release_siblings(struct nas_task *caller,
+                                  struct nas_task *leader,bool cancel_first);
 void nas_process_clear_tid_on_exit(void);
 /* The caller's current VM must be identical to the target thread's VM. */
 void nas_process_clear_tid_for_exit(struct nas_task *thread);

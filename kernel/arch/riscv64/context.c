@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../arch.h"
+#include "../trap_common.h"
 #include "../mmu.h"
 #include "../../task.h"
 #include "../../syscall/dispatch.h"
@@ -70,12 +71,9 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
          * one user instruction. Restore old instruction before GDB can
          * read memory, and report TRAP_TRACE, not a normal BRKPT. */
         bool stepped=nas_ptrace_rv_step_hit(tracee,frame->sepc);
-        bool traced=nas_ptrace_user_exception(tracee,NAS_SIGTRAP,stepped?2:1,
-                                      frame->sepc,frame->x[2],frame->sepc);
-        if(!traced)nas_sched_thread_group_exit(0,NAS_SIGTRAP);
-        uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-        frame->x[10]=resumed;
-        nas_signal_user_return((uint64_t *)(void *)frame);
+        nas_arch_finish_user_exception(tracee,NAS_SIGTRAP,stepped?2:1,
+            frame->sepc,frame->x[2],frame->sepc,
+            (uint64_t *)(void *)frame,&frame->x[10]);
         live=0;
         return;
     }
@@ -91,12 +89,9 @@ void nas_rv_full_trap_c(struct nas_rv_trap_frame *frame) {
             nas_arch_save_fpu(tracee);
             uint64_t signal_addr=exception.kind==NAS_EXC_ILLEGAL ?
                                  frame->sepc : stval;
-            bool traced=nas_ptrace_user_exception(tracee,outcome.signo,
-                         outcome.si_code,frame->sepc,frame->x[2],signal_addr);
-            if(!traced)nas_sched_thread_group_exit(0,outcome.signo);
-            uint64_t resumed=nas_task_schedule((uint64_t *)(void *)frame);
-            frame->x[10]=resumed;
-            nas_signal_user_return((uint64_t *)(void *)frame);
+            nas_arch_finish_user_exception(tracee,outcome.signo,outcome.si_code,
+                frame->sepc,frame->x[2],signal_addr,
+                (uint64_t *)(void *)frame,&frame->x[10]);
             live=0;
             return;
         }

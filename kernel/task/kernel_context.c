@@ -13,28 +13,20 @@ bool nas_kernel_context_prepare(struct nas_kernel_context *ctx,void *stack,
     uintptr_t top=(bottom+bytes)&~(uintptr_t)15U;
 #if defined(__x86_64__)
     /* pop r15,r14,r13,r12,rbp,rbx; ret. SysV first-entry rsp%16=8. */
-    const unsigned words=8U;
-    if(top-bottom<words*8U+16U)return false;
-    uint64_t *saved=(uint64_t *)(top-words*8U);
-    for(unsigned i=0;i<words;i++)saved[i]=0;
-    saved[6]=(uint64_t)(uintptr_t)entry;
+    const unsigned words=8U,entry_slot=6U;
 #elif defined(__riscv) && __riscv_xlen==64
     /* ra + s0..s11. Restored sp is 16-byte aligned. */
-    const unsigned words=13U;
-    if(top-bottom<words*8U+16U)return false;
-    uint64_t *saved=(uint64_t *)(top-words*8U);
-    for(unsigned i=0;i<words;i++)saved[i]=0;
-    saved[0]=(uint64_t)(uintptr_t)entry;
+    const unsigned words=13U,entry_slot=0U;
 #elif defined(__aarch64__)
     /* x19..x29, x30 LR. SP remains 16-byte aligned. */
-    const unsigned words=12U;
-    if(top-bottom<words*8U+16U)return false;
-    uint64_t *saved=(uint64_t *)(top-words*8U);
-    for(unsigned i=0;i<words;i++)saved[i]=0;
-    saved[11]=(uint64_t)(uintptr_t)entry;
+    const unsigned words=12U,entry_slot=11U;
 #else
 #error unsupported kernel continuation architecture
 #endif
+    if(top-bottom<words*8U+16U)return false;
+    uint64_t *saved=(uint64_t *)(top-words*8U);
+    for(unsigned i=0;i<words;i++)saved[i]=0;
+    saved[entry_slot]=(uint64_t)(uintptr_t)entry;
     ctx->saved_sp=(uint64_t)(uintptr_t)saved;
     return true;
 }
