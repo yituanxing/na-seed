@@ -1,0 +1,20 @@
+name: NaSeed whole-tree cleanup inventory
+on:
+  push:
+    branches: ['refactor/naseed-cleanup-*']
+    paths:
+      - 'scripts/audit-cleanup-inventory.py'
+      - '.github/workflows/cleanup-inventory.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Inventory exact source tree and repeated blocks
+        run: python3 scripts/audit-cleanup-inventory.py

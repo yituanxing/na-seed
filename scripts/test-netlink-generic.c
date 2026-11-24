@@ -174,9 +174,9 @@ int main(void) {
     assert(!nas_netlink_generic_is_slot(22));
     files.table.entries[7]=(struct nas_fd_entry){.kind=FD_SOCKET,.slot=20};
     const struct nas_file_ops *ops=nas_netlink_generic_ops();
-    assert(ops && ops->release && ops->poll && ops->poll_description &&
+    assert(ops && ops->release && ops->poll_description &&
            ops->read && ops->read_plan);
-    assert((ops->poll(7,PORT_POLLOUT)&PORT_POLLOUT)!=0);
+    assert((ops->poll_description(7,PORT_POLLOUT)&PORT_POLLOUT)!=0);
     assert((ops->poll_description(20,PORT_POLLIN)&PORT_POLLIN)==0);
     assert((int64_t)ops->read_plan(20,128)==-EAGAIN);
 
