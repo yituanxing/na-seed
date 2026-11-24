@@ -291,9 +291,24 @@ for token in ("nas_fs_kernel_path_begin(",
 for token in ("nas_vfs_mknod_child(parent,leaf,",
               "nas_vfs_path_node(target,&node)",
               "nas_vfs_path_put(&s->bound)",
-              "a->mount_id==b->mount_id", "a->inode==b->inode"):
+              "if(nas_fs_node_same_identity(&bound,&node))"):
     if token not in unix_src:
         raise SystemExit(f"AF_UNIX lost stable inode/path ownership: {token}")
+# The identity predicate is shared by AF_UNIX, VFS, inotify and mmap.
+# Check the actual common predicate, not obsolete copies in each caller.
+lookup_h=(root/"kernel/fs/lookup.h").read_text()
+identity=re.search(
+    r"static\s+inline\s+bool\s+nas_fs_node_same_identity\s*\("
+    r"[^{}]*\)\s*\{([^{}]*)\}", lookup_h, re.S)
+expected_identity={
+    "a->mount==b->mount", "a->mount_id==b->mount_id",
+    "a->filesystem==b->filesystem", "a->inode==b->inode",
+    "a->ino==b->ino",
+}
+identity_return=re.fullmatch(r"return\s+([^;]+);", identity.group(1).strip()) if identity else None
+comparisons=re.sub(r"\s+", "", identity_return.group(1)).split("&&") if identity_return else []
+if len(comparisons)!=len(expected_identity) or set(comparisons)!=expected_identity:
+    raise SystemExit("shared VFS identity lost complete mount/inode incarnation comparison")
 for source,body in (("socket_syscall.c",socket_src),("unix_socket.c",unix_src)):
     for forbidden in ("nas_vfs_path_string(","nas_path_join_raw(",
                       "tmp_find(","tmp_create(","tmp_parent_check(",
