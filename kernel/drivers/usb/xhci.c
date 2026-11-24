@@ -847,6 +847,31 @@ static int run_controller(struct nas_xhci_ro_session *s) {
         return -ETIMEDOUT;
     return enable_port(s, max_ports);
 }
+/* All xHC profiles allocate the same primary lease. The dual profile
+ * additionally owns an independent supplementary lease. Failure retains
+ * partially acquired pages for the existing close/quiesce path. */
+static int acquire_pages(struct nas_dma_lease *lease,
+                         const struct nas_dma_provider *dma,
+                         struct nas_dma_page *pages,unsigned count) {
+    int rc=nas_dma_lease_begin(lease,dma);
+    if(rc)return rc;
+    for(unsigned i=0;i<count;i++) {
+        rc=nas_dma_lease_alloc_page(lease,&pages[i]);
+        if(rc)return rc;
+    }
+    return 0;
+}
+static int release_pages(struct nas_dma_lease *lease,
+                         struct nas_dma_page *pages,unsigned count) {
+    for(unsigned i=0;i<count;i++) {
+        if(pages[i].cpu) {
+            int rc=nas_dma_lease_free_page(lease,&pages[i]);
+            if(rc)return rc;
+        }
+    }
+    return 0;
+}
+
 int nas_xhci_ro_open(const struct nas_xhci_io *io,
                      const struct nas_dma_provider *dma,
                      struct nas_xhci_ro_session *s) {
@@ -856,12 +881,8 @@ int nas_xhci_ro_open(const struct nas_xhci_io *io,
     s->io = io;
     s->dma = dma;
     s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc = nas_dma_lease_begin(&s->lease, dma);
-    if (rc) return rc;
-    for (unsigned i = 0; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
-        rc = nas_dma_lease_alloc_page(&s->lease, &s->pages[i]);
-        if (rc) return rc;
-    }
+    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
     rc = run_controller(s);
     if (rc) return rc;
     rc = setup_context(s);
@@ -890,12 +911,8 @@ static int hid_open_mode(const struct nas_xhci_io *io,
     s->hid_protocol = protocol;
     s->hid_report_bytes = report_bytes;
     s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc = nas_dma_lease_begin(&s->lease, dma);
-    if (rc) return rc;
-    for (unsigned i = 0; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
-        rc = nas_dma_lease_alloc_page(&s->lease, &s->pages[i]);
-        if (rc) return rc;
-    }
+    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
     rc = run_controller(s);
     if (rc) return rc;
     rc = setup_context(s);
@@ -997,19 +1014,10 @@ int nas_xhci_dual_hid_open(const struct nas_xhci_io *io,
     s->dual_missing_protocol=1U;
     dual_clear_active(s,1U,8U);
     s->debug_stage=NAS_XHCI_STAGE_DMA;
-    int rc=nas_dma_lease_begin(&s->lease,dma);
-    if (rc) return rc;
-    for (unsigned i=0;i<NAS_XHCI_RO_DMA_PAGES;++i) {
-        rc=nas_dma_lease_alloc_page(&s->lease,&s->pages[i]);
-        if (rc) return rc;
-    }
-    rc=nas_dma_lease_begin(&s->dual_extra_lease,dma);
-    if (rc) return rc;
-    for (unsigned i=0;i<NAS_XHCI_DUAL_EXTRA_PAGES;++i) {
-        rc=nas_dma_lease_alloc_page(&s->dual_extra_lease,
-                                     &s->dual_extra_pages[i]);
-        if (rc) return rc;
-    }
+    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
+    rc=acquire_pages(&s->dual_extra_lease,dma,s->dual_extra_pages,NAS_XHCI_DUAL_EXTRA_PAGES);
+    if(rc)return rc;
     rc=run_controller(s);
     if (rc) return rc;
     rc=setup_context(s);
@@ -1163,19 +1171,10 @@ int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *s) {
         }
         s->may_dma=false;
     }
-    for (unsigned i=0;i<NAS_XHCI_DUAL_EXTRA_PAGES;++i) {
-        if (s->dual_extra_pages[i].cpu) {
-            int rc=nas_dma_lease_free_page(&s->dual_extra_lease,
-                                           &s->dual_extra_pages[i]);
-            if (rc) return rc;
-        }
-    }
-    for (unsigned i=0;i<NAS_XHCI_RO_DMA_PAGES;++i) {
-        if (s->pages[i].cpu) {
-            int rc=nas_dma_lease_free_page(&s->lease,&s->pages[i]);
-            if (rc) return rc;
-        }
-    }
+    int rc=release_pages(&s->dual_extra_lease,s->dual_extra_pages,NAS_XHCI_DUAL_EXTRA_PAGES);
+    if(rc)return rc;
+    rc=release_pages(&s->lease,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
     if (s->dual_extra_lease.provider &&
         nas_dma_lease_end(&s->dual_extra_lease)) return -EIO;
     if (s->lease.provider && nas_dma_lease_end(&s->lease)) return -EIO;
@@ -1239,14 +1238,9 @@ int nas_xhci_ro_close(struct nas_xhci_ro_session *s) {
         if (rc) return rc;
         s->may_dma = false;
     }
-    for (unsigned i = 0; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
-        if (s->pages[i].cpu) {
-            int rc = nas_dma_lease_free_page(&s->lease,
-                                              &s->pages[i]);
-            if (rc) return rc;
-        }
-    }
-    int rc = nas_dma_lease_end(&s->lease);
+    int rc=release_pages(&s->lease,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
+    rc=nas_dma_lease_end(&s->lease);
     if (rc) return rc;
     zero_bytes(s, sizeof(*s));
     return 0;
@@ -1445,12 +1439,8 @@ int nas_xhci_ftdi_open(const struct nas_xhci_io *io,
     s->dma = dma;
     s->ftdi_mode = true;
     s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc = nas_dma_lease_begin(&s->lease, dma);
-    if (rc) return rc;
-    for (unsigned i = 0U; i < NAS_XHCI_RO_DMA_PAGES; ++i) {
-        rc = nas_dma_lease_alloc_page(&s->lease, &s->pages[i]);
-        if (rc) return rc;
-    }
+    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
     rc = run_controller(s);
     if (rc) return rc;
     rc = setup_context(s);

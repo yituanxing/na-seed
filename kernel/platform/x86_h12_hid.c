@@ -1,5 +1,5 @@
 #include "x86_h12_hid.h"
-#include "x86_qemu_xhci.h"
+#include "x86_qemu_hid_input.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/input/core.h"
 #include "../drivers/usb/hid_boot.h"
@@ -60,58 +60,19 @@ int nas_x86_h12_hid_publish_input(void) {
     if(!h12_persistent.attached || h12_persistent.input_published)
         return -ENODEV;
     nas_usb_hid_boot_init(&h12_report_state);
-    nas_input_device_init(&h12_input,"QEMU USB HID Boot Keyboard");
-    h12_input.id.bustype=3U; /* Linux BUS_USB */
-    if(nas_input_set_capability(&h12_input,NAS_INPUT_EV_SYN,
-                                NAS_INPUT_SYN_REPORT))return -EINVAL;
-    unsigned key_caps=0;
-    for(unsigned u=4U;u<=0x81U;u++) {
-        uint16_t key=nas_usb_hid_boot_keycode((uint8_t)u);
-        if(key && !nas_input_set_capability(&h12_input,
-                                            NAS_INPUT_EV_KEY,key))key_caps++;
-    }
-    for(unsigned u=0xe0U;u<=0xe7U;u++) {
-        uint16_t key=nas_usb_hid_boot_keycode((uint8_t)u);
-        if(key && !nas_input_set_capability(&h12_input,
-                                            NAS_INPUT_EV_KEY,key))key_caps++;
-    }
-    if(!key_caps || !(h12_input.keybit[30U/8U]&(1U<<(30U%8U))))
-        return -EINVAL; /* Require actual KEY_A Linux evdev keyboard. */
-    int rc=nas_input_register_device(&h12_input);
+    int rc=nas_x86_qemu_hid_keyboard_register(&h12_input,0U);
     if(rc)return rc;
-    if(h12_input.index!=0U) {
-        (void)nas_input_unregister_device(&h12_input);
-        return -EEXIST; /* This fixture expects only one input device. */
-    }
     h12_persistent.input_published=true;
     nas_print("[H12 HID INPUT ATTACHED] /dev/input/event0 QEMU USB Boot Keyboard EV_KEY/SYN_REPORT\n");
     return 0;
-}
-
-static void h12_emit(void *ctx,uint16_t type,uint16_t code,int32_t value) {
-    struct nas_input_device *dev=ctx;
-    nas_input_event(dev,type,code,value);
 }
 
 int nas_x86_h12_hid_poll(unsigned budget) {
     if(!h12_persistent.attached || !h12_persistent.input_published)
         return -ENODEV;
     if(!budget || budget>16U)return -EINVAL;
-    unsigned reports=0;
-    for(unsigned i=0;i<budget;i++) {
-        uint8_t report[NAS_USB_HID_BOOT_REPORT_BYTES]={0};
-        int rc=nas_xhci_hid_poll(&h12_xhci,report);
-        if(rc==-EAGAIN)break;
-        if(rc)return rc;
-        ++reports;
-        ++h12_persistent.reports;
-        rc=nas_usb_hid_boot_report(&h12_report_state,report,
-                                   sizeof(report),h12_emit,&h12_input);
-        if(rc && rc!=-EAGAIN && rc!=-EPROTO)return rc;
-        if(rc==-EPROTO)
-            nas_print("[H12 HID REPORT REJECTED] malformed Boot Keyboard payload\n");
-    }
-    return (int)reports;
+    return nas_x86_qemu_hid_keyboard_poll(&h12_xhci,nas_xhci_hid_poll,
+        &h12_report_state,&h12_input,budget,&h12_persistent.reports,"[H12 HID REPORT REJECTED] malformed Boot Keyboard payload\n");
 }
 
 int nas_x86_h12_hid_shutdown(void) {
@@ -119,7 +80,7 @@ int nas_x86_h12_hid_shutdown(void) {
     if(h12_persistent.input_published) {
         /* Drop logical pressed keys while evdev is still a live publisher.
          * PID1 already closed every input File before this orderly path. */
-        nas_usb_hid_boot_release_all(&h12_report_state,h12_emit,&h12_input);
+        nas_usb_hid_boot_release_all(&h12_report_state,nas_x86_qemu_hid_emit,&h12_input);
         int rc=nas_input_unregister_device(&h12_input);
         if(rc)return rc; /* A pinned reader forbids DMA/BAR teardown. */
         h12_persistent.input_published=false;

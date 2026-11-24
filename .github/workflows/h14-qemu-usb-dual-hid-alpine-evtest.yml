@@ -7,6 +7,8 @@ on:
       - 'refactor/naseed-cleanup-*'
     paths:
       - 'kernel/platform/x86_qemu_hw_contract.h'
+      - 'kernel/platform/x86_qemu_xhci.h'
+      - 'kernel/platform/x86_qemu_hid_input.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h14-qemu-usb-dual-hid-alpine-evtest.yml'
       - 'kernel/platform/x86_h14_dual_hid.*'
@@ -25,6 +27,7 @@ on:
       - 'scripts/h14-*'
       - 'scripts/check-h14-*.sh'
       - 'tests/h14-*'
+      - 'tests/h14-qemu-hid-shared-host.c'
       - 'scripts/stage-h14-dual-hid-alpine.sh'
       - 'scripts/build-h14-dual-hid-iso.sh'
       - 'scripts/stage-m166-prebuilt.sh'
@@ -74,6 +77,14 @@ jobs:
             sudo apt-get update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
           fi
+      - name: Exercise shared platform HID registration and poll paths
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
+            tests/h14-qemu-hid-shared-host.c kernel/drivers/usb/hid_boot.c \
+            kernel/drivers/usb/hid_boot_mouse.c kernel/drivers/input/core.c \
+            kernel/drivers/input/evdev.c kernel/mm/heap.c kernel/lib/string.c \
+            -o /tmp/naseed-h14-shared
+          /tmp/naseed-h14-shared
       - name: Real H14 dual HID host regressions and H14 script/Python syntax
         timeout-minutes: 8
         run: |

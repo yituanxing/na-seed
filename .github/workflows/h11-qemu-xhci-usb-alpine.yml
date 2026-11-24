@@ -7,6 +7,8 @@ on:
       - 'refactor/naseed-cleanup-*'
     paths:
       - 'kernel/platform/x86_qemu_hw_contract.h'
+      - 'kernel/platform/x86_qemu_xhci.h'
+      - 'kernel/platform/x86_qemu_hid_input.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h11-qemu-xhci-usb-alpine.yml'
       - 'kernel/platform/x86_h11_usb.*'

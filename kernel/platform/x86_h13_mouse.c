@@ -1,5 +1,5 @@
 #include "x86_h13_mouse.h"
-#include "x86_qemu_xhci.h"
+#include "x86_qemu_hid_input.h"
 #include "../arch/x86_64/mmu.h"
 #include "../drivers/input/core.h"
 #include "../drivers/usb/hid_boot_mouse.h"
@@ -56,57 +56,25 @@ int nas_x86_h13_mouse_publish_input(void) {
     if(!h13_persistent.attached || h13_persistent.input_published)
         return -ENODEV;
     nas_usb_hid_boot_mouse_init(&h13_report_state);
-    nas_input_device_init(&h13_input,"QEMU USB HID Boot Mouse");
-    h13_input.id.bustype=3U; /* Exact Linux BUS_USB for EVIOCGID. */
-    if(nas_input_set_capability(&h13_input,NAS_INPUT_EV_SYN,
-                                NAS_INPUT_SYN_REPORT) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_KEY,272U) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_KEY,273U) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_KEY,274U) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_REL,0U) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_REL,1U) ||
-       nas_input_set_capability(&h13_input,NAS_INPUT_EV_REL,8U))
-        return -EINVAL;
-    int rc=nas_input_register_device(&h13_input);
+    int rc=nas_x86_qemu_hid_mouse_register(&h13_input,0U);
     if(rc)return rc;
-    if(h13_input.index!=0U) {
-        (void)nas_input_unregister_device(&h13_input);
-        return -EEXIST;
-    }
     h13_persistent.input_published=true;
     nas_print("[H13 MOUSE INPUT ATTACHED] /dev/input/event0 QEMU USB HID Boot Mouse BUS_USB EV_REL/EV_KEY/SYN_REPORT\n");
     return 0;
-}
-
-static void h13_emit(void *ctx,uint16_t type,uint16_t code,int32_t value) {
-    nas_input_event((struct nas_input_device *)ctx,type,code,value);
 }
 
 int nas_x86_h13_mouse_poll(unsigned budget) {
     if(!h13_persistent.attached || !h13_persistent.input_published)
         return -ENODEV;
     if(!budget || budget>16U)return -EINVAL;
-    unsigned reports=0;
-    for(unsigned i=0;i<budget;i++) {
-        uint8_t report[NAS_USB_HID_BOOT_MOUSE_REPORT_BYTES]={0};
-        int rc=nas_xhci_hid_mouse_poll(&h13_xhci,report);
-        if(rc==-EAGAIN)break;
-        if(rc)return rc;
-        ++reports;
-        ++h13_persistent.reports;
-        rc=nas_usb_hid_boot_mouse_report(&h13_report_state,report,
-                                         sizeof(report),h13_emit,&h13_input);
-        if(rc && rc!=-EAGAIN && rc!=-EPROTO)return rc;
-        if(rc==-EPROTO)
-            nas_print("[H13 MOUSE REPORT REJECTED] malformed 4-byte Boot Mouse payload\n");
-    }
-    return (int)reports;
+    return nas_x86_qemu_hid_mouse_poll(&h13_xhci,nas_xhci_hid_mouse_poll,
+        &h13_report_state,&h13_input,budget,&h13_persistent.reports,"[H13 MOUSE REPORT REJECTED] malformed 4-byte Boot Mouse payload\n");
 }
 
 int nas_x86_h13_mouse_shutdown(void) {
     if(!h13_persistent.attached)return -ENODEV;
     if(h13_persistent.input_published) {
-        nas_usb_hid_boot_mouse_release_all(&h13_report_state,h13_emit,
+        nas_usb_hid_boot_mouse_release_all(&h13_report_state,nas_x86_qemu_hid_emit,
                                             &h13_input);
         int rc=nas_input_unregister_device(&h13_input);
         if(rc)return rc; /* Open evdev readers keep hardware DMA pinned. */
