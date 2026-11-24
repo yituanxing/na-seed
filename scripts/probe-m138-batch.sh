@@ -23,25 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M138 BATCH FAIL] $port missing serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M138_*_PASS) ;; *) echo "[M138 BAD MARKER] $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M138 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M138 BATCH FAIL] $port $marker appears $found times (expected once)" >&2
-        tail -2000 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M138_BATCH_PASS ]; then summary=$((summary + 1));
-    else count=$((count + 1)); fi
-done < scripts/m138-expected-markers.txt
-[ "$count" -eq 20 ] && [ "$summary" -eq 1 ] || {
-    echo "[M138 BATCH FAIL] $port expected 20 independent ELF functional tests" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M138 "$port" scripts/m138-expected-markers.txt "$log" 20 2000
 echo "[M138 BATCH PASS] $port 20 original signed LLVM 21 ELFs, native QEMU"

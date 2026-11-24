@@ -26,28 +26,7 @@ fi
 test -s "$log" || {
     echo "[M155 NATIVE QEMU FAIL] missing serial $port" >&2; exit 1;
 }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M155_*_PASS) ;; *) exit 2 ;; esac
-    case "$seen" in *" $marker "*)
-        echo "[M155 DUPLICATE MARKER] $marker" >&2; exit 2 ;;
-    esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || :)
-    [ "$found" -eq 1 ] || {
-        echo "[M155 NATIVE QEMU FAIL] $port $marker appears $found times" >&2
-        exit 1
-    }
-    if [ "$marker" = M155_BATCH_PASS ]; then summary=$((summary+1));
-    else count=$((count+1)); fi
-done < scripts/m155-expected-markers.txt
-[ "$count" -eq 30 ] && [ "$summary" -eq 1 ] || {
-    echo "[M155 NATIVE QEMU FAIL] $port expected 30 operations + summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M155 "$port" scripts/m155-expected-markers.txt "$log" 30 0
 # The 30 real operations cover 25 different ELF identities; eight tools
 # with unsafe/no-mount semantics are separately launched only to prove
 # the original ELF and userspace loader. Those are NOT counted as operations.

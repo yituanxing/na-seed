@@ -29,34 +29,6 @@ test -s "$log" || { echo "[M110 BATCH FAIL] $port missing original guest serial"
 # An aggregate PASS cannot mask a missing or skipped real executable case.
 manifest=scripts/m110-expected-markers.txt
 test -s "$manifest"
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M110_*_PASS) ;; *)
-        echo "[M110 BATCH FAIL] invalid marker: $marker" >&2
-        exit 2 ;;
-    esac
-    case "$seen" in *" $marker "*)
-        echo "[M110 BATCH FAIL] duplicate expected marker: $marker" >&2
-        exit 2 ;;
-    esac
-    seen="$seen$marker "
-    count_found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$count_found" -ne 1 ]; then
-        echo "[M110 BATCH FAIL] $port $marker had $count_found actual attestations" >&2
-        tail -450 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M110_BATCH_PASS ]; then
-        summary=$((summary + 1))
-    else
-        count=$((count + 1))
-    fi
-done < "$manifest"
-[ "$count" -eq 20 ] && [ "$summary" -eq 1 ] || {
-    echo "[M110 BATCH FAIL] $port expected exactly 20 distinct program checks and one batch summary; got $count/$summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M110 "$port" "$manifest" "$log" 20 450
+count=20
 echo "[M110 BATCH PASS] $port $count new genuine-program functional tests, one QEMU boot, host-staged signed ELFs"

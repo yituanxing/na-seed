@@ -23,24 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M128 BATCH FAIL] $port no guest serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M128_*_PASS) ;; *) echo "[M128 BATCH FAIL] invalid marker $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M128 BATCH FAIL] duplicate marker $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M128 BATCH FAIL] $port $marker attestations $found (expected exactly 1)" >&2
-        tail -450 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M128_BATCH_PASS ]; then summary=$((summary + 1)); else count=$((count + 1)); fi
-done < scripts/m128-expected-markers.txt
-[ "$count" -eq 15 ] && [ "$summary" -eq 1 ] || {
-    echo "[M128 BATCH FAIL] need 15+summary, got $count/$summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M128 "$port" scripts/m128-expected-markers.txt "$log" 15 450
 echo "[M128 BATCH PASS] $port 15 original signed filesystem ELF, single QEMU"

@@ -23,25 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M131 BATCH FAIL] $port missing serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M131_*_PASS) ;; *) echo "[M131 BAD MARKER] $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M131 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M131 BATCH FAIL] $port $marker appears $found times (need 1)" >&2
-        tail -450 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M131_BATCH_PASS ]; then summary=$((summary + 1));
-    else count=$((count + 1)); fi
-done < scripts/m131-expected-markers.txt
-[ "$count" -eq 15 ] && [ "$summary" -eq 1 ] || {
-    echo "[M131 BATCH FAIL] $port expected 15 distinct original markers" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M131 "$port" scripts/m131-expected-markers.txt "$log" 15 450
 echo "[M131 BATCH PASS] $port 15 signed original Alpine ELFs, real QEMU"

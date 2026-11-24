@@ -24,26 +24,7 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M157 FAIL] no real guest QEMU log" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M157_*_PASS) ;; *) exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M157 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || :)
-    [ "$found" -eq 1 ] || {
-        echo "[M157 QEMU FAIL] $port $marker appeared $found times" >&2
-        exit 1
-    }
-    if [ "$marker" = M157_BATCH_PASS ]; then summary=$((summary+1))
-    else count=$((count+1)); fi
-done < scripts/m157-expected-markers.txt
-[ "$count" -eq 30 ] && [ "$summary" -eq 1 ] || {
-    echo "[M157 QEMU FAIL] $port require 30 semantic cases, got $count" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M157 "$port" scripts/m157-expected-markers.txt "$log" 30 0
 while IFS= read -r elf; do
     case "$elf" in ''|'#'*) continue ;; esac
     grep -Fq "[EXEC] replaced process with CPIO ELF: /$elf" "$log" || {

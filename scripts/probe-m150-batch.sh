@@ -26,26 +26,5 @@ fi
 test -s "$log" || {
     echo "[M150 NATIVE QEMU FAIL] missing serial $port" >&2; exit 1;
 }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M150_*_PASS) ;; *) exit 2 ;; esac
-    case "$seen" in *" $marker "*)
-        echo "[M150 DUPLICATE MARKER] $marker" >&2; exit 2 ;;
-    esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || :)
-    [ "$found" -eq 1 ] || {
-        echo "[M150 NATIVE QEMU FAIL] $port $marker appears $found times" >&2
-        exit 1
-    }
-    if [ "$marker" = M150_BATCH_PASS ]; then summary=$((summary+1));
-    else count=$((count+1)); fi
-done < scripts/m150-expected-markers.txt
-[ "$count" -eq 26 ] && [ "$summary" -eq 1 ] || {
-    echo "[M150 NATIVE QEMU FAIL] $port expected 26 semantics + summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M150 "$port" scripts/m150-expected-markers.txt "$log" 26 0
 echo "[M150 NATIVE QEMU PASS] $port 26 new signed Alpine ELFs, 26 guest function tests"

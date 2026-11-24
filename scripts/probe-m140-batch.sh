@@ -23,25 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M140 BATCH FAIL] $port missing serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M140_*_PASS) ;; *) echo "[M140 BAD MARKER] $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M140 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M140 BATCH FAIL] $port $marker appears $found times" >&2
-        tail -2000 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M140_BATCH_PASS ]; then summary=$((summary+1));
-    else count=$((count+1)); fi
-done < scripts/m140-expected-markers.txt
-[ "$count" -eq 39 ] && [ "$summary" -eq 1 ] || {
-    echo "[M140 BATCH FAIL] $port expected 39 independent functional checks" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M140 "$port" scripts/m140-expected-markers.txt "$log" 39 2000
 echo "[M140 BATCH PASS] $port 20 distinct signed GNU/Netpbm ELFs, 39 functional checks"

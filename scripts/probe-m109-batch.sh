@@ -32,32 +32,6 @@ test -s "$log" || { echo "[M109 BATCH FAIL] $port missing guest serial" >&2; exi
 # Require every unique, independently asserted original-program marker.
 manifest=scripts/m109-expected-markers.txt
 test -s "$manifest"
-count=0
-seen=' '
-summary=0
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M109_*_PASS) ;; *)
-        echo "[M109 BATCH FAIL] unsafe expected marker: $marker" >&2; exit 2 ;;
-    esac
-    case "$seen" in *" $marker "*)
-        echo "[M109 BATCH FAIL] duplicate expected marker: $marker" >&2; exit 2 ;;
-    esac
-    seen="$seen$marker "
-    count_found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$count_found" -ne 1 ]; then
-        echo "[M109 BATCH FAIL] $port $marker had $count_found genuine guest attestations" >&2
-        tail -360 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M109_BATCH_PASS ]; then
-        summary=$((summary + 1))
-    else
-        count=$((count + 1))
-    fi
-done < "$manifest"
-[ "$count" -eq 15 ] && [ "$summary" -eq 1 ] || {
-    echo "[M109 BATCH FAIL] $port expected exactly 15 original software checks and one summary; got $count/$summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M109 "$port" "$manifest" "$log" 15 360
+count=15
 echo "[M109 BATCH PASS] $port $count original-program guest checks in one QEMU boot, host-installed signed ELF only"

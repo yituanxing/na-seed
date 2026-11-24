@@ -23,25 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M136 BATCH FAIL] $port missing serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M136_*_PASS) ;; *) echo "[M136 BAD MARKER] $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M136 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M136 BATCH FAIL] $port $marker appears $found times (expected once)" >&2
-        tail -500 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M136_BATCH_PASS ]; then summary=$((summary + 1));
-    else count=$((count + 1)); fi
-done < scripts/m136-expected-markers.txt
-[ "$count" -eq 20 ] && [ "$summary" -eq 1 ] || {
-    echo "[M136 BATCH FAIL] $port expected 20 independently tested ELFs" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M136 "$port" scripts/m136-expected-markers.txt "$log" 20 500
 echo "[M136 BATCH PASS] $port 20 signed original Alpine ELF tools, real QEMU"

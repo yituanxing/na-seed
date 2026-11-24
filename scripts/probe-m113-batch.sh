@@ -32,24 +32,5 @@ test -s "$log" || {
 }
 manifest=scripts/m113-expected-markers.txt
 test -s "$manifest"
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M113_*_PASS) ;; *) echo "[M113 BATCH FAIL] invalid marker $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M113 BATCH FAIL] duplicate marker $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    count_found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$count_found" -ne 1 ]; then
-        echo "[M113 BATCH FAIL] $port $marker emitted $count_found guest attestations" >&2
-        tail -450 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M113_BATCH_PASS ]; then summary=$((summary + 1)); else count=$((count + 1)); fi
-done < "$manifest"
-[ "$count" -eq 15 ] && [ "$summary" -eq 1 ] || {
-    echo "[M113 BATCH FAIL] expected 15 original executable markers plus summary, got $count/$summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M113 "$port" "$manifest" "$log" 15 450
 echo "[M113 BATCH PASS] $port 15 signed original Linux applications, one QEMU boot, host-prebuilt"

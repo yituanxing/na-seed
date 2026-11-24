@@ -31,3 +31,5 @@ with a replay or host-only result while claiming native acceptance.
 for these shared contracts. M239 and M240 have distinct native-QEMU workflows;
 neither host-only contract is a substitute for the relevant true two-boot
 guest NIC, serial, original OpenRC and physical ext4/fsck final oracle.
+
+`check-batch-markers.sh` owns the exact-once per-program marker and batch-summary gate for migrated M109–M157 probes. It does not launch QEMU or replace EXEC, codec, networking or filesystem assertions. Each caller retains its original manifest, count and runner. `test-batch-markers.py` exercises the real checker against all migrated manifests plus fail-closed negative cases; this is host evidence only.

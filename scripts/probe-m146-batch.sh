@@ -24,24 +24,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M146 NATIVE QEMU FAIL] missing serial $port" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M146_*_PASS) ;; *) exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M146 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || :)
-    [ "$found" -eq 1 ] || {
-        echo "[M146 NATIVE QEMU FAIL] $port $marker appears $found times" >&2
-        exit 1
-    }
-    if [ "$marker" = M146_BATCH_PASS ]; then summary=$((summary+1));
-    else count=$((count+1)); fi
-done < scripts/m146-expected-markers.txt
-[ "$count" -eq 24 ] && [ "$summary" -eq 1 ] || {
-    echo "[M146 NATIVE QEMU FAIL] $port expected 24 independent semantics" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M146 "$port" scripts/m146-expected-markers.txt "$log" 24 0
 echo "[M146 NATIVE QEMU PASS] $port 24 new signed Alpine ELFs, 24 guest semantic checks"

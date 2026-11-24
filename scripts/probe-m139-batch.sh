@@ -23,25 +23,5 @@ if ! sh "$runner"; then
     exit 1
 fi
 test -s "$log" || { echo "[M139 BATCH FAIL] $port missing serial" >&2; exit 1; }
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M139_*_PASS) ;; *) echo "[M139 BAD MARKER] $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M139 DUPLICATE MARKER] $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$found" -ne 1 ]; then
-        echo "[M139 BATCH FAIL] $port $marker appears $found times (expected once)" >&2
-        tail -2000 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M139_BATCH_PASS ]; then summary=$((summary + 1));
-    else count=$((count + 1)); fi
-done < scripts/m139-expected-markers.txt
-[ "$count" -eq 20 ] && [ "$summary" -eq 1 ] || {
-    echo "[M139 BATCH FAIL] $port expected 20 independent ELF functional tests" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M139 "$port" scripts/m139-expected-markers.txt "$log" 20 2000
 echo "[M139 BATCH PASS] $port 20 original signed Alpine ELFs, native QEMU"

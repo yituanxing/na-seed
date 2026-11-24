@@ -26,24 +26,5 @@ test -s "$log" || { echo "[M111 BATCH FAIL] $port missing guest serial" >&2; exi
 
 manifest=scripts/m111-expected-markers.txt
 test -s "$manifest"
-count=0
-summary=0
-seen=' '
-while IFS= read -r marker; do
-    case "$marker" in ''|'#'*) continue ;; esac
-    case "$marker" in M111_*_PASS) ;; *) echo "[M111 BATCH FAIL] invalid marker $marker" >&2; exit 2 ;; esac
-    case "$seen" in *" $marker "*) echo "[M111 BATCH FAIL] duplicate marker $marker" >&2; exit 2 ;; esac
-    seen="$seen$marker "
-    count_found=$(grep -Fxc "$marker" "$log" || true)
-    if [ "$count_found" -ne 1 ]; then
-        echo "[M111 BATCH FAIL] $port $marker emitted $count_found genuine guest attestations" >&2
-        tail -450 "$log" >&2
-        exit 1
-    fi
-    if [ "$marker" = M111_BATCH_PASS ]; then summary=$((summary + 1)); else count=$((count + 1)); fi
-done < "$manifest"
-[ "$count" -eq 15 ] && [ "$summary" -eq 1 ] || {
-    echo "[M111 BATCH FAIL] expected 15 distinct programs plus one summary, got $count/$summary" >&2
-    exit 1
-}
+sh scripts/acceptance/check-batch-markers.sh M111 "$port" "$manifest" "$log" 15 450
 echo "[M111 BATCH PASS] $port 15 signed original Linux applications, one QEMU boot, host-prebuilt"
