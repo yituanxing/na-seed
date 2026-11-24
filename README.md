@@ -82,6 +82,13 @@ the H11 USB storage acceptance is deliberately read-only.
    to `main` while its userspace base and provenance/licensing review are
    unresolved.
 
+## Documentation and historical records
+
+Current architecture, ABI, ownership, provenance and acceptance contracts remain in
+`docs/`. Earlier milestone reports are available in the
+[historical milestone index](docs/cleanup-01-baseline.md#historical-milestone-archive).
+The archive preserves exact reports and their dated evidence, not current-head PASS claims.
+
 ## Original development contract and early milestones
 
 The original project deliberately started with x86-64 and static GNU

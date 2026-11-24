@@ -9,6 +9,8 @@ on:
       - '.github/workflows/**'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'kernel/**'
+      - 'docs/**'
+      - 'README.md'
   workflow_dispatch:
 permissions:
   contents: read
