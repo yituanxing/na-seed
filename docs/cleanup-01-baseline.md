@@ -193,3 +193,8 @@ Exact report index:
 - [m93-aarch64-user-pt](https://github.com/yituanxing/na-seed/blob/b2f2c994558c7ef7c7de2057734e9d91eab462d1/docs/m93-aarch64-user-pt.md)
 - [m94-rv64-real-user-trap](https://github.com/yituanxing/na-seed/blob/b2f2c994558c7ef7c7de2057734e9d91eab462d1/docs/m94-rv64-real-user-trap.md)
 - [m95-rv64-real-elf](https://github.com/yituanxing/na-seed/blob/b2f2c994558c7ef7c7de2057734e9d91eab462d1/docs/m95-rv64-real-elf.md)
+
+M38–M49 and M51–M54 individual manual diagnostics now select their original
+profile in `alpine-focused-native.yml`. The original probe paths, three ISAs,
+job/step limits, CPIO gates, M42 compiler/serial evidence and failure artifact
+paths are preserved; the grouped M50 workload matrix is unchanged.
