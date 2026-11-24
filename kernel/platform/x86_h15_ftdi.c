@@ -5,7 +5,7 @@
 #include "../drivers/usb/xhci.h"
 #include "../drivers/serial.h"
 #include "../drivers/port/dma.h"
-#include "../fs/usb_serial_chrdev.h"
+#include "../drivers/usb/serial_backend.h"
 #include "../errno.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -24,7 +24,7 @@ static struct nas_pci_mmio_owner h15_owner;
 static struct nas_xhci_io h15_io;
 static struct nas_xhci_ro_session h15_xhci;
 static struct {
-    bool attempted,attached;
+    bool attempted,attached,class_published;
     uint8_t bus,slot,function;
     uint16_t original_command;
     struct nas_pci_mmio_claim claim;
@@ -199,10 +199,9 @@ int nas_x86_h15_ftdi_write(const uint8_t *src,uint32_t bytes) {
 }
 int nas_x86_h15_ftdi_shutdown(void) {
     if(!h15.attached)return -ENODEV;
-    /* The class unpublish refuses live File pins before any DMA frees. */
-    int rc=nas_usb_serial_chrdev_unpublish();
-    if(rc)return rc;
-    rc=nas_xhci_ftdi_close(&h15_xhci);
+    /* Class publication pins the controller until no File owns its node. */
+    if(h15.class_published)return -EBUSY;
+    int rc=nas_xhci_ftdi_close(&h15_xhci);
     if(rc)return rc; /* Unsafe stop: keep MMIO BAR pinned. */
     rc=h15_release_qualified_bar();
     if(rc)return rc;
@@ -213,4 +212,44 @@ int nas_x86_h15_ftdi_shutdown(void) {
     nas_dec((unsigned)h15.bulk_out_bytes);
     nas_print("\n");
     return 0;
+}
+
+// One physical USB serial implementation, exported as a borrowed class port.
+// No Linux ABI, devfs, or FS back-reference belongs in this platform driver.
+static bool h15_port_ready(void *ctx) {
+    return ctx==&h15 && h15.attached;
+}
+static int h15_port_pin(void *ctx) {
+    if(ctx!=&h15 || !h15.attached)return -ENODEV;
+    if(h15.class_published)return -EBUSY;
+    h15.class_published=true;
+    return 0;
+}
+static void h15_port_unpin(void *ctx) {
+    if(ctx==&h15)h15.class_published=false;
+}
+static unsigned h15_port_available(void *ctx) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_rx_count() : 0U;
+}
+static void h15_port_flush(void *ctx) {
+    if(ctx==&h15)nas_x86_h15_ftdi_rx_flush();
+}
+static int h15_port_read(void *ctx,uint8_t *dst,uint32_t bytes) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_read(dst,bytes) : -ENODEV;
+}
+static int h15_port_write(void *ctx,const uint8_t *src,uint32_t bytes) {
+    return ctx==&h15 ? nas_x86_h15_ftdi_write(src,bytes) : -ENODEV;
+}
+static const struct nas_usb_serial_backend h15_port={
+    .context=&h15,
+    .ready=h15_port_ready,
+    .publication_pin=h15_port_pin,
+    .publication_unpin=h15_port_unpin,
+    .rx_available=h15_port_available,
+    .flush_rx=h15_port_flush,
+    .read=h15_port_read,
+    .write=h15_port_write
+};
+const struct nas_usb_serial_backend *nas_x86_h15_ftdi_backend(void) {
+    return h15.attached ? &h15_port : NULL;
 }

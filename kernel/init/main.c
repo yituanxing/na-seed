@@ -283,8 +283,10 @@ static void nas_init_finish_success(void) {
     nas_print("[H14 DUAL USERLAND SHUTDOWN] event0/event1 closed, xHCI halted\n");
 #endif
 #ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
+    if(nas_usb_serial_chrdev_unpublish())
+        nas_fail("H15 FTDI ttyUSB0 still open, refusing hardware release");
     if(nas_x86_h15_ftdi_shutdown())
-        nas_fail("H15 FTDI ttyUSB0 still open or xHCI DMA/BAR shutdown failed");
+        nas_fail("H15 FTDI controller DMA/BAR shutdown failed");
     nas_print("[H15 FTDI USERLAND SHUTDOWN] original BusyBox stty/head/printf closed, real xHCI FTDI quiesced\n");
 #endif
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
@@ -581,7 +583,7 @@ void nas_init_userspace(void) {
 #ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
     /* Publish only the actually enumerated FT232BM class node, after
      * base character-device bootstrap and before original BusyBox starts. */
-    if(nas_usb_serial_chrdev_publish())
+    if(nas_usb_serial_chrdev_publish(nas_x86_h15_ftdi_backend()))
         nas_fail("H15 real FTDI ttyUSB0 class publication failed");
 #endif
     /* Native QEMU hardware acceptance: exercise real kernel C contexts

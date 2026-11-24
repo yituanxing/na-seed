@@ -14,6 +14,7 @@ on:
       - 'kernel/drivers/tty.*'
       - 'kernel/fs/devfs.c'
       - 'kernel/fs/syscall.c'
+      - 'kernel/fs/usb_serial_chrdev.*'
       - 'kernel/init/main.c'
       - 'kernel/boot_image.c'
       - 'kernel/kernel.c'
@@ -28,6 +29,19 @@ on:
       - 'limine-h15-ftdi.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+  pull_request:
+    branches:
+      - feat/na-hw-h0-pci-20261110
+    paths:
+      - 'kernel/fs/usb_serial_chrdev.*'
+      - 'kernel/platform/x86_h15_ftdi.*'
+      - 'kernel/platform/x86_qemu_hw_contract.h'
+      - 'kernel/drivers/usb/**'
+      - 'kernel/init/main.c'
+      - 'scripts/check-h15-ftdi-host.sh'
+      - 'scripts/check-architecture-boundaries.py'
+      - 'tests/h15-usb-serial-class-host.c'
+      - '.github/workflows/h15-qemu-usb-serial-alpine-busybox.yml'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
       - name: Install toolchain, signed Alpine staging, ext4, QEMU, OVMF and Python
         timeout-minutes: 15
@@ -83,6 +98,8 @@ jobs:
           sh -n scripts/check-h15-ftdi-host.sh
           make hw-h14-host-check
           sh scripts/check-h15-ftdi-host.sh
+          python3 scripts/check-architecture-boundaries.py --self-test
+          python3 scripts/check-architecture-boundaries.py
       - name: Build H15 kernel, UEFI ISO and immutable original signed Alpine NVMe ext4 root
         timeout-minutes: 50
         run: |
