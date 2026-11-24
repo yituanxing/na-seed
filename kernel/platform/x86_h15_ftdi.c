@@ -16,7 +16,7 @@
 #define H15_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 #define H15_RX_CAP 1024U
 
-static struct nas_x86_qemu_xhci_mmio h15_mmio={ H15_XHCI_VIRT_BASE };
+static struct nas_x86_qemu_mmio h15_mmio={H15_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
 static struct nas_pci_mmio_owner h15_owner;
 static struct nas_xhci_io h15_io;
 static struct nas_xhci_ro_session h15_xhci;
@@ -47,15 +47,17 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
         return -ENODEV;
     }
     h15.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H15 FTDI FAIL] xHCI MEM64 BAR0 outside Q35 whitelist\n");
         return -ENODEV;
     }
     struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_xhci_map(&h15_owner,resources,bar,
-                                H15_XHCI_VIRT_BASE,&claim,&flags);
+    int rc=nas_x86_qemu_map_bar(&h15_owner,resources,bar,
+                                H15_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
+                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
+                                &claim,&flags);
     if(rc)return rc;
     h15.claim=claim;
     h15.bus=fn->bus;
@@ -70,7 +72,7 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
                                (uint16_t)(resources->command|6U));
     h15_io=(struct nas_xhci_io){
         .context=&h15_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
+        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
     };
     rc=nas_xhci_ftdi_open(&h15_io,&nas_dma_qemu_coherent,&h15_xhci);
     if(rc) {

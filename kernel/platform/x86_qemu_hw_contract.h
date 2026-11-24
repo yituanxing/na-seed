@@ -8,10 +8,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* QEMU-only H11-H15 hardware acceptance bridge. These helpers are restricted to the
+/* QEMU-only H3-H15 hardware acceptance bridge. These helpers are restricted to the
  * explicitly qualified Q35 acceptance profiles, not arbitrary physical
  * devices or general interrupt/DMA safety. A future platform PCI resource owner should replace this fixture
- * specific code without changing xHCI class-driver semantics. */
+ * specific code without changing class-driver semantics. */
 static inline bool nas_x86_qemu_fw_cfg_signature(void) {
     static const char expected[4] = {'Q', 'E', 'M', 'U'};
     const uint16_t select_port = 0x510U, data_port = 0x511U;
@@ -53,34 +53,34 @@ static inline bool nas_x86_qemu_xhci_function_qualified(
         fn->programming_interface==0x30U && nas_x86_qemu_fw_cfg_signature();
 }
 
-static inline const struct nas_pci_bar_desc *nas_x86_qemu_xhci_bar0(
-    const struct nas_pci_resources *resources) {
+static inline const struct nas_pci_bar_desc *nas_x86_qemu_find_bar(
+    const struct nas_pci_resources *resources,uint8_t index) {
     if(resources)
         for(unsigned i=0;i<resources->bar_count;i++)
-            if(resources->bars[i].index==0U)return &resources->bars[i];
+            if(resources->bars[i].index==index)return &resources->bars[i];
     return NULL;
 }
 
-struct nas_x86_qemu_xhci_mmio { uint64_t base; };
+struct nas_x86_qemu_mmio { uint64_t base; uint32_t bytes; };
 
-static inline int nas_x86_qemu_xhci_read32(void *ctx,uint32_t offset,
+static inline int nas_x86_qemu_mmio_read32(void *ctx,uint32_t offset,
                                            uint32_t *value) {
-    const uint64_t base=ctx?((const struct nas_x86_qemu_xhci_mmio *)ctx)->base:0;
-    if(!base || !value || (offset&3U) ||
-       offset>NAS_H11_XHCI_MMIO_BYTES-4U)return -EINVAL;
+    const struct nas_x86_qemu_mmio *map=ctx;
+    if(!map || !map->base || map->bytes<4U || !value || (offset&3U) ||
+       offset>map->bytes-4U)return -EINVAL;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *value=*(volatile const uint32_t *)(uintptr_t)(base+offset);
+    *value=*(volatile const uint32_t *)(uintptr_t)(map->base+offset);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     return 0;
 }
 
-static inline int nas_x86_qemu_xhci_write32(void *ctx,uint32_t offset,
+static inline int nas_x86_qemu_mmio_write32(void *ctx,uint32_t offset,
                                             uint32_t value) {
-    const uint64_t base=ctx?((const struct nas_x86_qemu_xhci_mmio *)ctx)->base:0;
-    if(!base || (offset&3U) ||
-       offset>NAS_H11_XHCI_MMIO_BYTES-4U)return -EINVAL;
+    const struct nas_x86_qemu_mmio *map=ctx;
+    if(!map || !map->base || map->bytes<4U || (offset&3U) ||
+       offset>map->bytes-4U)return -EINVAL;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *(volatile uint32_t *)(uintptr_t)(base+offset)=value;
+    *(volatile uint32_t *)(uintptr_t)(map->base+offset)=value;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     return 0;
 }
@@ -93,16 +93,15 @@ static inline void nas_x86_qemu_restore_if(uint64_t flags) {
  * caller restores IF after its controller/class open. On every failure IF
  * is restored; partially installed UC/NX mappings remain pinned, exactly
  * as in the original isolated profiles. No DMA or PCI command is enabled here. */
-static inline int nas_x86_qemu_xhci_map(
+static inline int nas_x86_qemu_map_bar(
     struct nas_pci_mmio_owner *owner,const struct nas_pci_resources *resources,
-    const struct nas_pci_bar_desc *bar,uint64_t virt,
+    const struct nas_pci_bar_desc *bar,uint64_t virt,uint64_t bytes,
+    uint64_t window_base,uint64_t window_bytes,
     struct nas_pci_mmio_claim *claim,uint64_t *flags) {
     *owner=(struct nas_pci_mmio_owner){
-        .window_base=NAS_H11_QEMU_MMIO_BASE,
-        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
+        .window_base=window_base,.window_bytes=window_bytes
     };
-    int rc=nas_pci_mmio_claim_bar(owner,resources,0U,
-                                  NAS_H11_XHCI_MMIO_BYTES,claim);
+    int rc=nas_pci_mmio_claim_bar(owner,resources,bar->index,bytes,claim);
     if(rc)return rc;
     uint64_t saved=0;
     __asm__ volatile("pushfq; popq %0":"=r"(saved)::"memory");
@@ -114,7 +113,7 @@ static inline int nas_x86_qemu_xhci_map(
         nas_x86_qemu_restore_if(saved);
         return rc;
     }
-    for(unsigned i=0;i<NAS_H11_XHCI_MMIO_BYTES/4096U;i++) {
+    for(unsigned i=0;i<bytes/4096U;i++) {
         if(!nas_arch_x86_map_device_page(bar->base+(uint64_t)i*4096U,
                                        virt+(uint64_t)i*4096U)) {
             nas_x86_qemu_restore_if(saved);

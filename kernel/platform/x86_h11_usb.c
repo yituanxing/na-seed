@@ -20,7 +20,7 @@
  */
 #define H11_XHCI_VIRT_BASE UINT64_C(0xfffffe8001600000)
 
-static struct nas_x86_qemu_xhci_mmio h11_mmio={H11_XHCI_VIRT_BASE};
+static struct nas_x86_qemu_mmio h11_mmio={H11_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
 static struct nas_pci_mmio_owner h11_owner;
 static struct nas_xhci_io h11_io;
 static struct nas_xhci_ro_session h11_xhci;
@@ -49,15 +49,17 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
         return -ENODEV;
     }
     h11_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H11 XHCI FAIL] unqualified 64-bit BAR0 (fixed 16KiB QEMU aperture)\n");
         return -ENODEV;
     }
     struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_xhci_map(&h11_owner,resources,bar,
-                                H11_XHCI_VIRT_BASE,&claim,&flags);
+    int rc=nas_x86_qemu_map_bar(&h11_owner,resources,bar,
+                                H11_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
+                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
+                                &claim,&flags);
     if(rc)return rc;
     h11_persistent.claim=claim;
     h11_persistent.bus=fn->bus;
@@ -72,7 +74,7 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
                               (uint16_t)(resources->command|UINT16_C(6)));
     h11_io=(struct nas_xhci_io){
         .context=&h11_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
+        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
     };
     rc=nas_xhci_ro_open(&h11_io,&nas_dma_qemu_coherent,&h11_xhci);
     if(!rc)rc=nas_usb_msc_ro_open(&h11_xhci,&h11_msc);

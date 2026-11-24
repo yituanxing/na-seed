@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - feat/na-hw-h0-pci-20261110
+      - 'refactor/naseed-cleanup-*'
     paths:
+      - 'kernel/platform/x86_qemu_hw_contract.h'
+      - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h3-qemu-nvme-identify.yml'
       - 'kernel/platform/x86_h1_ecam.*'
       - 'kernel/platform/x86_h3_nvme.*'
@@ -51,6 +54,10 @@ jobs:
           fi
       - name: H0-H3 host checks
         run: make hw-h3-host-check
+      - name: Verify shared QEMU MMIO access and BAR lookup on host
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -O2 tests/h3-qemu-mmio-host.c -o /tmp/naseed-h3-qemu-mmio-host
+          /tmp/naseed-h3-qemu-mmio-host
       - name: Build isolated H3 NVMe admin Identify image
         run: |
           make hw-h3-kernel

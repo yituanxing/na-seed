@@ -15,7 +15,7 @@
  * Only the immutable NVMe Alpine root supplies the original signed evtest. */
 #define H14_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 
-static struct nas_x86_qemu_xhci_mmio h14_mmio={H14_XHCI_VIRT_BASE};
+static struct nas_x86_qemu_mmio h14_mmio={H14_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES};
 static struct nas_pci_mmio_owner h14_owner;
 static struct nas_xhci_io h14_io;
 static struct nas_xhci_ro_session h14_xhci;
@@ -40,15 +40,17 @@ int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
         return -ENODEV;
     }
     h14_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_find_bar(resources,0U);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H14 DUAL FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n");
         return -ENODEV;
     }
     struct nas_pci_mmio_claim claim={0};
     uint64_t flags=0;
-    int rc=nas_x86_qemu_xhci_map(&h14_owner,resources,bar,
-                                H14_XHCI_VIRT_BASE,&claim,&flags);
+    int rc=nas_x86_qemu_map_bar(&h14_owner,resources,bar,
+                                H14_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES,
+                                NAS_H11_QEMU_MMIO_BASE,NAS_H11_QEMU_MMIO_BYTES,
+                                &claim,&flags);
     if(rc)return rc;
     h14_persistent.claim=claim;
     h14_persistent.bus=fn->bus;
@@ -63,7 +65,7 @@ int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
                               (uint16_t)(resources->command|6U));
     h14_io=(struct nas_xhci_io){
         .context=&h14_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
-        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
+        .read32=nas_x86_qemu_mmio_read32,.write32=nas_x86_qemu_mmio_write32
     };
     rc=nas_xhci_dual_hid_open(&h14_io,&nas_dma_qemu_coherent,&h14_xhci);
     if(rc) {
