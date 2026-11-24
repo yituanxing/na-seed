@@ -5,10 +5,11 @@ set -eu
 port=$1
 shift
 arm64_efi_fallback=false
-if [ "${1-}" = --arm64-efi-fallback ]; then
-  arm64_efi_fallback=true
-  shift
-fi
+arm64_efi_legacy=false
+case "${1-}" in
+  --arm64-efi-fallback) arm64_efi_fallback=true; shift ;;
+  --arm64-efi-legacy) arm64_efi_legacy=true; shift ;;
+esac
 cross=none
 case "${1-}" in
   --cross-c) cross=c; shift ;;
@@ -17,9 +18,14 @@ esac
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 sh scripts/ci-ubuntu-mirror.sh
 missing=''
-for spec in 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
+if [ "${1-}" = --explicit-tools ]; then
+  shift
+else
+  set -- 'clang:clang' 'ld.lld:lld' 'readelf:binutils' \
             'cpio:cpio' 'xorriso:xorriso' 'mformat:mtools' \
-            'sgdisk:gdisk' 'qemu-riscv64:qemu-user' "$@"; do
+            'sgdisk:gdisk' 'qemu-riscv64:qemu-user' "$@"
+fi
+for spec in "$@"; do
   bin=${spec%%:*}; pkg=${spec#*:}
   command -v "$bin" >/dev/null || missing="$missing $pkg"
 done
@@ -50,7 +56,9 @@ case "$port" in
         test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
     fi
     command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
-    if [ ! -f /usr/share/AAVMF/AAVMF_CODE.fd ]; then
+    if "$arm64_efi_legacy"; then
+      test -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd || missing="$missing qemu-efi-aarch64"
+    elif [ ! -f /usr/share/AAVMF/AAVMF_CODE.fd ]; then
       if ! "$arm64_efi_fallback" || [ ! -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then
         missing="$missing qemu-efi-aarch64"
       fi

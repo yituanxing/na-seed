@@ -54,7 +54,12 @@ bool nas_space_regression(void) {
         !nas_space_lookup(&a, rx, 0, &rx_access) ||
         ro_access != NAS_UP_READ ||
         rx_access != (NAS_UP_READ|NAS_UP_EXEC)) return false;
-    if (nas_space_protect(&a, ro, 1, NAS_UP_WRITE|NAS_UP_EXEC) ||
+    /* Linux permits RWX (JIT); only unsupported bits must fail. */
+    if (!nas_space_protect(&a, ro, 1, NAS_UP_WRITE|NAS_UP_EXEC) ||
+        !nas_space_lookup(&a, ro, 0, &ro_access) ||
+        ro_access != (NAS_UP_READ|NAS_UP_WRITE|NAS_UP_EXEC) ||
+        !nas_space_protect(&a, ro, 1, NAS_UP_READ) ||
+        nas_space_protect(&a, ro, 1, 8U) ||
         !nas_space_lookup(&a, ro, 0, &ro_access) ||
         ro_access != NAS_UP_READ) return false;
     uint8_t *high_a=nas_space_user_byte(&a,high+71);

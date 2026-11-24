@@ -17,7 +17,8 @@ ARM_FALLBACK = "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
 IPXE = "/usr/lib/ipxe/qemu/efi-virtio.rom"
 
 def check(port, *, present=(), absent=(), firmware=None, extra=(),
-          fallback=False, cross=None, expected=(), expect_failure=False):
+          fallback=False, legacy=False, cross=None, explicit=False,
+          expected=(), expect_failure=False):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bins = root / "bin"
@@ -47,8 +48,12 @@ def check(port, *, present=(), absent=(), firmware=None, extra=(),
         args = ["/bin/sh", str(copy), port]
         if fallback:
             args.append("--arm64-efi-fallback")
+        if legacy:
+            args.append("--arm64-efi-legacy")
         if cross:
             args.append('--cross-' + cross)
+        if explicit:
+            args.append('--explicit-tools')
         args.extend(extra)
         result = subprocess.run(args, cwd=root, env={"PATH": str(bins),
                                 "APT_LOG": str(log)}, capture_output=True, text=True)
@@ -92,4 +97,16 @@ for port, arch, pkg in (("riscv64", "riscv64", "riscv64"),
           firmware=(FW[port], headers, libc))
     check(port, fallback=True, cross="c", present=(gcc,),
           firmware=(FW[port], headers, libc))
+# Older x86 native-only groups must not gain qemu-user or unrelated tools.
+check("amd64", explicit=True, absent=("clang", "qemu-riscv64", "cpio"),
+      extra=("clang:clang", "debugfs:e2fsprogs"),
+      expected=("clang", "e2fsprogs"))
+check("arm64", explicit=True, legacy=True, firmware=(ARM_FALLBACK,),
+      absent=("qemu-riscv64", "clang"))
+check("arm64", explicit=True, legacy=True, firmware=(FW["arm64"],),
+      expected=("qemu-efi-aarch64",))
+check("arm64", explicit=True, fallback=True, cross="cxx", firmware=(ARM_FALLBACK,),
+      extra=("openssl:openssl",),
+      expected=("openssl", "gcc-aarch64-linux-gnu", "g++-aarch64-linux-gnu",
+                "libc6-dev-arm64-cross"))
 print("[CI DEPS PASS] three ISAs, firmware alternatives, extra packages, failure paths")

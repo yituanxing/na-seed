@@ -4,6 +4,31 @@ on:
   # and scheduled gates remain unconditional; the label is deliberately not
   # inherited by unrelated PRs that merely touch common MM/TTY sources.
   workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'scripts/probe-m105-signal-group.sh'
+      - 'scripts/build-m105-signal-group.sh'
+      - 'scripts/m105-signal-group-serial-check.py'
+      - 'tests/m105-signal-group.c'
+      - 'kernel/arch/aarch64/**'
+      - 'kernel/mm/**'
+      - 'kernel/drivers/pty*'
+      - 'kernel/drivers/tty*'
+      - 'scripts/test-m105-native-jit-probe.sh'
+      - 'scripts/test-m105-native-jit.c'
+      - 'scripts/test-m105-native-jit-cases.tsv'
+      - 'kernel/arch/pt_directory.h'
+      - 'kernel/fs/**'
+      - 'ports/**'
+      - 'scripts/build-aarch64-full.sh'
+      - '.github/workflows/source-busybox-arm64.yml'
+  push:
+    branches: ['refactor/naseed-cleanup-*']
+    paths:
+      - 'kernel/**'
+      - 'ports/**'
+      - '.github/workflows/source-busybox-arm64.yml'
   schedule:
     - cron: '17 3 * * 0'
 
@@ -23,6 +48,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
       - name: Install ARM64 cross-toolchain and genuine system QEMU
         run: |
           sudo apt-get update -qq
