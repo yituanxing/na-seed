@@ -60,13 +60,17 @@ def catalog_probes() -> list[Path]:
             path = ROOT / "scripts/probe-alpine-signed-batch.sh"
             stage = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
         else:
+            dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
+            stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
+                     else f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}')
+            # Supplemental ISA-specific cohorts can share a milestone name.
+            # Only the port-parameterized canonical staging consumer owns
+            # the signed catalog row; supplemental probes are not duplicates.
+            matches = [candidate for candidate in matches if stage in candidate.read_text()]
             assert len(matches) == 1, (
                 f"{catalog}: {milestone} requires exactly one original probe, got {matches}"
             )
             path = matches[0]
-            dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
-            stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
-                     else f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}')
         assert path.read_text().count(stage) == 1, (
             f"{path}: missing or duplicate canonical staging call {stage}"
         )
