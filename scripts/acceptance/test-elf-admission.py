@@ -3,7 +3,6 @@
 from pathlib import Path
 import subprocess
 import tempfile
-import hashlib
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +49,49 @@ with tempfile.TemporaryDirectory() as d:
     (root / "bin/b").unlink()
     run(HASH, root, current, output, 2, "unique", "M999", cwd=cwd, status=1)
 
+    # Verify every stronger mode with real symlinks, executable permissions,
+    # an outside-root target, a multicall alias, and ELF magic rejection.
+    a, b = root / "bin/a", root / "bin/b"
+    a.write_bytes(b"\x7fELFa")
+    b.write_bytes(b"\x7fELFb")
+    a.chmod(0o755)
+    b.chmod(0o755)
+    modes = ("alias-path", "alias-exec", "contained-exec",
+             "contained-file", "contained-elf", "contained-exec-elf")
+    for mode in modes:
+        run(HASH, root, current, output, 2, mode, "M999", cwd=cwd)
+        assert output.read_text() == subprocess.check_output(
+            ["sha256sum", str(a), str(b)], text=True)
+    b.chmod(0o644)
+    run(HASH, root, current, output, 2, "alias-path", "M999", cwd=cwd)
+    for mode in modes[1:]:
+        run(HASH, root, current, output, 2, mode, "M999", cwd=cwd, status=1)
+    b.chmod(0o755)
+    b.write_bytes(b"not ELF")
+    run(HASH, root, current, output, 2, "contained-file", "M999", cwd=cwd)
+    for mode in ("contained-elf", "contained-exec-elf"):
+        run(HASH, root, current, output, 2, mode, "M999", cwd=cwd, status=1)
+    b.rename(root / "bin/busybox")
+    b.symlink_to("busybox")
+    for mode in modes:
+        run(HASH, root, current, output, 2, mode, "M999", cwd=cwd, status=1)
+    b.unlink()
+    outside = cwd / "outside"
+    outside.write_bytes(b"\x7fELFb")
+    outside.chmod(0o755)
+    b.symlink_to(outside)
+    for mode in modes[2:]:
+        run(HASH, root, current, output, 2, mode, "M999", cwd=cwd, status=1)
+    b.unlink()
+    real_b = root / "bin/real-b"
+    real_b.write_bytes(b"\x7fELFb")
+    real_b.chmod(0o755)
+    b.symlink_to("real-b")
+    run(HASH, root, current, output, 2, "alias-path", "M999", cwd=cwd)
+    assert str(b) in output.read_text()
+    run(HASH, root, current, output, 2, "contained-elf", "M999", cwd=cwd)
+    assert str(real_b) in output.read_text()
+
 # Verify all migrated shell sources parse and reference the original manifests.
 # Compare historical admission against the original exact-line rule using
 # the real repository manifests, including any pre-existing overlaps.
@@ -76,8 +118,8 @@ for script in sorted(scripts.glob("stage-m*-prebuilt.sh")):
         if not conflict and args: assert result == f"{len(entries)}\n"
     if "scripts/acceptance/hash-original-elfs.sh" in body:
         call = next(x for x in body.splitlines() if "scripts/acceptance/hash-original-elfs.sh" in x)
-        assert "scripts/" + name in call
-        expected = re.search(r' (\d+) (count|unique) M\d+$', call)
+        assert "scripts/" + name in call or ('"$manifest"' in call and "manifest=scripts/" + name in body)
+        expected = re.search(r' (\d+) (count|unique|alias-path|alias-exec|contained-exec|contained-file|contained-elf|contained-exec-elf) M\d+$', call)
         assert expected and int(expected[1]) == len(entries), (script, call, len(entries))
     migrated += 1
 assert migrated >= 52, migrated

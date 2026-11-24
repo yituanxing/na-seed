@@ -12,21 +12,5 @@ work="build/external/m125-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio" && test -s "$root/lib/apk/db/installed"
 grep -Fxq 'P:netpbm' "$root/lib/apk/db/installed"
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in
-        "$root/bin/busybox"|"$root/usr/bin/busybox")
-            echo "[M125 HOST STAGE FAIL] BusyBox alias masquerading as original ELF: $elf" >&2
-            exit 1 ;;
-    esac
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m125-original-elfs.txt > "$work/m125-original-signed-elfs.sha256"
-unique=$(awk '{ print $1 }' "$work/m125-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique" -ne 15 ]; then
-    echo "[M125 HOST STAGE FAIL] $port $count programs, $unique distinct SHA256" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m125-original-elfs.txt "$work/m125-original-signed-elfs.sha256" 15 alias-path M125
 echo "[M125 HOST STAGE PASS] $port 15 globally new native Netpbm original ELFs"

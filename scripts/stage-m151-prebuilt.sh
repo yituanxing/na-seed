@@ -25,23 +25,6 @@ for fixture in m151-mono.wav m151-stereo.wav m151-beats.wav m151-source.png \
                m151-source.ppm m151-source.y4m; do
     test -s "$root/tests/$fixture" || exit 1
 done
-root_canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$root_canonical"/*) ;; *)
-        echo "[M151 STAGE FAIL] ELF escapes signed root: $elf" >&2; exit 1 ;; esac
-    case "$resolved" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
-        echo "[M151 STAGE FAIL] BusyBox alias: $elf" >&2; exit 1 ;; esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M151 STAGE FAIL] not ELF: $elf" >&2; exit 1; }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m151-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m151-original-signed-elfs.sha256" |
-         sort -u | wc -l)
-[ "$unique" -eq 35 ] || {
-    echo "[M151 STAGE FAIL] only $unique distinct signed SHA256" >&2; exit 1; }
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m151-original-signed-elfs.sha256" 35 contained-elf M151
 echo "[M151 SIGNED APK STAGE PASS] $port 35 new distinct original ELF SHA256"
 echo '[M151 NATIVE QEMU UNVERIFIED] exact guest semantic markers still required'

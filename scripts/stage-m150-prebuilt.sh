@@ -26,28 +26,6 @@ done
 for fixture in m150-ext2.img m150-mbr.img m150-input.txt; do
     test -s "$root/tests/$fixture" || exit 1
 done
-root_canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$root_canonical"/*) ;; *)
-        echo "[M150 STAGE FAIL] $elf escaped signed root" >&2; exit 1 ;;
-    esac
-    case "$resolved" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
-        echo "[M150 STAGE FAIL] BusyBox alias $elf" >&2; exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M150 STAGE FAIL] non-ELF $elf ($magic)" >&2; exit 1;
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m150-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m150-original-signed-elfs.sha256" |
-         sort -u | wc -l)
-[ "$unique" -eq 26 ] || {
-    echo "[M150 STAGE FAIL] $port $unique unique SHA256, require 26" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m150-original-signed-elfs.sha256" 26 contained-elf M150
 echo "[M150 SIGNED APK STAGE PASS] $port 26 distinct original ELF SHA256"
 echo '[M150 QEMU NOT YET ACCEPTED] guest semantic proof pending native run'

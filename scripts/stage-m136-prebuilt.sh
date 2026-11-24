@@ -17,21 +17,5 @@ for pkg in flex byacc re2c ncurses ncurses-terminfo-base util-linux-misc \
         exit 1
     }
 done
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    target=$(readlink -f "$root/$elf") || exit 1
-    case "$target" in "$root/bin/busybox"|"$root/usr/bin/busybox")
-        echo "[M136 HOST STAGE FAIL] BusyBox alias $elf" >&2
-        exit 1 ;;
-    esac
-    test -x "$target"
-    sha256sum "$target"
-    count=$((count + 1))
-done < scripts/m136-original-elfs.txt > "$work/m136-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m136-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 20 ] || [ "$unique" -ne 20 ]; then
-    echo "[M136 HOST STAGE FAIL] $port only $count paths/$unique distinct signed SHA256" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m136-original-elfs.txt "$work/m136-original-signed-elfs.sha256" 20 alias-exec M136
 echo "[M136 HOST STAGE PASS] $port 20 newly signed and distinct ELF files"

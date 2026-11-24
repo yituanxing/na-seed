@@ -16,16 +16,5 @@ for fixture in tests/m165-batch-run.sh tests/m163-color.ppm \
                tests/m163-gray.pgm tests/m163-bw.pbm tests/m163-rgb.txt; do
     test -s "$root/$fixture"
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *) exit 1 ;; esac
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox) exit 1 ;; esac
-    test -x "$resolved" || exit 1
-    [ "$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')" = 7f454c46 ] || exit 1
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m165-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m165-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 30 ] || exit 1
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m165-original-signed-elfs.sha256" 30 contained-exec-elf M165
 echo "[M165 SIGNED APK PASS] $port 30 new native image ELF SHA256"

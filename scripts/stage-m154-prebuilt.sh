@@ -22,26 +22,6 @@ for package in a2ps barcode chafa csview csvq enca enscript figlet \
         exit 1
     }
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *)
-        echo "[M154 STAGE FAIL] path escapes signed $port root: $elf" >&2
-        exit 1 ;; esac
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox)
-        echo "[M154 STAGE FAIL] BusyBox alias $elf" >&2; exit 1 ;; esac
-    test -f "$resolved" && test -x "$resolved"
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M154 STAGE FAIL] non-ELF $port $elf" >&2; exit 1;
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m154-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m154-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 30 ] || {
-    echo "[M154 STAGE FAIL] $port 30 names but only $unique distinct SHA256" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m154-original-signed-elfs.sha256" 30 contained-elf M154
 echo "[M154 SIGNED APK STAGE PASS] $port 30 unique original ELF SHA256"
 echo '[M154 NATIVE QEMU PENDING] guest semantics still require actual acceptance'

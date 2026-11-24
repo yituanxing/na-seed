@@ -29,27 +29,6 @@ for fixture in m157-color.ppm m157-bw.pbm m157-gray.pgm m157-color.png \
         exit 1
     }
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *)
-        echo "[M157 STAGE FAIL] ELF escapes root: $elf" >&2; exit 1 ;;
-    esac
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox)
-        echo "[M157 STAGE FAIL] BusyBox alias: $elf" >&2; exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M157 STAGE FAIL] non-ELF original: $elf" >&2; exit 1
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m157-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m157-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 30 ] || {
-    echo "[M157 STAGE FAIL] $port only $unique distinct images, need 30" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m157-original-signed-elfs.sha256" 30 contained-elf M157
 echo "[M157 APK STAGE PASS] $port 30 distinct original signed Alpine ELF hashes"
 echo '[M157 GUEST SEMANTICS PENDING] native QEMU acceptance is a separate gate'

@@ -30,29 +30,6 @@ done
 test -s "$root/tests/m155-erofs.img" &&
 test -s "$root/tests/m155-input.txt" &&
 test -s "$root/tests/m155-seed/evidence.txt"
-root_canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$root_canonical"/*) ;; *)
-        echo "[M155 STAGE FAIL] ELF escaped staging root: $elf" >&2
-        exit 1 ;;
-    esac
-    case "$resolved" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
-        echo "[M155 STAGE FAIL] BusyBox alias: $elf" >&2; exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M155 STAGE FAIL] non-ELF $elf ($magic)" >&2; exit 1;
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m155-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m155-original-signed-elfs.sha256" |
-         sort -u | wc -l)
-[ "$unique" -eq 33 ] || {
-    echo "[M155 STAGE FAIL] $port $unique unique SHA256, require 33" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m155-original-signed-elfs.sha256" 33 contained-elf M155
 echo "[M155 SIGNED APK STAGE PASS] $port 33 distinct original ELF SHA256, compact real filesystem fixtures"
 echo '[M155 QEMU NOT YET ACCEPTED] guest semantic proof pending native run'

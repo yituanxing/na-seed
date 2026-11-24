@@ -26,27 +26,6 @@ for fixture in m158-color.ppm m158-palette.ppm m158-gray.pgm m158-bw.pbm; do
         exit 1
     }
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *)
-        echo "[M158 STAGE FAIL] ELF escapes root: $elf" >&2; exit 1 ;;
-    esac
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox)
-        echo "[M158 STAGE FAIL] BusyBox alias: $elf" >&2; exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M158 STAGE FAIL] non-ELF original: $elf" >&2; exit 1
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m158-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m158-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 30 ] || {
-    echo "[M158 STAGE FAIL] $port only $unique distinct ELF images" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m158-original-signed-elfs.sha256" 30 contained-elf M158
 echo "[M158 APK STAGE PASS] $port 30 distinct original signed Alpine ELF hashes"
 echo '[M158 GUEST SEMANTICS PENDING] native QEMU is the separate execution gate'

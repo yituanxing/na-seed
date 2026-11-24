@@ -18,22 +18,5 @@ for package in netpbm binutils libarchive-tools zip attr acl e2fsprogs-extra; do
         exit 1
     }
 done
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in
-        "$root/bin/busybox"|"$root/usr/bin/busybox")
-            echo "[M130 HOST STAGE FAIL] BusyBox alias: $elf" >&2
-            exit 1 ;;
-    esac
-    # Hash the referenced ELF content, not a symlink pathname.
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m130-original-elfs.txt > "$work/m130-original-signed-elfs.sha256"
-unique=$(awk '{ print $1 }' "$work/m130-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique" -ne 15 ]; then
-    echo "[M130 HOST STAGE FAIL] $port $count paths, $unique distinct original SHA256" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m130-original-elfs.txt "$work/m130-original-signed-elfs.sha256" 15 alias-path M130
 echo "[M130 HOST STAGE PASS] $port 15 globally new signed archive/image/metadata ELFs"

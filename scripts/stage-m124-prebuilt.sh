@@ -16,21 +16,5 @@ test -s "$root/tests/m124-empty-minix.img"
 test -s "$root/tests/m124-empty-swap.img"
 test -s "$root/tests/m124-cramfs-source/hello.txt"
 test -s "$root/tests/m124-look-words.txt"
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in
-        "$root/bin/busybox"|"$root/usr/bin/busybox")
-            echo "[M124 HOST STAGE FAIL] BusyBox alias masquerading as original ELF: $elf" >&2
-            exit 1 ;;
-    esac
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m124-original-elfs.txt > "$work/m124-original-signed-elfs.sha256"
-unique=$(awk '{ print $1 }' "$work/m124-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique" -ne 15 ]; then
-    echo "[M124 HOST STAGE FAIL] $port $count programs, $unique distinct SHA256" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m124-original-elfs.txt "$work/m124-original-signed-elfs.sha256" 15 alias-path M124
 echo "[M124 HOST STAGE PASS] $port 15 globally new native util-linux original ELFs"

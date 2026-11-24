@@ -10,17 +10,5 @@ count=$(sh scripts/acceptance/check-elf-history.sh M152 "$manifest" --count)
 sh scripts/stage-alpine-prebuilt-overlay.sh "$1" m152-batch
 root="build/external/m152-batch/$1"
 test -s "$root/rootfs.cpio" && test -s "$root/rootfs/lib/apk/db/installed"
-abs=$(cd "$root/rootfs" && pwd -P)
-while IFS= read -r elf; do
-  case "$elf" in ''|'#'*) continue ;; esac
-  resolved=$(readlink -f "$root/rootfs/$elf") || exit 1
-  case "$resolved" in "$abs"/*) ;; *) exit 1 ;; esac
-  test -f "$resolved" && test -x "$resolved"
-  case "$resolved" in "$abs"/bin/busybox|"$abs"/usr/bin/busybox) exit 1 ;; esac
-  sha256sum "$resolved"
-done < "$manifest" > "$root/m152-original-elfs.sha256"
-[ "$(awk '{print $1}' "$root/m152-original-elfs.sha256" | sort -u | wc -l)" -eq 35 ] || {
-  echo '[M152 FAIL] symlink aliases and identical ELF SHA are not new programs' >&2
-  exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root/rootfs" "$manifest" "$root/m152-original-elfs.sha256" 35 contained-file M152
 echo '[M152 STAGED] 35 original signed Alpine ELF identities; native QEMU pending'

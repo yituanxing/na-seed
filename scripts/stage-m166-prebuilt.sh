@@ -17,20 +17,5 @@ test -s "$root/tests/m166-input-display.c"
 for package in evtest libevdev-tools fbgrab imagemagick; do
     grep -Fxq "P:$package" "$root/lib/apk/db/installed"
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *) exit 1 ;; esac
-    test -x "$resolved" || exit 1
-    # Executable ELF only, never a BusyBox multicall alias, text script,
-    # copied compiler output, or a host-supplied unsigned fixture.
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox)
-        exit 1 ;;
-    esac
-    [ "$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')" = 7f454c46 ] || exit 1
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m166-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m166-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 4 ] || exit 1
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m166-original-signed-elfs.sha256" 4 contained-exec-elf M166
 echo "[M166 SIGNED STAGE PASS] $port four new independent original Alpine evdev ELFs"

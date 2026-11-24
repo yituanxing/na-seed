@@ -11,15 +11,5 @@ sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m143-batch
 root="build/external/m143-batch/$port"
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/lib/apk/db/installed"
-root_canonical=$(cd "$root/rootfs" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    real=$(readlink -f "$root/rootfs/$elf") || exit 1
-    case "$real" in "$root_canonical"/*) ;; *) exit 1 ;; esac
-    test -f "$real" && test -x "$real"
-    case "$real" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox") exit 1 ;; esac
-    sha256sum "$real"
-done < "$manifest" > "$root/m143-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$root/m143-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 3 ] || { echo "[M143 STAGE FAIL] duplicate binary hashes" >&2; exit 1; }
+sh scripts/acceptance/hash-original-elfs.sh "$root/rootfs" "$manifest" "$root/m143-original-signed-elfs.sha256" 3 contained-file M143
 echo "[M143 STAGED] $port three unique signed native Alpine ELFs; QEMU pending"

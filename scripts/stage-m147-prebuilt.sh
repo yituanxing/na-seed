@@ -9,16 +9,5 @@ count=$(sh scripts/acceptance/check-elf-history.sh M147 "$manifest" --count)
 sh scripts/stage-alpine-prebuilt-overlay.sh "$1" m147-batch
 root="build/external/m147-batch/$1"
 test -s "$root/rootfs.cpio" && test -s "$root/rootfs/lib/apk/db/installed"
-abs=$(cd "$root/rootfs" && pwd -P)
-while IFS= read -r elf; do
-  case "$elf" in ''|'#'*) continue ;; esac
-  resolved=$(readlink -f "$root/rootfs/$elf") || exit 1
-  case "$resolved" in "$abs"/*) ;; *) exit 1 ;; esac
-  test -f "$resolved" && test -x "$resolved"
-  case "$resolved" in "$abs"/bin/busybox|"$abs"/usr/bin/busybox) exit 1 ;; esac
-  sha256sum "$resolved"
-done < "$manifest" > "$root/m147-original-elfs.sha256"
-[ "$(awk '{print $1}' "$root/m147-original-elfs.sha256" | sort -u | wc -l)" -eq 29 ] || {
-  echo '[M147 FAIL] identical binary identities cannot be double-counted' >&2; exit 1;
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root/rootfs" "$manifest" "$root/m147-original-elfs.sha256" 29 contained-file M147
 echo '[M147 STAGED] 29 genuinely new signed Alpine ELF identities; QEMU pending'

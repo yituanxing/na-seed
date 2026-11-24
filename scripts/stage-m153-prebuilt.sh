@@ -27,22 +27,6 @@ for fixture in m153-native.o m153-native-v2.o m153-fixture.c \
                m153-assembly.asm m153-text.txt m153-text-v2.txt; do
     test -s "$root/tests/$fixture" || exit 1
 done
-root_canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$root_canonical"/*) ;; *)
-        echo "[M153 STAGE FAIL] ELF escaped signed APK root: $elf" >&2; exit 1 ;; esac
-    case "$resolved" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
-        echo "[M153 STAGE FAIL] BusyBox alias: $elf" >&2; exit 1 ;; esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M153 STAGE FAIL] not an actual ELF: $elf" >&2; exit 1; }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m153-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m153-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 36 ] || {
-    echo "[M153 STAGE FAIL] $port $unique unique SHA, require 36" >&2; exit 1; }
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m153-original-signed-elfs.sha256" 36 contained-elf M153
 echo "[M153 SIGNED APK STAGE PASS] $port 36 distinct official original ELF SHA256"
 echo '[M153 GUEST PENDING] QEMU functional acceptance required'

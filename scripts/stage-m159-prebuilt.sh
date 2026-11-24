@@ -25,27 +25,6 @@ for input in m159-color.ppm m159-gray.pgm m159-bw.pbm \
              m159-multi.pnm m159-rgb.txt m159-svn-note.txt m159-test-cert.p12; do
     test -s "$root/tests/$input" || exit 1
 done
-canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$canonical"/*) ;; *)
-        echo "[M159 ELF FAIL] path escaped signed guest root: $elf" >&2; exit 1 ;;
-    esac
-    case "$resolved" in "$canonical"/bin/busybox|"$canonical"/usr/bin/busybox)
-        echo "[M159 ELF FAIL] BusyBox alias: $elf" >&2; exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M159 ELF FAIL] not an ELF: $elf" >&2; exit 1
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m159-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m159-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 30 ] || {
-    echo "[M159 ELF FAIL] only $unique distinct SHA256 / required 30" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m159-original-signed-elfs.sha256" 30 contained-elf M159
 echo "[M159 APK STAGE PASS] $port 30 distinct signed native ELF SHA256 (SVN/NSS/image)"
 echo '[M159 REAL APPLICATION EXECUTION PENDING] native three-ISA QEMU is a separate gate'

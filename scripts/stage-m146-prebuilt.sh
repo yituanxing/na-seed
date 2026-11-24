@@ -19,30 +19,6 @@ for package in netpbm imagemagick php84 pax-utils scanelf; do
         exit 1
     }
 done
-root_canonical=$(cd "$root" && pwd -P)
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in "$root_canonical"/*) ;; *)
-        echo "[M146 STAGE FAIL] $elf escapes signed root: $resolved" >&2
-        exit 1 ;;
-    esac
-    case "$resolved" in "$root_canonical/bin/busybox"|"$root_canonical/usr/bin/busybox")
-        echo "[M146 STAGE FAIL] BusyBox alias $elf" >&2
-        exit 1 ;;
-    esac
-    test -f "$resolved" && test -x "$resolved" || exit 1
-    magic=$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M146 STAGE FAIL] non-ELF $elf ($magic)" >&2
-        exit 1
-    }
-    sha256sum "$resolved"
-done < "$manifest" > "$work/m146-original-signed-elfs.sha256"
-unique=$(awk '{print $1}' "$work/m146-original-signed-elfs.sha256" | sort -u | wc -l)
-[ "$unique" -eq 24 ] || {
-    echo "[M146 STAGE FAIL] $port 24 paths but only $unique unique original SHA256" >&2
-    exit 1
-}
+sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/m146-original-signed-elfs.sha256" 24 contained-elf M146
 echo "[M146 SIGNED APK STAGE PASS] $port 24 distinct original ELF SHA256"
 echo '[M146 QEMU NOT YET ACCEPTED] native guest behavior still requires validation'

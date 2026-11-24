@@ -18,22 +18,5 @@ for package in procps-ng psmisc util-linux-misc flock tmux; do
         exit 1
     }
 done
-count=0
-while IFS= read -r elf; do
-    case "$elf" in ''|'#'*) continue ;; esac
-    resolved=$(readlink -f "$root/$elf") || exit 1
-    case "$resolved" in
-        "$root/bin/busybox"|"$root/usr/bin/busybox")
-            echo "[M129 HOST STAGE FAIL] BusyBox alias: $elf" >&2
-            exit 1 ;;
-    esac
-    # Hash the referenced ELF content, not a symlink pathname.
-    sha256sum "$root/$elf"
-    count=$((count + 1))
-done < scripts/m129-original-elfs.txt > "$work/m129-original-signed-elfs.sha256"
-unique=$(awk '{ print $1 }' "$work/m129-original-signed-elfs.sha256" | sort -u | wc -l)
-if [ "$count" -ne 15 ] || [ "$unique" -ne 15 ]; then
-    echo "[M129 HOST STAGE FAIL] $port $count paths, $unique distinct original SHA256" >&2
-    exit 1
-fi
+sh scripts/acceptance/hash-original-elfs.sh "$root" scripts/m129-original-elfs.txt "$work/m129-original-signed-elfs.sha256" 15 alias-path M129
 echo "[M129 HOST STAGE PASS] $port 15 globally new signed process/monitoring ELFs"
