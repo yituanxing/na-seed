@@ -26,6 +26,15 @@ struct nas_task;
 /* Linux stack_t ABI is the same 24-byte LP64 struct on all three ports. */
 #define NAS_SS_ONSTACK 1U
 #define NAS_SS_DISABLE 2U
+/* One Linux LP64 stack_t wire layout, used by sigaltstack and rt_sigframe. */
+struct nas_sigaltstack_wire {
+    uint64_t sp;
+    uint32_t flags,padding;
+    uint64_t size;
+};
+_Static_assert(sizeof(struct nas_sigaltstack_wire)==24,"Linux LP64 stack_t ABI");
+struct nas_sigaltstack_wire nas_signal_stack_snapshot(const struct nas_task *,
+                                                       uint64_t user_sp);
 uint64_t nas_signal_action(uint64_t signum, uint64_t new_action,
                            uint64_t old_action, uint64_t size);
 uint64_t nas_signal_sigaltstack(uint64_t new_stack, uint64_t old_stack);

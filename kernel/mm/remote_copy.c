@@ -7,6 +7,7 @@
 #include "../task.h"
 #include "../arch/mmu.h"
 #include "frame.h"
+#include "usercopy.h"
 #include "vm.h"
 #include "fault.h"
 #include "prot.h"
@@ -30,9 +31,7 @@ int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
                !nas_mm_resolve_user(mm,at,&pa,0))
                 return count?(int64_t)count:-EFAULT;
         }
-        uint64_t room=4096ULL-(at&4095ULL);
-        uint64_t n=length-count;
-        if(n>room)n=room;
+        uint64_t n=nas_user_page_chunk(at,length-count);
         memcpy(dst+count,(const void *)(uintptr_t)(nas_hhdm_offset()+pa),
                (size_t)n);
         count+=n;
@@ -65,8 +64,7 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
                  NAS_UP_WRITE,false)==NAS_MM_FAULT_RESOLVED &&
              nas_mm_resolve_user(mm,at,&pa,0)))
             return -EFAULT; /* must not leave a partial breakpoint */
-        uint64_t n=4096ULL-(at&4095ULL);
-        if(n>length-count)n=length-count;
+        uint64_t n=nas_user_page_chunk(at,length-count);
         count+=n;
     }
 #if defined(__aarch64__)
@@ -87,16 +85,14 @@ int64_t nas_vm_write_task_bytes(const struct nas_task *task,uint64_t va,
                          v->kind==NAS_VMA_DEVICE_SHARED)) &&
                   !nas_mm_break_cow((struct nas_mm *)mm,at,0,true))
             return -EFAULT;
-        uint64_t n=4096ULL-(at&4095ULL);
-        if(n>length-count)n=length-count;
+        uint64_t n=nas_user_page_chunk(at,length-count);
         count+=n;
     }
     for(uint64_t count=0;count<length;) {
         uint64_t at=va+count,pa=0;
         if(!nas_mm_resolve_user(mm,at,&pa,0))
             return -EFAULT; /* single-core: preflight remains valid */
-        uint64_t n=4096ULL-(at&4095ULL);
-        if(n>length-count)n=length-count;
+        uint64_t n=nas_user_page_chunk(at,length-count);
         uint8_t *dst=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+pa);
         memcpy(dst,src+count,(size_t)n);
 #if defined(__aarch64__)

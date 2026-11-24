@@ -11,15 +11,6 @@
 #include "../arch/user_pt.h"
 #include "prot.h"
 #include "file_backing.h"
-/* Every NaSeed user page is a 4-KiB base page across all three backends.
- * A resolved HHDM pointer is physically contiguous only until the page
- * boundary; do not confuse adjacent user VAs with adjacent frames. */
-#define NAS_USERCOPY_PAGE_BYTES 4096ULL
-static uint64_t page_chunk(uint64_t va, uint64_t remaining) {
-    uint64_t room = NAS_USERCOPY_PAGE_BYTES -
-                    (va & (NAS_USERCOPY_PAGE_BYTES - 1));
-    return remaining < room ? remaining : room;
-}
 /* Return the kernel's alias of a readable user page, resolving a legitimate
  * nonresident VMA once. Never resolve an unmapped address by inventing a PTE. */
 static uint8_t *read_page(uint64_t at) {
@@ -38,7 +29,7 @@ bool nas_user_prepare_read(uint64_t addr, uint64_t len) {
     for (uint64_t done = 0; done < len;) {
         uint64_t at = addr + done;
         if (!read_page(at)) return false;
-        done += page_chunk(at, len - done);
+        done += nas_user_page_chunk(at, len - done);
     }
     return true;
 }
@@ -50,7 +41,7 @@ bool nas_user_copy_to_mapped(uint64_t va, const uint8_t *data, uint64_t length) 
         uint64_t addr = va + done;
         uint8_t *dst = nas_mmu_user_byte(addr);
         if (!dst) return false;
-        uint64_t n = page_chunk(addr, length - done);
+        uint64_t n = nas_user_page_chunk(addr, length - done);
         memcpy(dst, data + done, (size_t)n);
         done += n;
     }
@@ -62,7 +53,7 @@ bool nas_user_read_bytes(uint64_t addr, uint8_t *dst, uint64_t len) {
         uint64_t at = addr + done;
         uint8_t *src = read_page(at);
         if (!src) return false;
-        uint64_t n = page_chunk(at, len - done);
+        uint64_t n = nas_user_page_chunk(at, len - done);
         memcpy(dst + done, src, (size_t)n);
         done += n;
     }
@@ -76,7 +67,7 @@ int nas_user_read_cstr(uint64_t addr,char *dst,uint64_t capacity) {
         if(at>=USER_LIMIT)return -EFAULT;
         uint8_t *src=read_page(at);
         if(!src)return -EFAULT;
-        uint64_t n=page_chunk(at,capacity-done);
+        uint64_t n=nas_user_page_chunk(at,capacity-done);
         if(n>USER_LIMIT-at)n=USER_LIMIT-at;
         /* Do not touch the next byte after NUL, even when it shares a page. */
         uint64_t i=0;
@@ -125,7 +116,7 @@ bool nas_user_prepare_write(uint64_t addr,uint64_t len) {
                   nas_frame_refs(pa&~UINT64_C(4095))>1 &&
                   !nas_mm_break_cow(mm,at,access,false))return false;
         if(!nas_mmu_user_writable(at))return false;
-        checked += page_chunk(at, len - checked);
+        checked += nas_user_page_chunk(at, len - checked);
     }
     return true;
 }
@@ -143,13 +134,13 @@ bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
             nas_vma_find(&nas_current_task->mm->mmap_vmas,at);
         if(v && v->kind==NAS_VMA_FILE_MUTABLE_SHARED &&
            nas_fs_mmap_dirty(v->backing)<0)return false;
-        checked+=page_chunk(at,len-checked);
+        checked+=nas_user_page_chunk(at,len-checked);
     }
     for (uint64_t done = 0; done < len;) {
         uint64_t at = addr + done;
         uint8_t *dest = nas_mmu_user_byte(at);
         if (!dest) return false;
-        uint64_t n = page_chunk(at, len - done);
+        uint64_t n = nas_user_page_chunk(at, len - done);
         memcpy(dest, src + done, (size_t)n);
         done += n;
     }

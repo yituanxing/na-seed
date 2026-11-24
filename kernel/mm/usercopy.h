@@ -2,6 +2,12 @@
 #define NASEED_MM_USERCOPY_H
 #include <stdint.h>
 #include <stdbool.h>
+/* HHDM pointers are contiguous only to the end of the current 4 KiB
+ * base page, never automatically across adjacent user virtual pages. */
+static inline uint64_t nas_user_page_chunk(uint64_t va,uint64_t remaining) {
+    uint64_t room=4096ULL-(va&4095ULL);
+    return remaining<room?remaining:room;
+}
 /* MM address check and user-page access; current implementation is single-core. */
 bool nas_user_copy_to_mapped(uint64_t addr, const uint8_t *src, uint64_t len);
 /* Linux user pointer permissions are VMA policy, not the current COW
