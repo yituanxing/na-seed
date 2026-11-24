@@ -10,7 +10,6 @@
  * function. Physical USB bulk endpoints never alias the bootstrap UART. */
 int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *,
                           const struct nas_pci_resources *);
-bool nas_x86_h15_ftdi_attached(void);
 /* Scheduler-deferred physical USB Bulk-IN pump; never accesses user memory. */
 int nas_x86_h15_ftdi_poll(unsigned budget);
 unsigned nas_x86_h15_ftdi_rx_count(void);

@@ -76,10 +76,6 @@ uint64_t nas_eventfd_write(unsigned slot,const uint8_t *src,uint64_t count){
     counters[slot]+=value;
     return 8;
 }
-bool nas_eventfd_ready(unsigned slot,bool writing){
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
-    return writing?counters[slot]<EFD_MAX:counters[slot]!=0;
-}
 uint16_t nas_eventfd_poll_slot(unsigned slot,uint16_t events){
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
     uint16_t v=0;

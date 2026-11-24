@@ -282,9 +282,5 @@ void nas_task_adopt_orphans(uint64_t exiting_pid);
 uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
-struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot);
 struct nas_task *nas_task_at(unsigned slot);
-uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd);
-unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd);
-const struct nas_task *nas_task_find(uint64_t pid);
 #endif

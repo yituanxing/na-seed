@@ -84,10 +84,6 @@ void nas_task_boot_init(void) {
     nas_current_task->state = NAS_TASK_RUNNING;
 }
 struct nas_task *nas_task_current(void) { return nas_current_task; }
-const struct nas_task *nas_task_find(uint64_t pid) {
-    /* All callers share the single mutable/const PID lookup owner. */
-    return nas_task_by_pid(pid);
-}
 
 /* Reuse slots, NEVER PID identities. FD tables are copied, but
  * shared open-file references are adjusted after a successful VM fork.
@@ -298,20 +294,7 @@ uint64_t nas_task_page_root(const struct nas_task *task) {
 uint64_t nas_task_tls_base(const struct nas_task *task) {
     return task ? nas_arch_context_tls_base(&task->arch) : 0;
 }
-struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
-    if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;
-    struct nas_task *task = &task_table[slot];
-    if (task->state == NAS_TASK_FREE || (task->ppid != parent_pid || task->is_thread))
-        return NULL;
-    return task;
-}
 
 struct nas_task *nas_task_at(unsigned slot) {
     return slot < NAS_TASK_LIMIT ? &task_table[slot] : NULL;
-}
-uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds->entries[fd].kind : 0;
-}
-unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds->entries[fd].slot : NAS_OPEN_FILE_LIMIT;
 }

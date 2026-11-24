@@ -110,4 +110,41 @@ for path, line, name, static in definitions:
         print("LOWREF", path, line, name, "occurrences", n, "static", static)
 print("KERNEL IDENTIFIER INVENTORY", len(definitions), "candidate definitions; includes optional builds and test references")
 
+
+# Finer first-party C/ASM duplicate report: ignore comments, normalize only
+# architecture-local names, preserve literals, operators, and NAS ABI names.
+core_windows=defaultdict(list)
+for path in paths:
+    if path.parts[0] not in ("kernel", "ports", "user") or path.suffix not in (".c",".h",".S"):
+        continue
+    file=ROOT/path
+    content=file.read_text()
+    # Keep actual string contents (including asm symbol names).
+    content=re.sub(r"/\*[\s\S]*?\*/", lambda m:"\n"*m[0].count("\n"),content)
+    lines=[(i,re.sub(r"\b(?:nas_rv_|nas_arm_|nas_x86_|NAS_RV_|NAS_ARM_|NAS_X86_)", "ISA_", re.sub(r"\s+","",s.split("//",1)[0])))
+           for i,s in enumerate(content.splitlines(),1) if s.split("//",1)[0].strip()]
+    for j in range(len(lines)-6+1):
+        seq="\n".join(s for _,s in lines[j:j+6])
+        if len(seq)<110:continue
+        core_windows[seq].append((str(path),lines[j][0],lines[j+5][0]))
+core_clusters=defaultdict(list)
+for seq,loc in core_windows.items():
+    files=tuple(sorted({p for p,*_ in loc}))
+    if len(files)<2:continue
+    core_clusters[files].append((seq,loc))
+for files,windows in sorted(core_clusters.items(), key=lambda item:(len(item[0])-1)*len(item[1]), reverse=True)[:55]:
+    loc=windows[0][1]
+    print("CORE DUP",len(windows),"windows"," | ".join(f"{p}:{a}-{b}" for p,a,b in loc[:6]))
+# No earlier removed APIs may reappear as code, including host fixtures.
+retired=("nas_eventfd_ready","nas_vm_walk_task_pages","nas_x86_h15_ftdi_attached",
+         "nas_task_find","nas_task_child_at","nas_task_fd_kind","nas_task_fd_slot")
+for path in paths:
+    if path.suffix not in (".c",".h",".S",".s"):continue
+    file=ROOT/path
+    if not file.is_file():continue
+    for name in retired:
+        if re.search(r"\b"+name+r"\b",file.read_text(errors="replace")):
+            raise SystemExit(f"retired interface still referenced: {path}: {name}")
+print("[RETIRED KERNEL API PASS]",len(retired))
+
 print("[CLEANUP INVENTORY PASS] read-only candidate scan, not proof of removable code")

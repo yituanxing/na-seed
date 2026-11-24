@@ -146,11 +146,6 @@ bool nas_vm_walk_task_vmas(const struct nas_task *task,
     return task && task->state!=NAS_TASK_FREE && task->mm &&
            task->mm->users && nas_vma_walk(&task->mm->mmap_vmas,callback,ctx);
 }
-bool nas_vm_walk_task_pages(const struct nas_task *task,
-                             nas_mmu_user_visit callback,void *ctx) {
-    if(!task || !callback || task->state==NAS_TASK_FREE)return false;
-    return nas_mm_walk_pages(task->mm,callback,ctx);
-}
 #define heap_break TASK.mm->heap_break
 /* Ordinary anonymous allocation stays in the top-down window. Fixed
  * mappings participate in the same per-task VM ownership ledger, including

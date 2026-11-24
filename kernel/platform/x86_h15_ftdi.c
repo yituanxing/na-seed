@@ -53,7 +53,6 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
     nas_print("[H15 FTDI USB ENUMERATED] QEMU xHCI root port; genuine FT232BM 0403:6001 vendor-control 8N1 115200; Bulk-IN/OUT\n");
     return 0;
 }
-bool nas_x86_h15_ftdi_attached(void) { return h15.attached; }
 unsigned nas_x86_h15_ftdi_rx_count(void) { return h15.attached?h15.rx_count:0U; }
 void nas_x86_h15_ftdi_rx_flush(void) { h15.rx_head=h15.rx_count=0U; }
 

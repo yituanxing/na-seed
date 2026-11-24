@@ -30,9 +30,6 @@ struct nas_task;
 /* Logical VMA enumeration includes reserved PROT_NONE and nonresident pages.
  * Callers must check target Task lifetime/authorization first. */
 bool nas_vm_walk_task_vmas(const struct nas_task *,nas_vma_visit,void *ctx);
-/* Low-level resident PTE traversal retained for diagnostics only. */
-bool nas_vm_walk_task_pages(const struct nas_task *task,
-                             nas_mmu_user_visit callback,void *ctx);
 /* INTERNAL, unprivileged callers forbidden until ptrace authorization.
  * Returns bytes copied, -EFAULT with zero progress, -ESRCH for dead Task. */
 int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,
