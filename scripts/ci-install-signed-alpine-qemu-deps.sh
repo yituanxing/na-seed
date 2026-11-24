@@ -4,6 +4,11 @@ set -eu
 [ "$#" -ge 1 ] || exit 2
 port=$1
 shift
+arm64_efi_fallback=false
+if [ "${1-}" = --arm64-efi-fallback ]; then
+  arm64_efi_fallback=true
+  shift
+fi
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 sh scripts/ci-ubuntu-mirror.sh
 missing=''
@@ -24,7 +29,11 @@ case "$port" in
     test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
   arm64)
     command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
-    test -f /usr/share/AAVMF/AAVMF_CODE.fd || missing="$missing qemu-efi-aarch64"
+    if [ ! -f /usr/share/AAVMF/AAVMF_CODE.fd ]; then
+      if ! "$arm64_efi_fallback" || [ ! -f /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then
+        missing="$missing qemu-efi-aarch64"
+      fi
+    fi
     test -f /usr/lib/ipxe/qemu/efi-virtio.rom || missing="$missing ipxe-qemu" ;;
 esac
 if [ -n "$missing" ]; then
