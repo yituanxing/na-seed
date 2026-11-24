@@ -130,18 +130,36 @@ for names, count, mode in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=(\d+); mod
     for name in names.split("|"):
         assert name not in profiles
         profiles[name] = (int(count), mode)
-assert profiles == {f"m{n}": (
+expected_profiles = {f"m{n}": (
     21 if n == 110 else 68 if n == 141 else 20 if n >= 136 else 15,
     "count" if n <= 115 else "unique" if n <= 123 else "alias-path" if n <= 130
     else "alias-exec" if n <= 138 else "contained-exec" if n <= 140 else "contained-file")
     for n in range(109, 142)}
+expected_profiles.update({
+    "m146": (24, "contained-elf"),
+    "m148": (35, "contained-elf"),
+    "m150": (26, "contained-elf"),
+    "m151": (35, "contained-elf"),
+    "m153": (36, "contained-elf"),
+    "m154": (30, "contained-elf"),
+    "m155": (33, "contained-elf"),
+    "m157": (30, "contained-elf"),
+    "m158": (30, "contained-elf"),
+    "m159": (30, "contained-elf"),
+    "m163": (33, "contained-exec-elf"),
+    "m165": (30, "contained-exec-elf"),
+})
+assert profiles == expected_profiles
 for profile, (count, mode) in profiles.items():
     entries = [x for x in manifests[profile + "-original-elfs.txt"] if x and not x.startswith("#")]
     assert len(entries) == count, (profile, count, len(entries))
     if int(profile[1:]) >= 121:
         name = profile + "-original-elfs.txt"
         conflict = any(x in rows for x in entries for k, rows in manifests.items() if k != name)
-        args = ["--count"] if profile == "m141" else []
+        args = ["--count"] if int(profile[1:]) >= 141 else []
+        if profile in {"m150", "m151", "m153", "m155", "m157", "m158", "m159", "m163", "m165"}:
+            args.append("--distinct")
+            conflict = conflict or len(entries) != len(set(entries))
         result = run(HISTORY, profile.upper(), "scripts/" + name, *args, cwd=ROOT, status=int(conflict))
         if args and not conflict:
             assert result == f"{count}\n"
@@ -174,6 +192,18 @@ with tempfile.TemporaryDirectory() as d:
             "m138": "llvm21",
             "m139": "fontconfig font-dejavu netpbm util-linux-misc mcookie gnutls-utils gnupg-gpgconf",
             "m140": "coreutils netpbm",
+            "m146": "netpbm imagemagick php84 pax-utils scanelf",
+            "m148": "netpbm",
+            "m150": "lrzip par2cmdline pixz plzip sleuthkit",
+            "m151": "libsndfile aubio heif-thumbnailer faad2 fdkaac audiofile rubberband soundtouch aom libvpx-utils libjxl-tools libheif-tools jasper netpbm",
+            "m153": "binutils gcc ccache clang21-extra-tools radare2 pahole moreutils nasm yara bloaty cflow difftastic mold",
+            "m154": "a2ps barcode chafa csview csvq enca enscript figlet gnuplot ghostscript html2text jql libxml2-utils mandoc pango-tools potrace psutils rsvg-convert taplo unrtf font-dejavu",
+            "m155": "btrfs-progs btrfs-progs-extra xfsprogs xfsprogs-extra f2fs-tools erofs-utils ntfs-3g-progs gptfdisk parted",
+            "m157": "netpbm giflib-utils tiff-tools libpng-utils",
+            "m158": "netpbm",
+            "m159": "subversion nss-tools netpbm",
+            "m163": "netpbm",
+            "m165": "netpbm",
         }.get(profile, "fixture").split()
         installed = root / "lib/apk/db/installed"
         installed.write_text("".join(f"P:{p}\n" for p in packages))
@@ -181,7 +211,7 @@ with tempfile.TemporaryDirectory() as d:
         rows = [f"usr/bin/{profile}-{i}" for i in range(count)]
         (root / "usr/bin").mkdir(parents=True)
         for row in rows:
-            (root / row).write_bytes(row.encode())
+            (root / row).write_bytes(b"\x7fELF" + row.encode())
             (root / row).chmod(0o755)
         (cwd / "scripts" / (profile + "-original-elfs.txt")).write_text("\n".join(rows) + "\n")
         fixtures = {
@@ -192,6 +222,15 @@ with tempfile.TemporaryDirectory() as d:
             "m122": " ".join("m122-" + x for x in "original.ppm red.ppm blue.ppm black.pbm white.pgm flipped.ppm cropped.ppm inverted.ppm red-channel.pgm red8.ppm red31.ppm red-blue.ppm original.png invalid.ppm".split()),
             "m123": "m123-ext2.img m123-empty-ext.img m123-empty-fat.img",
             "m124": "m124-empty-minix.img m124-empty-swap.img m124-cramfs-source/hello.txt m124-look-words.txt",
+            "m150": "m150-ext2.img m150-mbr.img m150-input.txt",
+            "m151": "m151-mono.wav m151-stereo.wav m151-beats.wav m151-source.png m151-source.ppm m151-source.y4m",
+            "m153": "m153-native.o m153-native-v2.o m153-fixture.c m153-fixture-v2.c m153-style.c m153-rule.yar m153-assembly.asm m153-text.txt m153-text-v2.txt",
+            "m155": "m155-erofs.img m155-input.txt m155-seed/evidence.txt",
+            "m157": "m157-color.ppm m157-bw.pbm m157-gray.pgm m157-color.png m157-bad-itxt.png m157-color.gif m157-paletted.tif m157-fax.raw",
+            "m158": "m158-color.ppm m158-palette.ppm m158-gray.pgm m158-bw.pbm",
+            "m159": "m159-color.ppm m159-gray.pgm m159-bw.pbm m159-multi.pnm m159-rgb.txt m159-svn-note.txt m159-test-cert.p12",
+            "m163": "m163-batch-run.sh m163-color.ppm m163-gray.pgm m163-bw.pbm m163-rgb.txt",
+            "m165": "m165-batch-run.sh m163-color.ppm m163-gray.pgm m163-bw.pbm m163-rgb.txt",
         }.get(profile, "").split()
         for fixture in fixtures:
             p = root / "tests" / fixture
@@ -202,6 +241,10 @@ with tempfile.TemporaryDirectory() as d:
                 p = root / "usr/share/groff/1.23.0" / resource / "fixture"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(b"fixture")
+        if profile == "m155":
+            import gzip
+            for kind in ("btrfs", "xfs", "f2fs", "ntfs", "gpt"):
+                (root / "tests" / f"m155-{kind}.img.gz").write_bytes(gzip.compress(b"fixture"))
         run(shared, "amd64", profile, cwd=cwd)
         hashes = work / (profile + "-original-signed-elfs.sha256")
         assert len(hashes.read_text().splitlines()) == count
@@ -214,7 +257,7 @@ with tempfile.TemporaryDirectory() as d:
             (root / "usr/share/groff/1.23.0/font/fixture").unlink()
             run(shared, "amd64", profile, cwd=cwd, status=1)
             (root / "usr/share/groff/1.23.0/font/fixture").write_bytes(b"fixture")
-        if 124 <= int(profile[1:]) <= 140:
+        if int(profile[1:]) >= 124 and profile != "m141":
             installed.write_text("P:wrong-package\n")
             run(shared, "amd64", profile, cwd=cwd, status=1)
             installed.write_text("".join(f"P:{p}\n" for p in packages))
@@ -223,8 +266,18 @@ with tempfile.TemporaryDirectory() as d:
             collision.write_text(rows[0] + "\n")
             run(shared, "amd64", profile, cwd=cwd, status=1)
             collision.unlink()
-        if profile == "m141":
-            manifest = cwd / "scripts/m141-original-elfs.txt"
+        if profile == "m155":
+            p = root / "tests/m155-btrfs.img.gz"
+            p.write_bytes(b"invalid gzip")
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            p.write_bytes(gzip.compress(b"fixture"))
+        if mode in {"contained-elf", "contained-exec-elf"}:
+            p = root / rows[0]
+            p.write_bytes(b"not ELF")
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            p.write_bytes(b"\x7fELF" + rows[0].encode())
+        if int(profile[1:]) >= 141:
+            manifest = cwd / "scripts" / (profile + "-original-elfs.txt")
             manifest.write_text("\n".join(rows[:-1]) + "\n")
             run(shared, "amd64", profile, cwd=cwd, status=1)
             manifest.write_text("\n".join(rows) + "\n")

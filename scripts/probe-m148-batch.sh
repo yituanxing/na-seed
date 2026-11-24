@@ -4,7 +4,7 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m148-prebuilt.sh "$port"
+sh scripts/stage-alpine-signed-batch.sh "$port" m148
 work="build/external/m148-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

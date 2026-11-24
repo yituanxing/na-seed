@@ -1,5 +1,5 @@
 #!/bin/sh
-# One signed APK staging owner for the original M109–M141 batches.
+# One signed APK staging owner for the original M109–M165 selected batches.
 set -eu
 [ "$#" -eq 2 ] || { echo 'usage: stage-alpine-signed-batch.sh PORT PROFILE' >&2; exit 2; }
 port=$1
@@ -14,6 +14,14 @@ case "$profile" in
     m136|m137|m138) count=20; mode=alias-exec ;;
     m139|m140) count=20; mode=contained-exec ;;
     m141) count=68; mode=contained-file ;;
+    m146) count=24; mode=contained-elf ;;
+    m148|m151) count=35; mode=contained-elf ;;
+    m150) count=26; mode=contained-elf ;;
+    m153) count=36; mode=contained-elf ;;
+    m154|m157|m158|m159) count=30; mode=contained-elf ;;
+    m155) count=33; mode=contained-elf ;;
+    m163) count=33; mode=contained-exec-elf ;;
+    m165) count=30; mode=contained-exec-elf ;;
     *) exit 2 ;;
 esac
 label=$(printf '%s' "$profile" | tr '[:lower:]' '[:upper:]')
@@ -21,8 +29,11 @@ manifest="scripts/$profile-original-elfs.txt"
 case "$profile" in
     m12[1-9]|m13[0-9]|m140)
         sh scripts/acceptance/check-elf-history.sh "$label" "$manifest" ;;
-    m141)
+    m141|m146|m148|m154)
         actual=$(sh scripts/acceptance/check-elf-history.sh "$label" "$manifest" --count)
+        [ "$actual" -eq "$count" ] || { echo "[$label STAGE FAIL] $actual paths, expected $count" >&2; exit 1; } ;;
+    m150|m151|m153|m155|m157|m158|m159|m163|m165)
+        actual=$(sh scripts/acceptance/check-elf-history.sh "$label" "$manifest" --count --distinct)
         [ "$actual" -eq "$count" ] || { echo "[$label STAGE FAIL] $actual paths, expected $count" >&2; exit 1; } ;;
 esac
 sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$profile-batch"
@@ -80,6 +91,42 @@ case "$profile" in
     m138) require_packages llvm21 ;;
     m139) require_packages fontconfig font-dejavu netpbm util-linux-misc mcookie gnutls-utils gnupg-gpgconf ;;
     m140) require_packages coreutils netpbm ;;
+    m146)
+        require_packages netpbm imagemagick php84 pax-utils scanelf ;;
+    m148)
+        require_packages netpbm ;;
+    m150)
+        require_packages lrzip par2cmdline pixz plzip sleuthkit
+        require_fixtures m150-ext2.img m150-mbr.img m150-input.txt ;;
+    m151)
+        require_packages libsndfile aubio heif-thumbnailer faad2 fdkaac audiofile rubberband soundtouch aom libvpx-utils libjxl-tools libheif-tools jasper netpbm
+        require_fixtures m151-mono.wav m151-stereo.wav m151-beats.wav m151-source.png m151-source.ppm m151-source.y4m ;;
+    m153)
+        require_packages binutils gcc ccache clang21-extra-tools radare2 pahole moreutils nasm yara bloaty cflow difftastic mold
+        require_fixtures m153-native.o m153-native-v2.o m153-fixture.c m153-fixture-v2.c m153-style.c m153-rule.yar m153-assembly.asm m153-text.txt m153-text-v2.txt ;;
+    m154)
+        require_packages a2ps barcode chafa csview csvq enca enscript figlet gnuplot ghostscript html2text jql libxml2-utils mandoc pango-tools potrace psutils rsvg-convert taplo unrtf font-dejavu ;;
+    m155)
+        require_packages btrfs-progs btrfs-progs-extra xfsprogs xfsprogs-extra f2fs-tools erofs-utils ntfs-3g-progs gptfdisk parted
+        for kind in btrfs xfs f2fs ntfs gpt; do
+            gzip -t "$root/tests/m155-$kind.img.gz"
+        done
+        require_fixtures m155-erofs.img m155-input.txt m155-seed/evidence.txt ;;
+    m157)
+        require_packages netpbm giflib-utils tiff-tools libpng-utils
+        require_fixtures m157-color.ppm m157-bw.pbm m157-gray.pgm m157-color.png m157-bad-itxt.png m157-color.gif m157-paletted.tif m157-fax.raw ;;
+    m158)
+        require_packages netpbm
+        require_fixtures m158-color.ppm m158-palette.ppm m158-gray.pgm m158-bw.pbm ;;
+    m159)
+        require_packages subversion nss-tools netpbm
+        require_fixtures m159-color.ppm m159-gray.pgm m159-bw.pbm m159-multi.pnm m159-rgb.txt m159-svn-note.txt m159-test-cert.p12 ;;
+    m163)
+        require_packages netpbm
+        require_fixtures m163-batch-run.sh m163-color.ppm m163-gray.pgm m163-bw.pbm m163-rgb.txt ;;
+    m165)
+        require_packages netpbm
+        require_fixtures m165-batch-run.sh m163-color.ppm m163-gray.pgm m163-bw.pbm m163-rgb.txt ;;
 esac
 sh scripts/acceptance/hash-original-elfs.sh "$root" "$manifest" "$work/$profile-original-signed-elfs.sha256" "$count" "$mode" "$label"
 echo "[$label HOST STAGE PASS] $port $count original signed Alpine ELFs ($mode); native guest acceptance remains separate"
