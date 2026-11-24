@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/na-hw-h0-pci-20261110
+      - 'refactor/naseed-cleanup-*'
     paths:
       - '.github/workflows/h0-readonly-hardware-discovery.yml'
       - 'kernel/kernel.c'
@@ -11,6 +12,7 @@ on:
       - 'kernel/drivers/serial.*'
       - 'kernel/platform/firmware_acpi.*'
       - 'kernel/platform/x86_h0_pci.*'
+      - 'kernel/platform/x86_pci_config.h'
       - 'scripts/check-h0-acpi-host.sh'
       - 'scripts/check-pci-scan.sh'
       - 'scripts/test-pci-scan.c'

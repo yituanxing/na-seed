@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feat/na-hw-h0-pci-20261110
+      - 'refactor/naseed-cleanup-*'
     paths:
       - '.github/workflows/h2-readonly-pci-resource-inventory.yml'
       - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/platform/x86_pci_config.h'
       - 'kernel/drivers/core/pci_resources.*'
       - 'kernel/platform/pci_ecam.*'
       - 'kernel/kernel.c'

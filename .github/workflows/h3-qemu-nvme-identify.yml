@@ -10,6 +10,7 @@ on:
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h3-qemu-nvme-identify.yml'
       - 'kernel/platform/x86_h1_ecam.*'
+      - 'kernel/platform/x86_pci_config.h'
       - 'kernel/platform/x86_h3_nvme.*'
       - 'kernel/platform/pci_ecam.*'
       - 'kernel/drivers/core/pci_resources.*'

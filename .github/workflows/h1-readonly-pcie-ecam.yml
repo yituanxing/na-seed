@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/na-hw-h0-pci-20261110
+      - 'refactor/naseed-cleanup-*'
     paths:
       - '.github/workflows/h1-readonly-pcie-ecam.yml'
       - 'kernel/kernel.c'
@@ -11,6 +12,7 @@ on:
       - 'kernel/platform/firmware_acpi.*'
       - 'kernel/platform/pci_ecam.*'
       - 'kernel/platform/x86_h0_pci.*'
+      - 'kernel/platform/x86_pci_config.h'
       - 'kernel/platform/x86_h1_ecam.*'
       - 'kernel/drivers/core/pci_scan.*'
       - 'tests/h0-acpi-host.c'

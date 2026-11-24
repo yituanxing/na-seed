@@ -39,6 +39,7 @@ static inline int nas_qemu_virtio_register_classes(void) {
     rc=nas_virtio_gpu_driver_register();
     if(rc<0)return rc;
 #endif
+    (void)rc;
     return 0;
 }
 static inline bool nas_qemu_virtio_supported_class(uint32_t id) {

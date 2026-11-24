@@ -10,6 +10,9 @@ on:
       - 'ports/lwip/socket_port.c'
       - 'scripts/check-file-readiness.sh'
       - 'kernel/arch/**'
+      - 'kernel/platform/**'
+      - 'kernel/time/**'
+      - 'scripts/test-platform-contracts.c'
       - 'kernel/mm/**'
       - 'kernel/task/**'
       - 'scripts/check-netlink-providers.sh'
@@ -63,3 +66,10 @@ jobs:
           sh scripts/run-m236-local.sh --host-only
           sh scripts/run-m237-local.sh --host-only
           sh scripts/run-m238-local.sh --host-only
+
+      - name: Verify common PCI, VirtIO class and MM policy contracts
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -I third_party/unikraft/include -I ports/unikraft/include scripts/test-platform-contracts.c -o /tmp/naseed-platform-none
+          /tmp/naseed-platform-none
+          cc -std=c11 -O2 -Wall -Wextra -Werror -I third_party/unikraft/include -I ports/unikraft/include -DNAS_ENABLE_VIRTIO_BLK=1 -DNAS_ENABLE_VIRTIO_NET=1 -DNAS_ENABLE_VIRTIO_INPUT=1 -DNAS_ENABLE_VIRTIO_GPU=1 -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 scripts/test-platform-contracts.c -o /tmp/naseed-platform-all
+          /tmp/naseed-platform-all
