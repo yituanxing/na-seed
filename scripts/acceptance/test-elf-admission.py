@@ -130,15 +130,21 @@ for names, count, mode in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=(\d+); mod
     for name in names.split("|"):
         assert name not in profiles
         profiles[name] = (int(count), mode)
-assert profiles == {f"m{n}": (21 if n == 110 else 15, "count" if n <= 115 else "unique" if n <= 123 else "alias-path")
-                    for n in range(109, 129)}
+assert profiles == {f"m{n}": (
+    21 if n == 110 else 68 if n == 141 else 20 if n >= 136 else 15,
+    "count" if n <= 115 else "unique" if n <= 123 else "alias-path" if n <= 130
+    else "alias-exec" if n <= 138 else "contained-exec" if n <= 140 else "contained-file")
+    for n in range(109, 142)}
 for profile, (count, mode) in profiles.items():
     entries = [x for x in manifests[profile + "-original-elfs.txt"] if x and not x.startswith("#")]
     assert len(entries) == count, (profile, count, len(entries))
     if int(profile[1:]) >= 121:
         name = profile + "-original-elfs.txt"
         conflict = any(x in rows for x in entries for k, rows in manifests.items() if k != name)
-        run(HISTORY, profile.upper(), "scripts/" + name, cwd=ROOT, status=int(conflict))
+        args = ["--count"] if profile == "m141" else []
+        result = run(HISTORY, profile.upper(), "scripts/" + name, *args, cwd=ROOT, status=int(conflict))
+        if args and not conflict:
+            assert result == f"{count}\n"
 
 # Host-only synthetic overlay; the production shared stage and hash helpers run.
 with tempfile.TemporaryDirectory() as d:
@@ -156,6 +162,18 @@ with tempfile.TemporaryDirectory() as d:
             "m124": "util-linux-misc", "m125": "netpbm", "m126": "groff",
             "m127": "wavpack vorbis-tools speex-tools flac lame mpg123",
             "m128": "exfatprogs squashfs-tools squashfs-tools-ng blkid wipefs",
+            "m129": "procps-ng psmisc util-linux-misc flock tmux",
+            "m130": "netpbm binutils libarchive-tools zip attr acl e2fsprogs-extra",
+            "m131": "netpbm",
+            "m132": "icu libwebp-tools zopfli pcre2-tools bzip3",
+            "m133": "graphviz xz diffutils ed mtools",
+            "m134": "graphviz lua5.4 dash mawk xxd gperf ninja-build fish",
+            "m135": "cmake libjpeg-turbo-utils tidyhtml gdbm-tools graphviz netpbm",
+            "m136": "flex byacc re2c ncurses ncurses-terminfo-base util-linux-misc uuidgen findmnt flock lscpu",
+            "m137": "lmdb-tools fontconfig font-dejavu protoc flatc swig ragel xorriso graphicsmagick mdbook rclone restic recode fdupes zint zbar",
+            "m138": "llvm21",
+            "m139": "fontconfig font-dejavu netpbm util-linux-misc mcookie gnutls-utils gnupg-gpgconf",
+            "m140": "coreutils netpbm",
         }.get(profile, "fixture").split()
         installed = root / "lib/apk/db/installed"
         installed.write_text("".join(f"P:{p}\n" for p in packages))
@@ -164,6 +182,7 @@ with tempfile.TemporaryDirectory() as d:
         (root / "usr/bin").mkdir(parents=True)
         for row in rows:
             (root / row).write_bytes(row.encode())
+            (root / row).chmod(0o755)
         (cwd / "scripts" / (profile + "-original-elfs.txt")).write_text("\n".join(rows) + "\n")
         fixtures = {
             "m118": "m118-debug.o m118-debug-other.o m118-debug.elf m118-textrel.so",
@@ -195,7 +214,7 @@ with tempfile.TemporaryDirectory() as d:
             (root / "usr/share/groff/1.23.0/font/fixture").unlink()
             run(shared, "amd64", profile, cwd=cwd, status=1)
             (root / "usr/share/groff/1.23.0/font/fixture").write_bytes(b"fixture")
-        if int(profile[1:]) >= 124:
+        if 124 <= int(profile[1:]) <= 140:
             installed.write_text("P:wrong-package\n")
             run(shared, "amd64", profile, cwd=cwd, status=1)
             installed.write_text("".join(f"P:{p}\n" for p in packages))
@@ -204,6 +223,11 @@ with tempfile.TemporaryDirectory() as d:
             collision.write_text(rows[0] + "\n")
             run(shared, "amd64", profile, cwd=cwd, status=1)
             collision.unlink()
+        if profile == "m141":
+            manifest = cwd / "scripts/m141-original-elfs.txt"
+            manifest.write_text("\n".join(rows[:-1]) + "\n")
+            run(shared, "amd64", profile, cwd=cwd, status=1)
+            manifest.write_text("\n".join(rows) + "\n")
     run(shared, "amd64", "m999", cwd=cwd, status=2)
     run(shared, "unknown", "m109", cwd=cwd, status=2)
 migrated += len(profiles)
