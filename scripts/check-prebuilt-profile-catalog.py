@@ -134,8 +134,15 @@ def validate_wrappers(profiles: set[str]) -> int:
             if profile in wrappers:
                 fail(f"{profile}: duplicate shared or dedicated stage owner")
             probe = ROOT / f"scripts/probe-{name}-batch.sh"
-            if f'sh scripts/stage-alpine-signed-batch.sh "$port" {name}' not in probe.read_text():
-                fail(f"{profile}: probe does not use shared staging owner")
+            if 109 <= int(name[1:]) <= 140:
+                if probe.exists():
+                    fail(f"{profile}: duplicate dedicated native probe")
+                probe = ROOT / "scripts/probe-alpine-signed-batch.sh"
+                call = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
+            else:
+                call = f'sh scripts/stage-alpine-signed-batch.sh "$port" {name}'
+            if probe.read_text().count(call) != 1:
+                fail(f"{profile}: probe does not use shared staging owner exactly once")
             wrappers[profile] = shared.name
     if profiles != wrappers.keys():
         fail(f"catalog/wrapper mismatch: missing={sorted(wrappers.keys() - profiles)}, "

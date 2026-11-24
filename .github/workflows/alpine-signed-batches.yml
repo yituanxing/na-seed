@@ -86,7 +86,8 @@ jobs:
             *) suffix=original-elf-batch ;;
           esac
           echo "artifact=$PROFILE-signed-$suffix" >> "$GITHUB_OUTPUT"
-          for script in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-signed-batch.sh scripts/probe-$PROFILE-batch.sh tests/$PROFILE-batch-run.sh; do
+          if [ "$PROFILE" = m141 ]; then probe=scripts/probe-m141-batch.sh; else probe=scripts/probe-alpine-signed-batch.sh; fi
+          for script in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-signed-batch.sh "$probe" tests/$PROFILE-batch-run.sh; do
             sh -n "$script"
           done
           case "$PROFILE" in
@@ -137,7 +138,12 @@ jobs:
         timeout-minutes: ${{ inputs.profile == 'm109' && 35 || 45 }}
         env:
           PORT: ${{ matrix.port }}
-        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+        run: |
+          if [ "$PROFILE" = m141 ]; then
+            sh scripts/probe-m141-batch.sh "$PORT"
+          else
+            sh scripts/probe-alpine-signed-batch.sh "$PORT" "$PROFILE"
+          fi
       - name: Preserve signed package and native guest PASS evidence
         if: success()
         uses: actions/upload-artifact@v4

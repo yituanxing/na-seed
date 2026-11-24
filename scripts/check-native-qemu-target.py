@@ -55,11 +55,18 @@ def catalog_probes() -> list[Path]:
         milestone = profile.split("-", 1)[0]
         assert milestone not in found, f"{catalog}: duplicate milestone {milestone}"
         matches = sorted((ROOT / "scripts").glob(f"probe-{milestone}-*.sh"))
-        assert len(matches) == 1, (
-            f"{catalog}: {milestone} requires exactly one original probe, got {matches}"
-        )
-        path = matches[0]
-        stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
+        if 109 <= int(milestone[1:]) <= 140:
+            assert not matches, f"{milestone}: duplicate dedicated native probe"
+            path = ROOT / "scripts/probe-alpine-signed-batch.sh"
+            stage = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
+        else:
+            assert len(matches) == 1, (
+                f"{catalog}: {milestone} requires exactly one original probe, got {matches}"
+            )
+            path = matches[0]
+            dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
+            stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
+                     else f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}')
         assert path.read_text().count(stage) == 1, (
             f"{path}: missing or duplicate canonical staging call {stage}"
         )
@@ -73,7 +80,10 @@ def catalog_probes() -> list[Path]:
             assert found.get(milestone) == path, (
                 f"{path}: orphaned or duplicate {milestone} staging consumer"
             )
-    return list(found.values())
+    # Several catalog rows may share one native runner, but no workload
+    # identity may disappear. Validate each distinct implementation once.
+    assert all(f"m{n}" in found for n in range(109, 141))
+    return list(dict.fromkeys(found.values()))
 
 
 def probes() -> list[Path]:
