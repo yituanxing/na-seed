@@ -56,3 +56,9 @@ Retired superseded early pathname, pipe, boot-handoff and resource-lifetime
 design notes, and explicitly historical architecture/branch review notes.
 Their original contents are available at the immutable pre-cleanup commit
 `eaa64c246e3b9b60406409aa40adda24de40be53`; the current architecture and CI evidence contracts remain.
+
+The nine M146/M148/M150/M151/M153–M155/M157/M158 manual native
+workflows now use `alpine-signed-extended.yml` with the matching profile.
+The original workflows and historical results remain in Git history at
+`ed63bd01b5914cb7d0aa81a73425a232c673113e`; three-ISA scope, timeouts, profile-specific prerequisite tools,
+manifest counts, uniqueness checks and native guest evidence remain intact.

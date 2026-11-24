@@ -1,0 +1,215 @@
+name: NaSeed native extended signed software acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Original signed software acceptance profile
+        type: choice
+        required: true
+        options:
+          - m146
+          - m148
+          - m150
+          - m151
+          - m153
+          - m154
+          - m155
+          - m157
+          - m158
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: ${{ inputs.profile }} original software / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ contains(fromJSON('["m151"]'), inputs.profile) && 85 || contains(fromJSON('["m153","m157"]'), inputs.profile) && 70 || contains(fromJSON('["m155","m158"]'), inputs.profile) && 75 || 65 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ inputs.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+      - name: Verify exact original ELF inventory and host contracts
+        id: profile
+        timeout-minutes: ${{ contains(fromJSON('["m151"]'), inputs.profile) && 5 || 4 }}
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m146)
+              echo "artifact=m146-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m148)
+              echo "artifact=m148-original-codecs-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m150)
+              echo "artifact=m150-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m151)
+              echo "artifact=m151-original-multimedia-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m153)
+              echo "artifact=m153-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m154)
+              echo "artifact=m154-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m155)
+              echo "artifact=m155-filesystem-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m157)
+              echo "artifact=m157-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            m158)
+              echo "artifact=m158-original-$PORT-proof" >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 2 ;;
+          esac
+          for script in "scripts/stage-$PROFILE-prebuilt.sh" "scripts/probe-$PROFILE-batch.sh" "tests/$PROFILE-batch-run.sh"; do
+            sh -n "$script"
+          done
+          case "$PROFILE" in
+            m146|m148)
+              sh -n "scripts/stage-alpine-prebuilt-overlay.sh"
+              ;;
+            m150|m153|m154|m155|m157|m158)
+              sh -n "scripts/host-configure-$PROFILE-batch.sh"
+              ;;
+            m151)
+              sh -n "scripts/host-configure-$PROFILE-batch.sh"
+              sh -n "scripts/stage-alpine-prebuilt-overlay.sh"
+              ;;
+          esac
+          python3 scripts/check-prebuilt-profile-catalog.py
+          python3 scripts/check-three-isa-core.py
+          case "$PROFILE" in
+            m146)
+              sh scripts/check-vfs-provider.sh
+              sh scripts/check-m86-txn.sh
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-original-elfs.txt)" -eq 24
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-expected-markers.txt)" -eq 25
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m146-original-elfs.txt | sort -u | wc -l)" -eq 24
+              ;;
+            m148)
+              sh scripts/check-vfs-provider.sh
+              sh scripts/check-m86-txn.sh
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-original-elfs.txt)" -eq 35
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-expected-markers.txt)" -eq 36
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m148-original-elfs.txt | sort -u | wc -l)" -eq 35
+              ;;
+            m150)
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m150-original-elfs.txt)" -eq 26
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m150-expected-markers.txt)" -eq 27
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m150-original-elfs.txt | sort -u | wc -l)" -eq 26
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m150-expected-markers.txt | sort -u | wc -l)" -eq 27
+              ;;
+            m151)
+              sh scripts/check-vfs-provider.sh
+              sh scripts/check-m86-txn.sh
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m151-original-elfs.txt)" -eq 35
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m151-expected-markers.txt)" -eq 36
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m151-original-elfs.txt | sort -u | wc -l)" -eq 35
+              for elf in $(sed -e '/^#/d' -e '/^$/d' scripts/m151-original-elfs.txt); do
+                for prior in scripts/m[0-9]*-original-elfs.txt; do
+                  test "$prior" = scripts/m151-original-elfs.txt && continue
+                  if grep -Fxq "$elf" "$prior"; then
+                    echo "Historical collision: $elf in $prior" >&2
+                    exit 1
+                  fi
+                done
+              done
+              grep -Fxq '          - m151' .github/workflows/alpine-signed-extended.yml
+              grep -Fxq '        port: [amd64, riscv64, arm64]' .github/workflows/alpine-signed-extended.yml
+              ;;
+            m153)
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m153-original-elfs.txt)" -eq 36
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m153-expected-markers.txt)" -eq 37
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m153-original-elfs.txt | sort -u | wc -l)" -eq 36
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m153-expected-markers.txt | sort -u | wc -l)" -eq 37
+              for program in $(awk '!/^#/ && NF {print $0}' scripts/m153-original-elfs.txt); do
+                matches=$(grep -Flx "$program" scripts/m[0-9]*-original-elfs.txt | wc -l)
+                test "$matches" -eq 1 || { echo "M153 historical duplicate $program ($matches)" >&2; exit 1; }
+              done
+              ;;
+            m154)
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m154-original-elfs.txt)" -eq 30
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m154-expected-markers.txt)" -eq 31
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m154-original-elfs.txt | sort -u | wc -l)" -eq 30
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m154-expected-markers.txt | sort -u | wc -l)" -eq 31
+              ;;
+            m155)
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m155-original-elfs.txt)" -eq 33
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m155-expected-markers.txt)" -eq 31
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m155-original-elfs.txt | sort -u | wc -l)" -eq 33
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m155-expected-markers.txt | sort -u | wc -l)" -eq 31
+              ;;
+            m157)
+              python3 scripts/check-m157-inventory.py
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m157-original-elfs.txt)" -eq 30
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m157-original-elfs.txt | sort -u | wc -l)" -eq 30
+              ;;
+            m158)
+              python3 scripts/check-m158-inventory.py
+              python3 scripts/check-architecture-boundaries.py
+              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m158-original-elfs.txt)" -eq 30
+              test "$(awk '!/^#/ && NF {print $0}' scripts/m158-original-elfs.txt | sort -u | wc -l)" -eq 30
+              ;;
+          esac
+      - name: Install native system QEMU and signed APK host prerequisites
+        timeout-minutes: ${{ contains(fromJSON('["m151"]'), inputs.profile) && 13 || contains(fromJSON('["m155","m157","m158"]'), inputs.profile) && 14 || 12 }}
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m146)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback
+              ;;
+            m148)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback mke2fs:e2fsprogs
+              # x86 runner suppresses mkisofs stderr; fail here explicitly rather
+              # than reporting a later 'missing ISO' as a bootloader/kernel defect.
+              command -v xorriso
+              command -v mke2fs
+              ;;
+            m150|m153|m154|m157|m158)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback mke2fs:e2fsprogs
+              ;;
+            m151)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback mke2fs:e2fsprogs
+              # Native x86 ISO builder hides stderr: catch missing xorriso here.
+              command -v xorriso
+              command -v python3
+              command -v mke2fs
+              ;;
+            m155)
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback gzip:gzip mke2fs:e2fsprogs mkfs.btrfs:btrfs-progs mkfs.xfs:xfsprogs mkfs.f2fs:f2fs-tools mkntfs:ntfs-3g ntfscp:ntfs-3g mkfs.erofs:erofs-utils parted:parted
+              ;;
+          esac
+      - name: Execute original software in native QEMU
+        timeout-minutes: ${{ contains(fromJSON('["m151"]'), inputs.profile) && 63 || contains(fromJSON('["m153"]'), inputs.profile) && 53 || contains(fromJSON('["m155"]'), inputs.profile) && 55 || contains(fromJSON('["m157"]'), inputs.profile) && 52 || contains(fromJSON('["m158"]'), inputs.profile) && 54 || 48 }}
+        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+      - name: Preserve signed binary identity and native guest serial
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact || format('{0}-{1}', inputs.profile, matrix.port) }}
+          path: |
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/apk-install.log
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/requested-packages.txt
+            build/external/${{ inputs.profile }}-batch/${{ matrix.port }}/*.sha256
+            build/busybox-source-parity-x86/${{ inputs.profile }}-batch.clean.log
+            build/busybox-source-parity-x86/${{ inputs.profile }}-batch.serial.log
+            build/port-riscv64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+            build/port-riscv64/full/matrix-source/${{ inputs.profile }}-batch.serial.log
+            build/port-aarch64/full/matrix-source/${{ inputs.profile }}-batch.clean.log
+            build/port-aarch64/full/matrix-source/${{ inputs.profile }}-batch.serial.log
+          if-no-files-found: ignore
