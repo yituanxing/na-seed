@@ -56,7 +56,7 @@ jobs:
           NAS_M220_PUBLIC_QEMU_TIMEOUT: '3000'
           NAS_M220_PUBLIC_SECONDS: '2900'
           NAS_M220_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m220-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m220 amd64
       - name: Preserve real host UDP, two captures, guest UART and signed ext4
         if: always()
         uses: actions/upload-artifact@v4
@@ -120,7 +120,7 @@ jobs:
           NAS_M220_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M220_PUBLIC_SECONDS: '4400'
           NAS_M220_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m220-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m220 '${{ matrix.port }}'
       - name: Preserve native ELF, independent wire and durable ext4 proof
         if: always()
         uses: actions/upload-artifact@v4

@@ -8,7 +8,7 @@ on:
       - 'rootfs/alpine/packages-m238-candidates.txt'
       - 'scripts/m238-*'
       - 'scripts/test-m238-*'
-      - 'scripts/probe-m238-alpine-batch.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'scripts/run-m238-local.sh'
       - 'scripts/acceptance/run-local-alpine-cohort.sh'
       - 'scripts/inventory-m141-signed-apks.sh'

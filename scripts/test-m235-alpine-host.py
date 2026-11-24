@@ -23,7 +23,7 @@ def load(name: str):
     return target
 
 
-report = load('m235-compat-report.py')
+report = load('alpine-compat-report.py').load_owner('m235')
 http = load('m235-http-proof.py')
 historical = load('test-m223-http-host.py')
 wire = historical.wire
@@ -36,7 +36,7 @@ class M235StrictTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='m235-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.cases = report.owner.manifest_cases(BASE / 'm235-candidate-elfs.tsv')
+        self.cases = report.manifest_cases(BASE / 'm235-candidate-elfs.tsv')
 
     def ledgers(self, *, altered=None):
         first = ['M235_FIRST_DISCOVERY_COMPLETE']
@@ -51,7 +51,7 @@ class M235StrictTests(unittest.TestCase):
 
     def test_all_twelve_and_corrupt_or_duplicate_rejected(self):
         first, reopen = self.ledgers()
-        value = report.owner.build_report(self.cases, first, reopen)
+        value = report.build_report(self.cases, first, reopen)
         self.assertEqual(value['newly_installed_full_pass_entrypoints'], 12)
         self.assertEqual(value['preexisting'], 0)
         for altered in ((0, 'functional'), (1, 'reopen'), (2, 'install'),
@@ -59,16 +59,16 @@ class M235StrictTests(unittest.TestCase):
             with self.subTest(altered=altered):
                 data = self.ledgers(altered=altered)
                 try:
-                    result = report.owner.build_report(self.cases, *data)
+                    result = report.build_report(self.cases, *data)
                 except ValueError:
                     continue  # Contradictory states fail even earlier.
                 self.assertNotEqual(12, result['newly_installed_full_pass_entrypoints'])
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases, first.replace(
+            report.build_report(self.cases, first.replace(
                 'M235_FIRST_DISCOVERY_COMPLETE\n', ''), reopen)
         duplicate = 'M235_RESULT\t' + self.cases[0]['package'] + '\t' + self.cases[0]['elf_path'] + '\tinstall\tPASS\n'
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases, first + duplicate, reopen)
+            report.build_report(self.cases, first + duplicate, reopen)
 
     def test_actual_one_route_tcp_host_and_disk_negatives(self):
         source_dir = self.root / 'host-first'

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import struct
 import subprocess
+import runpy
 import tempfile
 
 
@@ -14,10 +15,10 @@ CHECKER = ROOT / "scripts/m221-dns-wire-check.py"
 GUEST = ROOT / "tests/m221-dns-update-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
-PILOT = ROOT / "scripts/probe-m221-alpine-pilot.sh"
+PILOT = ROOT / "scripts/probe-alpine-profile.sh"
 MANIFEST = ROOT / "scripts/m221-candidate-elfs.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m221-candidates.txt"
-REPORTER = ROOT / "scripts/m221-compat-report.py"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
 WORKFLOW = ROOT / ".github/workflows/m221-dns-update-alpine.yml"
 
 spec = spec_from_file_location("m221_host_checked", CHECKER)
@@ -155,7 +156,7 @@ def guest_ledgers(tmp: Path) -> None:
     def check(a: str, b: str) -> int:
         first.write_text(a)
         reopen.write_text(b)
-        p = subprocess.run(["python3", str(REPORTER), str(MANIFEST),
+        p = subprocess.run(["python3", str(REPORTER), "m221", str(MANIFEST),
                             str(first), str(reopen), str(report), "--require-all"],
                            cwd=ROOT, text=True, capture_output=True, timeout=5)
         return p.returncode
@@ -206,9 +207,9 @@ def integration_contract() -> None:
                    "m221-first-wire.json", "m221-reopen-wire.json",
                    "m221-reopen-wire.pcap", "m221-alpine-reopen-cases.tsv",
                    "M221_FIRST_DISCOVERY_COMPLETE", "M221_REOPEN_DISCOVERY_COMPLETE",
-                   "scripts/m221-compat-report.py", "scripts/m221-alpine-disk-check.py"):
+                   "scripts/alpine-compat-report.py m221", "scripts/m221-alpine-disk-check.py"):
         assert marker in runner, f"M197 shared first/reopen gate missing {marker}"
-    assert "export NAS_M221_PILOT=1" in PILOT.read_text()
+    runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m221")
     flow = WORKFLOW.read_text()
     assert "  workflow_dispatch:" in flow and "  push:" in flow
     assert "    branches: [naseed-app-batch2]" in flow

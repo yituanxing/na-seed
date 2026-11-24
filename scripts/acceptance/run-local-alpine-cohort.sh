@@ -24,16 +24,18 @@ python3 scripts/check-three-isa-core.py
 python3 scripts/check-architecture-boundaries.py
 for path in scripts/probe-m197-alpine-software-cohort.sh \
             scripts/inventory-m141-signed-apks.sh \
-            scripts/probe-${profile}-alpine-batch.sh \
+            scripts/probe-alpine-profile.sh \
             tests/m205-software-workload.sh \
             tests/${profile}-software-workload.sh; do
     sh -n "$path"
 done
 python3 -c 'from pathlib import Path
 import sys
-for suffix in ("alpine-disk-check.py", "alpine-uart.py", "compat-report.py"):
+for suffix in ("alpine-disk-check.py", "alpine-uart.py"):
     path = Path("scripts") / (sys.argv[1] + "-" + suffix)
-    compile(path.read_bytes(), str(path), "exec")' "$profile"
+    compile(path.read_bytes(), str(path), "exec")
+path = Path("scripts/alpine-compat-report.py")
+compile(path.read_bytes(), str(path), "exec")' "$profile"
 if [ "$mode" = --host-only ]; then
     echo "[${label} HOST ONLY PASS] strict manifest, original APK SHA and ledger negative cases; no native-QEMU acceptance claimed"
     exit 0
@@ -92,4 +94,4 @@ test "$unique" -eq "$count" || {
     echo "[${label} FAIL] signed APK original native ELFs share identical SHA; refuse inflated ${count_word}" >&2
     exit 1
 }
-sh scripts/probe-${profile}-alpine-batch.sh "$port"
+sh scripts/probe-alpine-profile.sh "$profile" "$port"

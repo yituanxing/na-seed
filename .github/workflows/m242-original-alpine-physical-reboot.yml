@@ -7,7 +7,7 @@ on:
     branches: [na-alpine-direct-use]
     paths:
       - '.github/workflows/m242-original-alpine-physical-reboot.yml'
-      - 'scripts/probe-m242-alpine-reboot.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'scripts/probe-m241-alpine-poweroff.sh'
       - 'scripts/m242-alpine-reboot-uart.py'
       - 'scripts/m242-verify-reboot-disk.py'
@@ -47,7 +47,7 @@ jobs:
       - name: Strict two-boot parser unit tests and legacy poweroff contract
         run: |
           set -eu
-          sh -n scripts/probe-m242-alpine-reboot.sh scripts/probe-m241-alpine-poweroff.sh scripts/run.sh
+          sh -n scripts/probe-alpine-profile.sh scripts/probe-m241-alpine-poweroff.sh scripts/run.sh
           python3 -m py_compile scripts/m242-alpine-reboot-uart.py scripts/m242-verify-reboot-disk.py
           python3 scripts/test-m242-alpine-reboot-uart.py
           sh scripts/check-m241-original-alpine-shutdown.sh
@@ -67,7 +67,7 @@ jobs:
         env:
           NAS_M242_DIAG_SECONDS: '400'
           NAS_M242_QEMU_TIMEOUT: '445'
-        run: sh scripts/probe-m242-alpine-reboot.sh ${{ matrix.port }}
+        run: sh scripts/probe-alpine-profile.sh m242 ${{ matrix.port }}
       - name: Preserve both raw boots and disk persistence evidence
         if: always()
         uses: actions/upload-artifact@v4

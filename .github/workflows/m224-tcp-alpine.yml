@@ -65,7 +65,7 @@ jobs:
           NAS_M224_PUBLIC_QEMU_TIMEOUT: '3400'
           NAS_M224_PUBLIC_SECONDS: '3250'
           NAS_M224_REOPEN_SECONDS: '1150'
-        run: sh scripts/probe-m224-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m224 amd64
       - name: Retain only signed APK original TCP host reports raw PCAP and hash sources
         if: always()
         uses: actions/upload-artifact@v4
@@ -134,7 +134,7 @@ jobs:
           NAS_M224_PUBLIC_QEMU_TIMEOUT: '5000'
           NAS_M224_PUBLIC_SECONDS: '4850'
           NAS_M224_REOPEN_SECONDS: '1700'
-        run: sh scripts/probe-m224-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m224 '${{ matrix.port }}'
       - name: Retain only original signed APK TCP host reports two PCAPs and SHA sources
         if: always()
         uses: actions/upload-artifact@v4

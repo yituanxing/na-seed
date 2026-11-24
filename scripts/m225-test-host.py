@@ -30,7 +30,7 @@ def load(name):
 
 host = load('m225-host-services.py')
 proof = load('m225-host-proof.py')
-ledger = load('m225-compat-report.py')
+ledger = load('alpine-compat-report.py').load_owner('m225')
 candidates = load('check-m141-candidates.py')
 
 
@@ -276,7 +276,7 @@ class IndependentNegativeEvidence(unittest.TestCase):
 class SignedGuestBoundaryNegatives(unittest.TestCase):
     def test_original_ftp_ledger_requires_both_real_clients_each_boot(self):
         path = Path(__file__).with_name('m225-candidate-elfs.tsv')
-        cases = ledger.owner.manifest_cases(path)
+        cases = ledger.manifest_cases(path)
         self.assertEqual(len(cases), 2)
         first = 'M225_FIRST_DISCOVERY_COMPLETE\n'
         reopen = 'M225_REOPEN_DISCOVERY_COMPLETE\n'
@@ -285,20 +285,20 @@ class SignedGuestBoundaryNegatives(unittest.TestCase):
             first += f'M225_RESULT\t{pair}\tinstall\tPASS\n'
             first += f'M225_RESULT\t{pair}\tfunctional\tPASS\n'
             reopen += f'M225_RESULT\t{pair}\treopen\tPASS\n'
-        result = ledger.owner.build_report(cases, first, reopen)
+        result = ledger.build_report(cases, first, reopen)
         self.assertEqual(result['newly_installed_full_pass_entrypoints'], 2)
         self.assertEqual(result['preexisting'], 0)
         with self.assertRaisesRegex(ValueError, 'missing/extra records'):
-            ledger.owner.build_report(cases, first, reopen.replace('M225_RESULT\trclone',
+            ledger.build_report(cases, first, reopen.replace('M225_RESULT\trclone',
                                                                    'M225_MISSING\trclone'))
         with self.assertRaisesRegex(ValueError, 'completion marker'):
-            ledger.owner.build_report(cases, first, reopen.replace('M225_REOPEN_DISCOVERY_COMPLETE',
+            ledger.build_report(cases, first, reopen.replace('M225_REOPEN_DISCOVERY_COMPLETE',
                                                                    'M225_FIRST_DISCOVERY_COMPLETE'))
         # A fake guest PASS but originally preinstalled executable never
         # qualifies; strict --require-all must reject non-new installation.
         old = first.replace('M225_RESULT\trclone\tusr/bin/rclone\tinstall\tPASS',
                             'M225_RESULT\trclone\tusr/bin/rclone\tinstall\tPREEXISTING')
-        report = ledger.owner.build_report(cases, old, reopen)
+        report = ledger.build_report(cases, old, reopen)
         self.assertEqual(report['newly_installed_full_pass_entrypoints'], 1)
         self.assertEqual(report['preexisting'], 1)
 

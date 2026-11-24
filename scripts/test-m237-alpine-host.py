@@ -19,7 +19,7 @@ def load(name: str):
     return target
 
 
-report = load('m237-compat-report.py')
+report = load('alpine-compat-report.py').load_owner('m237')
 disk = load('m237-alpine-disk-check.py')
 
 
@@ -28,7 +28,7 @@ class M237SignedNativeTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix='m237-physical-contract-')
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        self.cases = report.owner.manifest_cases(BASE / 'm237-candidate-elfs.tsv')
+        self.cases = report.manifest_cases(BASE / 'm237-candidate-elfs.tsv')
 
     def ledgers(self, altered=None):
         first = ['M237_FIRST_DISCOVERY_COMPLETE']
@@ -46,7 +46,7 @@ class M237SignedNativeTests(unittest.TestCase):
         self.assertEqual(len({item['elf_path'] for item in self.cases}), 15)
         self.assertEqual(len({item['package'] for item in self.cases}), 5)
         first, reopen = self.ledgers()
-        proved = report.owner.build_report(self.cases, first, reopen)
+        proved = report.build_report(self.cases, first, reopen)
         self.assertEqual(proved['newly_installed_full_pass_entrypoints'], 15)
         self.assertEqual(proved['preexisting'], 0)
         for bad in ((0, 'install'), (3, 'functional'), (12, 'reopen'),
@@ -54,17 +54,17 @@ class M237SignedNativeTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 f, r = self.ledgers(bad)
                 try:
-                    outcome = report.owner.build_report(self.cases, f, r)
+                    outcome = report.build_report(self.cases, f, r)
                 except ValueError:
                     continue
                 self.assertNotEqual(outcome['newly_installed_full_pass_entrypoints'], 15)
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases, first + first.splitlines()[1] + '\n', reopen)
+            report.build_report(self.cases, first + first.splitlines()[1] + '\n', reopen)
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases,
+            report.build_report(self.cases,
                                       first.replace('M237_FIRST_DISCOVERY_COMPLETE\n', ''), reopen)
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases, first, reopen.replace('\tPASS', '\tBLOCKED', 1))
+            report.build_report(self.cases, first, reopen.replace('\tPASS', '\tBLOCKED', 1))
 
     def test_signed_archive_sha_must_equal_actual_ext4_and_all_unique(self):
         original = {case['elf_path']: b'\x7fELF-M237-' + case['elf_path'].encode()

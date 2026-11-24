@@ -78,9 +78,9 @@ On a CI/native host with the M241 signed-staging, QEMU, Docker and ext4
 dependencies:
 
 ```sh
-sh scripts/probe-m242-alpine-reboot.sh amd64
-sh scripts/probe-m242-alpine-reboot.sh riscv64
-sh scripts/probe-m242-alpine-reboot.sh arm64
+sh scripts/probe-alpine-profile.sh m242 amd64
+sh scripts/probe-alpine-profile.sh m242 riscv64
+sh scripts/probe-alpine-profile.sh m242 arm64
 ```
 
 The workflow `.github/workflows/m242-original-alpine-physical-reboot.yml`

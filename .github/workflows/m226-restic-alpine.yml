@@ -65,7 +65,7 @@ jobs:
           NAS_M226_PUBLIC_QEMU_TIMEOUT: '3800'
           NAS_M226_PUBLIC_SECONDS: '3550'
           NAS_M226_REOPEN_SECONDS: '1500'
-        run: sh scripts/probe-m226-alpine-restic-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m226 amd64
       - name: Retain official SHA host two-phase REST/PCAP and independent ext4 evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -144,7 +144,7 @@ jobs:
           NAS_M226_PUBLIC_QEMU_TIMEOUT: '5400'
           NAS_M226_PUBLIC_SECONDS: '5150'
           NAS_M226_REOPEN_SECONDS: '2000'
-        run: sh scripts/probe-m226-alpine-restic-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m226 '${{ matrix.port }}'
       - name: Retain signed cross REST upstream host logs both PCAP and physical proofs
         if: always()
         uses: actions/upload-artifact@v4

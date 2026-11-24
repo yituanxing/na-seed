@@ -135,7 +135,7 @@ def guest_ledger() -> None:
         def run(a: str, b: str) -> int:
             first.write_text(a)
             reopen.write_text(b)
-            out = subprocess.run(['python3', str(ROOT / 'scripts/m222-compat-report.py'),
+            out = subprocess.run(['python3', str(ROOT / 'scripts/alpine-compat-report.py'), 'm222',
                 str(ROOT / 'scripts/m222-candidate-elfs.tsv'), str(first), str(reopen),
                 str(report), '--require-all'], cwd=ROOT, capture_output=True,
                 text=True, timeout=5)
@@ -184,7 +184,7 @@ def contract() -> None:
     for marker in ('m222_prepare_host first', 'm222_prepare_host reopen',
                    'm222_start_host first', 'm222_start_host reopen',
                    'm222_stop_host', 'm222-first-wire.json', 'm222-reopen-wire.json',
-                   'm222-compat-report.py', 'm222-alpine-disk-check.py',
+                   'alpine-compat-report.py m222', 'm222-alpine-disk-check.py',
                    'm222-alpine-reopen-cases.tsv'):
         assert marker in runner, marker
     for marker in ('ListenAddress=127.0.0.1', 'PasswordAuthentication=no',

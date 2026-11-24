@@ -7,7 +7,7 @@ on:
     branches: [na-alpine-direct-use]
     paths:
       - '.github/workflows/m243-original-alpine-cli-persistence.yml'
-      - 'scripts/probe-m243-alpine-cli.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'scripts/probe-m241-alpine-poweroff.sh'
       - 'scripts/m243-alpine-cli-uart.py'
       - 'scripts/m243-verify-cli-disk.py'
@@ -41,7 +41,7 @@ jobs:
       - name: Validate strict public-package and two-epoch host oracles
         run: |
           set -eu
-          sh -n scripts/probe-m243-alpine-cli.sh scripts/probe-m241-alpine-poweroff.sh
+          sh -n scripts/probe-alpine-profile.sh scripts/probe-m241-alpine-poweroff.sh
           python3 -m py_compile scripts/m243-alpine-cli-uart.py scripts/m243-verify-cli-disk.py
           python3 scripts/test-m243-alpine-cli-uart.py
           python3 scripts/test-m242-alpine-reboot-uart.py
@@ -62,7 +62,7 @@ jobs:
         env:
           NAS_M243_DIAG_SECONDS: '735'
           NAS_M243_QEMU_TIMEOUT: '780'
-        run: sh scripts/probe-m243-alpine-cli.sh ${{ matrix.port }}
+        run: sh scripts/probe-alpine-profile.sh m243 ${{ matrix.port }}
       - name: Preserve immutable physical ext4 UART and public wire evidence
         if: always()
         uses: actions/upload-artifact@v4

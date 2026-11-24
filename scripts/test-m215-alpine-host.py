@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import runpy
 import sys
 import tempfile
 
@@ -22,7 +23,7 @@ PACKAGES = ROOT / "rootfs/alpine/packages-m215-candidates.txt"
 PROBE = ROOT / "tests/m213-software-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 REOPEN = ROOT / "scripts/m215-alpine-reopen-cases.tsv"
-REPORTER = ROOT / "scripts/m215-compat-report.py"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
 DISK = ROOT / "scripts/m215-alpine-disk-check.py"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
 INVENTORY = ROOT / "scripts/inventory-m141-signed-apks.sh"
@@ -74,13 +75,13 @@ def adapter_contract() -> None:
         "cohort=m215", "packages-$cohort-candidates.txt", "signed-cache.sha256",
         "sha256sum -c", "m215-first-runner.log",
         "M215_FIRST_DISCOVERY_COMPLETE", "M215_REOPEN_DISCOVERY_COMPLETE",
-        "scripts/m215-alpine-reopen-cases.tsv", "m215-compat-report.py",
+        "scripts/m215-alpine-reopen-cases.tsv", "alpine-compat-report.py m215",
         "m215-alpine-disk-check.py", "--require-all"):
         assert needle in base, needle
     assert "apk --cache-dir /var/cache/apk --no-network" in dispatcher
     assert "M197_APP_WORKLOAD_PASS" in base and "m196-public-wire-check.py" in base
     assert "m191-alpine-root-disk.py verify" in base
-    assert "M215_PILOT=1" in (ROOT / "scripts/probe-m215-alpine-pilot.sh").read_text()
+    runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m215")
     reopen = "\n".join(active(REOPEN))
     for value in ("NAS_M215_PILOT=1", "m205-software-workload.sh --reopen",
                   "m197-software-workload.sh --reopen", "M197_PUBLIC_ALPINE_SOFTWARE_2026"):
@@ -93,17 +94,17 @@ def adapter_contract() -> None:
     assert ("  push:\n    branches: [naseed-app-batch2]\n    paths:\n"
             "      - '.github/workflows/m215-five-original-pilot.yml'") in workflow
     assert "sh scripts/inventory-m141-signed-apks.sh amd64 m215" in workflow
-    assert "sh scripts/probe-m215-alpine-pilot.sh amd64" in workflow
+    assert "sh scripts/probe-alpine-profile.sh m215 amd64" in workflow
     # A parallel, host-only signed-APK census is cheap and deliberately has a
     # matrix.  The real QEMU pilot must still be a single native x86 job.
     assert workflow.count("  original-five-x86:") == 1
     census, x86 = workflow.split("  original-five-x86:", 1)
     assert "matrix:" not in x86, "pilot must not multiply into three simultaneous long QEMUs"
     assert "port: [riscv64, arm64]" in census
-    assert "sh scripts/probe-m215-alpine-pilot.sh" not in census
+    assert "sh scripts/probe-alpine-profile.sh m215" not in census
     assert "sh scripts/inventory-m141-signed-apks.sh '${{ matrix.port }}' m215" in census
     for script in (OWNER, RUNNER, REOPEN, PROBE, INVENTORY,
-                   ROOT / "scripts/probe-m215-alpine-pilot.sh"):
+                   ROOT / "scripts/probe-alpine-profile.sh"):
         if script.suffix == ".sh":
             subprocess.run(["sh", "-n", str(script)], check=True, timeout=10)
     subprocess.run([sys.executable, "scripts/check-m141-candidates.py",
@@ -128,7 +129,7 @@ def report_contract(pilot: list[tuple[str, str, str, str]]) -> None:
         first, second, result = (tmp_path / "first", tmp_path / "second", tmp_path / "result.json")
 
         def run(strict: bool = True) -> tuple[int, dict, str]:
-            args = [sys.executable, str(REPORTER), str(PILOT), str(first),
+            args = [sys.executable, str(REPORTER), "m215", str(PILOT), str(first),
                     str(second), str(result)] + (["--require-all"] if strict else [])
             action = subprocess.run(args, capture_output=True, text=True, timeout=8)
             data = json.loads(result.read_text()) if result.is_file() else {}

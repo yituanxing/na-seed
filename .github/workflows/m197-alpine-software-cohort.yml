@@ -22,7 +22,7 @@ on:
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'tests/m197-*'
       - 'scripts/m204-*'
-      - 'scripts/probe-m204-alpine-compat-cohort.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'tests/m204-*'
       - 'scripts/m194-alpine-uart.py'
       - 'scripts/m195-alpine-disk-check.py'
@@ -75,7 +75,7 @@ jobs:
             scripts/m197-alpine-uart.py scripts/m197-alpine-disk-check.py \
             scripts/test-m197-alpine-host.py
           python3 scripts/test-m197-alpine-host.py
-          sh -n scripts/probe-m204-alpine-compat-cohort.sh
+          sh -n scripts/probe-alpine-profile.sh
           sh -n tests/m204-software-workload.sh
           python3 scripts/test-m204-alpine-host.py
           python3 scripts/test-m194-uart-prompt.py
@@ -120,7 +120,7 @@ jobs:
           # Full cold-push acceptance only checks existence: do not spend
           # bandwidth restoring 256MiB that the strict path never uses.
           lookup-only: ${{ github.event_name != 'workflow_dispatch' || !inputs.fast_replay }}
-          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-alpine-profile.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
           path: |
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json
@@ -145,7 +145,7 @@ jobs:
                [ '${{ inputs.fast_replay }}' = 'true' ]; then
               export NAS_M204_FAST_REPLAY=1
             fi
-            sh scripts/probe-m204-alpine-compat-cohort.sh ${{ matrix.port }}
+            sh scripts/probe-alpine-profile.sh m204 ${{ matrix.port }}
           else
             sh scripts/probe-m197-alpine-software-cohort.sh ${{ matrix.port }}
           fi
@@ -169,7 +169,7 @@ jobs:
         if: always() && steps.m204_checkpoint_ready.outputs.ready == 'true' && steps.m204_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-m204-alpine-compat-cohort.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
+          key: m204-public-v323-clean-reopen-v1-${{ matrix.port }}-${{ hashFiles('scripts/probe-m191-alpine-root.sh', 'scripts/probe-m197-alpine-software-cohort.sh', 'scripts/probe-alpine-profile.sh', 'scripts/m191-alpine-root-disk.py', 'scripts/m193-alpine-login-overlay.py', 'scripts/m194-alpine-uart.py', 'scripts/m195-alpine-disk-check.py', 'scripts/m196-public-wire-check.py', 'scripts/m197-*', 'scripts/m204-*', 'tests/m197-*', 'tests/m204-*') }}
           path: |
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.img
             build/external/m191-alpine-rootfs/${{ matrix.port }}/m204-first-checkpoint.json

@@ -29,7 +29,7 @@ PACKAGES = ROOT / "rootfs/alpine/packages-m206-candidates.txt"
 REOPEN = ROOT / "scripts/m206-alpine-reopen-cases.tsv"
 GUEST = ROOT / "tests/m206-software-workload.sh"
 DISPATCH = ROOT / "tests/m205-software-workload.sh"
-REPORTER = ROOT / "scripts/m206-compat-report.py"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
 DISK = ROOT / "scripts/m206-alpine-disk-check.py"
 
 
@@ -168,7 +168,7 @@ def reporting_contract(entries: list[tuple[str, str, str, str]]) -> None:
         first, reopen, report = (base / "first", base / "reopen", base / "report.json")
 
         def call(*, strict: bool = True) -> tuple[int, dict | None, str]:
-            args = [sys.executable, str(REPORTER), str(COHORT), str(first),
+            args = [sys.executable, str(REPORTER), "m206", str(COHORT), str(first),
                     str(reopen), str(report)]
             if strict:
                 args.append("--require-all")

@@ -31,12 +31,3 @@ jobs:
           path: build/cleanup-references.tsv
           if-no-files-found: error
           retention-days: 7
-      - name: Package tracked source for local cleanup review
-        run: git archive --format=tar.gz --output=build/cleanup-source.tar.gz HEAD
-      - name: Retain temporary source review snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: cleanup-source-snapshot
-          path: build/cleanup-source.tar.gz
-          if-no-files-found: error
-          retention-days: 1

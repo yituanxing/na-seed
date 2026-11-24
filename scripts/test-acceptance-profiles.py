@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import shutil
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -78,7 +80,66 @@ def failure(overrides, message):
     assert result.stderr == message + '\n', (overrides, result.stderr, message)
 
 
+LAUNCH_PROFILES = ("m204", "m205", "m206", "m215", "m218", "m219", "m220", "m221",
+                   "m222", "m223", "m224", "m225", "m226", "m235", "m236", "m237",
+                   "m238", "m242", "m243", "m244", "m253")
+REBOOT = {
+    "m242": ("m242-reboot", "430"), "m243": ("m243-alpine-cli", "830"),
+    "m244": ("m244-alpine-ssh", "1110"), "m253": ("m253-alpine-multiuser", "1740"),
+}
+
+
+def check_launch_profile(profile):
+    # Exercise the real dispatcher against inert stand-ins for the two native runners.
+    with tempfile.TemporaryDirectory() as folder:
+        scripts = Path(folder) / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(ROOT / "scripts/probe-alpine-profile.sh", scripts / "probe-alpine-profile.sh")
+        for name in ("probe-m197-alpine-software-cohort.sh", "probe-m241-alpine-poweroff.sh"):
+            (scripts / name).write_text('#!/bin/sh\nprintf "%s|%s\\n" "$0" "$1"\nenv | sort\n')
+        env = {"PATH": os.environ["PATH"], "NAS_M198_INTEGRATED_DESKTOP": "1",
+               "NAS_M199_ORIGINAL_OPENRC_DESKTOP": "1"}
+        command = ["sh", "scripts/probe-alpine-profile.sh", profile]
+        for port in ("amd64", "riscv64", "arm64"):
+            result = subprocess.run(command + [port], cwd=folder, env=env, capture_output=True, text=True)
+            assert result.returncode == 0, (profile, port, result.stderr)
+            lines = result.stdout.splitlines()
+            flags = dict(line.split("=", 1) for line in lines[1:] if "=" in line)
+            if profile not in REBOOT:
+                assert lines[0] == f"scripts/probe-m197-alpine-software-cohort.sh|{port}"
+                assert flags[BY_MODE[profile]] == "1"
+                assert flags["NAS_M198_INTEGRATED_DESKTOP"] == flags["NAS_M199_ORIGINAL_OPENRC_DESKTOP"] == "0"
+            else:
+                assert lines[0] == f"scripts/probe-m241-alpine-poweroff.sh|{port}"
+                tag, timeout = REBOOT[profile]
+                assert flags["NAS_M241_BUILD_TAG"] == tag and flags["NAS_M241_QEMU_TIMEOUT"] == timeout
+                for key in ("NAS_M242_REBOOT_ROUNDTRIP", "NAS_M242_PLATFORM_REBOOT", "NAS_M242_GUEST_REBOOT"):
+                    assert flags[key] == "1"
+                if profile != "m242":
+                    for key in ("NAS_M243_CLI_PERSISTENCE", "NAS_ENABLE_VIRTIO_NET", "NAS_VIRTIO_NET_USER", "NAS_ENABLE_LWIP"):
+                        assert flags[key] == "1"
+                if profile in ("m244", "m253"):
+                    assert flags["NAS_M244_SSH_REBOOT"] == "1"
+                if profile == "m244":
+                    assert flags["NAS_M244_DIAG_SECONDS"] == "965"
+                if profile == "m253":
+                    assert flags["NAS_M253_MULTIUSER"] == "1"
+                    assert flags["NAS_M253_DIAG_SECONDS"] == "1530"
+                    assert flags["NAS_M244_HOST_READY_TIMEOUT"] == "800"
+                    assert flags["NAS_M244_HOST_SSH_TIMEOUT"] == "240"
+        for args in ([], ["amd64", "arm64"]):
+            assert subprocess.run(command + args, cwd=folder, env=env, capture_output=True).returncode == 2
+        if profile in REBOOT:
+            override = {**env, f"NAS_{profile.upper()}_QEMU_TIMEOUT": "1234"}
+            result = subprocess.run(command + ["amd64"], cwd=folder, env=override, capture_output=True, text=True)
+            assert result.returncode == 0 and "NAS_M241_QEMU_TIMEOUT=1234" in result.stdout
+        if profile in ("m244", "m253"):
+            assert subprocess.run(command + ["invalid"], cwd=folder, env=env, capture_output=True).returncode == 2
+
+
 def main():
+    for profile in LAUNCH_PROFILES:
+        check_launch_profile(profile)
     assert len(SELECTORS) == 28 and len(BY_MODE) == 28
     main_shell = (ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
     profile_shell = (ROOT / 'scripts/acceptance/profile.sh').read_text()

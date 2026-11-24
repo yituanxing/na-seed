@@ -7,7 +7,7 @@ on:
     branches: [na-alpine-direct-use]
     paths:
       - '.github/workflows/m244-original-alpine-ssh-pty-reboot.yml'
-      - 'scripts/probe-m244-alpine-ssh-reboot.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'tests/m244-alpine-network-ready.sh'
       - 'scripts/probe-m241-alpine-poweroff.sh'
       # The M244 combined guest imports these live command/oracle owners.
@@ -82,7 +82,7 @@ jobs:
             scripts/test-elf-segments.c kernel/task/elf_segments.c \
             -o /tmp/naseed-m244-elf-interp
           /tmp/naseed-m244-elf-interp
-          sh -n scripts/probe-m244-alpine-ssh-reboot.sh \
+          sh -n scripts/probe-alpine-profile.sh \
             scripts/probe-m241-alpine-poweroff.sh tests/m244-alpine-network-ready.sh
           python3 -m py_compile scripts/m244-alpine-ssh-uart.py \
             scripts/m244-host-ssh-two-epoch.py scripts/m244-verify-ssh-disk.py
@@ -113,7 +113,7 @@ jobs:
           NAS_M244_QEMU_TIMEOUT: '1110'
           NAS_M244_HOST_READY_TIMEOUT: '700'
           NAS_M244_HOST_SSH_TIMEOUT: '180'
-        run: sh scripts/probe-m244-alpine-ssh-reboot.sh ${{ matrix.port }}
+        run: sh scripts/probe-alpine-profile.sh m244 ${{ matrix.port }}
       - name: Preserve native UART, authenticated host receipts and true NIC capture
         if: always()
         uses: actions/upload-artifact@v4

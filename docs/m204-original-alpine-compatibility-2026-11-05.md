@@ -11,7 +11,7 @@ independent native-QEMU boots on x86-64, RV64 and AArch64.
   signed-root staging, M197 Bash/Lua/SQLite/Git transaction, live DHCP/DNS,
   second QEMU, host disk oracle and fsck. No new rootfs or QEMU runner.
 - M204 is opt-in: `NAS_M204_COMPAT_COHORT=1` or
-  `sh scripts/probe-m204-alpine-compat-cohort.sh amd64|riscv64|arm64`.
+  `sh scripts/probe-alpine-profile.sh m204 amd64|riscv64|arm64`.
   Default M197 mode is unchanged.
 - M204 explicitly rejects `NAS_M198_INTEGRATED_DESKTOP=1` and
   `NAS_M199_ORIGINAL_OPENRC_DESKTOP=1`. Existing fbdev/input support remains;
@@ -70,7 +70,7 @@ First run the fast no-QEMU contracts:
 python3 scripts/test-m204-alpine-host.py
 python3 scripts/test-m197-alpine-host.py
 sh -n scripts/probe-m197-alpine-software-cohort.sh
-sh -n scripts/probe-m204-alpine-compat-cohort.sh
+sh -n scripts/probe-alpine-profile.sh
 sh -n tests/m204-software-workload.sh
 ```
 

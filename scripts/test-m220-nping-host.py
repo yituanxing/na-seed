@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import struct
 import subprocess
+import runpy
 import tempfile
 
 
@@ -17,10 +18,10 @@ CHECKER = ROOT / "scripts/m220-nping-wire-check.py"
 GUEST = ROOT / "tests/m220-nping-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
-PILOT = ROOT / "scripts/probe-m220-alpine-pilot.sh"
+PILOT = ROOT / "scripts/probe-alpine-profile.sh"
 INVENTORY = ROOT / "scripts/inventory-m141-signed-apks.sh"
 MANIFEST = ROOT / "scripts/m220-candidate-elfs.tsv"
-REPORTER = ROOT / "scripts/m220-compat-report.py"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
 PACKAGE = ROOT / "rootfs/alpine/packages-m220-candidates.txt"
 WORKFLOW = ROOT / ".github/workflows/m220-nping-alpine.yml"
 
@@ -96,7 +97,7 @@ def strict_guest_report(tmp: Path) -> None:
     def check(first_text: str, reopen_text: str) -> subprocess.CompletedProcess[str]:
         first.write_text(first_text)
         reopen.write_text(reopen_text)
-        return subprocess.run(["python3", str(REPORTER), str(MANIFEST),
+        return subprocess.run(["python3", str(REPORTER), "m220", str(MANIFEST),
                                str(first), str(reopen), str(result), "--require-all"],
                               cwd=ROOT, text=True, capture_output=True, timeout=5)
 
@@ -153,10 +154,10 @@ def integration_contract() -> None:
                    "m220-reopen-host-udp.log", "m220-first-wire.json",
                    "m220-reopen-wire.json", "NAS_VIRTIO_NET_PCAP",
                    "m220-alpine-reopen-cases.tsv", "M220_REOPEN_DISCOVERY_COMPLETE",
-                   "scripts/m220-compat-report.py", "scripts/m220-alpine-disk-check.py",
+                   "scripts/alpine-compat-report.py m220", "scripts/m220-alpine-disk-check.py",
                    "M220 ALPINE ORIGINAL NPING WIRE PASS"):
         assert marker in runner, f"host two-QEMU gate missing {marker}"
-    assert "export NAS_M220_PILOT=1" in PILOT.read_text()
+    runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m220")
     assert "m220" in INVENTORY.read_text()
     assert "[M220 HOST UDP RECV]" in ORACLE.read_text()
     workflow = WORKFLOW.read_text()

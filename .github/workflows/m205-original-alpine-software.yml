@@ -71,7 +71,7 @@ jobs:
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           sh -n scripts/probe-m197-alpine-software-cohort.sh
-          sh -n scripts/probe-m205-alpine-compat-cohort.sh
+          sh -n scripts/probe-alpine-profile.sh
           sh -n tests/m205-software-workload.sh
           python3 -m py_compile scripts/m205-alpine-uart.py scripts/m205-compat-report.py
       - name: Install native ISA QEMU, cross-GCC and real ext4 host tools
@@ -101,7 +101,7 @@ jobs:
           NAS_M205_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M205_PUBLIC_SECONDS: '4400'
           NAS_M205_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m205-alpine-compat-cohort.sh ${{ matrix.port }}
+        run: sh scripts/probe-alpine-profile.sh m205 ${{ matrix.port }}
       - name: Summarize actual guest outcome without equating discovery to PASS
         if: always()
         run: |

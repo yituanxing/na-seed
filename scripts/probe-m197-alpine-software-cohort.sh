@@ -2692,11 +2692,11 @@ if [ "$m206" = 1 ]; then
         exit 1
     }
     case "${NAS_M206_REQUIRE_ALL:-0}" in
-        0) python3 scripts/m206-compat-report.py \
+        0) python3 scripts/alpine-compat-report.py m206 \
                scripts/m206-alpine-cohort.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m206-compat-report.json" ;;
-        1) python3 scripts/m206-compat-report.py \
+        1) python3 scripts/alpine-compat-report.py m206 \
                scripts/m206-alpine-cohort.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m206-compat-report.json" --require-all ;;
@@ -2708,7 +2708,7 @@ if [ "$m235" = 1 ]; then
         echo '[M235 FAIL] second native QEMU omitted the 12 original ELF reopens' >&2
         exit 1
     }
-    python3 scripts/m235-compat-report.py \
+    python3 scripts/alpine-compat-report.py m235 \
         scripts/m235-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m235-compat-report.json" --require-all
@@ -2718,7 +2718,7 @@ if [ "$m236" = 1 ]; then
         echo '[M236 FAIL] second native QEMU omitted seven original ELF reopens' >&2
         exit 1
     }
-    python3 scripts/m236-compat-report.py \
+    python3 scripts/alpine-compat-report.py m236 \
         scripts/m236-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m236-compat-report.json" --require-all
@@ -2728,7 +2728,7 @@ if [ "$m237" = 1 ]; then
         echo '[M237 FAIL] second native QEMU omitted fifteen original ELF reopens' >&2
         exit 1
     }
-    python3 scripts/m237-compat-report.py \
+    python3 scripts/alpine-compat-report.py m237 \
         scripts/m237-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m237-compat-report.json" --require-all
@@ -2738,7 +2738,7 @@ if [ "$m238" = 1 ]; then
         echo '[M238 FAIL] second native QEMU omitted fifteen original ELF reopens' >&2
         exit 1
     }
-    python3 scripts/m238-compat-report.py \
+    python3 scripts/alpine-compat-report.py m238 \
         scripts/m238-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m238-compat-report.json" --require-all
@@ -2750,7 +2750,7 @@ if [ "$m215" = 1 ]; then
     }
     # This strict pilot covers only five executable M213 probes. A blocked
     # sixth case or false-positive timeouts cannot be accepted as PASS.
-    python3 scripts/m215-compat-report.py \
+    python3 scripts/alpine-compat-report.py m215 \
         scripts/m215-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m215-compat-report.json" --require-all
@@ -2760,7 +2760,7 @@ if [ "$m218" = 1 ]; then
         echo '[M218 FAIL] second QEMU did not rerun original ifstat' >&2
         exit 1
     }
-    python3 scripts/m218-compat-report.py \
+    python3 scripts/alpine-compat-report.py m218 \
         scripts/m218-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m218-compat-report.json" --require-all
@@ -2770,7 +2770,7 @@ if [ "$m219" = 1 ]; then
         echo '[M219 FAIL] second QEMU did not rerun original utmpdump' >&2
         exit 1
     }
-    python3 scripts/m219-compat-report.py \
+    python3 scripts/alpine-compat-report.py m219 \
         scripts/m219-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m219-compat-report.json" --require-all
@@ -2780,7 +2780,7 @@ if [ "$m220" = 1 ]; then
         echo '[M220 FAIL] second QEMU did not rerun original Nping' >&2
         exit 1
     }
-    python3 scripts/m220-compat-report.py \
+    python3 scripts/alpine-compat-report.py m220 \
         scripts/m220-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m220-compat-report.json" --require-all
@@ -2790,7 +2790,7 @@ if [ "$m221" = 1 ]; then
         echo '[M221 FAIL] second QEMU did not rerun signed nsupdate and host' >&2
         exit 1
     }
-    python3 scripts/m221-compat-report.py \
+    python3 scripts/alpine-compat-report.py m221 \
         scripts/m221-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m221-compat-report.json" --require-all
@@ -2799,7 +2799,7 @@ if [ "$m222" = 1 ]; then
     grep -Fq 'M222_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
         echo '[M222 FAIL] second original SSH/SCP/SFTP ledger incomplete' >&2; exit 1;
     }
-    python3 scripts/m222-compat-report.py \
+    python3 scripts/alpine-compat-report.py m222 \
         scripts/m222-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m222-compat-report.json" --require-all
@@ -2808,7 +2808,7 @@ if [ "$m223" = 1 ]; then
     grep -Fq 'M223_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
         echo '[M223 FAIL] second original HTTP client/server ledger incomplete' >&2; exit 1;
     }
-    python3 scripts/m223-compat-report.py \
+    python3 scripts/alpine-compat-report.py m223 \
         scripts/m223-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m223-compat-report.json" --require-all
@@ -2818,7 +2818,7 @@ if [ "$m224" = 1 ]; then
         echo '[M224 FAIL] second original TCP nmap/iperf3/ncat ledger incomplete' >&2
         exit 1
     }
-    python3 scripts/m224-compat-report.py \
+    python3 scripts/alpine-compat-report.py m224 \
         scripts/m224-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m224-compat-report.json" --require-all
@@ -2828,7 +2828,7 @@ if [ "$m225" = 1 ]; then
         echo '[M225 FAIL] second original signed lftp/rclone ledger incomplete' >&2
         exit 1
     }
-    python3 scripts/m225-compat-report.py \
+    python3 scripts/alpine-compat-report.py m225 \
         scripts/m225-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m225-compat-report.json" --require-all
@@ -2838,7 +2838,7 @@ if [ "$m226" = 1 ]; then
         echo '[M226 FAIL] second native original restic remote repository incomplete' >&2
         exit 1
     }
-    python3 scripts/m226-compat-report.py \
+    python3 scripts/alpine-compat-report.py m226 \
         scripts/m226-candidate-elfs.tsv \
         "$PWD/$work/m197-live.serial.log" "$reopen" \
         "$PWD/$work/m226-compat-report.json" --require-all

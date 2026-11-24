@@ -122,7 +122,7 @@ jobs:
           NAS_M215_PUBLIC_QEMU_TIMEOUT: '2500'
           NAS_M215_PUBLIC_SECONDS: '2400'
           NAS_M215_REOPEN_SECONDS: '600'
-        run: sh scripts/probe-m215-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m215 amd64
       - name: Preserve genuine source, guest, wire and physical ledger evidence
         if: always()
         uses: actions/upload-artifact@v4

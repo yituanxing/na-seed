@@ -19,7 +19,7 @@ def load(name: str):
     return target
 
 
-report = load('m236-compat-report.py')
+report = load('alpine-compat-report.py').load_owner('m236')
 disk = load('m236-alpine-disk-check.py')
 
 
@@ -28,7 +28,7 @@ class M236StrictTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='m236-host-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.cases = report.owner.manifest_cases(BASE / 'm236-candidate-elfs.tsv')
+        self.cases = report.manifest_cases(BASE / 'm236-candidate-elfs.tsv')
 
     def ledgers(self, altered=None):
         first = ['M236_FIRST_DISCOVERY_COMPLETE']
@@ -44,21 +44,21 @@ class M236StrictTests(unittest.TestCase):
         self.assertEqual(len(self.cases), 7)
         self.assertEqual(len({x['elf_path'] for x in self.cases}), 7)
         first, reopen = self.ledgers()
-        value = report.owner.build_report(self.cases, first, reopen)
+        value = report.build_report(self.cases, first, reopen)
         self.assertEqual(value['newly_installed_full_pass_entrypoints'], 7)
         self.assertEqual(value['preexisting'], 0)
         for altered in ((0, 'install'), (3, 'functional'), (6, 'reopen')):
             with self.subTest(altered=altered):
                 f, r = self.ledgers(altered)
                 try:
-                    altered_report = report.owner.build_report(self.cases, f, r)
+                    altered_report = report.build_report(self.cases, f, r)
                 except ValueError:
                     continue
                 self.assertNotEqual(altered_report['newly_installed_full_pass_entrypoints'], 7)
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases, first + first.splitlines()[1] + '\n', reopen)
+            report.build_report(self.cases, first + first.splitlines()[1] + '\n', reopen)
         with self.assertRaises(ValueError):
-            report.owner.build_report(self.cases,
+            report.build_report(self.cases,
                                       first.replace('M236_FIRST_DISCOVERY_COMPLETE\n', ''), reopen)
 
     def test_signed_inventory_must_match_original_physical_ext4_bytes(self):

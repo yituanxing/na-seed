@@ -20,7 +20,7 @@ VERSION = 1
 ALPINE = "v3.23"
 SOURCES = (
     "scripts/probe-m197-alpine-software-cohort.sh",
-    "scripts/probe-m204-alpine-compat-cohort.sh",
+    "scripts/probe-alpine-profile.sh",
     "scripts/probe-m191-alpine-root.sh",
     "scripts/m191-alpine-root-disk.py",
     "scripts/m193-alpine-login-overlay.py",

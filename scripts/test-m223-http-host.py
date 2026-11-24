@@ -192,7 +192,7 @@ class StrictHttpTests(unittest.TestCase):
                      'm223-host-reopen', 'm223-alpine-disk-check.py verify',
                      'm223-alpine-disk-check.py stage',
                      'NAS_M223_REOPEN_SECONDS', 'm223-alpine-uart.py',
-                     'm223-alpine-reopen-cases.tsv', 'm223-compat-report.py'):
+                     'm223-alpine-reopen-cases.tsv', 'alpine-compat-report.py m223'):
             self.assertIn(mark, runner)
         for mark in ('milestone=M223', 'export NAS_M223_BOOT_PHASE="$phase"',
                      '"$milestone" != M222 ] && [ "$milestone" != M223 ]',

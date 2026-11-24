@@ -80,7 +80,7 @@ jobs:
           NAS_M222_PUBLIC_QEMU_TIMEOUT: '3150'
           NAS_M222_PUBLIC_SECONDS: '3000'
           NAS_M222_REOPEN_SECONDS: '1100'
-        run: sh scripts/probe-m222-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m222 amd64
       - name: Preserve only SSH public fingerprints, logs, signed hashes and TWO PCAPs
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,7 +149,7 @@ jobs:
           NAS_M222_PUBLIC_QEMU_TIMEOUT: '4800'
           NAS_M222_PUBLIC_SECONDS: '4700'
           NAS_M222_REOPEN_SECONDS: '1500'
-        run: sh scripts/probe-m222-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m222 '${{ matrix.port }}'
       - name: Preserve only authenticated real host SSH logs, 2 PCAPs and signed SHA
         if: always()
         uses: actions/upload-artifact@v4

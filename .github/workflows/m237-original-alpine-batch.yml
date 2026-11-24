@@ -8,7 +8,7 @@ on:
       - 'rootfs/alpine/packages-m237-candidates.txt'
       - 'scripts/m237-*'
       - 'scripts/test-m237-*'
-      - 'scripts/probe-m237-alpine-batch.sh'
+      - 'scripts/probe-alpine-profile.sh'
       - 'scripts/run-m237-local.sh'
       - 'scripts/acceptance/run-local-alpine-cohort.sh'
       - 'scripts/inventory-m141-signed-apks.sh'

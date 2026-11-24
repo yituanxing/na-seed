@@ -59,7 +59,7 @@ ports, without a synthesized terminal/login or guest service shortcut.
 
 Host fast tests: `scripts/test-m243-alpine-cli-uart.py` (16 cases), and the
 existing M242 two-epoch contract (11 cases). End-to-end entrypoint:
-`scripts/probe-m243-alpine-cli.sh`; CI:
+`sh scripts/probe-alpine-profile.sh m243 PORT`; CI:
 `.github/workflows/m243-original-alpine-cli-persistence.yml` (automatic on
 relevant feature-branch pushes, **not** a manually dispatched green job).
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import shutil
 import subprocess
+import runpy
 import tempfile
 
 
@@ -16,8 +17,8 @@ WORKLOAD = ROOT / "tests/m219-utmpdump-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
 MANIFEST = ROOT / "scripts/m219-candidate-elfs.tsv"
-REPORTER = ROOT / "scripts/m219-compat-report.py"
-PILOT = ROOT / "scripts/probe-m219-alpine-pilot.sh"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
+PILOT = ROOT / "scripts/probe-alpine-profile.sh"
 
 
 def run(*args: str, timeout: int = 5) -> subprocess.CompletedProcess[str]:
@@ -114,7 +115,7 @@ def check_strict_guest_report(directory: Path) -> None:
     def check(first_data: str, reopen_data: str) -> subprocess.CompletedProcess[str]:
         first.write_text(first_data)
         reopen.write_text(reopen_data)
-        return run("python3", str(REPORTER), str(MANIFEST), str(first),
+        return run("python3", str(REPORTER), "m219", str(MANIFEST), str(first),
                    str(reopen), str(report_file), "--require-all")
 
     good = check(first_good, reopen_good)
@@ -174,11 +175,11 @@ def main() -> None:
                    '"$overlay/root/m219-cohort.tsv"',
                    "scripts/m219-alpine-reopen-cases.tsv",
                    "M219_REOPEN_DISCOVERY_COMPLETE",
-                   "scripts/m219-compat-report.py",
+                   "scripts/alpine-compat-report.py m219",
                    "scripts/m219-alpine-disk-check.py",
                    "--require-all"):
         assert marker in runner, f"M219 two-QEMU or fixture gate missing {marker}"
-    assert "export NAS_M219_PILOT=1" in PILOT.read_text()
+    runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m219")
     assert run("sh", "-n", str(PILOT)).returncode == 0
     assert run("sh", "-n", str(RUNNER)).returncode == 0
     assert run("sh", "-n", str(OWNER)).returncode == 0

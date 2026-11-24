@@ -40,7 +40,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
           sh scripts/check-timerfd.sh
           sh scripts/check-m191-pid1-quiesce.sh
-          sh -n scripts/probe-m215-alpine-pilot.sh
+          sh -n scripts/probe-alpine-profile.sh
       - name: Install native QEMU, cross-GCC, UEFI and physical ext4 host tools
         timeout-minutes: 18
         run: |
@@ -63,7 +63,7 @@ jobs:
           NAS_M215_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M215_PUBLIC_SECONDS: '4400'
           NAS_M215_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m215-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m215 '${{ matrix.port }}'
       - name: Summarize actual first/reopen guest result, never invent PASS
         if: always()
         run: |

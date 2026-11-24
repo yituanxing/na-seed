@@ -56,7 +56,7 @@ jobs:
           NAS_M221_PUBLIC_QEMU_TIMEOUT: '3000'
           NAS_M221_PUBLIC_SECONDS: '2900'
           NAS_M221_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m221-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m221 amd64
       - name: Preserve both true host UDP transcripts, PCAPs, signed APK and ext4
         if: always()
         uses: actions/upload-artifact@v4
@@ -118,7 +118,7 @@ jobs:
           NAS_M221_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M221_PUBLIC_SECONDS: '4400'
           NAS_M221_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m221-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m221 '${{ matrix.port }}'
       - name: Preserve signed original DNS clients and all host/QEMU wire and ext4 proof
         if: always()
         uses: actions/upload-artifact@v4

@@ -64,7 +64,7 @@ jobs:
           NAS_M225_PUBLIC_QEMU_TIMEOUT: '3500'
           NAS_M225_PUBLIC_SECONDS: '3300'
           NAS_M225_REOPEN_SECONDS: '1250'
-        run: sh scripts/probe-m225-alpine-ftp-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m225 amd64
       - name: Retain original Alpine signed provenance host FTP and two raw PCAPs
         if: always()
         uses: actions/upload-artifact@v4
@@ -130,7 +130,7 @@ jobs:
           NAS_M225_PUBLIC_QEMU_TIMEOUT: '5600'
           NAS_M225_PUBLIC_SECONDS: '5300'
           NAS_M225_REOPEN_SECONDS: '2100'
-        run: sh scripts/probe-m225-alpine-ftp-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m225 '${{ matrix.port }}'
       - name: Retain signed cross FTP source and actual independent QEMU evidence
         if: always()
         uses: actions/upload-artifact@v4

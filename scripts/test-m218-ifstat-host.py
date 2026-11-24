@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import runpy
 import tempfile
 
 
@@ -14,9 +15,9 @@ WORKLOAD = ROOT / "tests/m218-ifstat-workload.sh"
 M213 = ROOT / "tests/m213-software-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
-PILOT = ROOT / "scripts/probe-m218-alpine-pilot.sh"
+PILOT = ROOT / "scripts/probe-alpine-profile.sh"
 MANIFEST = ROOT / "scripts/m218-candidate-elfs.tsv"
-REPORTER = ROOT / "scripts/m218-compat-report.py"
+REPORTER = ROOT / "scripts/alpine-compat-report.py"
 TRAFFIC_MARKER = "M205_REAL_UDP_SENT=40 dst=10.0.2.3:53\n"
 
 
@@ -66,7 +67,7 @@ def strict_report_contract(folder: Path) -> None:
     def run(first_text: str, reopen_text: str) -> subprocess.CompletedProcess[str]:
         first.write_text(first_text)
         reopen.write_text(reopen_text)
-        return subprocess.run(["python3", str(REPORTER), str(MANIFEST),
+        return subprocess.run(["python3", str(REPORTER), "m218", str(MANIFEST),
                                str(first), str(reopen), str(output), "--require-all"],
                               cwd=ROOT, capture_output=True, text=True, timeout=5)
 
@@ -124,7 +125,7 @@ def main() -> None:
                    '"$overlay/root/m218-cohort.tsv"',
                    "scripts/m218-alpine-reopen-cases.tsv",
                    "M218_REOPEN_DISCOVERY_COMPLETE",
-                   "scripts/m218-compat-report.py",
+                   "scripts/alpine-compat-report.py m218",
                    "--require-all",
                    "scripts/m218-alpine-disk-check.py"):
         assert marker in runner, f"M218 two-boot gate missing: {marker}"
@@ -134,7 +135,7 @@ def main() -> None:
             and '"$overlay/root/m205-fixtures/udp-traffic"' in runner
             and 'sudo test -x "$overlay/root/m205-fixtures/udp-traffic"' in runner), (
         "M218 must build and stage a target-native 40-packet UDP fixture")
-    assert "export NAS_M218_PILOT=1" in PILOT.read_text()
+    runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m218")
     subprocess.run(["sh", "-n", str(WORKLOAD)], cwd=ROOT,
                    check=True, timeout=5)
 

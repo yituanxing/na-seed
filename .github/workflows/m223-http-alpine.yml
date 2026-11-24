@@ -58,7 +58,7 @@ jobs:
           NAS_M223_PUBLIC_QEMU_TIMEOUT: '3300'
           NAS_M223_PUBLIC_SECONDS: '3150'
           NAS_M223_REOPEN_SECONDS: '1100'
-        run: sh scripts/probe-m223-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m223 amd64
       - name: Preserve only signed SHA original UART host GET logs and two actual PCAPs
         if: always()
         uses: actions/upload-artifact@v4
@@ -125,7 +125,7 @@ jobs:
           NAS_M223_PUBLIC_QEMU_TIMEOUT: '4850'
           NAS_M223_PUBLIC_SECONDS: '4700'
           NAS_M223_REOPEN_SECONDS: '1600'
-        run: sh scripts/probe-m223-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m223 '${{ matrix.port }}'
       - name: Preserve only original signed SHA UART host GET logs PCAP and JSON
         if: always()
         uses: actions/upload-artifact@v4

@@ -57,7 +57,7 @@ jobs:
           NAS_M219_PUBLIC_QEMU_TIMEOUT: '3000'
           NAS_M219_PUBLIC_SECONDS: '2900'
           NAS_M219_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m219-alpine-pilot.sh amd64
+        run: sh scripts/probe-alpine-profile.sh m219 amd64
       - name: Preserve signed provenance, guest and physical ext4 proof
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,7 +116,7 @@ jobs:
           NAS_M219_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M219_PUBLIC_SECONDS: '4400'
           NAS_M219_REOPEN_SECONDS: '900'
-        run: sh scripts/probe-m219-alpine-pilot.sh '${{ matrix.port }}'
+        run: sh scripts/probe-alpine-profile.sh m219 '${{ matrix.port }}'
       - name: Preserve signed ELF, guest UART, wire and durable ext4
         if: always()
         uses: actions/upload-artifact@v4

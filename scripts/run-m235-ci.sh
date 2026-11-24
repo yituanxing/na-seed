@@ -11,12 +11,12 @@ python3 scripts/test-m223-http-host.py
 python3 scripts/test-m205-alpine-host.py
 python3 scripts/test-m206-alpine-host.py
 for script in scripts/probe-m197-alpine-software-cohort.sh \
-              scripts/probe-m235-alpine-batch.sh \
+              scripts/probe-alpine-profile.sh \
               scripts/inventory-m141-signed-apks.sh \
               tests/m205-software-workload.sh tests/m235-software-workload.sh; do
     sh -n "$script"
 done
-python3 -m py_compile scripts/m235-alpine-uart.py scripts/m235-compat-report.py \
+python3 -m py_compile scripts/m235-alpine-uart.py scripts/alpine-compat-report.py \
     scripts/m235-alpine-disk-check.py scripts/m235-http-proof.py
 
 sh scripts/ci-ubuntu-mirror.sh
@@ -64,4 +64,4 @@ awk -F '\t' 'NR > 1 { n++; if ($3 != "NATIVE_ELF") bad++ } END {
 unique=$(awk -F '\t' 'NR > 1 { print $4 }' "$tsv" | sort -u | wc -l)
 test "$unique" -eq 12 || { echo '[M235 FAIL] duplicate signed ELF SHA' >&2; exit 1; }
 echo "[M235 SIGNED APK PASS] $port twelve newly signed target-native unique ELF hashes"
-sh scripts/probe-m235-alpine-batch.sh "$port"
+sh scripts/probe-alpine-profile.sh m235 "$port"

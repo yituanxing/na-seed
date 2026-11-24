@@ -3,6 +3,7 @@
 
 import importlib.util
 import re
+import runpy
 from pathlib import Path
 
 
@@ -89,14 +90,13 @@ for invalid_first, invalid_reopen in (
 old_probe = (ROOT / "scripts/probe-m197-alpine-software-cohort.sh").read_text()
 assert '. scripts/acceptance/profile.sh' in old_probe
 old_probe += '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
-new_probe = (ROOT / "scripts/probe-m204-alpine-compat-cohort.sh").read_text()
+new_probe = (ROOT / "scripts/probe-alpine-profile.sh").read_text()
 assert "NAS_M204_COMPAT_COHORT:-0" in old_probe
 assert "scripts/m204-alpine-uart.py" in old_probe
 assert "scripts/m204-alpine-reopen-cases.tsv" in old_probe
 assert "m197-alpine-disk-check.py" in old_probe
 assert "m196-public-wire-check.py" in old_probe
-assert "NAS_M198_INTEGRATED_DESKTOP=0" in new_probe
-assert "NAS_M199_ORIGINAL_OPENRC_DESKTOP=0" in new_probe
+runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m204")
 assert "--allow-untrusted" not in new_probe
 
 # M197 retains its established no-cache baseline; M204 must reuse the
