@@ -122,9 +122,11 @@ class OriginalDebianInteractiveUARTContract(unittest.TestCase):
         self.assertIn(b"[PASS] cmdline userspace exit 0", uart.NATIVE_EXIT.values())
 
     def test_runner_requires_original_elf_exec_glibc_and_native_rc_zero(self):
-        source = (BASE / "scripts/m251-debian-uart.py").read_text()
+        source = (BASE / "scripts/m251-debian-uart.py").read_text() + "\n" + (BASE / "scripts/m250-debian-uart.py").read_text()
         self.assertIn('proc.returncode != 0', source)
-        self.assertIn('for name in (*NEW_COREUTILS, b"printf"):', source)
+        self.assertIn('minimum_interpreters=9', source)
+        self.assertIs(uart.output_line, uart.transport.output_line)
+        self.assertIn('programs=(*NEW_COREUTILS, b"printf")', source)
         self.assertIn('b"[EXEC] replaced process with lwext4 ELF: /usr/bin/" + name', source)
         self.assertIn('[DYN] real ELF interpreter loaded, entry=', source)
         self.assertIn('missing real glibc dynamic interpreter evidence', source)
@@ -135,7 +137,7 @@ class OriginalDebianInteractiveUARTContract(unittest.TestCase):
     def test_negative_host_contract_does_not_fake_guest_pass(self):
         # M251 native guest PASS still needs actual QEMU serial, original ELF,
         # signed provenance and disk readback checked by the separate disk tool.
-        source = (BASE / "scripts/m251-debian-uart.py").read_text()
+        source = (BASE / "scripts/m251-debian-uart.py").read_text() + "\n" + (BASE / "scripts/m250-debian-uart.py").read_text()
         self.assertIn('native QEMU exit 0 and clean ext4 unmount', source)
         self.assertIn('native runner stopped early', source)
 

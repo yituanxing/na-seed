@@ -114,12 +114,13 @@ class OriginalDebianTextToolsContract(unittest.TestCase):
         self.assertIn(b"[ARM64] userspace debug-exit status=0", uart.NATIVE_EXIT.values())
 
     def test_runner_exits_zero_real_original_elf_and_dynamic_loader(self):
-        source = MODULE.read_text(encoding="utf-8")
+        source = MODULE.read_text(encoding="utf-8") + "\n" + (BASE / "scripts/m250-debian-uart.py").read_text()
         for fragment in ("proc.returncode != 0",
-                         "for name in (*NEW_PROGRAMS, *ALSO_REQUIRED):",
+                         "programs=(*NEW_PROGRAMS, *ALSO_REQUIRED)",
+                         "minimum_interpreters=10",
                          "[EXEC] replaced process with lwext4 ELF: /usr/bin/",
                          "[DYN] real ELF interpreter loaded, entry=",
-                         "missing genuine glibc dynamic interpreter load",
+                         "missing real glibc dynamic interpreter evidence",
                          "os.mkfifo(", "send(hold, command)", "native runner stopped early"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, source)

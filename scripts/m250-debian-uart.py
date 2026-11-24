@@ -67,15 +67,30 @@ def capture(log_name: Path, offset: int, received: bytearray) -> int:
     return offset
 
 
-def run(port: str, runner: str, log_name: Path, runner_log: Path,
-        fifo: Path, deadline_seconds: int) -> None:
-    if port not in NATIVE_EXIT:
-        raise ValueError("unrecognized native QEMU ISA")
+def prompt_boundary(serial: bytes, cursor: int) -> int:
+    """Find only the shell's line-leading prompt, not `PS1=M250> ` from env.
+
+    Real guest UART may print this literal anywhere in a program's stdout;
+    accepting an embedded substring would make a complete, correct command
+    look like it terminated before its output was produced.
+    """
+    match = re.search(rb"(?m)^" + re.escape(PROMPT), serial[cursor:])
+    return -1 if match is None else cursor + match.start()
+
+
+def run_profile(port: str, runner: str, serial: Path, runner_log: Path,
+                fifo: Path, deadline_seconds: int, *, commands, required,
+                programs, minimum_interpreters: int, profile: str,
+                pass_message: str, line_prompt: bool = True,
+                native_exit=NATIVE_EXIT) -> None:
+    """Shared real UART transport; callers own exact workload and proof."""
+    if port not in native_exit:
+        raise ValueError("unreviewed native ISA")
     fifo.parent.mkdir(parents=True, exist_ok=True)
     if fifo.exists():
-        raise RuntimeError("refusing stale serial FIFO: " + str(fifo))
-    if log_name.exists():
-        log_name.unlink()
+        raise RuntimeError("refusing stale real-UART FIFO: " + str(fifo))
+    if serial.exists():
+        serial.unlink()
     os.mkfifo(fifo, 0o600)
     hold = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
     runner_log.parent.mkdir(parents=True, exist_ok=True)
@@ -85,76 +100,73 @@ def run(port: str, runner: str, log_name: Path, runner_log: Path,
     cursor = 0
     sent = 0
     first_prompt_seen = False
-    started = time.monotonic()
     runner_finished_at = None
+    started = time.monotonic()
     try:
         with runner_log.open("wb") as outfile:
             proc = subprocess.Popen(["sh", runner], stdout=outfile,
                                     stderr=subprocess.STDOUT, start_new_session=True)
             while time.monotonic() - started < deadline_seconds:
-                logged = capture(log_name, logged, raw)
+                logged = capture(serial, logged, raw)
                 normalized = bytes(raw).replace(b"\r", b"")
                 if b"[FAIL]" in normalized or b"[M250 LAUNCH FAIL]" in normalized:
-                    raise RuntimeError("real guest reported a failure")
-                if sent < len(COMMANDS):
-                    boundary = normalized.find(PROMPT, cursor)
+                    raise RuntimeError("native guest reported an explicit failure")
+                if sent < len(commands):
+                    boundary = (prompt_boundary(normalized, cursor) if line_prompt
+                                else normalized.find(PROMPT, cursor))
                     if boundary >= 0:
                         segment = normalized[cursor:boundary]
-                        required = None if sent == 0 else COMMANDS[sent - 1][1]
-                        if required is not None and not output_line(segment, required):
+                        expected = None if sent == 0 else commands[sent - 1][1]
+                        if expected is not None and not output_line(segment, expected):
                             raise RuntimeError(
-                                f"dash prompt without true guest-output line for command {sent}: "
-                                + repr(required))
+                                f"prompt without genuine independent guest stdout line "
+                                f"for command {sent}: {expected!r}")
                         if not first_prompt_seen:
                             if b"[M250 CTTY] real /dev/tty acquired" not in normalized:
-                                raise RuntimeError("unsigned helper skipped real TIOCSCTTY")
+                                raise RuntimeError("real controlling terminal was not acquired")
                             first_prompt_seen = True
-                        command, _, description = COMMANDS[sent]
-                        print(f"[M250 UART] {port} interactive step {sent+1}/{len(COMMANDS)}: "
+                        command, _, description = commands[sent]
+                        print(f"[{profile} UART] {port} step {sent + 1}/{len(commands)}: "
                               f"{description}", flush=True)
                         cursor = boundary + len(PROMPT)
                         send(hold, command)
                         sent += 1
 
-                if sent == len(COMMANDS) and NATIVE_EXIT[port] in normalized:
-                    # Actual QEMU runner must also return 0; seeing a kernel
-                    # marker without the host runner's verification is not PASS.
+                if sent == len(commands) and native_exit[port] in normalized:
                     if proc.poll() is None:
                         time.sleep(0.15)
                         continue
-                    logged = capture(log_name, logged, raw)
+                    logged = capture(serial, logged, raw)
                     normalized = bytes(raw).replace(b"\r", b"")
                     if proc.returncode != 0:
-                        raise RuntimeError("native runner failed after guest exit: " + str(proc.returncode))
-                    missing = [marker for marker in REQUIRED if marker not in normalized]
+                        raise RuntimeError("native-QEMU runner failed: " + str(proc.returncode))
+                    missing = [marker for marker in required if marker not in normalized]
                     if missing:
-                        raise RuntimeError("missing physical-root/clean-unmount evidence: "
-                                           + ", ".join(repr(item) for item in missing))
-                    for name in (b"true", b"cat", b"wc", b"printf"):
+                        raise RuntimeError("missing true mounted-root/exit evidence: "
+                                           + ", ".join(repr(v) for v in missing))
+                    for name in programs:
                         marker = b"[EXEC] replaced process with lwext4 ELF: /usr/bin/" + name
                         if marker not in normalized:
-                            raise RuntimeError("original Debian coreutils not executed: " + name.decode())
-                    if normalized.count(b"[DYN] real ELF interpreter loaded, entry=") < 5:
-                        raise RuntimeError("original signed glibc PT_INTERP not actually exercised")
-                    print(f"[M250 INTERACTIVE DEBIAN UART GUEST PASS] {port} "
-                          "8 sequential live commands; physical root; original dash/glibc; "
-                          "pipe+redirection; clean native exit", flush=True)
+                            raise RuntimeError("original signed ELF not executed: "
+                                               + name.decode())
+                    if normalized.count(b"[DYN] real ELF interpreter loaded, entry=") < minimum_interpreters:
+                        raise RuntimeError("missing real glibc dynamic interpreter evidence")
+                    print(pass_message, flush=True)
                     return
+
                 if proc.poll() is not None:
-                    # The monitor can finish between two incremental UART
-                    # reads. Give the log reader one final chance to drain
-                    # the already-written kernel exit markers before FAIL.
+                    # Avoid racing the last already-written QEMU serial chunk.
                     if runner_finished_at is None:
                         runner_finished_at = time.monotonic()
                     if time.monotonic() - runner_finished_at >= 1.0:
-                        raise RuntimeError(f"native runner stopped before full interactive proof: "
-                                           f"rc={proc.returncode} sent={sent}")
+                        raise RuntimeError(f"native runner stopped early: "
+                                           f"rc={proc.returncode}, commands={sent}")
                 time.sleep(0.10)
-            raise RuntimeError(f"real UART interactive timeout after "
-                               f"{deadline_seconds}s, sent={sent}/{len(COMMANDS)}")
+            raise RuntimeError(f"real UART deadline {deadline_seconds}s "
+                               f"with {sent}/{len(commands)} commands")
     except Exception:
-        print("[M250 REAL DEBIAN UART FAIL] raw physical serial tail:\n" +
-              bytes(raw).decode("utf-8", errors="replace")[-14000:], file=sys.stderr)
+        print(f"[{profile} REAL DEBIAN UART FAIL] physical QEMU serial tail:\n"
+              + bytes(raw).decode("utf-8", errors="replace")[-14000:], file=sys.stderr)
         raise
     finally:
         if proc is not None and proc.poll() is None:
@@ -173,8 +185,19 @@ def run(port: str, runner: str, log_name: Path, runner_log: Path,
         os.close(hold)
         fifo.unlink()
         if raw:
-            clean = log_name.with_name(log_name.name.removesuffix(".serial.log") + ".clean.log")
+            clean = serial.with_name(serial.name.removesuffix(".serial.log") + ".clean.log")
             clean.write_bytes(bytes(raw).replace(b"\r", b""))
+
+
+def run(port: str, runner: str, log_name: Path, runner_log: Path,
+        fifo: Path, deadline_seconds: int) -> None:
+    run_profile(port, runner, log_name, runner_log, fifo, deadline_seconds,
+                commands=COMMANDS, required=REQUIRED,
+                programs=(b"true", b"cat", b"wc", b"printf"),
+                minimum_interpreters=5, profile="M250", line_prompt=False,
+                pass_message=f"[M250 INTERACTIVE DEBIAN UART GUEST PASS] {port} "
+                             "8 sequential live commands; physical root; original dash/glibc; "
+                             "pipe+redirection; clean native exit")
 
 
 def main() -> None:
