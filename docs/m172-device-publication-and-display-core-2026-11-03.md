@@ -60,7 +60,7 @@ architecture checks are `scripts/check-three-isa-core.py` and
 `scripts/check-architecture-boundaries.py`.
 
 Native acceptance is a separate exact-HEAD three-ISA system-QEMU matrix in
-`.github/workflows/m172-batch.yml`. It reuses the established M171 real guest
+the former `m172-batch.yml` (historical workflow). It reuses the established M171 real guest
 image/terminal/browser/LVGL + physical QMP mouse + screen pixel oracle,
 precisely to detect regressions through the new device publication path.
 M171 remains available by manual dispatch; M172 is the active automated gate.
@@ -78,3 +78,5 @@ The previous VFS, netdev, block and input algorithms are unchanged. Their
 existing focused real-software and three-ISA tests remain acceptance gates;
 this batch is an architectural connection point, not completeness parity
 with Linux.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/device-irq-native.yml`, select `m172` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

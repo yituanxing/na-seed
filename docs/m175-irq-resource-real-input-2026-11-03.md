@@ -69,7 +69,7 @@ irqdomain, MSI-X allocation, SMP affinity or a new interrupt worker.
   shared-action lifetime/rollback tests, modern PCI ISR cap tests, two actual
   class-driver queues consuming 12+12 host-injected events across the 8-event
   quota, no-IRQ/no-speculative-poll checks, and 76 shared-core/ISA boundaries.
-- The exact-head `.github/workflows/m175-irq.yml` host gate also retains
+- The exact-head the former `m175-irq.yml` (historical workflow) host gate also retains
   M166 input and M174 devfs regression coverage. It is the **one** active
   native three-ISA CI batch; M174 remains available through manual dispatch.
 - `sh scripts/probe-m175-irq.sh amd64|riscv64|arm64` retains M174's 20 signed
@@ -86,3 +86,5 @@ successful **exact pushed head** x86-64/RV64/AArch64 native-QEMU matrix may
 be reported as M175 IRQ success. Current platform choices apply to the pinned
 QEMU virtual machines and one vCPU; broader physical discovery, hotplug and
 MSI-X remain later, independently motivated architecture work.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/device-irq-native.yml`, select `m175` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

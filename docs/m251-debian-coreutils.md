@@ -70,9 +70,11 @@ sh scripts/m251-probe-debian-coreutils.sh arm64
 ```
 
 Or run the scoped GitHub Actions workflow:
-`.github/workflows/m251-debian-coreutils-ext4.yml`.
+the former `m251-debian-coreutils-ext4.yml` (historical workflow).
 
 **Evidence boundary:** host unit tests, signature verification alone, any
 individual startup marker, and green CI without the actual native UART and
 post-shutdown fsck/readback **do not count** as M251 guest acceptance.
 M249/M250 baseline evidence and their original acceptance paths stay intact.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/debian-native-ext4.yml`, select `m251` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

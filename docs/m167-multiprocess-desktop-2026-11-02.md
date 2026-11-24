@@ -50,7 +50,7 @@ pretending that this unimplemented general case already works.
   already queued when the last slave closes is delivered as
   `POLLIN|POLLHUP`, then only HUP after draining. The terminal establishes
   a separate child-attachment handshake to avoid racing its slave open.
-- `.github/workflows/m167-batch.yml` invokes three-ISA native QEMU acceptance
+- the former `m167-batch.yml` (historical workflow) invokes three-ISA native QEMU acceptance
   (amd64, riscv64, arm64). QEMU's hardware input sequence raises the image,
   drags it, raises the terminal and types into its PTY. The independent QMP
   oracle captures and validates **five physical framebuffer screenshots**.
@@ -77,3 +77,5 @@ surface protocol, while desktop remains the only framebuffer owner.
 
 Native three-ISA QEMU/QMP evidence, not the host self-test alone, is required
 before calling the milestone hardware-accepted.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/desktop-native.yml`, select `m167` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

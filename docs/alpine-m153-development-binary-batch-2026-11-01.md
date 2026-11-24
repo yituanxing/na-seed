@@ -43,7 +43,7 @@ similarly, already admitted `ar`, `nm`, `objcopy`, `objdump`, `readelf`,
    binaries under native QEMU. Exactly 36 named semantic `M153_*_PASS`
    markers and one `M153_BATCH_PASS` are mandatory; any failed command
    prints its captured actual stdout/stderr and causes the job to fail.
-4. `.github/workflows/m153-batch.yml`: x86_64 by default; manual dispatch,
+4. the former `m153-batch.yml` (historical workflow): x86_64 by default; manual dispatch,
    `run-m153-multiarch`, and shared `run-m151-155-multiarch` trigger ARM64 and
    RV64 lanes. Uploads the signed APK log, 36 SHA hashes and raw QEMU serial.
 
@@ -55,3 +55,5 @@ Catalog integration is intentionally owned by the main agent; append only:
 ```
 m153-batch	rootfs/alpine/packages-m153-batch.txt	scripts/m153-original-elfs.txt	scripts/m153-rootfs-copies.tsv	main+community
 ```
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/alpine-signed-extended.yml`, select `m153` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

@@ -61,7 +61,7 @@ their actual Linux statusq producer can be ported.
 - `sh scripts/check-m166-input-port.sh`: host tests of the actual input core,
   evdev, Unikraft/DMA queue port; clang syntax checks for three native targets
   where clang is installed.
-- `.github/workflows/m166-batch.yml`: native QEMU **amd64/riscv64/arm64**,
+- the former `m166-batch.yml` (historical workflow): native QEMU **amd64/riscv64/arm64**,
   QMP real hardware key/absolute/button/relative events, signed Alpine evtest
   key-state reads, and five screenshot color oracles that inspect QEMU's
   physical framebuffer independently of the guest's serial messages.
@@ -74,3 +74,5 @@ USB HID stack, global seat policy, or end-user desktop input mapper. Those
 are independent follow-on features once the present software demands them.
 The real native QEMU workflow, not the host mocks, is the authority for
 claiming full hardware acceptance.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/desktop-native.yml`, select `m166` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

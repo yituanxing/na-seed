@@ -92,7 +92,7 @@ host replay counts toward semantic admission.
    m151-batch	rootfs/alpine/packages-m151-batch.txt	scripts/m151-original-elfs.txt	scripts/m151-rootfs-copies.tsv	main+community
    ```
 
-2. On pull requests, `.github/workflows/m151-batch.yml` runs genuine native
+2. On pull requests, the former `m151-batch.yml` (historical workflow) runs genuine native
    x86_64 QEMU by default. `workflow_dispatch`, label `run-m151-multiarch`,
    or the coordinated label `run-m151-155-multiarch` additionally enable
    the real RV64 and AArch64 guest jobs.
@@ -106,3 +106,5 @@ Static fixture and shell syntax tests do not establish successful QEMU
 semantics; only those per-ISA serial artifacts can do so. The first CI
 iteration may reveal real encoder parameter variations or kernel ABI gaps;
 those should be diagnosed from actual serial logs without skipping tests.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/alpine-signed-extended.yml`, select `m151` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

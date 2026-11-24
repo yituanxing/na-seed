@@ -90,7 +90,7 @@ guest manifest and exact rootfs fixture preservation fail closed at staging.
   upstream LVGL client. Five physically captured 800x600 frames are checked
   for visible windows, button pixels and terminal survival. Serial markers
   synchronize the observer; they are not a screenshot substitute.
-- The final `.github/workflows/m174-batch.yml` is the **one** automated
+- The final the former `m174-batch.yml` (historical workflow) is the **one** automated
   three-ISA run for this batch. M173 becomes manually dispatchable to avoid
   repeating the historical CI fleet.
 
@@ -106,3 +106,5 @@ VirtIO transport ISR acknowledgement to a driver consumer. Input/net still
 poll their completion queues. Rather than add an untested generic IRQ API,
 the next resource stage should implement one end-to-end real interrupt
 consumer (including safe unbind), then extract the shared typed contract.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/device-irq-native.yml`, select `m174` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

@@ -81,3 +81,22 @@ The current cleanup/main push regression is unchanged. M252 is already
 shared by M254–M257 and retains its existing reusable workflow interface.
 M250 owns the common UART transport for M251/M252; commands, original ELF
 exec evidence, interpreter thresholds and clean native exit remain distinct.
+
+## Consolidated signed Alpine entrypoints
+
+The staged APK and original native QEMU contracts are unchanged by the
+wrapper retirement. The current commands for consolidated software batches are:
+
+    sh scripts/stage-alpine-signed-batch.sh PORT PROFILE
+    sh scripts/probe-alpine-signed-batch.sh PORT PROFILE
+
+PROFILE is the original milestone such as m109 or m165, and PORT is amd64,
+riscv64 or arm64. M141 retains its specialized native probe and supplemental
+network/LLVM cohorts; all of those call the shared M141 staging profile.
+The host fixture dispatcher owns M119–M128, M143/M144/M147/M149/M152,
+M163/M165 and M166–M168. Original guest scripts, exact marker counts,
+independent ELF manifests and native evidence remain separate. In particular,
+M163/M165 share actual PNM data and M166–M168 retain the original distinct
+static program lists, machine checks and SHA256 evidence names. The common
+probe matches complete kernel exec trace lines, not executable-name prefixes.
+Host-only test fixtures are not evidence of native guest acceptance.

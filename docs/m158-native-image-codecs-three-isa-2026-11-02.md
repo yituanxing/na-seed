@@ -28,7 +28,7 @@ historically new, native executable paths (15 encoder/decoder pairs):
 | SIR | `pnmtosir` / `sirtopnm` |
 | YUV | `ppmtoyuv` / `yuvtoppm` |
 
-`stage-m158-prebuilt.sh` rejects every ELF path that was admitted by an
+`scripts/stage-alpine-signed-batch.sh PORT m158` rejects every ELF path that was admitted by an
 earlier M-series manifest, checks all targets are real signed-package ELF
 files of the correct architecture, disallows BusyBox aliases and requires
 30 different SHA-256 image hashes. No guest compile, relink, generated

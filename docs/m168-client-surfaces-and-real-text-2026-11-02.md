@@ -44,7 +44,7 @@ the new browser branch rather than being omitted.
   surfaces, real memfd, focus/overlap/z-order and pixel glyph checks.
 - `sh scripts/check-m167-desktop.sh` verifies the unchanged M167 public
   behavior through its production self-test after protocol generalization.
-- `.github/workflows/m168-batch.yml` runs native QEMU on amd64, riscv64 and
+- the former `m168-batch.yml` (historical workflow) runs native QEMU on amd64, riscv64 and
   arm64. QMP injects physical absolute pointer, buttons and keyboard input
   and independently validates **seven actual framebuffer screenshots**:
   initial, image focus, image drag, browser focus, browser key, terminal
@@ -64,3 +64,5 @@ about window identities.
 
 Three-ISA QEMU/physical input/real signed ELF evidence, rather than host
 simulation, decides whether the batch is accepted.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/desktop-native.yml`, select `m168` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

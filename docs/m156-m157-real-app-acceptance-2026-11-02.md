@@ -83,10 +83,12 @@ sh -n tests/m157-batch-run.sh
 ```
 
 The new exact-head GitHub Actions jobs are
-`.github/workflows/m156-https.yml` and `.github/workflows/m157-batch.yml`,
+`.github/workflows/m156-https.yml` and the former `m157-batch.yml` (historical workflow),
 both now requiring all three ISAs.
 If a guest fails, classify its actual syscall trace, guest output and host
 oracle before changing `kernel/fs/socket_syscall.c`, `ports/lwip/socket_port.c`
 or Task/File ownership. The existing code already proves ordinary HTTP,
 DNS, UDP, dual-NIC DHCP and cross-ISA signed applications; do not regress
 those working contracts to make one new client pass.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/alpine-signed-extended.yml`, select `m157` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

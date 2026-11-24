@@ -61,7 +61,7 @@ PASS or weaken the ELF program.
 Run `python3 tests/m245-debian-dynamic-host.py` and
 `sh -n scripts/m245-probe-debian-glibc.sh` for subsecond offline negative
 contracts; they cannot be reported as guest support. The separate automatic
-scoped x86 workflow `.github/workflows/m245-debian-dynamic-glibc.yml` handles
+scoped x86 workflow the former `m245-debian-dynamic-glibc.yml` (historical workflow) handles
 the first native proof and preserves its real serial and authenticated host
 metadata. It triggers only on relevant M245/loader changes on the feature
 branch, not on every unrelated NaSeed commit.
@@ -71,3 +71,5 @@ glibc Bash, full Debian `/sbin/init`, complete Debian rootfs, networking or
 desktop. Extend those only after this minimal unmodified dynamic ELF runs
 on the real kernel. The existing musl Alpine 3/3 acceptance remains a
 separate mandatory nonregression gate for loader changes.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/debian-native-x86.yml`, select `m245` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.

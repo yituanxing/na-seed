@@ -39,7 +39,7 @@ sh scripts/probe-alpine-signed-batch.sh arm64 m154
 
 The probes run real firmware-booted **system QEMU** with each architecture's
 NaSeed native kernel, not qemu-user or host execution. The PR CI workflow
-`.github/workflows/m154-batch.yml` runs x86_64 by default; `workflow_dispatch`,
+the former `m154-batch.yml` (historical workflow) runs x86_64 by default; `workflow_dispatch`,
 `run-m154-multiarch` and the shared `run-m151-155-multiarch` PR label select
 the full three-architecture matrix. Failure preserves serial logs, APK
 provenance and original ELF SHA-256 artifacts.
@@ -54,3 +54,5 @@ At implementation time the 30 ELF names were checked against the historical
 batch manifests, including M151–M155 peers. Only an actual native system-QEMU
 CI execution establishes the final runtime pass; host-side APK inspection
 and syntax checks are separate evidence and are not presented as QEMU passes.
+
+**Current acceptance entry (cleanup 2026-11-24):** `.github/workflows/alpine-signed-extended.yml`, select `m154` for this workload. The original CI description above is historical; the current workflow owns the actual triggers, target matrix and timeouts.
