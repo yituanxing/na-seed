@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
-#include "../syscall/ops.h"
+#include "../syscall/poll_wait_policy.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../pipe.h"
@@ -78,25 +78,13 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     if (task->wait.blocked_op == NAS_SC_waitid)
         return nas_process_waitid_ready(task,task->wait.blocked_args[0],
                 task->wait.blocked_args[1],task->wait.blocked_args[3]);
-    if(task->wait.blocked_op==NAS_SC_epoll_wait ||
-       task->wait.blocked_op==NAS_SC_epoll_pwait)
-        return nas_epoll_task_ready(task);
-    if(task->wait.blocked_op==NAS_SC_bind ||
-       task->wait.blocked_op==NAS_SC_connect ||
-       task->wait.blocked_op==NAS_SC_listen ||
-       task->wait.blocked_op==NAS_SC_setsockopt ||
-       task->wait.blocked_op==NAS_SC_getsockopt ||
-       task->wait.blocked_op==NAS_SC_shutdown ||
-       task->wait.blocked_op==NAS_SC_getsockname ||
-       task->wait.blocked_op==NAS_SC_getpeername)
+    switch(nas_poll_wait_kind(task->wait.blocked_op)) {
+    case NAS_POLL_WAIT_EPOLL: return nas_epoll_task_ready(task);
+    case NAS_POLL_WAIT_SOCKET:
         return nas_fs_socket_control_ready(task->wait.description_slot);
-    if(task->wait.blocked_op==NAS_SC_accept ||
-       task->wait.blocked_op==NAS_SC_accept4)
-        return nas_fs_poll_ready(task); /* original listener description */
-    if (task->wait.blocked_op == NAS_SC_poll ||
-        (task->wait.blocked_op == NAS_SC_ppoll ||
-         (task->wait.blocked_op == NAS_SC_pselect6 || task->wait.blocked_op == NAS_SC_select)))
-        return nas_fs_poll_ready(task);
+    case NAS_POLL_WAIT_FDS: return nas_fs_poll_ready(task);
+    default: break;
+    }
     if (task->wait.blocked_op == NAS_SC_read ||
         task->wait.blocked_op == NAS_SC_readv ||
         task->wait.blocked_op == NAS_SC_recvfrom || /* TCP MSG_PEEK */

@@ -149,33 +149,16 @@ bool nas_arm_pt_protect(const struct nas_arm_pt *pt,uint64_t va,
     *leaf=e;
     return true;
 }
-static bool arm_walk(uint64_t pa,unsigned level,uint64_t base,bool top,
-                     nas_user_pt_visit fn,void *ctx) {
-    const uint64_t *entries=nas_pt_table(pa);
-    /* TTBR0 owns the entire lower-VA user region; unlike Sv39 it does not
-     * reserve the upper 256 root entries for the kernel (TTBR1 does). */
-    (void)top;
-    unsigned count=512;
-    for(unsigned i=0;i<count;i++) {
-        uint64_t e=entries[i];
-        if(!e) continue;
-        uint64_t va=base | ((uint64_t)i<<(12+9*level));
-        if(level) {
-            if(!is_table(e) ||
-               !arm_walk(e&PA_MASK,level-1,va,false,fn,ctx)) return false;
-        } else {
-            if((e&3)!=DESCRIPTOR || !(e&AP_EL0) || !(e&AF) ||
-               !(e&PA_MASK)) return false;
-            unsigned perms=NAS_UP_READ |
-                ((e&AP_RO)?0:NAS_UP_WRITE) |
-                ((e&UXN)?0:NAS_UP_EXEC);
-            if(!fn(va,e&PA_MASK,perms,ctx)) return false;
-        }
-    }
+static bool arm_leaf_access(uint64_t e,unsigned *perms) {
+    if((e&3)!=DESCRIPTOR || !(e&AP_EL0) || !(e&AF) || !(e&PA_MASK))
+        return false;
+    *perms=NAS_UP_READ | ((e&AP_RO)?0:NAS_UP_WRITE) |
+        ((e&UXN)?0:NAS_UP_EXEC);
     return true;
 }
 bool nas_arm_pt_walk(const struct nas_arm_pt *pt,
                       nas_user_pt_visit fn,void *ctx) {
     return pt && frame_pa(pt->root_pa) && valid_levels(pt->levels) && fn &&
-           arm_walk(pt->root_pa,pt->levels-1,0,true,fn,ctx);
+           nas_pt_dir_walk(&dirs,pt->root_pa,pt->levels-1,0,512,
+                           arm_leaf_access,fn,ctx);
 }

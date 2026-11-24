@@ -167,18 +167,21 @@ bool nas_mmu_walk_user_mapping(uint64_t target_root,
     if(!target_root || (target_root&(PAGE-1)) || !cb)return false;
     return nas_x86_walk_level(target_root,3,0,256,cb,arg);
 }
+static uint64_t alloc_root_from(uint64_t source) {
+    uint64_t pa=nas_frame_alloc();
+    if(!pa)return 0;
+    uint64_t *fresh=phys_table(pa),*old=phys_table(source);
+    for(unsigned i=256;i<512;i++)fresh[i]=old[i]&~P_USER;
+    return pa;
+}
 bool nas_mmu_bootstrap(void) {
     uint64_t cr3 = nas_arch_current_page_root();
     if (nas_arch_la57_enabled()) return false; /* LA57 not part of M1. */
     /* Separate userspace CR3: copy supervisor upper half, zero the lower half. */
     uint64_t boot_root = cr3 & PHYS_MASK;
     if (!boot_root) return false;
-    TASK.mm->root_phys = nas_frame_alloc();
-    if (!TASK.mm->root_phys) return false;
-    uint64_t *old = phys_table(boot_root);
-    uint64_t *fresh = phys_table(TASK.mm->root_phys);
-    for (unsigned i = 256; i < 512; i++)
-        fresh[i] = old[i] & ~P_USER;
+    TASK.mm->root_phys=alloc_root_from(boot_root);
+    if(!TASK.mm->root_phys)return false;
     nas_arch_switch_page_root(TASK.mm->root_phys);
     return true;
 }
@@ -186,37 +189,23 @@ bool nas_mmu_bootstrap(void) {
  * inherited without transferring ownership of its boot mappings. The old
  * root is reclaimed only after CR3 switches. Fork/COW is owned by MM. */
 uint64_t nas_mmu_alloc_root(void) {
-    uint64_t pa = nas_frame_alloc();
-    if (!pa) return 0;
-    uint64_t *fresh = phys_table(pa), *current = phys_table(TASK.mm->root_phys);
-    for (unsigned i = 256; i < 512; i++)
-        fresh[i] = current[i] & ~P_USER;
-    return pa;
+    return alloc_root_from(TASK.mm->root_phys);
 }
-static bool free_user_tree(uint64_t table_pa, unsigned depth) {
-    uint64_t *table = phys_table(table_pa);
-    for (unsigned i = 0; i < 512; i++) {
+static bool free_user_tree(uint64_t table_pa,unsigned depth,unsigned count) {
+    uint64_t *table=phys_table(table_pa);
+    for(unsigned i=0;i<count;i++) {
         uint64_t e = table[i];
         if (!(e & P_PRESENT)) continue;
         if (!(e & P_USER) || (e & (1ULL << 7))) return false;
         uint64_t pa = e & PHYS_MASK;
-        if (depth && !free_user_tree(pa, depth - 1)) return false;
+        if (depth && !free_user_tree(pa,depth-1,512)) return false;
         table[i] = 0;
         if (!nas_frame_put(pa)) return false;
     }
     return true;
 }
 bool nas_mmu_reclaim_root(uint64_t pa) {
-    uint64_t *root = phys_table(pa);
-    for (unsigned i = 0; i < 256; i++) {
-        uint64_t e = root[i];
-        if (!(e & P_PRESENT)) continue;
-        if (!(e & P_USER) || (e & (1ULL << 7))) return false;
-        uint64_t child = e & PHYS_MASK;
-        if (!free_user_tree(child, 2)) return false;
-        root[i] = 0;
-        if (!nas_frame_put(child)) return false;
-    }
+    if(!free_user_tree(pa,3,256))return false;
     return nas_frame_put(pa);
 }
 /* Installing CR3 changes CPU execution state, not MM ownership.
@@ -316,15 +305,9 @@ bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
     return true;
 }
 bool nas_mmu_map_elf_page(uint64_t va,unsigned flags) {
-    if (!(flags&4U) || (flags&~7U) || !nas_arch_nx_enabled())return false;
-    uint64_t *leaf=user_leaf(va,true);
-    if (!leaf || *leaf)return false;
-    uint64_t pa=nas_frame_alloc();
-    if (!pa)return false;
-    *leaf=pa|P_PRESENT|P_USER|((flags&2U)?P_RW:0)|
-          ((flags&1U)?0:(1ULL<<63));
-    nas_arch_invalidate_page(va);
-    return true;
+    if(!(flags&4U) || (flags&~7U))return false;
+    return nas_mmu_map_prot_page(va,NAS_VM_READ |
+        ((flags&2U)?NAS_VM_WRITE:0) | ((flags&1U)?NAS_VM_EXEC:0));
 }
 bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len) {
     /* x86-64 has coherent instruction and data caches. Validate ownership

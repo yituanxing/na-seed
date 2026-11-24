@@ -152,29 +152,15 @@ bool nas_rv_pt_protect(const struct nas_rv_page_table *pt,uint64_t va,
     *slot=e;
     return true;
 }
-static bool rv_walk(uint64_t pa,unsigned level,uint64_t base,bool top,
-                    nas_user_pt_visit fn,void *ctx) {
-    const uint64_t *entries=nas_pt_table(pa);
-    unsigned count=top?256:512;
-    for(unsigned i=0;i<count;i++) {
-        uint64_t e=entries[i];
-        if (!e) continue;
-        if (!(e&V)) return false;
-        uint64_t va=base | ((uint64_t)i<<(12+9*level));
-        if (level) {
-            if(!table_entry(e) ||
-               !rv_walk(entry_pa(e),level-1,va,false,fn,ctx)) return false;
-        } else {
-            if (!(e&U) || !(e&(R|X)) || ((e&W)&&!(e&R))) return false;
-            unsigned perms=((e&R)?NAS_UP_READ:0)|
-                ((e&W)?NAS_UP_WRITE:0)|((e&X)?NAS_UP_EXEC:0);
-            if(!fn(va,entry_pa(e),perms,ctx)) return false;
-        }
-    }
+static bool rv_leaf_access(uint64_t e,unsigned *perms) {
+    if(!(e&V) || !(e&U) || !(e&(R|X)) || ((e&W)&&!(e&R)))return false;
+    *perms=((e&R)?NAS_UP_READ:0) | ((e&W)?NAS_UP_WRITE:0) |
+        ((e&X)?NAS_UP_EXEC:0);
     return true;
 }
 bool nas_rv_pt_walk(const struct nas_rv_page_table *pt,
                      nas_user_pt_visit fn,void *ctx) {
     return pt && pt->root_pa && valid_levels(pt->levels) && fn &&
-           rv_walk(pt->root_pa,pt->levels-1,0,true,fn,ctx);
+           nas_pt_dir_walk(&dirs,pt->root_pa,pt->levels-1,0,256,
+                           rv_leaf_access,fn,ctx);
 }
