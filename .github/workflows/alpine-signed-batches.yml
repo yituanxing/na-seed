@@ -27,6 +27,19 @@ on:
           - m126
           - m127
           - m128
+          - m129
+          - m130
+          - m131
+          - m132
+          - m133
+          - m134
+          - m135
+          - m136
+          - m137
+          - m138
+          - m139
+          - m140
+          - m141
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
@@ -49,13 +62,30 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Validate signed catalog, target and profile-specific host contracts
         id: profile
-        timeout-minutes: 3
+        timeout-minutes: ${{ contains(fromJSON('["m131","m132","m133","m134","m135","m136","m137","m138","m139","m140","m141"]'), inputs.profile) && 4 || 3 }}
         run: |
           set -eu
           case "$PROFILE" in
-            m109|m110|m111|m112|m113|m114|m115|m116|m117|m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128) ;;
+            m109|m110|m111|m112|m113|m114|m115|m116|m117|m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128|m129|m130|m131|m132|m133|m134|m135|m136|m137|m138|m139|m140|m141) ;;
             *) exit 2 ;;
           esac
+          case "$PROFILE" in
+            m120) suffix=libtiff-batch ;;
+            m121) suffix=pdf-batch ;;
+            m122) suffix=netpbm-batch ;;
+            m123|m124|m128) suffix=filesystem-batch ;;
+            m125) suffix=netpbm-image-batch ;;
+            m126) suffix=groff-text-batch ;;
+            m127) suffix=audio-batch ;;
+            m129|m130) suffix=process-batch ;;
+            m131) suffix=image-batch ;;
+            m132|m133|m134|m135|m136|m137|m139) suffix=multifamily ;;
+            m138) suffix=llvm21 ;;
+            m140) suffix=gnu ;;
+            m141) suffix=software ;;
+            *) suffix=original-elf-batch ;;
+          esac
+          echo "artifact=$PROFILE-signed-$suffix" >> "$GITHUB_OUTPUT"
           for script in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-$PROFILE-prebuilt.sh scripts/probe-$PROFILE-batch.sh tests/$PROFILE-batch-run.sh; do
             sh -n "$script"
           done
@@ -63,6 +93,11 @@ jobs:
             m118|m119|m120|m121|m122|m123|m124|m125|m126|m127|m128)
               sh -n "scripts/host-configure-$PROFILE-batch.sh" ;;
           esac
+          if [ "$PROFILE" = m141 ]; then
+            for script in tests/m141-dns-run.sh tests/m141-toolchain-run.sh tests/m141-system-run.sh; do
+              sh -n "$script"
+            done
+          fi
           python3 scripts/check-prebuilt-profile-catalog.py
           python3 scripts/check-native-qemu-target.py
           python3 scripts/check-three-isa-core.py
@@ -73,18 +108,18 @@ jobs:
             m124)
               sh scripts/check-m86-txn.sh
               sh scripts/check-vfs-provider.sh ;;
+            m129)
+              cc -O2 -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-m129-itimer-host.c kernel/time/clock.c -o /tmp/naseed-m129-itimer-host
+              /tmp/naseed-m129-itimer-host
+              sh scripts/check-m105-signal-group.sh ;;
+            m130) sh scripts/check-vfs-provider.sh ;;
+            m131|m132|m133|m134|m135|m136|m137|m138|m139)
+              sh scripts/check-vfs-provider.sh
+              sh scripts/check-m108-tmp-index.sh ;;
+            m140|m141)
+              sh scripts/check-vfs-provider.sh
+              sh scripts/check-m86-txn.sh ;;
           esac
-          case "$PROFILE" in
-            m120) suffix=libtiff-batch ;;
-            m121) suffix=pdf-batch ;;
-            m122) suffix=netpbm-batch ;;
-            m123|m124|m128) suffix=filesystem-batch ;;
-            m125) suffix=netpbm-image-batch ;;
-            m126) suffix=groff-text-batch ;;
-            m127) suffix=audio-batch ;;
-            *) suffix=original-elf-batch ;;
-          esac
-          echo "artifact=$PROFILE-signed-$suffix" >> "$GITHUB_OUTPUT"
       - name: Install original signed APK staging and native QEMU tools
         timeout-minutes: 12
         env:

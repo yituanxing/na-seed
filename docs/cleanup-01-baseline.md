@@ -42,3 +42,17 @@ entry names are retired, not the underlying tests. The normal push-triggered
 userspace regression remains unchanged. The M152 ELF inventory has one source
 file, with the same guest copy destination and exact admission checks.
 No historical native result is promoted to the new head.
+
+## Further consolidation and retirement
+
+M129–M141 join the existing `alpine-signed-batches.yml` dispatch; M159,
+M163 and M165 share `alpine-signed-inventory.yml`. Profile-specific host
+checks, three-ISA guest probes and signed evidence remain mandatory. The
+strace/GDB profiles share byte-identical package and ELF lists through the
+existing catalog; M163/M165 share the package list only, with separate ELF
+inventories. Historic unique-ELF checks still see the same union of paths.
+
+Retired superseded early pathname, pipe, boot-handoff and resource-lifetime
+design notes, and explicitly historical architecture/branch review notes.
+Their original contents are available at the immutable pre-cleanup commit
+`eaa64c246e3b9b60406409aa40adda24de40be53`; the current architecture and CI evidence contracts remain.

@@ -12,10 +12,10 @@ m67-control	rootfs/alpine/packages-m67-control.txt	scripts/m67-original-elfs.txt
 m69-inspect	rootfs/alpine/packages-m69-inspect.txt	scripts/m69-original-elfs.txt	scripts/m69-rootfs-copies.tsv	main
 m70-vmfd	rootfs/alpine/packages-m70-vmfd.txt	scripts/m70-original-elfs.txt	scripts/m70-rootfs-copies.tsv	main
 m72-strace	rootfs/alpine/packages-m72-strace.txt	scripts/m72-original-elfs.txt	scripts/m72-rootfs-copies.tsv	main
-m73-strace	rootfs/alpine/packages-m73-strace.txt	scripts/m73-original-elfs.txt	scripts/m73-rootfs-copies.tsv	main
-m74-strace	rootfs/alpine/packages-m74-strace.txt	scripts/m74-original-elfs.txt	scripts/m74-rootfs-copies.tsv	main
+m73-strace	rootfs/alpine/packages-m72-strace.txt	scripts/m72-original-elfs.txt	scripts/m73-rootfs-copies.tsv	main
+m74-strace	rootfs/alpine/packages-m72-strace.txt	scripts/m72-original-elfs.txt	scripts/m74-rootfs-copies.tsv	main
 m75-gdb	rootfs/alpine/packages-m75-gdb.txt	scripts/m75-original-elfs.txt	scripts/m75-rootfs-copies.tsv	main
-m76-gdb	rootfs/alpine/packages-m76-gdb.txt	scripts/m76-original-elfs.txt	scripts/m76-rootfs-copies.tsv	main
+m76-gdb	rootfs/alpine/packages-m76-gdb.txt	scripts/m75-original-elfs.txt	scripts/m76-rootfs-copies.tsv	main
 m79-workflow	rootfs/alpine/packages-m79-workflow.txt	scripts/m79-original-elfs.txt	scripts/m79-rootfs-copies.tsv	main
 m80-batch	rootfs/alpine/packages-m80-batch.txt	scripts/m80-original-elfs.txt	scripts/m80-rootfs-copies.tsv	main+community
 m83-source	rootfs/alpine/packages-native-busybox.txt	scripts/m83-original-elfs.txt	scripts/m83-rootfs-copies.tsv	main
@@ -74,7 +74,7 @@ m161-batch	rootfs/alpine/packages-m161-batch.txt	scripts/m161-original-elfs.txt	
 m162-batch	rootfs/alpine/packages-m162-batch.txt	scripts/m161-original-elfs.txt	scripts/m162-rootfs-copies.tsv	main+community
 m163-batch	rootfs/alpine/packages-m163-batch.txt	scripts/m163-original-elfs.txt	scripts/m163-rootfs-copies.tsv	main+community
 m164-batch	rootfs/alpine/packages-m164-batch.txt	scripts/m161-original-elfs.txt	scripts/m164-rootfs-copies.tsv	main+community
-m165-batch	rootfs/alpine/packages-m165-batch.txt	scripts/m165-original-elfs.txt	scripts/m165-rootfs-copies.tsv	main+community
+m165-batch	rootfs/alpine/packages-m163-batch.txt	scripts/m165-original-elfs.txt	scripts/m165-rootfs-copies.tsv	main+community
 m166-batch	rootfs/alpine/packages-m166-batch.txt	scripts/m166-original-elfs.txt	scripts/m166-rootfs-copies.tsv	main+community
 m167-batch	rootfs/alpine/packages-m167-batch.txt	scripts/m167-original-elfs.txt	scripts/m167-rootfs-copies.tsv	main+community
 m168-batch	rootfs/alpine/packages-m168-batch.txt	scripts/m168-original-elfs.txt	scripts/m168-rootfs-copies.tsv	main+community
