@@ -755,11 +755,6 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     if(room(s,1))ready|=PORT_POLLOUT;
     return (uint16_t)(ready&events);
 }
-static uint16_t poll_fd(uint64_t fd,uint16_t events) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_SOCKET)return 0;
-    return poll_description(nas_current_task->fds->entries[fd].slot,events);
-}
 static void release(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)
         sockets[slot]=(struct nf_socket){0};
@@ -767,6 +762,6 @@ static void release(unsigned slot) {
 static const struct nas_file_ops ops={
     .read_plan=read_plan,.read=read_bytes,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=poll_fd,.poll_description=poll_description,.release=release
+    .poll_description=poll_description,.release=release
 };
 const struct nas_file_ops *nas_netlink_filter_ops(void){return &ops;}

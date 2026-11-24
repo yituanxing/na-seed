@@ -6,6 +6,9 @@ on:
       - 'scripts/check-ci-checkout-head.py'
       - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
       - 'scripts/check-ci-alpine-deps.py'
+      - 'kernel/fs/**'
+      - 'ports/lwip/socket_port.c'
+      - 'scripts/check-file-readiness.sh'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +21,7 @@ concurrency:
 jobs:
   checkout-integrity:
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,3 +31,6 @@ jobs:
 
       - name: Check shared Alpine dependency installer without apt or network
         run: python3 scripts/check-ci-alpine-deps.py
+
+      - name: Check sole OpenFile readiness interface and existing FD host regressions
+        run: sh scripts/check-file-readiness.sh

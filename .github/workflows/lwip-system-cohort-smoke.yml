@@ -2,6 +2,12 @@ name: NaSeed 8 signed Alpine system utilities, one x86 QEMU boot
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['refactor/naseed-cleanup-*']
+    paths:
+      - 'kernel/fs/**'
+      - 'ports/lwip/socket_port.c'
+      - '.github/workflows/lwip-system-cohort-smoke.yml'
 
 permissions:
   contents: read

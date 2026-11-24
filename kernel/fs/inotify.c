@@ -221,10 +221,6 @@ uint16_t nas_inotify_poll_slot(unsigned slot,uint16_t events) {
     return (events&1U) && (instances[slot]->count ||
                             instances[slot]->overflow_pending)?1U:0;
 }
-uint16_t nas_inotify_poll_fd(uint64_t fd,uint16_t events) {
-    unsigned slot=0;
-    return fd_instance(fd,&slot)?0:nas_inotify_poll_slot(slot,events);
-}
 void nas_inotify_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot])return;
     (void)nas_heap_free(instances[slot]);

@@ -839,11 +839,6 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     return ready&(uint16_t)(events|PORT_POLLERR|PORT_POLLHUP);
 }
 
-static uint16_t poll_fd(uint64_t fd,uint16_t events) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_SOCKET)return 0;
-    return poll_description(nas_current_task->fds->entries[fd].slot,events);
-}
 
 static void release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
@@ -902,7 +897,7 @@ static const struct nas_file_ops ops={
     .read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=poll_fd,.poll_description=poll_description,
+    .poll_description=poll_description,
     .release=release
 };
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &ops;}

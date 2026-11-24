@@ -1151,17 +1151,11 @@ static uint64_t vwrite_tty(unsigned slot,const uint8_t *src,uint64_t n) {
 static uint16_t dpoll_always(unsigned slot,uint16_t events) {
     (void)slot;return events & 0x0005U;
 }
-static uint16_t vpoll_always(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_always(0,events);
-}
 static uint16_t dpoll_tty(unsigned slot,uint16_t events) {
     (void)slot;
     uint16_t out=events & 0x0004U;
     if((events & 0x0001U) && nas_tty_poll_readable())out|=0x0001U;
     return out;
-}
-static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_tty(0,events);
 }
 static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
     if(nas_pipe_poll_readable(slot))
@@ -1170,23 +1164,14 @@ static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
      * A normally closed writer is already readable as EOF above. */
     return nas_pipe_read_ready(slot)?0x0018U:0;
 }
-static uint16_t vpoll_pipe_read(uint64_t fd,uint16_t events) {
-    return dpoll_pipe_read(TASK.fds->entries[fd].slot,events);
-}
 static uint16_t dpoll_pipe_write(unsigned slot,uint16_t events) {
     if(nas_pipe_poll_writable(slot))return events & 0x0004U;
     /* A full pipe must remain blocked, but no readers means EPIPE and
      * a blocked writer MUST wake, regardless of requested POLLOUT. */
     return nas_pipe_write_ready(slot)?0x0018U:0;
 }
-static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
-    return dpoll_pipe_write(TASK.fds->entries[fd].slot,events);
-}
 static uint16_t dpoll_fifo_rw(unsigned slot,uint16_t events) {
     return dpoll_pipe_read(slot,events)|dpoll_pipe_write(slot,events);
-}
-static uint16_t vpoll_fifo_rw(uint64_t fd,uint16_t events) {
-    return dpoll_fifo_rw(TASK.fds->entries[fd].slot,events);
 }
 static uint64_t vioctl_tty(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
@@ -1208,9 +1193,6 @@ static uint16_t dpoll_vt(unsigned slot,uint16_t events) {
     uint16_t ready=events&0x0004U;
     if((events&0x0001U)&&nas_vt_poll_readable())ready|=0x0001U;
     return ready;
-}
-static uint16_t vpoll_vt(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_vt(0,events);
 }
 static void vt_wait_start(unsigned slot,struct nas_task *task,uint64_t n) {
     (void)slot;(void)n;nas_vt_blocking_read_start(task);
@@ -1235,14 +1217,14 @@ static const struct nas_file_ops ops_uart={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_TTY,
-    .poll=vpoll_tty,.poll_description=dpoll_tty,
+    .poll_description=dpoll_tty,
     .ioctl=vioctl_uart
 };
 static const struct nas_file_ops ops_tty={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_TTY,
-    .poll=vpoll_tty,.poll_description=dpoll_tty,
+    .poll_description=dpoll_tty,
     .ioctl=vioctl_tty
 };
 static const struct nas_file_ops ops_vt={
@@ -1250,31 +1232,31 @@ static const struct nas_file_ops ops_vt={
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
     .read_wait_start=vt_wait_start,.read_wait_ready=vt_wait_ready,
-    .poll=vpoll_vt,.poll_description=dpoll_vt,
+    .poll_description=dpoll_vt,
     .ioctl=vioctl_vt
 };
 static const struct nas_file_ops ops_null={
     .read_plan=vread_null_plan,.read=vread_null,.write=vwrite_discard,
     .write_ignores_source=true,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.write_ignores_source=true,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_random={
     .read=vread_random,.write=vwrite_random,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_fbdev={
     .read_plan=fb_transfer_plan,.write_plan=fb_transfer_plan,
     .read=fb_read,.write=fb_write,
     .read_at=fb_read_at,.write_at=fb_write_at,
-    .poll=vpoll_always,.poll_description=dpoll_always,
+    .poll_description=dpoll_always,
     .ioctl=fb_ioctl
 };
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
@@ -1282,17 +1264,17 @@ static const struct nas_file_ops ops_fbdev={
 static const struct nas_file_ops ops_vfs_regular={
     .read_plan=vread_regular_plan,.write_plan=vwrite_regular_plan,
     .read=vread_regular,.write=vwrite_regular,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_vfs_dir={
     .read_plan=vread_dir_plan,.read=vread_dir,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_pipe_read={
     .read_plan=pipe_read_plan,.read=pipe_fd_read,
     .aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
+    .poll_description=dpoll_pipe_read,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_pipe_write={
@@ -1300,7 +1282,7 @@ static const struct nas_file_ops ops_pipe_write={
     .atomic_write_limit=NAS_PIPE_CAP,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
+    .poll_description=dpoll_pipe_write,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_fifo_rw={
@@ -1310,7 +1292,7 @@ static const struct nas_file_ops ops_fifo_rw={
     .aggregate_readv=true,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_fifo_rw,.poll_description=dpoll_fifo_rw,
+    .poll_description=dpoll_fifo_rw,
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
@@ -1321,23 +1303,17 @@ static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
         return (events&1U)|0x10U|dpoll_pipe_write(slot,events);
     return dpoll_pipe_read(slot,events) | dpoll_pipe_write(slot,events);
 }
-static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
-    return dpoll_socket(TASK.fds->entries[fd].slot,events);
-}
 static const struct nas_file_ops ops_socket={
     .read_plan=socket_read_plan,.write_plan=socket_write_plan,
     .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_socket,.poll_description=dpoll_socket,
+    .poll_description=dpoll_socket,
     .release=vrelease_socket
 };
 static uint16_t dpoll_pty(unsigned slot,uint16_t events) {
     return nas_pty_poll(slot,events);
-}
-static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
-    return dpoll_pty(TASK.fds->entries[fd].slot,events);
 }
 static uint64_t vread_pty_plan(unsigned slot,uint64_t requested) {
     return nas_pty_read_plan_mode(slot,requested,
@@ -1357,12 +1333,9 @@ static const struct nas_file_ops ops_pty={
     .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
     .read_wait_start=nas_pty_read_wait_start,
     .read_wait_ready=nas_pty_read_wait_ready,
-    .poll=vpoll_pty,.poll_description=dpoll_pty,
+    .poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };
-static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
-    return nas_epoll_fd_poll(fd,events);
-}
 static void vrelease_epoll(unsigned slot){nas_epoll_release(slot);}
 static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
 /* signalfd is a genuine File: its mask belongs to the refcounted open
@@ -1428,15 +1401,11 @@ uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
 static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
     return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
 }
-static uint16_t signalfd_poll_fd(uint64_t fd,uint16_t events) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)return 0;
-    return signalfd_poll_slot(TASK.fds->entries[fd].slot,events);
-}
 static void signalfd_release(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)signalfd_masks[slot]=0;
 }
 static const struct nas_file_ops ops_epoll={
-    .poll=vpoll_epoll,.poll_description=nas_epoll_description_poll,.release=vrelease_epoll
+    .poll_description=nas_epoll_description_poll,.release=vrelease_epoll
 };
 static const struct nas_file_ops ops_eventfd={
     .read_plan=nas_eventfd_read_plan,.write_plan=nas_eventfd_write_plan,
@@ -1444,13 +1413,13 @@ static const struct nas_file_ops ops_eventfd={
     .atomic_write_limit=8,.read_commit_before_copyout=true,
     .aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
+    .poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
 static const struct nas_file_ops ops_timerfd={
     .read_plan=nas_timerfd_read_plan,.read=nas_timerfd_read,
     .read_commit_before_copyout=true,.aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_timerfd_poll_fd,.poll_description=nas_timerfd_poll_slot,
+    .poll_description=nas_timerfd_poll_slot,
     .release=nas_timerfd_release
 };
 static uint64_t vioctl_inotify(uint64_t fd,uint64_t cmd,uint64_t arg) {
@@ -1466,20 +1435,19 @@ static const struct nas_file_ops ops_inotify={
     .read_plan=nas_inotify_read_plan,.read=nas_inotify_read,
     .read_variable_records=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_inotify_poll_fd,.poll_description=nas_inotify_poll_slot,
+    .poll_description=nas_inotify_poll_slot,
     .ioctl=vioctl_inotify,
     .release=nas_inotify_release
 };
 static const struct nas_file_ops ops_signalfd={
     .read_plan=signalfd_read_plan,.read=signalfd_read,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
+    .poll_description=signalfd_poll_slot,
     .poll_description_task=nas_fs_signalfd_poll_task,
     .release=signalfd_release
 };
 static const struct nas_file_ops ops_pidfd={
     .read=nas_pidfd_read,
-    .poll=nas_pidfd_poll_fd,
     .poll_description=nas_pidfd_poll_description,
     .release=nas_pidfd_release
 };

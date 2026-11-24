@@ -198,11 +198,6 @@ uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests) {
         return 0;
     return instance_ready(slot,nas_current_task)?(interests&EP_IN):0;
 }
-uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
-    unsigned slot;
-    if(!instance_slot(nas_current_task,fd,&slot))return 0;
-    return nas_epoll_description_poll(slot,interests);
-}
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;
     struct nas_task *task=nas_current_task;

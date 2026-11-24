@@ -53,12 +53,6 @@ uint16_t nas_pidfd_poll_description(unsigned slot,uint16_t events) {
                       (target ? 0 : PIDFD_HUP));
 }
 
-uint16_t nas_pidfd_poll_fd(uint64_t fd,uint16_t events) {
-    const struct nas_task *task=nas_current_task;
-    if(!task || !task->fds || fd>=NAS_FD_LIMIT ||
-       task->fds->entries[fd].kind!=FD_PIDFD)return 0;
-    return nas_pidfd_poll_description(task->fds->entries[fd].slot,events);
-}
 
 uint64_t nas_pidfd_read(unsigned slot,uint8_t *dst,uint64_t count) {
     (void)slot;(void)dst;(void)count;

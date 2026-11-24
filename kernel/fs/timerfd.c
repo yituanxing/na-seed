@@ -164,10 +164,6 @@ uint16_t nas_timerfd_poll_slot(unsigned slot,uint16_t events) {
            POLLIN|POLLRDNORM:0;
 }
 
-uint16_t nas_timerfd_poll_fd(uint64_t fd,uint16_t events) {
-    unsigned slot;
-    return timerfd_fd(fd,&slot)?nas_timerfd_poll_slot(slot,events):0;
-}
 
 void nas_timerfd_release(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)timers[slot]=(struct timerfd_state){0};

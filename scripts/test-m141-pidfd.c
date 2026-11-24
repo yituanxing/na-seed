@@ -31,7 +31,6 @@ struct nas_task *nas_task_at(unsigned slot) {
 }
 static const struct nas_file_ops pidfd_ops={
     .read=nas_pidfd_read,
-    .poll=nas_pidfd_poll_fd,
     .poll_description=nas_pidfd_poll_description,
     .release=nas_pidfd_release
 };
@@ -70,7 +69,7 @@ int main(void) {
     assert(nas_open_files[slot].refcount==1);
     assert(nas_open_files[slot].ops==&pidfd_ops);
     assert(nas_open_files[slot].status_flags==0);
-    assert(nas_pidfd_poll_fd(result,1)==0);
+    assert(nas_open_files[owner.fds->entries[result].slot].ops->poll_description(slot,1)==0);
     assert(nas_pidfd_poll_description(slot,1)==0);
     assert(nas_pidfd_read(slot,NULL,1)==(uint64_t)-EINVAL);
 

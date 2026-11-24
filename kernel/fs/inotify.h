@@ -26,7 +26,6 @@ uint64_t nas_inotify_read_plan(unsigned slot,uint64_t count);
 uint64_t nas_inotify_read(unsigned slot,uint8_t *dst,uint64_t count);
 int nas_inotify_pending_bytes(unsigned slot,uint32_t *bytes);
 uint16_t nas_inotify_poll_slot(unsigned slot,uint16_t events);
-uint16_t nas_inotify_poll_fd(uint64_t fd,uint16_t events);
 void nas_inotify_release(unsigned slot);
 void nas_inotify_emit_child(const struct nas_fs_node *parent,const char *name,
                            uint32_t mask,uint32_t cookie,bool is_directory);

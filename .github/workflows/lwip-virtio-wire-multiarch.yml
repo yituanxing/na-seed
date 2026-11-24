@@ -2,6 +2,12 @@ name: NaSeed dual VirtIO-MMIO + lwIP Alpine Ncat wire (RV64 and ARM64 QEMU)
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['refactor/naseed-cleanup-*']
+    paths:
+      - 'kernel/fs/**'
+      - 'ports/lwip/socket_port.c'
+      - '.github/workflows/lwip-virtio-wire-multiarch.yml'
 
 permissions:
   contents: read

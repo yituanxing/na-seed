@@ -1,7 +1,7 @@
 name: NaSeed userspace regressions
 on:
   push:
-    branches: [main]
+    branches: [main, 'refactor/naseed-cleanup-*']
     # Only pure documentation / completed one-off cleanup edits skip the
     # heavyweight main QEMU suite. Kernel, scripts, test fixtures, boot
     # configs, Makefile and CI changes continue to trigger it.

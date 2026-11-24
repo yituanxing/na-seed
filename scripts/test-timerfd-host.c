@@ -63,18 +63,18 @@ int main(void){
     unsigned slot=descriptors.entries[fd].slot;
     assert((int64_t)nas_timerfd_read_plan(slot,7)==-EINVAL);
     assert((int64_t)nas_timerfd_read_plan(slot,8)==-EOPNOTSUPP);
-    assert(nas_timerfd_poll_fd(fd,1)==0);
+    assert(nas_timerfd_poll_slot(descriptors.entries[fd].slot,1)==0);
     uint64_t one_shot[4]={0,0,3,0}, old[4]={0};
     assert(nas_timerfd_settime(fd,0,ptr(one_shot),ptr(old))==0);
     assert(old[0]==0 && old[2]==0);
     assert(nas_timerfd_gettime(fd,ptr(old))==0 && old[2]==3);
     monotonic_ns=2999999999ULL;
-    assert(nas_timerfd_poll_fd(fd,1)==0);
+    assert(nas_timerfd_poll_slot(descriptors.entries[fd].slot,1)==0);
     monotonic_ns=3000000000ULL;
-    assert((nas_timerfd_poll_fd(fd,1)&0x41)==0x41);
+    assert((nas_timerfd_poll_slot(descriptors.entries[fd].slot,1)&0x41)==0x41);
     uint8_t bytes[16]={0};
     assert(nas_timerfd_read(slot,bytes,sizeof(bytes))==8 && bytes[0]==1);
-    assert(nas_timerfd_poll_fd(fd,1)==0);
+    assert(nas_timerfd_poll_slot(descriptors.entries[fd].slot,1)==0);
     /* Periodic expirations missed while the caller is not scheduled must
      * accumulate and be delivered exactly once to EVERY dup/fork alias. */
     uint64_t periodic[4]={0,100000000,0,200000000};
@@ -82,31 +82,31 @@ int main(void){
     descriptors.entries[6]=descriptors.entries[fd];
     nas_open_files[slot].refcount++;
     monotonic_ns=3700000000ULL;
-    assert(nas_timerfd_poll_fd(6,1)&1);
+    assert(nas_timerfd_poll_slot(descriptors.entries[6].slot,1)&1);
     memset(bytes,0,sizeof(bytes));
     assert(nas_timerfd_read(slot,bytes,8)==8);
     assert(bytes[0]==6); /* at 3.2s then 3.3, 3.4, 3.5, 3.6, 3.7 */
     close_fd((unsigned)fd);
     monotonic_ns=3800000000ULL;
-    assert(nas_timerfd_poll_fd(6,1)&1);
+    assert(nas_timerfd_poll_slot(descriptors.entries[6].slot,1)&1);
     assert(nas_timerfd_read(slot,bytes,8)==8 && bytes[0]==1);
     close_fd(6);
     uint64_t reopened=nas_timerfd_create(1,0x80800);
     assert(reopened==0 && descriptors.entries[reopened].cloexec);
     assert((int64_t)nas_timerfd_read_plan(slot,8)==-EAGAIN);
     /* Reused OpenFile slot must not inherit the previous timer's deadline. */
-    assert(nas_timerfd_poll_fd(reopened,1)==0);
+    assert(nas_timerfd_poll_slot(descriptors.entries[reopened].slot,1)==0);
     uint64_t deadline[4]={0,0,4,0};
     assert(nas_timerfd_settime(reopened,1,ptr(deadline),0)==0);
     monotonic_ns=4000000000ULL;
-    assert(nas_timerfd_poll_fd(reopened,1)&1);
+    assert(nas_timerfd_poll_slot(descriptors.entries[reopened].slot,1)&1);
     assert(nas_timerfd_read(slot,bytes,8)==8 && bytes[0]==1);
     /* Disarming and invalid timespec do not leak previous expirations. */
     uint64_t bad[4]={0,1000000000,1,0};
     assert((int64_t)nas_timerfd_settime(reopened,0,ptr(bad),0)==-EINVAL);
     uint64_t disarm[4]={0};
     assert(nas_timerfd_settime(reopened,0,ptr(disarm),0)==0);
-    assert(nas_timerfd_poll_fd(reopened,1)==0);
+    assert(nas_timerfd_poll_slot(descriptors.entries[reopened].slot,1)==0);
     close_fd((unsigned)reopened);
     return 0;
 }

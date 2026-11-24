@@ -145,7 +145,8 @@ int main(void) {
     files.table.entries[5]=(struct nas_fd_entry){0};
     nas_open_files[33].refcount--;
     nas_inotify_emit_child(&path_identity,"still-live",NAS_IN_MODIFY,0,false);
-    assert(nas_inotify_poll_fd(6,1));
+    assert(files.table.entries[6].kind==FD_INOTIFY);
+    assert(nas_inotify_poll_slot(files.table.entries[6].slot,1));
     drain(33);
     assert(nas_inotify_rm_watch(6,1)==0);
     assert(nas_inotify_read_plan(33,sizeof(bytes))==16);

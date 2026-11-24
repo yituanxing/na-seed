@@ -20,14 +20,6 @@ static bool semaphore_mode[NAS_OPEN_FILE_LIMIT];
 static bool eventfd_live_slot(unsigned slot){
     return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
 }
-static bool eventfd_slot(uint64_t fd,unsigned *slot){
-    if(fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_EVENTFD)return false;
-    unsigned s=nas_current_task->fds->entries[fd].slot;
-    if(s>=NAS_OPEN_FILE_LIMIT || !nas_open_files[s].refcount)return false;
-    *slot=s;
-    return true;
-}
 uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
     if(flags&~(EFD_SEMAPHORE|EFD_NONBLOCK|EFD_CLOEXEC))
         return (uint64_t)-EINVAL;
@@ -94,10 +86,6 @@ uint16_t nas_eventfd_poll_slot(unsigned slot,uint16_t events){
     if((events&EFD_IN) && counters[slot])v|=EFD_IN;
     if((events&EFD_OUT) && counters[slot]<EFD_MAX)v|=EFD_OUT;
     return v;
-}
-uint16_t nas_eventfd_poll(uint64_t fd,uint16_t events){
-    unsigned slot;
-    return eventfd_slot(fd,&slot)?nas_eventfd_poll_slot(slot,events):0;
 }
 void nas_eventfd_release(unsigned slot){
     if(slot<NAS_OPEN_FILE_LIMIT){counters[slot]=0;semaphore_mode[slot]=false;}
