@@ -203,3 +203,10 @@ M65/M66/M67/M69/M70/M79 also select their original profiles in the focused
 native diagnostics workflow. Their real host procfs or developer-workflow
 checks execute before package setup and actual native QEMU; per-profile
 failure evidence is preserved.
+
+The twelve x86 M141/M142 and lwIP cohort workflows now use
+`alpine-x86-cohorts.yml`. The former system-cohort push gate remains the
+default automatic profile on its original paths; all other cohorts are
+manual choices. Original exact program/fixture/packet checks, signed
+provenance, independent SSH/iperf3 dependencies and evidence paths remain.
+The separate RV64/ARM64 network workflow is unchanged.
