@@ -13,12 +13,9 @@
 
 /* H14 is QEMU-qualified: one xHC owns two separate keyboard/mouse root ports.
  * Only the immutable NVMe Alpine root supplies the original signed evtest. */
-#define H14_XHCI_MMIO_BYTES UINT32_C(0x4000)
-#define H14_XHCI_MMIO_PAGES (H14_XHCI_MMIO_BYTES/4096U)
 #define H14_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 
-struct h14_mmio_mapping {uint64_t base;};
-static struct h14_mmio_mapping h14_mmio={H14_XHCI_VIRT_BASE};
+static struct nas_x86_qemu_xhci_mmio h14_mmio={H14_XHCI_VIRT_BASE};
 static struct nas_pci_mmio_owner h14_owner;
 static struct nas_xhci_io h14_io;
 static struct nas_xhci_ro_session h14_xhci;
@@ -35,75 +32,24 @@ static struct {
     uint64_t reports;
 } h14_persistent;
 
-
-static int h14_read32(void *ctx,uint32_t offset,uint32_t *value) {
-    const uint64_t base=ctx?((const struct h14_mmio_mapping*)ctx)->base:0;
-    if(!base || !value || (offset&3U) ||
-       offset>H14_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *value=*(volatile const uint32_t *)(uintptr_t)(base+offset);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-
-static int h14_write32(void *ctx,uint32_t offset,uint32_t value) {
-    const uint64_t base=ctx?((const struct h14_mmio_mapping*)ctx)->base:0;
-    if(!base || (offset&3U) ||
-       offset>H14_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *(volatile uint32_t *)(uintptr_t)(base+offset)=value;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-
-static void h14_restore_if(uint64_t flags) {
-    if(flags&(UINT64_C(1)<<9))__asm__ volatile("sti":::"memory");
-}
-
 int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
                            const struct nas_pci_resources *resources) {
     if(!fn || !resources)return -EINVAL;
-    if(h14_persistent.attempted || fn->bus!=0U || fn->slot!=4U ||
-       fn->function!=0U || fn->vendor_id!=0x1b36U ||
-       fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
-       fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !nas_x86_qemu_fw_cfg_signature()) {
+    if(h14_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
         nas_print("[H14 DUAL FAIL] unqualified QEMU PCI xHCI\n");
         return -ENODEV;
     }
     h14_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=NULL;
-    for(unsigned i=0;i<resources->bar_count;i++)
-        if(resources->bars[i].index==0U){bar=&resources->bars[i];break;}
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H14 DUAL FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n");
         return -ENODEV;
     }
-    h14_owner=(struct nas_pci_mmio_owner){
-        .window_base=NAS_H11_QEMU_MMIO_BASE,
-        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
-    };
     struct nas_pci_mmio_claim claim={0};
-    int rc=nas_pci_mmio_claim_bar(&h14_owner,resources,0U,
-                                  H14_XHCI_MMIO_BYTES,&claim);
-    if(rc)return rc;
     uint64_t flags=0;
-    __asm__ volatile("pushfq; popq %0":"=r"(flags)::"memory");
-    __asm__ volatile("cli":::"memory");
-    rc=nas_pci_mmio_pin_mapping_attempt(&h14_owner,&claim);
-    if(rc) {
-        (void)nas_pci_mmio_release(&h14_owner,&claim);
-        h14_restore_if(flags);
-        return rc;
-    }
-    for(unsigned i=0;i<H14_XHCI_MMIO_PAGES;i++) {
-        if(!nas_arch_x86_map_device_page(
-            bar->base+(uint64_t)i*4096U,
-            H14_XHCI_VIRT_BASE+(uint64_t)i*4096U)) {
-            h14_restore_if(flags);
-            return -EIO; /* Partial UC/NX mapping must remain pinned. */
-        }
-    }
+    int rc=nas_x86_qemu_xhci_map(&h14_owner,resources,bar,
+                                H14_XHCI_VIRT_BASE,&claim,&flags);
+    if(rc)return rc;
     h14_persistent.claim=claim;
     h14_persistent.bus=fn->bus;
     h14_persistent.slot=fn->slot;
@@ -116,8 +62,8 @@ int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
         nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                               (uint16_t)(resources->command|6U));
     h14_io=(struct nas_xhci_io){
-        .context=&h14_mmio,.mmio_bytes=H14_XHCI_MMIO_BYTES,
-        .read32=h14_read32,.write32=h14_write32
+        .context=&h14_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
+        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
     };
     rc=nas_xhci_dual_hid_open(&h14_io,&nas_dma_qemu_coherent,&h14_xhci);
     if(rc) {
@@ -136,7 +82,7 @@ int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
             nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                    resources->command);
         }
-        h14_restore_if(flags);
+        nas_x86_qemu_restore_if(flags);
         if(missing==1U)
             nas_print("[H14 DUAL FAIL] required USB Boot Keyboard unavailable\n");
         else if(missing==2U)
@@ -146,11 +92,10 @@ int nas_x86_h14_dual_hid_bind(const struct nas_pci_function_info *fn,
         return rc;
     }
     h14_persistent.attached=true;
-    h14_restore_if(flags);
+    nas_x86_qemu_restore_if(flags);
     nas_print("[H14 DUAL USB ENUMERATED] same QEMU PCI xHCI, two physical root ports; 8B Boot Keyboard and 4B Boot Mouse Interrupt-IN\n");
     return 0;
 }
-
 
 int nas_x86_h14_dual_hid_publish_input(void) {
     if(!h14_persistent.attached || h14_persistent.input_published ||

@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - feat/na-hw-h0-pci-20261110
+      - 'refactor/naseed-cleanup-*'
     paths:
+      - 'kernel/platform/x86_qemu_hw_contract.h'
+      - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h14-qemu-usb-dual-hid-alpine-evtest.yml'
       - 'kernel/platform/x86_h14_dual_hid.*'
       - 'kernel/platform/x86_h11_usb.*'

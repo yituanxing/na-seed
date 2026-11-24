@@ -12,12 +12,9 @@
 
 /* H13 is QEMU-qualified only, independent of H11 storage and H12 keyboard.
  * The original signed Alpine evtest binary is loaded from immutable NVMe. */
-#define H13_XHCI_MMIO_BYTES UINT32_C(0x4000)
-#define H13_XHCI_MMIO_PAGES (H13_XHCI_MMIO_BYTES/4096U)
 #define H13_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 
-struct h13_mmio_mapping {uint64_t base;};
-static struct h13_mmio_mapping h13_mmio={H13_XHCI_VIRT_BASE};
+static struct nas_x86_qemu_xhci_mmio h13_mmio={H13_XHCI_VIRT_BASE};
 static struct nas_pci_mmio_owner h13_owner;
 static struct nas_xhci_io h13_io;
 static struct nas_xhci_ro_session h13_xhci;
@@ -31,75 +28,24 @@ static struct {
     uint64_t reports;
 } h13_persistent;
 
-
-static int h13_read32(void *ctx,uint32_t offset,uint32_t *value) {
-    const uint64_t base=ctx?((const struct h13_mmio_mapping*)ctx)->base:0;
-    if(!base || !value || (offset&3U) ||
-       offset>H13_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *value=*(volatile const uint32_t *)(uintptr_t)(base+offset);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-
-static int h13_write32(void *ctx,uint32_t offset,uint32_t value) {
-    const uint64_t base=ctx?((const struct h13_mmio_mapping*)ctx)->base:0;
-    if(!base || (offset&3U) ||
-       offset>H13_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *(volatile uint32_t *)(uintptr_t)(base+offset)=value;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-
-static void h13_restore_if(uint64_t flags) {
-    if(flags&(UINT64_C(1)<<9))__asm__ volatile("sti":::"memory");
-}
-
 int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
                            const struct nas_pci_resources *resources) {
     if(!fn || !resources)return -EINVAL;
-    if(h13_persistent.attempted || fn->bus!=0U || fn->slot!=4U ||
-       fn->function!=0U || fn->vendor_id!=0x1b36U ||
-       fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
-       fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !nas_x86_qemu_fw_cfg_signature()) {
+    if(h13_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
         nas_print("[H13 MOUSE FAIL] unqualified QEMU PCI xHCI\n");
         return -ENODEV;
     }
     h13_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=NULL;
-    for(unsigned i=0;i<resources->bar_count;i++)
-        if(resources->bars[i].index==0U){bar=&resources->bars[i];break;}
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H13 MOUSE FAIL] unqualified MEM64 BAR0; 16MiB Q35 high whitelist only\n");
         return -ENODEV;
     }
-    h13_owner=(struct nas_pci_mmio_owner){
-        .window_base=NAS_H11_QEMU_MMIO_BASE,
-        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
-    };
     struct nas_pci_mmio_claim claim={0};
-    int rc=nas_pci_mmio_claim_bar(&h13_owner,resources,0U,
-                                  H13_XHCI_MMIO_BYTES,&claim);
-    if(rc)return rc;
     uint64_t flags=0;
-    __asm__ volatile("pushfq; popq %0":"=r"(flags)::"memory");
-    __asm__ volatile("cli":::"memory");
-    rc=nas_pci_mmio_pin_mapping_attempt(&h13_owner,&claim);
-    if(rc) {
-        (void)nas_pci_mmio_release(&h13_owner,&claim);
-        h13_restore_if(flags);
-        return rc;
-    }
-    for(unsigned i=0;i<H13_XHCI_MMIO_PAGES;i++) {
-        if(!nas_arch_x86_map_device_page(
-            bar->base+(uint64_t)i*4096U,
-            H13_XHCI_VIRT_BASE+(uint64_t)i*4096U)) {
-            h13_restore_if(flags);
-            return -EIO; /* Partial UC/NX mapping must remain pinned. */
-        }
-    }
+    int rc=nas_x86_qemu_xhci_map(&h13_owner,resources,bar,
+                                H13_XHCI_VIRT_BASE,&claim,&flags);
+    if(rc)return rc;
     h13_persistent.claim=claim;
     h13_persistent.bus=fn->bus;
     h13_persistent.slot=fn->slot;
@@ -112,8 +58,8 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
         nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                               (uint16_t)(resources->command|6U));
     h13_io=(struct nas_xhci_io){
-        .context=&h13_mmio,.mmio_bytes=H13_XHCI_MMIO_BYTES,
-        .read32=h13_read32,.write32=h13_write32
+        .context=&h13_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
+        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
     };
     rc=nas_xhci_hid_mouse_open(&h13_io,&nas_dma_qemu_coherent,&h13_xhci);
     if(rc) {
@@ -131,12 +77,12 @@ int nas_x86_h13_mouse_bind(const struct nas_pci_function_info *fn,
             nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                    resources->command);
         }
-        h13_restore_if(flags);
+        nas_x86_qemu_restore_if(flags);
         nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable\n");
         return rc;
     }
     h13_persistent.attached=true;
-    h13_restore_if(flags);
+    nas_x86_qemu_restore_if(flags);
     nas_print("[H13 MOUSE USB ENUMERATED] 4-byte Boot Mouse interrupt-IN; input class publication deferred\n");
     return 0;
 }

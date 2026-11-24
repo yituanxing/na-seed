@@ -13,13 +13,10 @@
 /* Same narrowly qualified Q35 xHCI resource lifetime as H12-H14.
  * One 0403:6001 FT232BM is configured by the xHCI FTDI transport to 8N1,
  * 115200 baud; no synthetic or UART-console RX may enter this queue. */
-#define H15_XHCI_MMIO_BYTES UINT32_C(0x4000)
-#define H15_XHCI_MMIO_PAGES (H15_XHCI_MMIO_BYTES / 4096U)
 #define H15_XHCI_VIRT_BASE UINT64_C(0xfffffe8001800000)
 #define H15_RX_CAP 1024U
 
-struct h15_mmio_mapping { uint64_t base; };
-static struct h15_mmio_mapping h15_mmio={ H15_XHCI_VIRT_BASE };
+static struct nas_x86_qemu_xhci_mmio h15_mmio={ H15_XHCI_VIRT_BASE };
 static struct nas_pci_mmio_owner h15_owner;
 static struct nas_xhci_io h15_io;
 static struct nas_xhci_ro_session h15_xhci;
@@ -33,27 +30,6 @@ static struct {
     uint64_t bulk_in_bytes,bulk_out_bytes;
 } h15;
 
-static int h15_read32(void *ctx,uint32_t offset,uint32_t *value) {
-    const uint64_t base=ctx?((const struct h15_mmio_mapping*)ctx)->base:0;
-    if(!base || !value || (offset&3U) ||
-       offset>H15_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *value=*(volatile const uint32_t *)(uintptr_t)(base+offset);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-static int h15_write32(void *ctx,uint32_t offset,uint32_t value) {
-    const uint64_t base=ctx?((const struct h15_mmio_mapping*)ctx)->base:0;
-    if(!base || (offset&3U) ||
-       offset>H15_XHCI_MMIO_BYTES-4U)return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *(volatile uint32_t *)(uintptr_t)(base+offset)=value;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-static void h15_restore_if(uint64_t flags) {
-    if(flags&(UINT64_C(1)<<9))__asm__ volatile("sti":::"memory");
-}
 static int h15_release_qualified_bar(void) {
     int rc=nas_pci_mmio_quiesced_unmap_release(
         &h15_owner,&h15.claim,H15_XHCI_VIRT_BASE,true,
@@ -66,47 +42,21 @@ static int h15_release_qualified_bar(void) {
 int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
                           const struct nas_pci_resources *resources) {
     if(!fn || !resources)return -EINVAL;
-    if(h15.attempted || fn->bus!=0U || fn->slot!=4U ||
-       fn->function!=0U || fn->vendor_id!=0x1b36U ||
-       fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
-       fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !nas_x86_qemu_fw_cfg_signature()) {
+    if(h15.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
         nas_print("[H15 FTDI FAIL] unqualified QEMU PCI xHCI\n");
         return -ENODEV;
     }
     h15.attempted=true;
-    const struct nas_pci_bar_desc *bar=NULL;
-    for(unsigned i=0;i<resources->bar_count;i++)
-        if(resources->bars[i].index==0U){bar=&resources->bars[i];break;}
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H15 FTDI FAIL] xHCI MEM64 BAR0 outside Q35 whitelist\n");
         return -ENODEV;
     }
-    h15_owner=(struct nas_pci_mmio_owner){
-        .window_base=NAS_H11_QEMU_MMIO_BASE,
-        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
-    };
     struct nas_pci_mmio_claim claim={0};
-    int rc=nas_pci_mmio_claim_bar(&h15_owner,resources,0U,
-                                 H15_XHCI_MMIO_BYTES,&claim);
-    if(rc)return rc;
     uint64_t flags=0;
-    __asm__ volatile("pushfq; popq %0":"=r"(flags)::"memory");
-    __asm__ volatile("cli":::"memory");
-    rc=nas_pci_mmio_pin_mapping_attempt(&h15_owner,&claim);
-    if(rc) {
-        (void)nas_pci_mmio_release(&h15_owner,&claim);
-        h15_restore_if(flags);
-        return rc;
-    }
-    for(unsigned i=0;i<H15_XHCI_MMIO_PAGES;i++) {
-        if(!nas_arch_x86_map_device_page(
-            bar->base+(uint64_t)i*4096U,
-            H15_XHCI_VIRT_BASE+(uint64_t)i*4096U)) {
-            h15_restore_if(flags);
-            return -EIO; /* Unproven partial mapping remains pinned. */
-        }
-    }
+    int rc=nas_x86_qemu_xhci_map(&h15_owner,resources,bar,
+                                H15_XHCI_VIRT_BASE,&claim,&flags);
+    if(rc)return rc;
     h15.claim=claim;
     h15.bus=fn->bus;
     h15.slot=fn->slot;
@@ -119,8 +69,8 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
         nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                (uint16_t)(resources->command|6U));
     h15_io=(struct nas_xhci_io){
-        .context=&h15_mmio,.mmio_bytes=H15_XHCI_MMIO_BYTES,
-        .read32=h15_read32,.write32=h15_write32
+        .context=&h15_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
+        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
     };
     rc=nas_xhci_ftdi_open(&h15_io,&nas_dma_qemu_coherent,&h15_xhci);
     if(rc) {
@@ -134,12 +84,12 @@ int nas_x86_h15_ftdi_bind(const struct nas_pci_function_info *fn,
         } else if(h15_release_qualified_bar()) {
             nas_print("[H15 FTDI PINNED] BAR unmap/release failed\n");
         }
-        h15_restore_if(flags);
+        nas_x86_qemu_restore_if(flags);
         nas_print("[H15 FTDI FAIL] required QEMU FT232BM 0403:6001 unavailable; no original Alpine userland\n");
         return rc;
     }
     h15.attached=true;
-    h15_restore_if(flags);
+    nas_x86_qemu_restore_if(flags);
     nas_print("[H15 FTDI USB ENUMERATED] QEMU xHCI root port; genuine FT232BM 0403:6001 vendor-control 8N1 115200; Bulk-IN/OUT\n");
     return 0;
 }

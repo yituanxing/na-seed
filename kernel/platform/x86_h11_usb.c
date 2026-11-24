@@ -18,12 +18,9 @@
  * independently observed in the H11 genuine QEMU/OVMF PCI inventory.
  * The narrow fixed 16MiB high acceptance window is independent of the BAR.
  */
-#define H11_XHCI_MMIO_BYTES UINT32_C(0x4000)
-#define H11_XHCI_MMIO_PAGES (H11_XHCI_MMIO_BYTES/4096U)
 #define H11_XHCI_VIRT_BASE UINT64_C(0xfffffe8001600000)
 
-struct h11_mmio_mapping { uint64_t base; };
-static struct h11_mmio_mapping h11_mmio={H11_XHCI_VIRT_BASE};
+static struct nas_x86_qemu_xhci_mmio h11_mmio={H11_XHCI_VIRT_BASE};
 static struct nas_pci_mmio_owner h11_owner;
 static struct nas_xhci_io h11_io;
 static struct nas_xhci_ro_session h11_xhci;
@@ -36,26 +33,6 @@ static struct {
     struct nas_pci_mmio_claim claim;
 } h11_persistent;
 
-
-static int h11_read32(void *ctx,uint32_t off,uint32_t *value) {
-    const uint64_t base=ctx?((const struct h11_mmio_mapping *)ctx)->base:0;
-    if(!base || !value || (off&3U) || off>H11_XHCI_MMIO_BYTES-4U)
-        return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *value=*(volatile const uint32_t *)(uintptr_t)(base+off);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-static int h11_write32(void *ctx,uint32_t off,uint32_t value) {
-    const uint64_t base=ctx?((const struct h11_mmio_mapping *)ctx)->base:0;
-    if(!base || (off&3U) || off>H11_XHCI_MMIO_BYTES-4U)
-        return -EINVAL;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    *(volatile uint32_t *)(uintptr_t)(base+off)=value;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return 0;
-}
-
 static int64_t h11_block_read(void *backend,uint64_t lba,uint32_t sectors,
                               void *destination) {
     int rc=nas_usb_msc_ro_read((struct nas_usb_msc_ro_session *)backend,
@@ -64,58 +41,24 @@ static int64_t h11_block_read(void *backend,uint64_t lba,uint32_t sectors,
 }
 static const struct nas_port_block_ops h11_block_ops={.read=h11_block_read};
 
-static void h11_restore_interrupts(uint64_t flags) {
-    if(flags&(UINT64_C(1)<<9))__asm__ volatile("sti":::"memory");
-}
-
 int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
                          const struct nas_pci_resources *resources) {
     if(!fn || !resources)return -EINVAL;
-    if(h11_persistent.attempted || fn->bus!=0U || fn->slot!=4U ||
-       fn->function!=0U || fn->vendor_id!=0x1b36U ||
-       fn->device_id!=0x000dU || fn->class_code!=0x0cU ||
-       fn->subclass!=0x03U || fn->programming_interface!=0x30U ||
-       !nas_x86_qemu_fw_cfg_signature()) {
+    if(h11_persistent.attempted || !nas_x86_qemu_xhci_function_qualified(fn)) {
         nas_print("[H11 XHCI FAIL] unqualified QEMU xHCI function\n");
         return -ENODEV;
     }
     h11_persistent.attempted=true;
-    const struct nas_pci_bar_desc *bar=NULL;
-    for(unsigned i=0;i<resources->bar_count;i++)
-        if(resources->bars[i].index==0U) {
-            bar=&resources->bars[i];break;
-        }
+    const struct nas_pci_bar_desc *bar=nas_x86_qemu_xhci_bar0(resources);
     if(!nas_h11_qemu_xhci_bar_qualified(bar)) {
         nas_print("[H11 XHCI FAIL] unqualified 64-bit BAR0 (fixed 16KiB QEMU aperture)\n");
         return -ENODEV;
     }
-    h11_owner=(struct nas_pci_mmio_owner){
-        .window_base=NAS_H11_QEMU_MMIO_BASE,
-        .window_bytes=NAS_H11_QEMU_MMIO_BYTES
-    };
     struct nas_pci_mmio_claim claim={0};
-    int rc=nas_pci_mmio_claim_bar(&h11_owner,resources,0U,
-                                  H11_XHCI_MMIO_BYTES,&claim);
-    if(rc)return rc;
     uint64_t flags=0;
-    __asm__ volatile("pushfq; popq %0":"=r"(flags)::"memory");
-    __asm__ volatile("cli":::"memory");
-    rc=nas_pci_mmio_pin_mapping_attempt(&h11_owner,&claim);
-    if(rc) {
-        (void)nas_pci_mmio_release(&h11_owner,&claim);
-        h11_restore_interrupts(flags);
-        return rc;
-    }
-    /* Four distinct UC/NX supervisor pages, no WB/HHDM alias. A failed
-     * partial mapping deliberately pins the BAR to avoid reallocation. */
-    for(unsigned i=0;i<H11_XHCI_MMIO_PAGES;i++) {
-        if(!nas_arch_x86_map_device_page(
-            bar->base+(uint64_t)i*4096U,
-            H11_XHCI_VIRT_BASE+(uint64_t)i*4096U)) {
-            h11_restore_interrupts(flags);
-            return -EIO;
-        }
-    }
+    int rc=nas_x86_qemu_xhci_map(&h11_owner,resources,bar,
+                                H11_XHCI_VIRT_BASE,&claim,&flags);
+    if(rc)return rc;
     h11_persistent.claim=claim;
     h11_persistent.bus=fn->bus;
     h11_persistent.slot=fn->slot;
@@ -128,8 +71,8 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
         nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                               (uint16_t)(resources->command|UINT16_C(6)));
     h11_io=(struct nas_xhci_io){
-        .context=&h11_mmio,.mmio_bytes=H11_XHCI_MMIO_BYTES,
-        .read32=h11_read32,.write32=h11_write32
+        .context=&h11_mmio,.mmio_bytes=NAS_H11_XHCI_MMIO_BYTES,
+        .read32=nas_x86_qemu_xhci_read32,.write32=nas_x86_qemu_xhci_write32
     };
     rc=nas_xhci_ro_open(&h11_io,&nas_dma_qemu_coherent,&h11_xhci);
     if(!rc)rc=nas_usb_msc_ro_open(&h11_xhci,&h11_msc);
@@ -164,12 +107,12 @@ int nas_x86_h11_usb_bind(const struct nas_pci_function_info *fn,
                 nas_x86_qemu_pci_command_write(fn->bus,fn->slot,fn->function,
                                        resources->command);
         }
-        h11_restore_interrupts(flags);
+        nas_x86_qemu_restore_if(flags);
         nas_print("[H11 USB FAIL] required QEMU USB Mass Storage unavailable\n");
         return rc;
     }
     h11_persistent.attached=true;
-    h11_restore_interrupts(flags);
+    nas_x86_qemu_restore_if(flags);
     nas_print("[H11 USB BLOCK ATTACHED] name=usb0 read-only sectors=");
     nas_dec((unsigned)h11_msc.sectors);
     nas_print(" sector_bytes=512 xHCI/BOT/SCSI READ10\n");
