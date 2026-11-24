@@ -96,7 +96,7 @@ host replay counts toward semantic admission.
    x86_64 QEMU by default. `workflow_dispatch`, label `run-m151-multiarch`,
    or the coordinated label `run-m151-155-multiarch` additionally enable
    the real RV64 and AArch64 guest jobs.
-3. `scripts/probe-m151-batch.sh` checks 35 separate exact `M151_*_PASS`
+3. `scripts/probe-alpine-signed-batch.sh (profile m151)` checks 35 separate exact `M151_*_PASS`
    markers, a unique `M151_BATCH_PASS`, and the original kernel's real
    `[EXEC] replaced process with CPIO ELF: /usr/bin/...` line for *each* of
    35 binaries. CI also publishes complete native serial logs, APK log,

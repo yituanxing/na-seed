@@ -55,7 +55,7 @@ def catalog_probes() -> list[Path]:
         milestone = profile.split("-", 1)[0]
         assert milestone not in found, f"{catalog}: duplicate milestone {milestone}"
         matches = sorted((ROOT / "scripts").glob(f"probe-{milestone}-*.sh"))
-        if 109 <= int(milestone[1:]) <= 140:
+        if 109 <= int(milestone[1:]) <= 140 or milestone in {"m146", "m148", "m150", "m151", "m153", "m154", "m155", "m157", "m158", "m159", "m163", "m165"}:
             assert not matches, f"{milestone}: duplicate dedicated native probe"
             path = ROOT / "scripts/probe-alpine-signed-batch.sh"
             stage = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
@@ -87,6 +87,7 @@ def catalog_probes() -> list[Path]:
     # Several catalog rows may share one native runner, but no workload
     # identity may disappear. Validate each distinct implementation once.
     assert all(f"m{n}" in found for n in range(109, 141))
+    assert all(name in found for name in ("m146", "m148", "m150", "m151", "m153", "m154", "m155", "m157", "m158", "m159", "m163", "m165"))
     return list(dict.fromkeys(found.values()))
 
 

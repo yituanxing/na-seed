@@ -74,8 +74,9 @@ set -eu
 [ "$BUSYBOX_PARITY_BINARY" = "build/external/$TEST_PROFILE-batch/$TEST_PORT/rootfs/bin/busybox" ]
 [ "$NAS_ACCEPTANCE_CPIO" = "build/external/$TEST_PROFILE-batch/$TEST_PORT/rootfs.cpio" ]
 [ "$BUSYBOX_PARITY_EXPECTED_COUNT" = 1 ]
-[ "$NAS_ACCEPTANCE_QEMU_RAM" = 1536M ]
-[ "$NAS_ACCEPTANCE_DISK_MB" = 768 ]
+[ "$NAS_ACCEPTANCE_QEMU_RAM" = "$TEST_RAM" ]
+[ "$NAS_ACCEPTANCE_DISK_MB" = "$TEST_DISK" ]
+if [ -n "$TEST_TIMEOUT" ]; then [ "$NAS_APP_BATCH_QEMU_TIMEOUT" = "$TEST_TIMEOUT" ]; fi
 [ "$BUSYBOX_PARITY_MANIFEST" = "scripts/$TEST_PROFILE-batch-cases.tsv" ]
 if [ "$TEST_PROFILE" = m110 ]; then [ "$NAS_SYSCALL_TRACE" = 1 ]; fi
 case "$TEST_PORT" in
@@ -92,28 +93,64 @@ cp fixture.log "$log"
         for name in ("probe-x86-busybox-parity.sh", "probe-riscv64-busybox-matrix.sh",
                      "probe-aarch64-busybox-matrix.sh"):
             (scripts / name).write_text(fake)
+        extended = {
+            "m146": (24, 600, 1024, False),
+            "m148": (35, 660, 1024, True),
+            "m150": (26, 650, 1024, False),
+            "m151": (35, 900, 1536, True),
+            "m153": (36, 700, 1024, False),
+            "m154": (30, 700, 1024, True),
+            "m155": (30, 800, 1024, True),
+            "m157": (30, 700, 1024, True),
+            "m158": (30, 700, 1024, True),
+            "m159": (30, 900, 1024, True),
+            "m163": (33, 900, 1024, True),
+            "m165": (30, 900, 1024, True),
+        }
         def run_profile(profile, port, records, status=0, fail_runner=False):
             (cwd / "fixture.log").write_text("\n".join(records) + "\n")
+            config = extended.get(profile)
             env = dict(os.environ, TEST_PROFILE=profile, TEST_PORT=port,
-                       TEST_FAIL_RUNNER=str(int(fail_runner)))
+                       TEST_FAIL_RUNNER=str(int(fail_runner)),
+                       TEST_RAM="2048M" if config else "1536M",
+                       TEST_DISK=str(config[2]) if config else "768",
+                       TEST_TIMEOUT=str(config[1]) if config else "")
             p = subprocess.run(["sh", probe, port, profile], cwd=cwd, env=env,
                                text=True, capture_output=True)
             assert p.returncode == status, (profile, port, p.stdout, p.stderr)
-        for n in range(109, 141):
+        for n in (*range(109, 141), *[int(p[1:]) for p in extended]):
             profile = f"m{n}"
             prefix = profile.upper()
             path = ROOT / "scripts" / (profile + "-expected-markers.txt")
             shutil.copyfile(path, scripts / path.name)
             entries = [s for s in path.read_text().splitlines() if s and not s.startswith("#")]
-            count = 39 if n == 140 else 20 if n == 110 or n >= 136 else 15
+            config = extended.get(profile)
+            count = config[0] if config else (39 if n == 140 else 20 if n == 110 or n >= 136 else 15)
             assert len(entries) == len(set(entries)) == count + 1
             assert entries.count(prefix + "_BATCH_PASS") == 1
             assert all(s.startswith(prefix + "_") and s.endswith("_PASS") for s in entries)
+            execs = []
+            special = []
+            if config and config[3]:
+                elf_file = ROOT / "scripts" / (profile + "-original-elfs.txt")
+                shutil.copyfile(elf_file, scripts / elf_file.name)
+                execs = ["[EXEC] replaced process with CPIO ELF: /" + e
+                         for e in elf_file.read_text().splitlines() if e and not e.startswith("#")]
+            if profile == "m151":
+                special = ["[M151 ROUNDTRIP] fixture"] * 23
+            elif profile == "m155":
+                special = ["[M155 ELF STARTUP ONLY] fixture"] * 8
+                assert len(execs) == 33
+            evidence = entries + execs + special
             for port in ("amd64", "riscv64", "arm64"):
-                run_profile(profile, port, entries)
-            run_profile(profile, "amd64", entries[1:], status=1)
-            run_profile(profile, "amd64", [*entries, entries[0]], status=1)
-            run_profile(profile, "amd64", entries, status=1, fail_runner=True)
+                run_profile(profile, port, evidence)
+            run_profile(profile, "amd64", evidence[1:], status=1)
+            run_profile(profile, "amd64", [*evidence, entries[0]], status=1)
+            run_profile(profile, "amd64", evidence, status=1, fail_runner=True)
+            if execs:
+                run_profile(profile, "amd64", entries + execs[1:] + special, status=1)
+            if special:
+                run_profile(profile, "amd64", evidence[:-1], status=1)
             migrated += 1
         run_profile("m999", "amd64", [], status=2)
         run_profile("m109", "invalid", [], status=2)

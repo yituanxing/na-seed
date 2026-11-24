@@ -23,7 +23,7 @@ network service executions across architectures.
 - The x86-64 upstream `netpbm-11.12.0-r0.apk` contains all 20 selected native
   binaries as regular executable members (not `pnmtoplainpnm` shell wrappers).
   Their 20 upstream packaged bytes have different SHA256 digests.
-- `scripts/stage-m146-prebuilt.sh` rejects any path used in older
+- `scripts/stage-alpine-signed-batch.sh (profile m146)` rejects any path used in older
   `m*-original-elfs.txt` manifests, any BusyBox alias, non-ELF payload, escaped
   symlink, missing signed APK, or duplicate SHA256 identity.
 - The common Alpine overlay uses **host-only** `apk --no-scripts` to install
@@ -33,9 +33,9 @@ network service executions across architectures.
 ## Acceptance gate
 
 ```
-sh scripts/probe-m146-batch.sh amd64
-sh scripts/probe-m146-batch.sh riscv64
-sh scripts/probe-m146-batch.sh arm64
+sh scripts/probe-alpine-signed-batch.sh amd64 m146
+sh scripts/probe-alpine-signed-batch.sh riscv64 m146
+sh scripts/probe-alpine-signed-batch.sh arm64 m146
 ```
 
 Each run must boot the ordinary native system QEMU, execute the complete guest

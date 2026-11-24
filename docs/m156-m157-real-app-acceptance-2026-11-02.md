@@ -77,7 +77,7 @@ python3 scripts/check-m157-inventory.py
 python3 scripts/check-three-isa-core.py
 python3 scripts/check-architecture-boundaries.py
 sh -n scripts/probe-m156-https-wire-smoke.sh
-sh -n scripts/probe-m157-batch.sh
+sh -n scripts/probe-alpine-signed-batch.sh
 sh -n tests/m156-https-run.sh
 sh -n tests/m157-batch-run.sh
 ```

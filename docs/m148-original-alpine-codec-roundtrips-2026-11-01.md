@@ -24,7 +24,7 @@ counted, and package metadata alone never constitutes QEMU acceptance.
 
 ## Host-only provenance gates
 
-- `scripts/stage-m148-prebuilt.sh` installs the original signed `netpbm` APK
+- `scripts/stage-alpine-signed-batch.sh (profile m148)` installs the original signed `netpbm` APK
   using the common `stage-alpine-prebuilt-overlay.sh`, rejects historical
   duplicate paths and any missing/non-ELF/BusyBox-alias payload, validates
   the target ISA, then requires 35 distinct SHA256 digests.
@@ -39,9 +39,9 @@ counted, and package metadata alone never constitutes QEMU acceptance.
 ## Real native QEMU gate
 
 ```
-sh scripts/probe-m148-batch.sh amd64
-sh scripts/probe-m148-batch.sh riscv64
-sh scripts/probe-m148-batch.sh arm64
+sh scripts/probe-alpine-signed-batch.sh amd64 m148
+sh scripts/probe-alpine-signed-batch.sh riscv64 m148
+sh scripts/probe-alpine-signed-batch.sh arm64 m148
 ```
 
 The PR workflow defaults to the smallest **x86-64 only** job; an explicit

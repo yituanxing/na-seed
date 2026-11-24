@@ -75,7 +75,7 @@ jobs:
               ;;
             *) exit 2 ;;
           esac
-          for script in scripts/stage-alpine-signed-batch.sh "scripts/probe-$PROFILE-batch.sh" "tests/$PROFILE-batch-run.sh"; do
+          for script in scripts/stage-alpine-signed-batch.sh scripts/probe-alpine-signed-batch.sh "tests/$PROFILE-batch-run.sh"; do
             sh -n "$script"
           done
           case "$PROFILE" in
@@ -196,7 +196,7 @@ jobs:
           esac
       - name: Execute original software in native QEMU
         timeout-minutes: ${{ contains(fromJSON('["m151"]'), inputs.profile) && 63 || contains(fromJSON('["m153"]'), inputs.profile) && 53 || contains(fromJSON('["m155"]'), inputs.profile) && 55 || contains(fromJSON('["m157"]'), inputs.profile) && 52 || contains(fromJSON('["m158"]'), inputs.profile) && 54 || 48 }}
-        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+        run: sh scripts/probe-alpine-signed-batch.sh "$PORT" "$PROFILE"
       - name: Preserve signed binary identity and native guest serial
         if: always()
         uses: actions/upload-artifact@v4

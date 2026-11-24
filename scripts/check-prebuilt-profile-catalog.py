@@ -134,7 +134,7 @@ def validate_wrappers(profiles: set[str]) -> int:
             if profile in wrappers:
                 fail(f"{profile}: duplicate shared or dedicated stage owner")
             probe = ROOT / f"scripts/probe-{name}-batch.sh"
-            if 109 <= int(name[1:]) <= 140:
+            if 109 <= int(name[1:]) <= 140 or name in {"m146", "m148", "m150", "m151", "m153", "m154", "m155", "m157", "m158", "m159", "m163", "m165"}:
                 if probe.exists():
                     fail(f"{profile}: duplicate dedicated native probe")
                 probe = ROOT / "scripts/probe-alpine-signed-batch.sh"

@@ -31,7 +31,7 @@ similarly, already admitted `ar`, `nm`, `objcopy`, `objdump`, `readelf`,
 
 ## Gates and evidence
 
-1. `scripts/stage-m153-prebuilt.sh PORT`: scans every prior milestone
+1. `scripts/stage-alpine-signed-batch.sh PORT m153`: scans every prior milestone
    `scripts/m*-original-elfs.txt`, requires exactly 36 different paths,
    imports Alpine's signed x86_64/riscv64/aarch64 target APKs, checks native
    ELF magic/architecture and distinct actual SHA256 of resolved executables.
@@ -39,7 +39,7 @@ similarly, already admitted `ar`, `nm`, `objcopy`, `objdump`, `readelf`,
    **target-ISA** object files with DWARF layout, functions, globals, and
    intentional changes; also copies real source, YARA rules, and assembler
    input to the guest rootfs. Guests never run a compiler for this fixture.
-3. `scripts/probe-m153-batch.sh PORT`: executes the unchanged target-ISA ELF
+3. `scripts/probe-alpine-signed-batch.sh PORT m153`: executes the unchanged target-ISA ELF
    binaries under native QEMU. Exactly 36 named semantic `M153_*_PASS`
    markers and one `M153_BATCH_PASS` are mandatory; any failed command
    prints its captured actual stdout/stderr and causes the job to fail.

@@ -48,7 +48,7 @@ removed before the next group. This avoids doubling the 320 MiB XFS image
 in initramfs and keeps the peak below the 2 GiB guest RAM budget. The host
 hook guards against unexpectedly large compressed fixtures.
 
-`scripts/probe-m155-batch.sh` validates exact serial markers, 33 kernel
+`scripts/probe-alpine-signed-batch.sh (profile m155)` validates exact serial markers, 33 kernel
 exec identities and eight explicitly non-semantic ELF starts. On CI, x86_64
 native QEMU runs by default; `run-m155-multiarch` or the common
 `run-m151-155-multiarch` pull-request label (or workflow dispatch) expands

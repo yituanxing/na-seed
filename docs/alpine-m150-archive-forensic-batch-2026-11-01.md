@@ -25,7 +25,7 @@ The 22 Sleuth Kit images are `blkcalc`, `blkcat`, `blkls`, `blkstat`, `fcat`, `f
 
 ## Provenance and acceptance
 
-1. `scripts/stage-m150-prebuilt.sh` reads 26 absolute-inside-rootfs paths,
+1. `scripts/stage-alpine-signed-batch.sh (profile m150)` reads 26 absolute-inside-rootfs paths,
    searches all historical `scripts/m*-original-elfs.txt` inventories,
    calls the existing canonical signature-verifying APK overlay, and
    independently requires 26 different SHA-256 digests from real ELF files.
@@ -36,7 +36,7 @@ The 22 Sleuth Kit images are `blkcalc`, `blkcat`, `blkls`, `blkstat`, `fcat`, `f
 3. The original 26 binaries are scheduled to run inside a native NaSeed QEMU guest under
    `tests/m150-batch-run.sh`, each reporting a distinct success marker only
    after checking real bytes, file names, inodes, partitions or recovery.
-4. `scripts/probe-m150-batch.sh` requires every marker **exactly once** in
+4. `scripts/probe-alpine-signed-batch.sh (profile m150)` requires every marker **exactly once** in
    the real guest serial and preserves APK hashes and QEMU logs as CI artifacts.
    x86-64 is the normal narrow PR gate; explicit dispatch or
    `run-m150-multiarch` broadens to RV64/AArch64.

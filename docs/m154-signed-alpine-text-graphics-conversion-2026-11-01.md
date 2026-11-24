@@ -32,9 +32,9 @@ requires per-ELF `execve` logs and 31 exactly-once markers.
 ## Reproduction and proof
 
 ```sh
-sh scripts/probe-m154-batch.sh amd64
-sh scripts/probe-m154-batch.sh riscv64
-sh scripts/probe-m154-batch.sh arm64
+sh scripts/probe-alpine-signed-batch.sh amd64 m154
+sh scripts/probe-alpine-signed-batch.sh riscv64 m154
+sh scripts/probe-alpine-signed-batch.sh arm64 m154
 ```
 
 The probes run real firmware-booted **system QEMU** with each architecture's

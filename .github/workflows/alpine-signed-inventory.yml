@@ -47,7 +47,7 @@ jobs:
             *) exit 2 ;;
           esac
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
-          for script in scripts/stage-alpine-signed-batch.sh "scripts/probe-$PROFILE-batch.sh" "scripts/host-configure-$PROFILE-batch.sh" "tests/$PROFILE-batch-run.sh"; do
+          for script in scripts/stage-alpine-signed-batch.sh scripts/probe-alpine-signed-batch.sh "scripts/host-configure-$PROFILE-batch.sh" "tests/$PROFILE-batch-run.sh"; do
             sh -n "$script"
           done
           if [ "$PROFILE" = m165 ]; then
@@ -64,7 +64,7 @@ jobs:
         timeout-minutes: 58
         env:
           PORT: ${{ matrix.port }}
-        run: sh "scripts/probe-$PROFILE-batch.sh" "$PORT"
+        run: sh scripts/probe-alpine-signed-batch.sh "$PORT" "$PROFILE"
       - name: Preserve original signed APK hashes and native guest semantics
         if: always()
         uses: actions/upload-artifact@v4
