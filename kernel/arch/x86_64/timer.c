@@ -2,6 +2,7 @@
 #include "../../task.h"
 #include "../../task/sched.h"
 #include "../arch.h"
+#include "../../time/counter.h"
 #include "../../panic.h"
 #include "irq.h"
 #include "../../drivers/core/irq.h"
@@ -56,8 +57,7 @@ void nas_x86_clock_init(void) {
 uint64_t nas_arch_monotonic_ns(void) {
     if(!tsc_hz) nas_fail("x86 monotonic clock before PIT calibration");
     uint64_t elapsed=read_tsc()-tsc_epoch;
-    return (elapsed/tsc_hz)*1000000000ULL +
-           (elapsed%tsc_hz)*1000000000ULL/tsc_hz;
+    return nas_counter_ns(elapsed,tsc_hz);
 }
 uint64_t nas_arch_clock_resolution_ns(void) {
     return 1000000ULL; /* conservative millisecond accuracy after PIT sync */

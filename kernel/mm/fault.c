@@ -50,8 +50,7 @@ enum nas_mm_fault_result nas_mm_handle_fault(struct nas_mm *mm,uint64_t addr,
                        old==frame ? NAS_MM_FAULT_RESOLVED :
                                     NAS_MM_FAULT_INVARIANT;
             }
-            if(vma->kind==NAS_VMA_ANON_SHARED ||
-               vma->kind==NAS_VMA_DEVICE_SHARED) {
+            if(nas_vma_direct_shared(vma->kind)) {
                 /* Device PTEs alias provider-owned physical storage.  An
                  * existing leaf may need a logical permission upgrade, but
                  * its frame is never COWed or marked as a file-cache page. */

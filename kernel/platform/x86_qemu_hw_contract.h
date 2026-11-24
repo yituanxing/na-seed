@@ -2,6 +2,7 @@
 #define NASEED_X86_QEMU_HW_CONTRACT_H
 
 #include "x86_h11_bar.h"
+#include "x86_pci_config.h"
 #include "../arch/x86_64/mmu.h"
 #include "../errno.h"
 #include <stddef.h>
@@ -32,13 +33,7 @@ static inline bool nas_x86_qemu_fw_cfg_signature(void) {
 static inline void nas_x86_qemu_pci_command_write(uint8_t bus, uint8_t slot,
                                                    uint8_t function,
                                                    uint16_t command) {
-    const uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
-        ((uint32_t)slot << 11) | ((uint32_t)function << 8) | 4U;
-    const uint16_t select_port = 0xcf8U, data_port = 0xcfcU;
-    __asm__ volatile("outl %0,%1" :: "a"(address), "Nd"(select_port)
-                     : "memory");
-    __asm__ volatile("outl %0,%1" :: "a"((uint32_t)command), "Nd"(data_port)
-                     : "memory");
+    nas_x86_pci_write32(bus,slot,function,4U,(uint32_t)command);
 }
 
 

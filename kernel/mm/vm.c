@@ -747,8 +747,7 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                  * instead: the first genuine store marks inode times and
                  * advances the page's coherent dirty state. */
                 if(mutable_shared(v))hw_prot &= ~NAS_VM_WRITE;
-                else if(v && (v->kind==NAS_VMA_ANON_SHARED ||
-                              v->kind==NAS_VMA_DEVICE_SHARED))
+                else if(v && nas_vma_direct_shared(v->kind))
                     hw_prot=(unsigned)prot; /* true shared physical frame */
                 else if((prot&NAS_VM_WRITE) &&
                         nas_frame_refs(pa&~UINT64_C(4095))>1)

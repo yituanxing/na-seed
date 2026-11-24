@@ -6,6 +6,7 @@
 #include "../../errno.h"
 #include "../../drivers/core/irq.h"
 #include "../arch.h"
+#include "../../time/counter.h"
 #include "context.h"
 
 /* QEMU virt/OpenSBI timebase is 10 MHz. The privileged time CSR alone
@@ -98,8 +99,7 @@ static struct sbi_result sbi_call(uint64_t eid, uint64_t fid, uint64_t arg0) {
 uint64_t nas_arch_monotonic_ns(void) {
     uint64_t ticks;
     __asm__ volatile("rdtime %0" : "=r"(ticks));
-    return (ticks / QEMU_VIRT_TIMEBASE_HZ) * 1000000000ULL +
-           (ticks % QEMU_VIRT_TIMEBASE_HZ) * 1000000000ULL / QEMU_VIRT_TIMEBASE_HZ;
+    return nas_counter_ns(ticks,QEMU_VIRT_TIMEBASE_HZ);
 }
 uint64_t nas_arch_clock_resolution_ns(void) {
     return 1000000000ULL / QEMU_VIRT_TIMEBASE_HZ;

@@ -5,6 +5,7 @@
 #include "../../errno.h"
 #include "../../drivers/core/irq.h"
 #include "../arch.h"
+#include "../../time/counter.h"
 #include "context.h"
 
 /* QEMU 'virt' GICv2: distributor 0x08000000, CPU interface 0x08010000.
@@ -81,8 +82,7 @@ uint64_t nas_arch_monotonic_ns(void) {
     __asm__ volatile("mrs %0,cntvct_el0" : "=r"(ticks));
     __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(hz));
     if(!hz) nas_fail("ARM64 monotonic counter has no frequency");
-    return (ticks / hz) * 1000000000ULL +
-           (ticks % hz) * 1000000000ULL / hz;
+    return nas_counter_ns(ticks,hz);
 }
 uint64_t nas_arch_clock_resolution_ns(void) {
     uint64_t hz;

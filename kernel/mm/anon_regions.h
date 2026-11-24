@@ -42,6 +42,18 @@ enum nas_vma_kind {
     NAS_VMA_FILE_PRIVATE_LAZY=9,
     NAS_VMA_DEVICE_SHARED=10
 };
+/* These predicates describe physical sharing (not the user MAP_SHARED
+ * flag: immutable snapshots need not share resident frames). Mutable file
+ * pages have a separate dirtying contract from anonymous/device aliases. */
+static inline bool nas_vma_direct_shared(unsigned kind) {
+    return kind==NAS_VMA_ANON_SHARED || kind==NAS_VMA_DEVICE_SHARED;
+}
+static inline bool nas_vma_preserves_shared_frames(unsigned kind) {
+    return kind==NAS_VMA_FILE_MUTABLE_SHARED || nas_vma_direct_shared(kind);
+}
+static inline bool nas_vma_provider_writes(unsigned kind) {
+    return kind==NAS_VMA_FILE_MUTABLE_SHARED || kind==NAS_VMA_DEVICE_SHARED;
+}
 #define NAS_VMA_DONTFORK 1U
 struct nas_mapped_file;
 struct nas_vm_device;

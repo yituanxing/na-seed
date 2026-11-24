@@ -1,4 +1,5 @@
 #include "x86_h0_pci.h"
+#include "x86_pci_config.h"
 #include "../drivers/serial.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -6,25 +7,11 @@
 /* x86 PCI configuration mechanism #1. Only CF8 receives a SELECT write;
  * CFC is read-only and no device PCI config DWORD is modified. The caller
  * owns interrupt exclusion so another CPU/interrupt cannot change CF8. */
-static void config_select(uint32_t address) {
-    __asm__ volatile("outl %0,%1" :: "a"(address), "Nd"((uint16_t)0xcf8)
-                     : "memory");
-}
-static uint32_t config_data_read(void) {
-    uint32_t value;
-    __asm__ volatile("inl %1,%0" : "=a"(value)
-                     : "Nd"((uint16_t)0xcfc) : "memory");
-    return value;
-}
 uint32_t nas_x86_h0_pci_config_read32(void *context, uint8_t bus, uint8_t slot,
                                       uint8_t function, uint16_t offset) {
     (void)context;
     /* Scanner requests standard aligned header DWORDs only. */
-    uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
-                       ((uint32_t)slot << 11) | ((uint32_t)function << 8) |
-                       (uint32_t)(offset & 0xfcU);
-    config_select(address);
-    return config_data_read();
+    return nas_x86_pci_read32(bus,slot,function,offset);
 }
 
 static void print_hex_byte(uint8_t value) {

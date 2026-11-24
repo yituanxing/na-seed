@@ -42,6 +42,13 @@ struct h1_page {
     uint64_t physical;
     uint64_t virtual_address;
 };
+#ifdef NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY
+struct h1_candidate {
+    bool found;
+    struct nas_pci_function_info function;
+    struct nas_pci_resources resources;
+};
+#endif
 struct h1_context {
     nas_x86_h1_mmio_allowed allowed;
     void *allowed_context;
@@ -54,45 +61,21 @@ struct h1_context {
     unsigned h2_xhci;
 #endif
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
-    bool h3_candidate_found;
-    struct nas_pci_function_info h3_candidate;
-    struct nas_pci_resources h3_candidate_resources;
+    struct h1_candidate h3;
 #endif
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
-    bool h9_candidate_found;
-    struct nas_pci_function_info h9_candidate;
-    struct nas_pci_resources h9_candidate_resources;
+    struct h1_candidate h9;
 #endif
 #ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
     unsigned h10_e1000_count;
-    bool h10_candidate_found;
-    struct nas_pci_function_info h10_candidate;
-    struct nas_pci_resources h10_candidate_resources;
+    struct h1_candidate h10;
 #endif
-#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
-    bool h11_candidate_found;
-    struct nas_pci_function_info h11_candidate;
-    struct nas_pci_resources h11_candidate_resources;
-#endif
-#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
-    bool h12_candidate_found;
-    struct nas_pci_function_info h12_candidate;
-    struct nas_pci_resources h12_candidate_resources;
-#endif
-#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
-    bool h13_candidate_found;
-    struct nas_pci_function_info h13_candidate;
-    struct nas_pci_resources h13_candidate_resources;
-#endif
-#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
-    bool h14_candidate_found;
-    struct nas_pci_function_info h14_candidate;
-    struct nas_pci_resources h14_candidate_resources;
-#endif
-#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
-    bool h15_candidate_found;
-    struct nas_pci_function_info h15_candidate;
-    struct nas_pci_resources h15_candidate_resources;
+#if defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) || \
+    defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND) || \
+    defined(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND)
+    struct h1_candidate xhci;
 #endif
     struct nas_pci_ecam_host host;
 };
@@ -182,11 +165,7 @@ static int h1_compare_function(void *context,
         /* Keep H2's discovery phase read-only until the entire PCI scan
          * confirms there is exactly one NVMe candidate. In particular a
          * second controller must not appear *after* controller writes. */
-        if(!h1->h3_candidate_found) {
-            h1->h3_candidate=*function;
-            h1->h3_candidate_resources=resources;
-            h1->h3_candidate_found=true;
-        }
+        if(!h1->h3.found)h1->h3=(struct h1_candidate){true,*function,resources};
 #endif
     } else if(function->class_code==0x01U && function->subclass==0x06U &&
               function->programming_interface==0x01U) {
@@ -194,50 +173,18 @@ static int h1_compare_function(void *context,
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
         /* Never open a SATA controller in the enumeration callback. The
          * complete read-only scan must first rule out ambiguous owners. */
-        if(!h1->h9_candidate_found) {
-            h1->h9_candidate=*function;
-            h1->h9_candidate_resources=resources;
-            h1->h9_candidate_found=true;
-        }
+        if(!h1->h9.found)h1->h9=(struct h1_candidate){true,*function,resources};
 #endif
     }
     else if(function->class_code==0x0cU && function->subclass==0x03U &&
             function->programming_interface==0x30U) {
         ++h1->h2_xhci;
-#ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
-        if(!h1->h11_candidate_found) {
-            h1->h11_candidate_found=true;
-            h1->h11_candidate=*function;
-            h1->h11_candidate_resources=resources;
-        }
-#endif
-#ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
-        if(!h1->h12_candidate_found) {
-            h1->h12_candidate_found=true;
-            h1->h12_candidate=*function;
-            h1->h12_candidate_resources=resources;
-        }
-#endif
-#ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
-        if(!h1->h13_candidate_found) {
-            h1->h13_candidate_found=true;
-            h1->h13_candidate=*function;
-            h1->h13_candidate_resources=resources;
-        }
-#endif
-#ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
-        if(!h1->h14_candidate_found) {
-            h1->h14_candidate_found=true;
-            h1->h14_candidate=*function;
-            h1->h14_candidate_resources=resources;
-        }
-#endif
-#ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
-        if(!h1->h15_candidate_found) {
-            h1->h15_candidate_found=true;
-            h1->h15_candidate=*function;
-            h1->h15_candidate_resources=resources;
-        }
+#if defined(NAS_ENABLE_H11_QEMU_XHCI_USERLAND) || \
+    defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND) || \
+    defined(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND)
+        if(!h1->xhci.found)h1->xhci=(struct h1_candidate){true,*function,resources};
 #endif
     }
 #ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
@@ -247,11 +194,7 @@ static int h1_compare_function(void *context,
     if(function->class_code==2U && function->subclass==0U &&
        function->vendor_id==0x8086U && function->device_id==0x100eU) {
         ++h1->h10_e1000_count;
-        if(!h1->h10_candidate_found) {
-            h1->h10_candidate_found=true;
-            h1->h10_candidate=*function;
-            h1->h10_candidate_resources=resources;
-        }
+        if(!h1->h10.found)h1->h10=(struct h1_candidate){true,*function,resources};
     }
 #endif
 #endif
@@ -289,14 +232,14 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
         return result ? result : -EIO;
     }
 #ifdef NAS_ENABLE_H10_QEMU_E1000_USERLAND
-    if(h1.h10_e1000_count!=1U || !h1.h10_candidate_found) {
+    if(h1.h10_e1000_count!=1U || !h1.h10.found) {
         nas_print("[H10 E1000 FAIL] required unique QEMU E1000 missing or duplicate; BAR/DMA untouched\n");
         return h1.h10_e1000_count>1U ? -EEXIST : -ENODEV;
     }
-    if(!nas_x86_h10_e1000_candidate(&h1.h10_candidate,
-                                     &h1.h10_candidate_resources) ||
-       nas_x86_h10_e1000_bind(&h1.h10_candidate,
-                               &h1.h10_candidate_resources)) {
+    if(!nas_x86_h10_e1000_candidate(&h1.h10.function,
+                                     &h1.h10.resources) ||
+       nas_x86_h10_e1000_bind(&h1.h10.function,
+                               &h1.h10.resources)) {
         nas_print("[H10 E1000 FAIL] qualified QEMU E1000 bind required\n");
         return -ENODEV;
     }
@@ -304,12 +247,12 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
 #ifdef NAS_ENABLE_H11_QEMU_XHCI_USERLAND
     /* The read-only PCI scan must finish before binding and enabling USB
      * bus mastering, including rejection of ambiguous xHCI candidates. */
-    if(h1.h2_xhci!=1U || !h1.h11_candidate_found) {
+    if(h1.h2_xhci!=1U || !h1.xhci.found) {
         nas_print("[H11 XHCI FAIL] required unique QEMU USB controller absent or ambiguous; DMA untouched\n");
         return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
     }
-    if(nas_x86_h11_usb_bind(&h1.h11_candidate,
-                            &h1.h11_candidate_resources)) {
+    if(nas_x86_h11_usb_bind(&h1.xhci.function,
+                            &h1.xhci.resources)) {
         nas_print("[H11 XHCI FAIL] qualified QEMU USB storage unavailable\n");
         return -ENODEV;
     }
@@ -317,12 +260,12 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
 #ifdef NAS_ENABLE_H12_QEMU_USB_HID_USERLAND
     /* Keep discovery read-only. Exactly one qualified xHCI is allowed
      * before starting asynchronous interrupt-IN DMA for the keyboard. */
-    if(h1.h2_xhci!=1U || !h1.h12_candidate_found) {
+    if(h1.h2_xhci!=1U || !h1.xhci.found) {
         nas_print("[H12 HID FAIL] required unique QEMU xHCI absent or ambiguous\n");
         return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
     }
-    if(nas_x86_h12_hid_bind(&h1.h12_candidate,
-                            &h1.h12_candidate_resources)) {
+    if(nas_x86_h12_hid_bind(&h1.xhci.function,
+                            &h1.xhci.resources)) {
         nas_print("[H12 HID FAIL] required QEMU USB Boot Keyboard unavailable\n");
         return -ENODEV;
     }
@@ -330,12 +273,12 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
 #ifdef NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND
     /* Enumerate the entire PCI bus before opening real USB mouse DMA.
      * A missing/ambiguous xHC must never reach an evdev publisher. */
-    if(h1.h2_xhci!=1U || !h1.h13_candidate_found) {
+    if(h1.h2_xhci!=1U || !h1.xhci.found) {
         nas_print("[H13 MOUSE FAIL] required unique QEMU xHCI absent or ambiguous\n");
         return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
     }
-    if(nas_x86_h13_mouse_bind(&h1.h13_candidate,
-                              &h1.h13_candidate_resources)) {
+    if(nas_x86_h13_mouse_bind(&h1.xhci.function,
+                              &h1.xhci.resources)) {
         nas_print("[H13 MOUSE FAIL] required QEMU USB Boot Mouse unavailable\n");
         return -ENODEV;
     }
@@ -343,23 +286,23 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
 #ifdef NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND
     /* One single xHC must qualify both physical HID root ports. Never
      * open the DMA rings during PCI enumeration or accept another xHC. */
-    if(h1.h2_xhci!=1U || !h1.h14_candidate_found) {
+    if(h1.h2_xhci!=1U || !h1.xhci.found) {
         nas_print("[H14 DUAL FAIL] required unique QEMU xHCI absent or ambiguous\n");
         return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
     }
-    if(nas_x86_h14_dual_hid_bind(&h1.h14_candidate,
-                                 &h1.h14_candidate_resources))
+    if(nas_x86_h14_dual_hid_bind(&h1.xhci.function,
+                                 &h1.xhci.resources))
         return -ENODEV; /* Driver printed the exact one failed HID. */
 #endif
 #ifdef NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND
     /* No bus mastering or USB DMA until the whole read-only PCI scan
      * proves one Q35 xHC. Host attachment alone is not proof of FTDI. */
-    if(h1.h2_xhci!=1U || !h1.h15_candidate_found) {
+    if(h1.h2_xhci!=1U || !h1.xhci.found) {
         nas_print("[H15 FTDI FAIL] required unique QEMU xHCI absent or ambiguous\n");
         return h1.h2_xhci>1U ? -EEXIST : -ENODEV;
     }
-    if(nas_x86_h15_ftdi_bind(&h1.h15_candidate,
-                             &h1.h15_candidate_resources))
+    if(nas_x86_h15_ftdi_bind(&h1.xhci.function,
+                             &h1.xhci.resources))
         return -ENODEV;
 #endif
 #ifdef NAS_ENABLE_H3_QEMU_NVME_IDENTIFY
@@ -369,25 +312,25 @@ int nas_x86_h1_ecam_verify(const struct nas_acpi_discovery *acpi,
      * A dedicated result distinguishes this intentionally refused QEMU image
      * from an ordinary probe/controller failure in the boot harness. */
 #ifdef NAS_ENABLE_H6_QEMU_AMBIGUOUS_NVME
-    if(h1.h2_nvme==2U && h1.h3_candidate_found) {
+    if(h1.h2_nvme==2U && h1.h3.found) {
         nas_print("[H6 PCI FAIL-CLOSED] duplicate NVMe candidates; controller writes=0 DMA=0\n");
         return -EEXIST;
     }
 #endif
-    if(h1.h2_nvme!=1U || !h1.h3_candidate_found ||
-       nas_x86_h3_nvme_identify(&h1.h3_candidate,
-                                 &h1.h3_candidate_resources)) {
+    if(h1.h2_nvme!=1U || !h1.h3.found ||
+       nas_x86_h3_nvme_identify(&h1.h3.function,
+                                 &h1.h3.resources)) {
         nas_print("[H3 NVME FAIL] one qualified candidate required before controller writes\n");
         return -ENODEV;
     }
 #endif
 #ifdef NAS_ENABLE_H9_QEMU_AHCI_USERLAND
-    if(h1.h2_ahci!=1U || !h1.h9_candidate_found) {
+    if(h1.h2_ahci!=1U || !h1.h9.found) {
         nas_print("[H9 AHCI FAIL] required unique QEMU SATA controller unavailable\n");
         return -ENODEV;
     }
-    if(nas_x86_h9_ahci_bind(&h1.h9_candidate,
-                            &h1.h9_candidate_resources))return -ENODEV;
+    if(nas_x86_h9_ahci_bind(&h1.h9.function,
+                            &h1.h9.resources))return -ENODEV;
 #endif
     nas_print("[H1 ECAM VERIFIED] CF8/ECAM identical functions=");
     nas_dec(h1.verified);
