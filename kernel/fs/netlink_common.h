@@ -71,4 +71,73 @@ static inline unsigned nas_nl_copy_reply(uint8_t *dst,unsigned capacity,
     if(msg_flags)*msg_flags=copy<actual?32U:0U; /* MSG_TRUNC */
     return flags&32U?actual:copy;
 }
+/* Common socket accounting and bounded reply-ring policy. Protocols retain
+ * their own port namespace, payload backing, multicast and error semantics. */
+struct nas_nl_endpoint {
+    bool owned,bound;
+    uint32_t owner_pid,port_id,send_quota,receive_quota;
+    uint8_t head,count;
+};
+static inline bool nas_nl_live(unsigned slot,const struct nas_nl_endpoint *e) {
+    return e->owned && nas_open_files[slot].refcount;
+}
+static inline int nas_nl_name(const struct nas_nl_endpoint *e,uint8_t *address,
+                              uint32_t groups) {
+    if(!e)return -EBADF;
+    if(!address)return -EINVAL;
+    nas_nl_make_address(address,e->bound?e->port_id:0,groups);
+    return 0;
+}
+static inline int nas_nl_get_quota(const struct nas_nl_endpoint *e,
+                                  bool receive,uint32_t *bytes) {
+    if(!e)return -EBADF;
+    if(!bytes)return -EINVAL;
+    *bytes=receive?e->receive_quota:e->send_quota;
+    return 0;
+}
+static inline int nas_nl_set_quota(struct nas_nl_endpoint *e,bool receive,
+    uint32_t requested,uint32_t min,uint32_t max) {
+    if(!e)return -EBADF;
+    if(receive)e->receive_quota=nas_nl_quota(requested,min,max);
+    else e->send_quota=nas_nl_quota(requested,min,max);
+    return 0;
+}
+static inline bool nas_nl_room(const struct nas_nl_endpoint *e,
+    unsigned records,unsigned limit,unsigned record_bytes) {
+    const uint64_t count=(uint64_t)e->count+records;
+    return count<=limit && count*record_bytes<=e->receive_quota;
+}
+static inline void nas_nl_header(uint8_t *p,uint32_t size,uint16_t type,
+                                 uint16_t flags,uint32_t seq,uint32_t port) {
+    nas_nl_wr32(p,size);nas_nl_wr16(p+4,type);nas_nl_wr16(p+6,flags);
+    nas_nl_wr32(p+8,seq);nas_nl_wr32(p+12,port);
+}
+static inline int nas_nl_recv_check(unsigned capacity,const uint8_t *dst,
+                                     unsigned flags) {
+    if(flags&~(2U|32U|64U))return -EOPNOTSUPP;
+    return capacity && !dst ? -EINVAL:0;
+}
+static inline unsigned nas_nl_receive_record(struct nas_nl_endpoint *e,
+    unsigned limit,uint8_t *dst,unsigned capacity,const uint8_t *data,
+    unsigned actual,unsigned flags,uint8_t *source,uint32_t groups,
+    uint32_t *source_length,uint32_t *msg_flags) {
+    unsigned result=nas_nl_copy_reply(dst,capacity,data,actual,flags,
+                                      source,groups,source_length,msg_flags);
+    if(!(flags&2U)) { /* MSG_PEEK retains the original record. */
+        e->head=(uint8_t)((e->head+1U)%limit);
+        --e->count;
+    }
+    return result;
+}
+static inline uint64_t nas_nl_read_plan(const struct nas_nl_endpoint *e,
+    uint64_t requested,unsigned length) {
+    if(!requested)return 0;
+    if(!e->count)return (uint64_t)-EAGAIN;
+    return requested<length?requested:length;
+}
+static inline uint16_t nas_nl_poll(const struct nas_nl_endpoint *e,
+    uint16_t events,bool room,bool overrun) {
+    uint16_t ready=(e->count?1U:0U)|(room?4U:0U);
+    return (uint16_t)((ready&events)|(overrun?8U:0U));
+}
 #endif

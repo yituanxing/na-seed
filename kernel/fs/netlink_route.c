@@ -39,9 +39,6 @@
 #define NLM_F_REQUEST_LINUX 1U
 #define NLM_F_MULTI_LINUX 2U
 #define NLM_F_DUMP_LINUX 0x300U
-#define MSG_PEEK_LINUX 2U
-#define MSG_TRUNC_LINUX 32U
-#define MSG_DONTWAIT_LINUX 64U
 #define NETLINK_REPLY_QUEUE (NAS_LWIP_GUEST_IF_LIMIT + 1U)
 #define RTMGRP_LINK_LINUX 1U
 #define RTMGRP_IPV4_IFADDR_LINUX 16U
@@ -76,8 +73,6 @@ _Static_assert(NETLINK_ROUTE_REPLY_SIZE>=364U,
                "route reply must fit full Linux 64/32-bit NIC statistics");
 _Static_assert(NETLINK_ROUTE_REPLY_SIZE>=NETLINK_DIAG_REPLY_SIZE,
                "route reply backing must fit inet_diag message");
-#define PORT_POLLIN 1U
-#define PORT_POLLOUT 4U
 #define PORT_POLLERR 8U
 
 struct netlink_reply {
@@ -86,12 +81,10 @@ struct netlink_reply {
     uint32_t source_groups;
 };
 struct netlink_socket {
-    bool owned,bound,overrun;
+    struct nas_nl_endpoint ep;
+    bool overrun;
     uint8_t protocol;
-    uint32_t owner_pid,port_id,groups;
-    uint32_t send_quota;
-    uint32_t receive_quota;
-    uint8_t head,count;
+    uint32_t groups;
     struct netlink_reply replies[NETLINK_REPLY_QUEUE];
 };
 static struct netlink_socket sockets[NAS_OPEN_FILE_LIMIT];
@@ -101,8 +94,8 @@ static void put64(uint8_t *p,uint64_t v) {
     nas_nl_wr32(p,(uint32_t)v);nas_nl_wr32(p+4,(uint32_t)(v>>32));
 }
 static struct netlink_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && sockets[slot].owned &&
-           nas_open_files[slot].refcount ? &sockets[slot]:NULL;
+    return slot<NAS_OPEN_FILE_LIMIT && nas_nl_live(slot,&sockets[slot].ep)
+           ? &sockets[slot]:NULL;
 }
 bool nas_netlink_route_is_slot(unsigned slot) {return live(slot)!=NULL;}
 
@@ -116,13 +109,13 @@ static unsigned receive_capacity(const struct netlink_socket *s) {
 static int open_netlink(unsigned slot,uint32_t owner_pid,unsigned protocol) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
-    if(sockets[slot].owned)return -EBUSY;
-    sockets[slot]=(struct netlink_socket){.owned=true,.owner_pid=owner_pid,
-        .protocol=(uint8_t)protocol,
+    if(sockets[slot].ep.owned)return -EBUSY;
+    sockets[slot]=(struct netlink_socket){.protocol=(uint8_t)protocol,
+        .ep={.owned=true,.owner_pid=owner_pid,
         .send_quota=NAS_NETLINK_ROUTE_MAX_DATAGRAM,
         .receive_quota=protocol==NETLINK_SOCK_DIAG_LINUX ?
             NETLINK_REPLY_QUEUE*NETLINK_DIAG_REPLY_SIZE :
-            NETLINK_REPLY_QUEUE*NETLINK_ROUTE_REPLY_SIZE};
+            NETLINK_REPLY_QUEUE*NETLINK_ROUTE_REPLY_SIZE}};
     return 0;
 }
 int nas_netlink_route_open(unsigned slot,uint32_t owner_pid) {
@@ -138,41 +131,31 @@ int nas_netlink_route_protocol(unsigned slot) {
 
 int nas_netlink_route_set_sndbuf(unsigned slot,uint32_t requested) {
     struct netlink_socket *s=live(slot);
-    if(!s)return -EBADF;
-    s->send_quota=nas_nl_quota(requested,NETLINK_SNDBUF_MIN,NETLINK_SNDBUF_MAX);
-    return 0;
+    return nas_nl_set_quota(s?&s->ep:NULL,false,requested,NETLINK_SNDBUF_MIN,NETLINK_SNDBUF_MAX);
 }
 int nas_netlink_route_get_sndbuf(unsigned slot,uint32_t *bytes) {
     struct netlink_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->send_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,false,bytes);
 }
 int nas_netlink_route_set_rcvbuf(unsigned slot,uint32_t requested) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
-    /* Linux's doubled socket quota is capped to memory this provider
-     * ACTUALLY owns. No accepted SO_RCVBUF can reserve phantom records. */
-    s->receive_quota=nas_nl_quota(requested,reply_allocation(s),receive_capacity(s));
-    return 0;
+    return nas_nl_set_quota(&s->ep,true,requested,
+                            reply_allocation(s),receive_capacity(s));
 }
 int nas_netlink_route_get_rcvbuf(unsigned slot,uint32_t *bytes) {
     struct netlink_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->receive_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,true,bytes);
 }
 
 static bool port_used(uint32_t pid,unsigned protocol) {
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].owned && sockets[i].bound &&
-           sockets[i].protocol==protocol && sockets[i].port_id==pid)return true;
+        if(sockets[i].ep.owned && sockets[i].ep.bound &&
+           sockets[i].protocol==protocol && sockets[i].ep.port_id==pid)return true;
     return false;
 }
 static int allocate_port(struct netlink_socket *s,uint32_t requested) {
-    return nas_nl_bind_port(&s->bound,&s->port_id,s->owner_pid,requested,
+    return nas_nl_bind_port(&s->ep.bound,&s->ep.port_id,s->ep.owner_pid,requested,
                             &next_port_id,s->protocol,port_used);
 }
 int nas_netlink_route_bind(unsigned slot,const uint8_t *address,unsigned length) {
@@ -193,25 +176,19 @@ int nas_netlink_route_bind(unsigned slot,const uint8_t *address,unsigned length)
 int nas_netlink_route_getsockname(unsigned slot,
                                  uint8_t address[NAS_NETLINK_ROUTE_SOCKADDR_SIZE]) {
     struct netlink_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!address)return -EINVAL;
-    nas_nl_make_address(address,s->bound?s->port_id:0,s->groups);
-    return 0;
+    return nas_nl_name(s?&s->ep:NULL,address,s?s->groups:0);
 }
 
 static struct netlink_reply *enqueue(struct netlink_socket *s) {
-    if(s->count==NETLINK_REPLY_QUEUE)return NULL;
+    if(s->ep.count==NETLINK_REPLY_QUEUE)return NULL;
     struct netlink_reply *reply=
-        &s->replies[(s->head+s->count)%NETLINK_REPLY_QUEUE];
+        &s->replies[(s->ep.head+s->ep.count)%NETLINK_REPLY_QUEUE];
     memset(reply,0,sizeof(*reply));
-    ++s->count;
+    ++s->ep.count;
     return reply;
 }
 static bool can_enqueue(const struct netlink_socket *s,unsigned records) {
-    /* Account each protocol's complete allocated reply record, even when
-     * its wire payload is smaller than the fixed-slot backing storage. */
-    return (unsigned)s->count+records<=NETLINK_REPLY_QUEUE &&
-           ((uint64_t)s->count+records)*reply_allocation(s)<=s->receive_quota;
+    return nas_nl_room(&s->ep,records,NETLINK_REPLY_QUEUE,reply_allocation(s));
 }
 /* All NaSeed kernel C, including tcpip_thread callbacks, runs with local
  * IRQs masked and without kernel preemption on one CPU (k_sync.c contract).
@@ -219,12 +196,11 @@ static bool can_enqueue(const struct netlink_socket *s,unsigned records) {
  * callback persists a slot pointer across scheduling. SMP/preemptible kernel
  * requires one shared irqsave lock covering these same queue operations. */
 static struct netlink_reply *newest_reply(struct netlink_socket *s) {
-    return &s->replies[(s->head+s->count-1U)%NETLINK_REPLY_QUEUE];
+    return &s->replies[(s->ep.head+s->ep.count-1U)%NETLINK_REPLY_QUEUE];
 }
 static void make_nlmsg(uint8_t *out,uint32_t length,uint16_t type,
                        uint32_t seq,uint32_t port) {
-    nas_nl_wr32(out,length);nas_nl_wr16(out+4,type);nas_nl_wr16(out+6,NLM_F_MULTI_LINUX);
-    nas_nl_wr32(out+8,seq);nas_nl_wr32(out+12,port);
+    nas_nl_header(out,length,type,NLM_F_MULTI_LINUX,seq,port);
 }
 static void enqueue_addr(struct netlink_socket *s,uint32_t seq,
                          uint32_t ifindex,uint8_t prefix,uint8_t scope,
@@ -232,7 +208,7 @@ static void enqueue_addr(struct netlink_socket *s,uint32_t seq,
     struct netlink_reply *r=enqueue(s);
     /* 16 nlmsghdr + 8 ifaddrmsg + 8 IFA_ADDRESS + 8 IFA_LOCAL. */
     r->length=40;
-    make_nlmsg(r->bytes,r->length,RTM_NEWADDR_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,RTM_NEWADDR_LINUX,seq,s->ep.port_id);
     r->bytes[16]=AF_INET_LINUX;
     r->bytes[17]=prefix;
     r->bytes[18]=0; /* ifa_flags: none */
@@ -264,7 +240,7 @@ static void enqueue_link(struct netlink_socket *s,uint32_t seq,
     const unsigned stats32_off=stats64_off+4U+RTNL_LINK_STATS64_FIELDS*8U;
     r->length=(uint16_t)(stats ? stats32_off+4U+
                         RTNL_LINK_STATS32_FIELDS*4U : stats64_off);
-    make_nlmsg(r->bytes,r->length,RTM_NEWLINK_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,RTM_NEWLINK_LINUX,seq,s->ep.port_id);
     r->bytes[16]=AF_UNSPEC_LINUX;
     nas_nl_wr16(r->bytes+18,iface->loopback ? ARPHRD_LOOPBACK_LINUX :
                             ARPHRD_ETHER_LINUX);
@@ -354,7 +330,7 @@ static void enqueue_done(struct netlink_socket *s,uint32_t seq) {
      * local port, even though the sender sockaddr_nl reports kernel pid 0.
      * iproute2 libnetlink rejects every mismatched nlmsg_pid, including
      * NLMSG_DONE, then loops waiting for a completion it never accepts. */
-    make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,NLMSG_DONE_LINUX,seq,s->ep.port_id);
 }
 static void enqueue_unsupported_qdisc(struct netlink_socket *s,uint32_t seq,
                                        const uint8_t *request) {
@@ -366,7 +342,7 @@ static void enqueue_unsupported_qdisc(struct netlink_socket *s,uint32_t seq,
      * missing error record therefore desynchronizes all later dumps.
      * We have no real qdisc inventory, so report the limitation honestly. */
     r->length=36U; /* nlmsghdr + nlmsgerr.error + original nlmsghdr */
-    make_nlmsg(r->bytes,r->length,NLMSG_ERROR_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,NLMSG_ERROR_LINUX,seq,s->ep.port_id);
     nas_nl_wr16(r->bytes+6,0); /* an error record is not multipart */
     nas_nl_wr32(r->bytes+16,(uint32_t)-EOPNOTSUPP);
     memcpy(r->bytes+20,request,16);
@@ -378,7 +354,7 @@ static void enqueue_loopback_noqueue(struct netlink_socket *s,uint32_t seq,
      * Its direct-output callback hands packets to upstream lwIP, whose
      * internal pbuf queue is unrelated to Linux TC queuing. */
     r->length=48U;
-    make_nlmsg(r->bytes,r->length,RTM_NEWQDISC_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,RTM_NEWQDISC_LINUX,seq,s->ep.port_id);
     nas_nl_wr32(r->bytes+20,ifindex); /* tcmsg.tcm_ifindex */
     nas_nl_wr32(r->bytes+28,TC_H_ROOT_LINUX); /* tcmsg.tcm_parent */
     nas_nl_wr16(r->bytes+36,12U);
@@ -393,7 +369,7 @@ static void enqueue_tcp_listener(struct netlink_socket *s,uint32_t seq,
      * endpoint comes from Netconn's post-listen GETNAME result. There is
      * no fabricated socket for an empty host/guest listener table. */
     r->length=88;
-    make_nlmsg(r->bytes,r->length,SOCK_DIAG_BY_FAMILY_LINUX,seq,s->port_id);
+    make_nlmsg(r->bytes,r->length,SOCK_DIAG_BY_FAMILY_LINUX,seq,s->ep.port_id);
     r->bytes[16]=AF_INET_LINUX;
     r->bytes[17]=TCP_LISTEN_LINUX;
     r->bytes[20]=(uint8_t)(listener->local.port>>8);
@@ -446,7 +422,7 @@ static int64_t send_diag(struct netlink_socket *s,const uint8_t *bytes,
     if((nas_nl_rd32(bytes+64)!=0 && nas_nl_rd32(bytes+64)!=UINT32_MAX) ||
        (nas_nl_rd32(bytes+68)!=0 && nas_nl_rd32(bytes+68)!=UINT32_MAX))
         return -EOPNOTSUPP;
-    if(!s->bound) {
+    if(!s->ep.bound) {
         int rc=allocate_port(s,0);
         if(rc)return rc;
     }
@@ -469,7 +445,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                                 unsigned destination_length) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
-    if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM || length>s->send_quota)
+    if(length>NAS_NETLINK_ROUTE_MAX_DATAGRAM || length>s->ep.send_quota)
         return -EMSGSIZE;
     if(!bytes || length<17)return -EINVAL;
     uint32_t target=0,groups=0;
@@ -511,7 +487,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
                qdiscs[i].kind==NAS_NET_QDISC_NOQUEUE)
                 attached_noqueue=true;
         if(!can_enqueue(s,attached_noqueue ? 2U:1U))return -EAGAIN;
-        if(!s->bound) {
+        if(!s->ep.bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
         }
@@ -569,7 +545,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
             }
         }
         if(!can_enqueue(s,count+1U))return -EAGAIN;
-        if(!s->bound) {
+        if(!s->ep.bound) {
             rc=allocate_port(s,0);
             if(rc)return rc;
         }
@@ -601,7 +577,7 @@ int64_t nas_netlink_route_sendto(unsigned slot,const uint8_t *bytes,
         } else if(interfaces[i].ifindex==1)return -EIO;
     }
     if(!can_enqueue(s,count+1U))return -EAGAIN;
-    if(!s->bound) {
+    if(!s->ep.bound) {
         rc=allocate_port(s,0);
         if(rc)return rc;
     }
@@ -618,32 +594,23 @@ int64_t nas_netlink_route_recvmsg(unsigned slot,uint8_t *destination,
                                  uint32_t *source_length,uint32_t *msg_flags) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
-    if(flags&~(MSG_PEEK_LINUX|MSG_TRUNC_LINUX|MSG_DONTWAIT_LINUX))
-        return -EOPNOTSUPP;
-    if(capacity && !destination)return -EINVAL;
+    int rc=nas_nl_recv_check(capacity,destination,flags);
+    if(rc)return rc;
     /* Linux reports an asynchronous multicast receive overflow as one
      * ENOBUFS. This is not a successful empty read, and retained queued
      * datagrams remain readable on the following call. */
     if(s->overrun) {s->overrun=false;return -ENOBUFS;}
-    if(!s->count)return -EAGAIN;
-    struct netlink_reply *r=&s->replies[s->head];
-    unsigned result=nas_nl_copy_reply(destination,capacity,r->bytes,
-        r->length,flags,source,r->source_groups,source_length,msg_flags);
-    if(!(flags&MSG_PEEK_LINUX)) {
-        s->head=(uint8_t)((s->head+1U)%NETLINK_REPLY_QUEUE);
-        --s->count;
-    }
-    return result;
+    if(!s->ep.count)return -EAGAIN;
+    struct netlink_reply *r=&s->replies[s->ep.head];
+    return nas_nl_receive_record(&s->ep,NETLINK_REPLY_QUEUE,destination,capacity,
+        r->bytes,r->length,flags,source,r->source_groups,source_length,msg_flags);
 }
 
 static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct netlink_socket *s=live(slot);
     if(!s)return (uint64_t)-EBADF;
-    if(!requested)return 0;
-    if(s->overrun)return (uint64_t)-ENOBUFS;
-    if(!s->count)return (uint64_t)-EAGAIN;
-    return requested<s->replies[s->head].length ? requested:
-           s->replies[s->head].length;
+    if(requested && s->overrun)return (uint64_t)-ENOBUFS;
+    return nas_nl_read_plan(&s->ep,requested,s->replies[s->ep.head].length);
 }
 static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
     return (uint64_t)nas_netlink_route_recvmsg(slot,out,(unsigned)count,
@@ -651,12 +618,7 @@ static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
 }
 static uint16_t poll_description(unsigned slot,uint16_t events) {
     struct netlink_socket *s=live(slot);
-    if(!s)return PORT_POLLERR;
-    uint16_t ready=0;
-    if(s->count)ready|=PORT_POLLIN;
-    if(s->overrun)ready|=PORT_POLLERR;
-    if(can_enqueue(s,1))ready|=PORT_POLLOUT;
-    return (uint16_t)((ready&events)|(ready&PORT_POLLERR));
+    return s?nas_nl_poll(&s->ep,events,can_enqueue(s,1),s->overrun):PORT_POLLERR;
 }
 static void release(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)

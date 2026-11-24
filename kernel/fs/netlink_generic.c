@@ -36,11 +36,6 @@
 #define GENL_CTRL_OP_FLAGS 2U
 #define GENL_CAP_DO 2U
 #define GENL_CAP_DUMP 4U
-#define MSG_PEEK 2U
-#define MSG_TRUNC 32U
-#define MSG_DONTWAIT 64U
-#define PORT_POLLIN 1U
-#define PORT_POLLOUT 4U
 #define PORT_POLLERR 8U
 #define GENL_REPLY_LIMIT 8U
 #define GENL_REPLY_BYTES 128U
@@ -49,25 +44,23 @@
 
 struct genl_reply { uint16_t length; uint8_t data[GENL_REPLY_BYTES]; };
 struct genl_socket {
-    bool owned,bound;
-    uint32_t owner_pid,port_id,send_quota,receive_quota;
-    uint8_t head,count;
+    struct nas_nl_endpoint ep;
     struct genl_reply replies[GENL_REPLY_LIMIT];
 };
 static struct genl_socket sockets[NAS_OPEN_FILE_LIMIT];
 static uint32_t next_port_id=UINT32_C(0x60000000);
 
 static struct genl_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && sockets[slot].owned &&
-           nas_open_files[slot].refcount ? &sockets[slot]:NULL;
+    return slot<NAS_OPEN_FILE_LIMIT && nas_nl_live(slot,&sockets[slot].ep)
+           ? &sockets[slot]:NULL;
 }
 bool nas_netlink_generic_is_slot(unsigned slot) {return live(slot)!=NULL;}
 int nas_netlink_generic_open(unsigned slot,uint32_t owner_pid) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return -EBADF;
-    if(sockets[slot].owned)return -EBUSY;
-    sockets[slot]=(struct genl_socket){.owned=true,.owner_pid=owner_pid,
+    if(sockets[slot].ep.owned)return -EBUSY;
+    sockets[slot]=(struct genl_socket){.ep={.owned=true,.owner_pid=owner_pid,
         .send_quota=NAS_NETLINK_GENERIC_MAX_DATAGRAM,
-        .receive_quota=GENL_REPLY_LIMIT*GENL_REPLY_BYTES};
+        .receive_quota=GENL_REPLY_LIMIT*GENL_REPLY_BYTES}};
     return 0;
 }
 int nas_netlink_generic_protocol(unsigned slot) {
@@ -76,12 +69,12 @@ int nas_netlink_generic_protocol(unsigned slot) {
 static bool port_used(uint32_t port,unsigned protocol) {
     (void)protocol;
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].owned && sockets[i].bound &&
-           sockets[i].port_id==port)return true;
+        if(sockets[i].ep.owned && sockets[i].ep.bound &&
+           sockets[i].ep.port_id==port)return true;
     return false;
 }
 static int autobind(struct genl_socket *s,uint32_t requested) {
-    return nas_nl_bind_port(&s->bound,&s->port_id,s->owner_pid,requested,
+    return nas_nl_bind_port(&s->ep.bound,&s->ep.port_id,s->ep.owner_pid,requested,
                             &next_port_id,0,port_used);
 }
 int nas_netlink_generic_bind(unsigned slot,const uint8_t *address,unsigned n) {
@@ -96,50 +89,36 @@ int nas_netlink_generic_bind(unsigned slot,const uint8_t *address,unsigned n) {
 }
 int nas_netlink_generic_getsockname(unsigned slot,uint8_t address[12]) {
     struct genl_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!address)return -EINVAL;
-    nas_nl_make_address(address,s->bound?s->port_id:0,0);
-    return 0;
+    return nas_nl_name(s?&s->ep:NULL,address,0);
 }
 int nas_netlink_generic_set_sndbuf(unsigned slot,uint32_t requested) {
     struct genl_socket *s=live(slot);
-    if(!s)return -EBADF;
-    s->send_quota=nas_nl_quota(requested,GENL_SNDBUF_MIN,GENL_SNDBUF_MAX);
-    return 0;
+    return nas_nl_set_quota(s?&s->ep:NULL,false,requested,GENL_SNDBUF_MIN,GENL_SNDBUF_MAX);
 }
 int nas_netlink_generic_get_sndbuf(unsigned slot,uint32_t *bytes) {
     struct genl_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->send_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,false,bytes);
 }
 int nas_netlink_generic_set_rcvbuf(unsigned slot,uint32_t requested) {
     struct genl_socket *s=live(slot);
-    if(!s)return -EBADF;
-    s->receive_quota=nas_nl_quota(requested,GENL_REPLY_BYTES,GENL_REPLY_LIMIT*GENL_REPLY_BYTES);
-    return 0;
+    return nas_nl_set_quota(s?&s->ep:NULL,true,requested,
+                            GENL_REPLY_BYTES,GENL_REPLY_LIMIT*GENL_REPLY_BYTES);
 }
 int nas_netlink_generic_get_rcvbuf(unsigned slot,uint32_t *bytes) {
     struct genl_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->receive_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,true,bytes);
 }
 
 static bool room(const struct genl_socket *s,unsigned records) {
-    return s->count+records<=GENL_REPLY_LIMIT &&
-           (s->count+records)*GENL_REPLY_BYTES<=s->receive_quota;
+    return nas_nl_room(&s->ep,records,GENL_REPLY_LIMIT,GENL_REPLY_BYTES);
 }
 static struct genl_reply *header(struct genl_socket *s,unsigned size,
                                  uint16_t type,uint16_t flags,uint32_t seq) {
-    struct genl_reply *r=&s->replies[(s->head+s->count)%GENL_REPLY_LIMIT];
+    struct genl_reply *r=&s->replies[(s->ep.head+s->ep.count)%GENL_REPLY_LIMIT];
     memset(r,0,sizeof(*r));
-    s->count++;
+    s->ep.count++;
     r->length=(uint16_t)size;
-    nas_nl_wr32(r->data,size);nas_nl_wr16(r->data+4,type);nas_nl_wr16(r->data+6,flags);
-    nas_nl_wr32(r->data+8,seq);nas_nl_wr32(r->data+12,s->port_id);
+    nas_nl_header(r->data,size,type,flags,seq,s->ep.port_id);
     return r;
 }
 static unsigned attribute(uint8_t *p,unsigned off,uint16_t type,
@@ -261,7 +240,7 @@ int64_t nas_netlink_generic_sendto(unsigned slot,const uint8_t *bytes,
     struct genl_socket *s=live(slot);
     if(!s)return -EBADF;
     if(!bytes || length<16)return -EINVAL;
-    if(length>NAS_NETLINK_GENERIC_MAX_DATAGRAM || length>s->send_quota)
+    if(length>NAS_NETLINK_GENERIC_MAX_DATAGRAM || length>s->ep.send_quota)
         return -EMSGSIZE;
     uint32_t port=0,groups=0;
     int rc=0;
@@ -287,7 +266,7 @@ int64_t nas_netlink_generic_sendto(unsigned slot,const uint8_t *bytes,
         pos+=aligned;
     }
     if(!room(s,records))return -EAGAIN;
-    if(!s->bound) {
+    if(!s->ep.bound) {
         rc=autobind(s,0);
         if(rc)return rc;
     }
@@ -312,25 +291,17 @@ int64_t nas_netlink_generic_recvmsg(unsigned slot,uint8_t *destination,
                                    uint32_t *msg_flags) {
     struct genl_socket *s=live(slot);
     if(!s)return -EBADF;
-    if(flags&~(MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT))return -EOPNOTSUPP;
-    if(capacity && !destination)return -EINVAL;
-    if(!s->count)return -EAGAIN;
-    struct genl_reply *r=&s->replies[s->head];
-    unsigned result=nas_nl_copy_reply(destination,capacity,r->data,
-        r->length,flags,source,0,source_length,msg_flags);
-    if(!(flags&MSG_PEEK)) {
-        s->head=(uint8_t)((s->head+1U)%GENL_REPLY_LIMIT);
-        s->count--;
-    }
-    return result;
+    int rc=nas_nl_recv_check(capacity,destination,flags);
+    if(rc)return rc;
+    if(!s->ep.count)return -EAGAIN;
+    struct genl_reply *r=&s->replies[s->ep.head];
+    return nas_nl_receive_record(&s->ep,GENL_REPLY_LIMIT,destination,capacity,
+        r->data,r->length,flags,source,0,source_length,msg_flags);
 }
 static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct genl_socket *s=live(slot);
     if(!s)return (uint64_t)-EBADF;
-    if(!requested)return 0;
-    if(!s->count)return (uint64_t)-EAGAIN;
-    const unsigned length=s->replies[s->head].length;
-    return requested<length?requested:length;
+    return nas_nl_read_plan(&s->ep,requested,s->replies[s->ep.head].length);
 }
 static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
     return (uint64_t)nas_netlink_generic_recvmsg(slot,out,(unsigned)count,
@@ -338,11 +309,7 @@ static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
 }
 static uint16_t poll_description(unsigned slot,uint16_t events) {
     struct genl_socket *s=live(slot);
-    if(!s)return PORT_POLLERR;
-    uint16_t ready=0;
-    if(s->count)ready|=PORT_POLLIN;
-    if(room(s,1))ready|=PORT_POLLOUT;
-    return (uint16_t)(ready&events);
+    return s?nas_nl_poll(&s->ep,events,room(s,1),false):PORT_POLLERR;
 }
 static void release(unsigned slot) {
     if(slot<NAS_OPEN_FILE_LIMIT)
