@@ -53,7 +53,22 @@ with tempfile.TemporaryDirectory() as d:
                 (cwd / root / "tests" / FILES[profile][0]).unlink()
                 run(port, root, profile, 1)
                 generator.write_text(old)
+    for profile in ("m143", "m144", "m147", "m149", "m152"):
+        for port in ("amd64", "riscv64", "arm64"):
+            root = f"build/external/{profile}-batch/{port}/rootfs"
+            (cwd / root).mkdir(parents=True)
+            run(port, root, profile, 1)
+            etc = cwd / root / "etc"
+            etc.mkdir()
+            run(port, root, profile, 0)
+            assert (etc / "passwd").read_text() == "root:x:0:0:root:/tmp:/bin/sh\n"
+            assert (etc / "group").read_text() == "root:x:0:\n"
+            (etc / "passwd").write_text("existing-account\n")
+            (etc / "group").write_text("existing-group\n")
+            run(port, root, profile, 0)
+            assert (etc / "passwd").read_text() == "existing-account\n"
+            assert (etc / "group").read_text() == "existing-group\n"
     run("invalid", "bad", "m120", 2)
     run("amd64", "bad", "m999", 2)
     run("amd64", "bad", "m126", 2)
-print("[HOST FIXTURE DISPATCH PASS] 10 profiles, three ISAs, missing-file and invalid input rejection")
+print("[HOST FIXTURE DISPATCH PASS] 15 profiles, three ISAs, missing-file and invalid input rejection")

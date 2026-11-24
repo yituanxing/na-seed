@@ -34,6 +34,11 @@ case "$profile" in
         for file in "$@"; do test -s "$root/tests/$file" || exit 1; done
         if [ "$profile" = m120 ]; then test "$(wc -c < "$root/tests/m120-gray.raw")" -eq 256; fi
         ;;
+    m143|m144|m147|m149|m152)
+        test -d "$root/etc"
+        [ -s "$root/etc/passwd" ] || printf 'root:x:0:0:root:/tmp:/bin/sh\n' > "$root/etc/passwd"
+        [ -s "$root/etc/group" ] || printf 'root:x:0:\n' > "$root/etc/group"
+        ;;
     *) exit 2 ;;
 esac
 echo "[$profile HOST DATA PASS] $port independent fixtures generated on Linux host"

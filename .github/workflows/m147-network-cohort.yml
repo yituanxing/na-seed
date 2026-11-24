@@ -27,7 +27,7 @@ jobs:
       - name: Check manifest uniqueness and static shell syntax
         run: |
           set -eu
-          for f in scripts/stage-m147-prebuilt.sh scripts/probe-m147-network-cohort.sh scripts/host-configure-m147-batch.sh tests/m147-network-run.sh scripts/native-qemu-target.sh scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh; do sh -n "$f"; done
+          for f in scripts/stage-m147-prebuilt.sh scripts/probe-m147-network-cohort.sh scripts/host-configure-alpine-fixtures.sh tests/m147-network-run.sh scripts/native-qemu-target.sh scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh; do sh -n "$f"; done
           python3 scripts/check-prebuilt-profile-catalog.py
           test "$(awk '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m147-original-elfs.txt)" -eq 29
           test "$(awk '$1 !~ /^#/ && NF {print $0}' scripts/m147-original-elfs.txt | sort -u | wc -l)" -eq 29

@@ -19,7 +19,7 @@ jobs:
       - name: Check signed target manifests and guest script syntax
         run: |
           set -eu
-          for f in tests/m144-*-run.sh scripts/stage-m144-prebuilt.sh scripts/host-configure-m144-batch.sh scripts/probe-m144-server-cohort.sh; do sh -n "$f"; done
+          for f in tests/m144-*-run.sh scripts/stage-m144-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-m144-server-cohort.sh; do sh -n "$f"; done
           python3 -m py_compile scripts/m144-http-oracle.py
           test "$(awk '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m144-original-elfs.txt)" -eq 5
           test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m144-server-cases.tsv)" -eq 1

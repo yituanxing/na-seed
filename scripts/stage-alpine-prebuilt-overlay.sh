@@ -101,7 +101,7 @@ sudo chown -R "$(id -u):$(id -g)" "$root"
 # --no-scripts, so allow an explicitly named, profile-local HOST hook before
 # the one canonical rootfs archive is produced.  No code runs in NaSeed.
 case "$profile" in
-    m119-batch|m12[0-8]-batch)
+    m119-batch|m12[0-8]-batch|m143-batch|m144-batch|m147-batch|m149-batch|m152-batch)
         sh scripts/host-configure-alpine-fixtures.sh "$port" "$root" "${profile%-batch}" ;;
     *)
         host_hook="scripts/host-configure-$profile.sh"
