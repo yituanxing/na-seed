@@ -62,3 +62,7 @@ workflows now use `alpine-signed-extended.yml` with the matching profile.
 The original workflows and historical results remain in Git history at
 `ed63bd01b5914cb7d0aa81a73425a232c673113e`; three-ISA scope, timeouts, profile-specific prerequisite tools,
 manifest counts, uniqueness checks and native guest evidence remain intact.
+
+M166/M167/M168/M170/M171 desktop and input native probes are selected in
+`desktop-native.yml`; per-profile syntax/host gates, LVGL revision, compiler
+flags, three-ISA actual QEMU runs and signed/display evidence remain.
