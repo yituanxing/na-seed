@@ -81,4 +81,33 @@ for files, windows in rank[:40]:
     ex = windows[0]
     print("BLOCK", "files",len(files),"windows",len(windows),"start",ex[0][3],
           " ".join(f"{p}:{a}" for p,a,_,_ in ex[:30]))
+
+# Identifier inventory includes scripts, assembly, build configuration and
+# tests. Single-occurrence static definitions are candidates, not proof:
+# macro token pasting, indirect assembly entry and optional configs matter.
+identifiers = Counter()
+definitions = []
+for path in paths:
+    file = ROOT / path
+    if not file.is_file() or file.is_symlink():
+        continue
+    raw = file.read_bytes()
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        continue
+    identifiers.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", content))
+    if path.parts[0] != "kernel" or path.suffix not in (".c", ".h"):
+        continue
+    for match in re.finditer(r"^(?P<storage>static\s+(?:inline\s+)?)?(?:[A-Za-z_][A-Za-z0-9_]*[ \t*]+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*?\)\s*\{", content, re.M):
+        name = match["name"]
+        if name in ("if", "while", "for", "switch"):
+            continue
+        definitions.append((str(path), content.count("\n", 0, match.start())+1, name, bool(match["storage"])))
+for path, line, name, static in definitions:
+    n = identifiers[name]
+    if (static and n == 1) or (not static and name.startswith("nas_") and n <= 2):
+        print("LOWREF", path, line, name, "occurrences", n, "static", static)
+print("KERNEL IDENTIFIER INVENTORY", len(definitions), "candidate definitions; includes optional builds and test references")
+
 print("[CLEANUP INVENTORY PASS] read-only candidate scan, not proof of removable code")
