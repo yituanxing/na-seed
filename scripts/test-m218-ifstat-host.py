@@ -127,7 +127,7 @@ def main() -> None:
                    "M218_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m218",
                    "--require-all",
-                   "scripts/m218-alpine-disk-check.py"):
+                   "scripts/m206-alpine-disk-check.py m218"):
         assert marker in runner, f"M218 two-boot gate missing: {marker}"
     assert ('if [ "$m205" = 1 ] || [ "$m218" = 1 ]; then' in runner
             and 'tests/m205-udp-traffic.c -o "$fixture_udp"' in runner

@@ -176,7 +176,7 @@ def main() -> None:
                    "scripts/m219-alpine-reopen-cases.tsv",
                    "M219_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m219",
-                   "scripts/m219-alpine-disk-check.py",
+                   "scripts/m206-alpine-disk-check.py m219",
                    "--require-all"):
         assert marker in runner, f"M219 two-QEMU or fixture gate missing {marker}"
     runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m219")

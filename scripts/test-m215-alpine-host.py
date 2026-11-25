@@ -24,7 +24,7 @@ PROBE = ROOT / "tests/m213-software-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
 REOPEN = ROOT / "scripts/m215-alpine-reopen-cases.tsv"
 REPORTER = ROOT / "scripts/alpine-compat-report.py"
-DISK = ROOT / "scripts/m215-alpine-disk-check.py"
+DISK = ROOT / "scripts/m206-alpine-disk-check.py"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
 INVENTORY = ROOT / "scripts/inventory-m141-signed-apks.sh"
 WORKFLOW = ROOT / ".github/workflows/m215-five-original-pilot.yml"
@@ -76,7 +76,7 @@ def adapter_contract() -> None:
         "sha256sum -c", "m215-first-runner.log",
         "M215_FIRST_DISCOVERY_COMPLETE", "M215_REOPEN_DISCOVERY_COMPLETE",
         "scripts/m215-alpine-reopen-cases.tsv", "alpine-compat-report.py m215",
-        "m215-alpine-disk-check.py", "--require-all"):
+        "m206-alpine-disk-check.py m215", "--require-all"):
         assert needle in base, needle
     assert "apk --cache-dir /var/cache/apk --no-network" in dispatcher
     assert "M197_APP_WORKLOAD_PASS" in base and "m196-public-wire-check.py" in base
@@ -88,7 +88,7 @@ def adapter_contract() -> None:
         assert value in reopen
     assert "m215" in INVENTORY.read_text() and "m215" in (
         ROOT / "scripts/check-m141-candidates.py").read_text()
-    assert "expected_count=5" in DISK.read_text() and "m206-alpine-disk-check.py" in DISK.read_text()
+    assert runpy.run_path(str(DISK))["SIMPLE_PROFILES"]["m215"] == 5
     workflow = WORKFLOW.read_text()
     assert "workflow_dispatch:" in workflow
     assert ("  push:\n    branches: [naseed-app-batch2]\n    paths:\n"

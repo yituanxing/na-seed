@@ -16,7 +16,7 @@ for script in scripts/probe-m197-alpine-software-cohort.sh \
               tests/m205-software-workload.sh tests/m235-software-workload.sh; do
     sh -n "$script"
 done
-python3 -m py_compile scripts/m235-alpine-uart.py scripts/alpine-compat-report.py \
+python3 -m py_compile scripts/alpine-first-uart.py scripts/alpine-compat-report.py \
     scripts/m235-alpine-disk-check.py scripts/m235-http-proof.py
 
 sh scripts/ci-ubuntu-mirror.sh

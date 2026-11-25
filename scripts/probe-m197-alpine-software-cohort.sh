@@ -1576,46 +1576,46 @@ else
             exit "$m227_first_rc"
         fi
     elif [ "$m226" = 1 ]; then
-        python3 scripts/m226-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m226 "$runner" "$serial" \
             "$PWD/$work/m226-first-runner.log" "$fifo"
     elif [ "$m225" = 1 ]; then
-        python3 scripts/m225-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m225 "$runner" "$serial" \
             "$PWD/$work/m225-first-runner.log" "$fifo"
     elif [ "$m224" = 1 ]; then
-        python3 scripts/m224-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m224 "$runner" "$serial" \
             "$PWD/$work/m224-first-runner.log" "$fifo"
     elif [ "$m223" = 1 ]; then
-        python3 scripts/m223-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m223 "$runner" "$serial" \
             "$PWD/$work/m223-first-runner.log" "$fifo"
     elif [ "$m222" = 1 ]; then
-        python3 scripts/m222-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m222 "$runner" "$serial" \
             "$PWD/$work/m222-first-runner.log" "$fifo"
     elif [ "$m221" = 1 ]; then
-        python3 scripts/m221-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m221 "$runner" "$serial" \
             "$PWD/$work/m221-first-runner.log" "$fifo"
     elif [ "$m220" = 1 ]; then
-        python3 scripts/m220-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m220 "$runner" "$serial" \
             "$PWD/$work/m220-first-runner.log" "$fifo"
     elif [ "$m219" = 1 ]; then
-        python3 scripts/m219-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m219 "$runner" "$serial" \
             "$PWD/$work/m219-first-runner.log" "$fifo"
     elif [ "$m218" = 1 ]; then
-        python3 scripts/m218-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m218 "$runner" "$serial" \
             "$PWD/$work/m218-first-runner.log" "$fifo"
     elif [ "$m215" = 1 ]; then
-        python3 scripts/m215-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m215 "$runner" "$serial" \
             "$PWD/$work/m215-first-runner.log" "$fifo"
     elif [ "$m238" = 1 ]; then
-        python3 scripts/m238-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m238 "$runner" "$serial" \
             "$PWD/$work/m238-first-runner.log" "$fifo"
     elif [ "$m237" = 1 ]; then
-        python3 scripts/m237-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m237 "$runner" "$serial" \
             "$PWD/$work/m237-first-runner.log" "$fifo"
     elif [ "$m236" = 1 ]; then
-        python3 scripts/m236-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m236 "$runner" "$serial" \
             "$PWD/$work/m236-first-runner.log" "$fifo"
     elif [ "$m235" = 1 ]; then
-        python3 scripts/m235-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m235 "$runner" "$serial" \
             "$PWD/$work/m235-first-runner.log" "$fifo"
     elif [ "$m206" = 1 ]; then
         python3 scripts/m206-alpine-uart.py "$runner" "$serial" \
@@ -2869,19 +2869,19 @@ elif [ "$m222" = 1 ]; then
         python3 scripts/m222-alpine-disk-check.py "$port" "$root" "$disk"
 elif [ "$m221" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m221-alpine-disk-check.py "$port" "$root" "$disk"
+        python3 scripts/m206-alpine-disk-check.py m221 "$port" "$root" "$disk"
 elif [ "$m220" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m220-alpine-disk-check.py "$port" "$root" "$disk"
+        python3 scripts/m206-alpine-disk-check.py m220 "$port" "$root" "$disk"
 elif [ "$m219" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m219-alpine-disk-check.py "$port" "$root" "$disk"
+        python3 scripts/m206-alpine-disk-check.py m219 "$port" "$root" "$disk"
 elif [ "$m218" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m218-alpine-disk-check.py "$port" "$root" "$disk"
+        python3 scripts/m206-alpine-disk-check.py m218 "$port" "$root" "$disk"
 elif [ "$m215" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
-        python3 scripts/m215-alpine-disk-check.py "$port" "$root" "$disk"
+        python3 scripts/m206-alpine-disk-check.py m215 "$port" "$root" "$disk"
 elif [ "$m238" = 1 ]; then
     sudo env NAS_M191_DISK_MIB="$disk_mib" \
         python3 scripts/m238-alpine-disk-check.py "$port" "$root" "$disk"

@@ -207,7 +207,7 @@ def integration_contract() -> None:
                    "m221-first-wire.json", "m221-reopen-wire.json",
                    "m221-reopen-wire.pcap", "m221-alpine-reopen-cases.tsv",
                    "M221_FIRST_DISCOVERY_COMPLETE", "M221_REOPEN_DISCOVERY_COMPLETE",
-                   "scripts/alpine-compat-report.py m221", "scripts/m221-alpine-disk-check.py"):
+                   "scripts/alpine-compat-report.py m221", "scripts/m206-alpine-disk-check.py m221"):
         assert marker in runner, f"M197 shared first/reopen gate missing {marker}"
     runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m221")
     flow = WORKFLOW.read_text()

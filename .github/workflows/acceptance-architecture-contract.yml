@@ -11,6 +11,8 @@ on:
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/m194-alpine-uart.py'
+      - 'scripts/alpine-first-uart.py'
+      - 'scripts/m206-alpine-disk-check.py'
       - 'scripts/m233-alpine-uart.py'
       - 'scripts/m239-tty-interaction.py'
       - 'scripts/qemu-hostfwd-extra.sh'
@@ -45,6 +47,7 @@ jobs:
           sh -n scripts/run.sh
           sh -n scripts/probe-riscv64-busybox-matrix.sh
           sh -n scripts/probe-aarch64-busybox-matrix.sh
+          python3 -m py_compile scripts/alpine-first-uart.py scripts/m206-alpine-disk-check.py
           python3 scripts/test-acceptance-profiles.py
           python3 scripts/acceptance/test-qemu-netdev.py
           sh scripts/test-acceptance-host-supervisor.sh

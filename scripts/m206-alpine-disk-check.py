@@ -161,7 +161,25 @@ def verify(port: str, signed_root: Path, disk: Path, *,
           "persisted after native second boot, M197 fsck/public-software proof intact")
 
 
+# These profiles use exactly the same physical APK/ELF oracle; specialized
+# wire, crypto and application semantics remain in their dedicated checkers.
+SIMPLE_PROFILES = {'m215': 5, 'm218': 1, 'm219': 1, 'm220': 1, 'm221': 2}
+
+
+def verify_profile(profile: str, port: str, root: Path, disk: Path) -> None:
+    if profile not in SIMPLE_PROFILES:
+        raise ValueError("unknown simple disk profile: " + profile)
+    home = Path(__file__).resolve().parent.parent
+    verify(port, root, disk,
+           candidates=home / f"scripts/{profile}-candidate-elfs.tsv",
+           packages=home / f"rootfs/alpine/packages-{profile}-candidates.txt",
+           expected_count=SIMPLE_PROFILES[profile], label=profile.upper())
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: m206-alpine-disk-check.py PORT SIGNED_ROOT DISK")
-    verify(sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]))
+    if len(sys.argv) == 5 and sys.argv[1] in SIMPLE_PROFILES:
+        verify_profile(sys.argv[1], sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]))
+    elif len(sys.argv) == 4:
+        verify(sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
+        raise SystemExit("usage: m206-alpine-disk-check.py [PROFILE] PORT SIGNED_ROOT DISK")

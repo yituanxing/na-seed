@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/m235-original-alpine-batch.yml'
       - 'scripts/m235-*'
+      - 'scripts/alpine-first-uart.py'
+      - 'scripts/alpine-compat-report.py'
       - 'scripts/run-m235-ci.sh'
       - 'rootfs/alpine/packages-m235-candidates.txt'
       - 'tests/m235-software-workload.sh'
