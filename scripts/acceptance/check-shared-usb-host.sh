@@ -6,15 +6,19 @@ for script in scripts/acceptance/stage-qemu-usb-alpine.sh \
               scripts/acceptance/build-qemu-usb-iso.sh \
               scripts/acceptance/qemu-negative-observer.sh \
               scripts/acceptance/run-local-alpine-cohort.sh \
-              scripts/stage-h1[2-5]-*alpine.sh scripts/build-h1[2-5]-*iso.sh \
-              scripts/check-h1[2-5]-no-*-qemu.sh scripts/run-m23[6-8]-local.sh; do
+              scripts/acceptance/check-qemu-usb-hid.sh \
+              scripts/acceptance/check-qemu-usb-negative.sh \
+              scripts/check-h15-usb-serial-qemu.sh; do
     sh -n "$script"
 done
-for script in stage-qemu-usb-alpine build-qemu-usb-iso run-local-alpine-cohort; do
+for script in stage-qemu-usb-alpine build-qemu-usb-iso run-local-alpine-cohort check-qemu-usb-hid; do
     status=0
     sh "scripts/acceptance/$script.sh" invalid || status=$?
     [ "$status" -eq 2 ]
 done
+status=0
+sh scripts/acceptance/check-qemu-usb-negative.sh invalid invalid || status=$?
+[ "$status" -eq 2 ]
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir "$tmp/scripts"

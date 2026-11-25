@@ -27,17 +27,12 @@ for id in echo ash-builtin ash-fork ash-pipe ash-tmp source-lifecycle vm-lifetim
     [ "$(grep -c "^$id$(printf '\t')" "$cases")" -eq 1 ]
 done
 for filename in scripts/build-source-busybox.sh scripts/probe-source-busybox.sh \
-                scripts/check-source-busybox.sh scripts/build-m11-vm-test.sh \
-                scripts/build-m12-process-test.sh scripts/build-m13-init.sh \
-                scripts/check-m13-init-log.sh scripts/build-m14-groups.sh \
-                scripts/build-m15-kill.sh scripts/build-m16-stop.sh scripts/build-m17-tty.sh \
-                scripts/probe-m17-interactive.sh scripts/build-m18-ash-init.sh \
+                scripts/check-source-busybox.sh scripts/build-source-busybox-workloads.sh \
+                scripts/check-m13-init-log.sh \
+                scripts/probe-m17-interactive.sh \
                 scripts/probe-m18-ash-interactive.sh \
                 scripts/probe-m18-port-interactive.sh \
-                scripts/m18-port-qemu.sh scripts/build-m21-tty-sched.sh \
-                scripts/build-m22-poll.sh scripts/build-m23-signals.sh scripts/build-m24-signals.sh \
-                scripts/build-m25-tty-jobs.sh scripts/build-m29-time.sh \
-                scripts/build-m30-signal-handlers.sh; do
+                scripts/m18-port-qemu.sh; do
     sh -n "$filename"
 done
 # Both 17-case and source-profile runners must consume the same manifest

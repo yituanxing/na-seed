@@ -12,21 +12,7 @@ if [ "$port" = amd64 ]; then
     sh scripts/check-kstack-busybox-oracle.sh "$binary"
     python3 scripts/check-m28-linux-oracle.py "$binary"
 fi
-sh scripts/build-m11-vm-test.sh "$port"
-sh scripts/build-m12-process-test.sh "$port"
-sh scripts/build-m13-init.sh "$port"
-sh scripts/build-m14-groups.sh "$port"
-sh scripts/build-m15-kill.sh "$port"
-sh scripts/build-m16-stop.sh "$port"
-sh scripts/build-m17-tty.sh "$port"
-sh scripts/build-m18-ash-init.sh "$port"
-sh scripts/build-m21-tty-sched.sh "$port"
-sh scripts/build-m22-poll.sh "$port"
-sh scripts/build-m23-signals.sh "$port"
-sh scripts/build-m24-signals.sh "$port"
-sh scripts/build-m25-tty-jobs.sh "$port"
-sh scripts/build-m29-time.sh "$port"
-sh scripts/build-m30-signal-handlers.sh "$port"
+sh scripts/build-source-busybox-workloads.sh "$port"
 extra_dir="build/source-busybox/$port/extra"
 mkdir -p "$extra_dir"
 cp "build/source-busybox/$port/m11-vm" "$extra_dir/m11-vm"
@@ -74,16 +60,20 @@ if [ "$port" = amd64 ]; then
     sh scripts/probe-m17-interactive.sh
     sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m21-tty-sched \
-      NASEED_INTERACTIVE_DRIVER=scripts/m21-serial-check.py \
+      NASEED_TTY_PROFILE=m21 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m22-poll \
-      NASEED_INTERACTIVE_DRIVER=scripts/m22-serial-check.py \
+      NASEED_TTY_PROFILE=m22 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m23-signals \
-      NASEED_INTERACTIVE_DRIVER=scripts/m23-serial-check.py \
+      NASEED_TTY_PROFILE=m23 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-ash-interactive.sh
     NASEED_INTERACTIVE_INIT=/bin/m25-tty-jobs \
-      NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
+      NASEED_TTY_PROFILE=m25 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-ash-interactive.sh
     sh scripts/probe-m28-x86-preempt.sh amd64
 else
@@ -91,16 +81,20 @@ else
     # target machine, not under Linux QEMU-user or synthetic UART logs.
     sh scripts/probe-m18-port-interactive.sh "$port"
     NASEED_INTERACTIVE_INIT=/bin/m21-tty-sched \
-      NASEED_INTERACTIVE_DRIVER=scripts/m21-serial-check.py \
+      NASEED_TTY_PROFILE=m21 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
     NASEED_INTERACTIVE_INIT=/bin/m22-poll \
-      NASEED_INTERACTIVE_DRIVER=scripts/m22-serial-check.py \
+      NASEED_TTY_PROFILE=m22 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
     NASEED_INTERACTIVE_INIT=/bin/m23-signals \
-      NASEED_INTERACTIVE_DRIVER=scripts/m23-serial-check.py \
+      NASEED_TTY_PROFILE=m23 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
     NASEED_INTERACTIVE_INIT=/bin/m25-tty-jobs \
-      NASEED_INTERACTIVE_DRIVER=scripts/m25-serial-check.py \
+      NASEED_TTY_PROFILE=m25 \
+      NASEED_INTERACTIVE_DRIVER=scripts/source-busybox-tty-serial.py \
       sh scripts/probe-m18-port-interactive.sh "$port"
 fi
 if [ "$port" = riscv64 ] || [ "$port" = arm64 ]; then

@@ -31,11 +31,9 @@ for path in scripts/probe-m197-alpine-software-cohort.sh \
 done
 python3 -c 'from pathlib import Path
 import sys
-for suffix in ("alpine-disk-check.py", "alpine-uart.py"):
-    path = Path("scripts") / (sys.argv[1] + "-" + suffix)
-    compile(path.read_bytes(), str(path), "exec")
-path = Path("scripts/alpine-compat-report.py")
-compile(path.read_bytes(), str(path), "exec")' "$profile"
+for path in (Path("scripts") / (sys.argv[1] + "-alpine-disk-check.py"),
+             Path("scripts/alpine-first-uart.py"), Path("scripts/alpine-compat-report.py")):
+    compile(path.read_bytes(), str(path), "exec")' "$profile"
 if [ "$mode" = --host-only ]; then
     echo "[${label} HOST ONLY PASS] strict manifest, original APK SHA and ledger negative cases; no native-QEMU acceptance claimed"
     exit 0
