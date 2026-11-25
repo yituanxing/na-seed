@@ -340,7 +340,25 @@ bool nas_tty_poll_readable(void){return false;}
 int nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;return 0;}
 #if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
 bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
-bool nas_netlink_core_is_slot(unsigned slot){(void)slot;return false;}
+/* Only the syscall File/iovec adapter is under test here: the actual
+ * ROUTE/GENERIC providers have their own kernel host regressions. */
+static unsigned mock_netlink_slot=NAS_OPEN_FILE_LIMIT;
+static bool mock_netlink_reply_ready;
+bool nas_netlink_core_is_slot(unsigned slot){return slot==mock_netlink_slot;}
+int64_t nas_netlink_core_recvmsg(unsigned slot,uint8_t *buffer,
+        unsigned capacity,unsigned flags,uint8_t source[12],
+        uint32_t *source_length,uint32_t *msg_flags) {
+    (void)flags;
+    assert(slot==mock_netlink_slot && source && source_length && msg_flags);
+    if(!mock_netlink_reply_ready)return -EAGAIN;
+    static const uint8_t payload[7]={'N','E','T','L','I','N','K'};
+    unsigned copied=capacity<sizeof(payload)?capacity:sizeof(payload);
+    if(copied)memcpy(buffer,payload,copied);
+    memset(source,0,12);
+    *source_length=12;
+    *msg_flags=capacity<sizeof(payload)?0x20U:0;
+    return sizeof(payload);
+}
 #endif
 /* M107 tests the backend; here we observe the real syscall adapter's
  * prepare-before-I/O, commit-on-progress and cancel-on-failure decisions. */
@@ -578,6 +596,50 @@ static uint16_t m106_poll_description(unsigned slot,uint16_t events) {
 static const struct nas_file_ops m106_poll_ops={
     .poll_description=m106_poll_description
 };
+/* Genuine Netlink syscall adapter + shared File importer + usercopy.
+ * The mock below supplies only an immutable kernel datagram and EAGAIN;
+ * no iovec parser, Task snapshot or File lifetime is mocked. */
+static void test_netlink_recvmsg_iovec_snapshot(void) {
+    assert(live_fds()==0);
+    reset_mapping();
+    enum { FD=7, SLOT=117 };
+    assert(nas_fd_install_new(&guest_task,FD,SLOT,FD_SOCKET,2,false));
+    mock_netlink_slot=SLOT;
+    mock_netlink_reply_ready=false;
+    /* No scalar FileOps read method: a datagram has protocol-owned I/O. */
+    nas_open_files[SLOT].ops=&m106_poll_ops;
+    const uint64_t message=TEST_BASE+128,iov=TEST_BASE+256;
+    const uint64_t first=TEST_BASE+512,second=TEST_BASE+TEST_PAGE+256;
+    const uint64_t changed=TEST_BASE+2*TEST_PAGE+256;
+    struct nas_msghdr msg={0};
+    msg.iov=iov;
+    msg.iovlen=2;
+    assert(nas_user_write_bytes(message,(const uint8_t *)&msg,sizeof(msg)));
+    a008_iov(iov,0,first,3);
+    a008_iov(iov,1,second,4);
+    uint64_t args[]={0,FD,message,0,0,0,0};
+    struct nas_netlink_receive_attempt attempt={0};
+    nas_fs_netlink_receive_start(NAS_SC_recvmsg,args,&attempt);
+    assert(attempt.applicable && attempt.pending && attempt.slot==SLOT);
+    assert(nas_open_files[SLOT].refcount==2);
+    /* A parked Task must not import the mutated userspace pointer again. */
+    a008_iov(iov,0,changed,3);
+    mock_netlink_reply_ready=true;
+    assert(nas_fs_netlink_receive_resume(attempt.pending)==7);
+    assert(!memcmp(user_ptr(first),"NET",3));
+    assert(!memcmp(user_ptr(second),"LINK",4));
+    assert(*user_ptr(changed)==0xa6);
+    nas_fs_netlink_receive_release(attempt.pending);
+    nas_fs_drop_kernel_description(SLOT);
+    assert(nas_open_files[SLOT].refcount==1);
+    /* Immediate completion separately proves the new iovec still works. */
+    assert(sys_netlink_recvmsg(FD,message,0)==7);
+    assert(!memcmp(user_ptr(changed),"NET",3));
+    mock_netlink_slot=NAS_OPEN_FILE_LIMIT;
+    nas_fs_close_fd(FD);
+    assert(live_fds()==0 && !nas_open_files[SLOT].refcount);
+    puts("[M106 NETLINK IOV PASS] immutable parked iovec, live File pin, provider-owned datagram read, synchronous retry");
+}
 static void test_poll_select_wait_ownership(void) {
     /* Real poll/select ABI and usercopy; only provider readiness is mocked.
      * The Task must retain original File identities across FD reuse and
@@ -1134,6 +1196,7 @@ int main(void) {
     test_bootstrap_metadata_and_vfs_priority();
     test_dup2_atomic_source_pin();
     test_poll_select_wait_ownership();
+    test_netlink_recvmsg_iovec_snapshot();
 
     /* A valid mapped RX destination must NOT publish descriptors. */
     can_write[0]=false;
