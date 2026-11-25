@@ -22,7 +22,8 @@ grep -Fq 'scripts/fetch-busybox-fixture.sh amd64' scripts/fetch-debian.sh
 grep -Fq 'sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox' scripts/probe-riscv64-busybox.sh
 grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh aarch64' scripts/probe-aarch64-busybox-matrix.sh
 grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh riscv64' scripts/probe-riscv64-busybox-matrix.sh
-grep -Fq 'sh scripts/fetch-busybox-fixture.sh "$arch" "$dir/busybox"' scripts/probe-port-busybox-matrix.sh
+grep -Fq 'if [ "$fixture_arch" = aarch64 ]; then fixture_arch=arm64; fi' scripts/probe-port-busybox-matrix.sh
+grep -Fq 'sh scripts/fetch-busybox-fixture.sh "$fixture_arch" "$dir/busybox"' scripts/probe-port-busybox-matrix.sh
 grep -Fq 'sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox' scripts/compare-busybox-applets.sh
 test "$(grep -vc '^#' scripts/busybox-parity-cases.tsv)" -eq 17
 awk -F '\t' '

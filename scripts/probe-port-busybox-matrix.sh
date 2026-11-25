@@ -22,8 +22,11 @@ if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
     cp "$BUSYBOX_PARITY_BINARY" "$work/input-busybox"
     binary="$work/input-busybox"
 else
-    # Both native ports fetch from the same pinned package/SHA manifest.
-    sh scripts/fetch-busybox-fixture.sh "$arch" "$dir/busybox"
+    # Kernel/port name aarch64 maps to Debian's package architecture arm64.
+    # Both ports still use one pinned version and SHA256-verified fetch owner.
+    fixture_arch=$arch
+    if [ "$fixture_arch" = aarch64 ]; then fixture_arch=arm64; fi
+    sh scripts/fetch-busybox-fixture.sh "$fixture_arch" "$dir/busybox"
     work="$dir/matrix"
     mkdir -p "$work"
     binary="$dir/busybox"
