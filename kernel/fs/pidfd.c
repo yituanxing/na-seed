@@ -9,7 +9,6 @@
  * allocator is monotonic (and rejects exhaustion), so a retained pidfd
  * cannot accidentally become a handle for the next occupant of a slot.
  * dup/fork share one File and its immutable target; final close reclaims it. */
-static uint64_t targets[NAS_OPEN_FILE_LIMIT];
 
 #define PIDFD_IN 0x0001U
 #define PIDFD_RDNORM 0x0040U
@@ -25,14 +24,14 @@ uint64_t nas_pidfd_open(uint64_t raw_pid,uint64_t flags) {
     if(rc)return (uint64_t)(int64_t)rc;
     if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_PIDFD,
                            0,true))return (uint64_t)-EBADF;
-    targets[slots[0]]=(uint32_t)pid;
+    nas_open_files[slots[0]].private.pidfd_target=(uint32_t)pid;
     return fds[0];
 }
 
 uint16_t nas_pidfd_poll_description(unsigned slot,uint16_t events) {
     if(!nas_file_slot_live(slot) ||
-       !targets[slot])return 0;
-    const struct nas_task *target=nas_task_by_pid(targets[slot]);
+       !nas_open_files[slot].private.pidfd_target)return 0;
+    const struct nas_task *target=nas_task_by_pid(nas_open_files[slot].private.pidfd_target);
     if(target && (target->state!=NAS_TASK_ZOMBIE ||
                   nas_task_group_has_live_peers(target)))return 0;
     /* Linux fs/pidfs.c: readable at zombie transition; after wait4 reaps
@@ -49,5 +48,5 @@ uint64_t nas_pidfd_read(unsigned slot,uint8_t *dst,uint64_t count) {
 }
 
 void nas_pidfd_release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)targets[slot]=0;
+    if(slot<NAS_OPEN_FILE_LIMIT)nas_open_files[slot].private.pidfd_target=0;
 }

@@ -113,7 +113,22 @@ bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease);
  * fixed-capacity object table for now, not a heap allocator or full VFS. */
 struct limine_file;
 struct bootfs_entry;
+/* Scalar provider state belongs to its shared File, not parallel slot tables.
+ * These providers are mutually exclusive, and File installation/finalization
+ * initialize and clear this storage as part of the ordinary lifetime. */
+struct nas_timerfd_state {
+    uint64_t deadline_ns,interval_ns,expirations;
+    uint32_t clockid;
+    bool armed;
+};
+union nas_file_private {
+    struct { uint64_t counter; bool semaphore; } eventfd;
+    struct nas_timerfd_state timerfd;
+    uint64_t pidfd_target;
+    uint64_t signalfd_mask;
+};
 struct nas_open_file {
+    union nas_file_private private;
     uint16_t refcount;
     /* Nonzero only while this OpenFile is a kernel-owned pending lease.
      * The token cannot be confused with the protocol stack's own handle. */

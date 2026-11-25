@@ -1341,7 +1341,6 @@ static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
 /* signalfd is a genuine File: its mask belongs to the refcounted open
  * description, while pending signals belong to the active task/TGID. This
  * works across dup/fork without creating an independent fake signal queue. */
-static uint64_t signalfd_masks[NAS_OPEN_FILE_LIMIT];
 static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
                              uint64_t mask_size,uint64_t flags) {
     if(mask_size!=8ULL || (flags&~(0x800ULL|0x80000ULL)))
@@ -1351,26 +1350,26 @@ static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
     mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
     int fd=(int32_t)(uint32_t)raw_fd;
     if(fd!=-1) {
-        if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
-            return (uint64_t)-EBADF;
-        unsigned slot=TASK.fds->entries[fd].slot;
-        signalfd_masks[slot]=mask;
+        const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,(uint64_t)fd);
+        if(!entry || entry->kind!=FD_SIGNALFD)return (uint64_t)-EBADF;
+        unsigned slot=entry->slot;
+        nas_open_files[slot].private.signalfd_mask=mask;
         return (uint64_t)fd;
     }
     unsigned fds[2],slots[2];
     int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"signalfd4");
     if(rc)return (uint64_t)(int64_t)rc;
-    signalfd_masks[slots[0]]=mask;
     if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_SIGNALFD,
                            flags&0x800ULL,!!(flags&0x80000ULL)))
         nas_fs_fail("reserved signalfd description was occupied");
+    nas_open_files[slots[0]].private.signalfd_mask=mask;
     return fds[0];
 }
 static uint64_t signalfd_read_plan(unsigned slot,uint64_t requested) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
     if(requested<128ULL)return (uint64_t)-EINVAL;
-    if(!nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot]))
+    if(!nas_signal_signalfd_ready(nas_current_task,nas_open_files[slot].private.signalfd_mask))
         return (nas_open_files[slot].status_flags&0x800ULL)?
                (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
     return 128ULL;
@@ -1381,7 +1380,7 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
     if(!dst)return (uint64_t)-EFAULT;
     struct nas_signalfd_event event={0};
     unsigned signo=nas_signal_signalfd_take(nas_current_task,
-                                             signalfd_masks[slot],&event);
+                                             nas_open_files[slot].private.signalfd_mask,&event);
     if(!signo)return (uint64_t)-EAGAIN;
     /* Native Linux signalfd_siginfo: signo@0, code@8, pid@12,
      * status@40, all 32-bit fields in the same LP64 ABI on three ISAs. */
@@ -1396,13 +1395,13 @@ uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
                                   const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
     return (events&1U) &&
-        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
+        nas_signal_signalfd_ready(task,nas_open_files[slot].private.signalfd_mask)?1U:0U;
 }
 static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
     return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
 }
 static void signalfd_release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)signalfd_masks[slot]=0;
+    if(slot<NAS_OPEN_FILE_LIMIT)nas_open_files[slot].private.signalfd_mask=0;
 }
 static const struct nas_file_ops ops_epoll={
     .poll_description=nas_epoll_description_poll,.release=vrelease_epoll
