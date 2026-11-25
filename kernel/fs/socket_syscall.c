@@ -109,10 +109,16 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
         nas_fd_reserve(nas_current_task,0,1,fds,slots,"socket");
     if(capacity)return (uint64_t)(int64_t)capacity;
     unsigned fd=fds[0],slot=slots[0];
-    if(domain==1)nas_unix_socket_init(slot);
     if(!nas_fd_install_new(nas_current_task,fd,slot,FD_SOCKET,
                            2ULL|(type&0x800ULL),(type&0x80000ULL)!=0))
         nas_fail("reserved socket descriptor became occupied");
+    if(domain==1) {
+        int rc=nas_unix_socket_init(slot);
+        if(rc) {
+            nas_fs_close_fd(fd);
+            return (uint64_t)(int64_t)rc;
+        }
+    }
     if(domain==2) {
         nas_open_files[slot].ops=nas_lwip_socket_port_ops();
         enum nas_lwip_bridge_type native_type=socket_type==1U ?

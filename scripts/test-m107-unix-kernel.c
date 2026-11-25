@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../kernel/errno.h"
 #include "../kernel/task.h"
@@ -130,9 +131,12 @@ int nas_pipe_peer_slot(unsigned sender) {
         return -1;
     return (int)paired[sender];
 }
+static const struct nas_file_ops unix_file_ops={0};
 const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
-    (void)kind;return NULL;
+    return kind==FD_SOCKET ? &unix_file_ops : NULL;
 }
+void *nas_heap_calloc(size_t n,size_t bytes){return calloc(n,bytes);}
+bool nas_heap_free(void *p){free(p);return true;}
 void nas_fs_drop_kernel_description(unsigned slot) {
     assert(slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount);
     if(!--nas_open_files[slot].refcount) {
@@ -153,7 +157,8 @@ void nas_arch_halt(void){assert(!"NaSeed unix backend panic");__builtin_trap();}
 static void new_endpoint(unsigned slot) {
     assert(slot<NAS_OPEN_FILE_LIMIT && !nas_open_files[slot].refcount);
     nas_open_files[slot].refcount=1;
-    nas_unix_socket_init(slot);
+    nas_open_files[slot].ops=&unix_file_ops;
+    assert(nas_unix_socket_init(slot)==0);
 }
 static void connect_named(unsigned slot,const char *name) {
     struct nas_vfs_path found={0};
@@ -219,8 +224,9 @@ int main(void) {
 
     /* SCM_RIGHTS holds an independent reference after the sender closes.
      * The receiver takes ownership, no double put on its final close. */
-    new_endpoint(40);new_endpoint(41);
-    nas_unix_socket_pair_ready(40,41);
+    nas_open_files[40].refcount=nas_open_files[41].refcount=1;
+    nas_open_files[40].ops=nas_open_files[41].ops=&unix_file_ops;
+    assert(nas_unix_socket_pair_ready(40,41)==0);
     paired[40]=41;paired[41]=40;
     uint8_t kind=FD_SOCKET,transfer_slot=14;
     uint16_t prior=nas_open_files[transfer_slot].refcount;
@@ -257,8 +263,9 @@ int main(void) {
 
     /* A blocked sender can lose BOTH endpoint FDs while the transaction
      * waits. The pre-held kernel references still make cancellation safe. */
-    new_endpoint(52);new_endpoint(53);
-    nas_unix_socket_pair_ready(52,53);
+    nas_open_files[52].refcount=nas_open_files[53].refcount=1;
+    nas_open_files[52].ops=nas_open_files[53].ops=&unix_file_ops;
+    assert(nas_unix_socket_pair_ready(52,53)==0);
     paired[52]=53;paired[53]=52;
     transfer_slot=13;
     prior=nas_open_files[transfer_slot].refcount;
@@ -272,8 +279,9 @@ int main(void) {
 
     /* Partial receive transfers exactly one reference; socket teardown
      * disposes only the undelivered remainder via the canonical finalizer. */
-    new_endpoint(54);new_endpoint(55);
-    nas_unix_socket_pair_ready(54,55);
+    nas_open_files[54].refcount=nas_open_files[55].refcount=1;
+    nas_open_files[54].ops=nas_open_files[55].ops=&unix_file_ops;
+    assert(nas_unix_socket_pair_ready(54,55)==0);
     paired[54]=55;paired[55]=54;
     uint8_t multiple[2]={13,15};
     uint16_t original13=nas_open_files[13].refcount;

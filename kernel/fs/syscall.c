@@ -107,7 +107,6 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         nas_pipe_create_socketpair(slots[0], slots[1]) :
         nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
-    if (stream_socket) nas_unix_socket_pair_ready(slots[0],slots[1]);
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
         uint8_t kind=stream_socket ? FD_SOCKET : i ? FD_PIPE_W : FD_PIPE_R;
@@ -116,6 +115,14 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         if(!nas_fd_install_new(nas_current_task,fd,slot,kind,status,
                                !!(flags & 0x80000ULL)))
             nas_fs_fail("reserved pipe/socket FD was occupied");
+    }
+    if(stream_socket) {
+        int rc=nas_unix_socket_pair_ready(slots[0],slots[1]);
+        if(rc) {
+            nas_fs_close_fd(fds[0]);
+            nas_fs_close_fd(fds[1]);
+            return (uint64_t)(int64_t)rc;
+        }
     }
     uint8_t output[8] = {0};
     for (unsigned i = 0; i < 2; i++)
