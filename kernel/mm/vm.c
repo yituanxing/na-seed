@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "../errno.h"
 #include "../task.h"
+#include "../panic.h"
 #include "../arch/arch.h"
 #include "vm.h"
 #include "mm.h"
@@ -494,10 +495,10 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     for (uint64_t i=0; i<count; ++i) {
         uint64_t va=addr+i*PAGE;
         /* PROT_NONE reservations have intentionally absent PTEs. */
-        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va)) {
-            nas_anon_reset(&updated);
-            return (uint64_t)-EFAULT;
-        }
+        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+            /* Earlier pages may already be unmapped; the MM cannot roll
+             * back leaf ownership after the first physical frame put. */
+            nas_fail("munmap: committed leaf release invariant");
     }
     nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
@@ -628,7 +629,10 @@ uint64_t nas_vm_brk(uint64_t want) {
             return base;
         }
         for (uint64_t va=after;va<before;va+=PAGE)
-            if (!nas_mmu_unmap_page(va)) { nas_anon_reset(&planned); return base; }
+            if (!nas_mmu_unmap_page(va))
+                /* A previous page may already have been released; returning
+                 * the old brk would conceal a partially destroyed heap. */
+                nas_fail("brk shrink: committed leaf release invariant");
         nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     }
     heap_break=want;
