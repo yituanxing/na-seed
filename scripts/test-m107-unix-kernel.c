@@ -15,6 +15,7 @@
 #include "../kernel/errno.h"
 #include "../kernel/task.h"
 #include "../kernel/fd.h"
+#include "../kernel/fs/file_ops.h"
 #include "../kernel/fs/vfs.h"
 #include "../kernel/fs/unix_socket.h"
 
