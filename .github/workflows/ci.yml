@@ -39,6 +39,12 @@ jobs:
         run: python3 scripts/check-ci-checkout-head.py
       - name: Verify full original ELF marker profiles, fail-closed negatives and synthetic QEMU rejection
         run: python3 scripts/acceptance/test-batch-markers.py
+      - name: Lint shared native network coordinator and reject invalid dispatches
+        run: |
+          sh -n scripts/acceptance/ci-original-alpine-network.sh
+          if sh scripts/acceptance/ci-original-alpine-network.sh runtime m999 amd64 >/dev/null 2>&1; then exit 1; fi
+          if sh scripts/acceptance/ci-original-alpine-network.sh runtime m218 mips64 >/dev/null 2>&1; then exit 1; fi
+          if sh scripts/acceptance/ci-original-alpine-network.sh invalid m218 amd64 >/dev/null 2>&1; then exit 1; fi
       - name: Verify selected M218-M225 original native network cohorts after deduplication
         run: |
           python3 scripts/test-m220-nping-host.py

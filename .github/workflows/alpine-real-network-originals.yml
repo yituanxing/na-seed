@@ -7,12 +7,39 @@ on:
     branches: [naseed-app-batch2]
     paths:
       - '.github/workflows/alpine-real-network-originals.yml'
+      - 'rootfs/alpine/*m218*'
+      - 'rootfs/alpine/*m219*'
+      - 'rootfs/alpine/*m220*'
+      - 'rootfs/alpine/*m221*'
+      - 'rootfs/alpine/*m222*'
+      - 'rootfs/alpine/*m223*'
+      - 'rootfs/alpine/*m224*'
+      - 'rootfs/alpine/*m225*'
+      - 'scripts/*m218-*'
+      - 'scripts/*m219-*'
+      - 'scripts/*m220-*'
+      - 'scripts/*m221-*'
+      - 'scripts/*m222-*'
+      - 'scripts/*m223-*'
+      - 'scripts/*m224-*'
+      - 'scripts/*m225-*'
       - 'scripts/acceptance/ci-original-alpine-network.sh'
+      - 'scripts/inventory-m141-signed-apks.sh'
+      - 'scripts/probe-alpine-profile.sh'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'scripts/test-m218-ifstat-host.py'
       - 'scripts/test-m219-utmpdump-host.py'
       - 'tests/m205-software-workload.sh'
+      - 'tests/m218-*'
       - 'tests/m218-ifstat-workload.sh'
+      - 'tests/m219-*'
       - 'tests/m219-utmpdump-workload.sh'
+      - 'tests/m220-*'
+      - 'tests/m221-*'
+      - 'tests/m222-*'
+      - 'tests/m223-*'
+      - 'tests/m224-*'
+      - 'tests/m225-*'
   workflow_dispatch:
     inputs:
       profile:
@@ -50,9 +77,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import fnmatch, json, os, subprocess
-          owner = {"m218":["tests/m218-ifstat-workload.sh","scripts/test-m218-ifstat-host.py","tests/m205-software-workload.sh"],"m219":["tests/m219-utmpdump-workload.sh","scripts/test-m219-utmpdump-host.py"],"m220":[],"m221":[],"m222":[],"m223":[],"m224":[],"m225":[]}
+          owner = {"m218":["tests/m218-ifstat-workload.sh","scripts/test-m218-ifstat-host.py","tests/m205-software-workload.sh","scripts/*m218-*","tests/m218-*","rootfs/alpine/*m218*"],"m219":["tests/m219-utmpdump-workload.sh","scripts/test-m219-utmpdump-host.py","scripts/*m219-*","tests/m219-*","rootfs/alpine/*m219*"],"m220":["scripts/*m220-*","tests/m220-*","rootfs/alpine/*m220*"],"m221":["scripts/*m221-*","tests/m221-*","rootfs/alpine/*m221*"],"m222":["scripts/*m222-*","tests/m222-*","rootfs/alpine/*m222*"],"m223":["scripts/*m223-*","tests/m223-*","rootfs/alpine/*m223*"],"m224":["scripts/*m224-*","tests/m224-*","rootfs/alpine/*m224*"],"m225":["scripts/*m225-*","tests/m225-*","rootfs/alpine/*m225*"]}
           shared = {'.github/workflows/alpine-real-network-originals.yml',
-                    'scripts/acceptance/ci-original-alpine-network.sh'}
+                    'scripts/acceptance/ci-original-alpine-network.sh',
+                    'scripts/probe-alpine-profile.sh',
+                    'scripts/probe-m197-alpine-software-cohort.sh',
+                    'scripts/inventory-m141-signed-apks.sh'}
           if os.environ['EVENT_NAME'] == 'workflow_dispatch':
               profiles = [os.environ['PROFILE']]
           else:
