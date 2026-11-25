@@ -1,7 +1,12 @@
 name: Kernel baseline
+# Push is the authoritative head check: a same-repository PR would otherwise
+# run an identical push and pull_request matrix for the exact same SHA.
 on:
   push:
-  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -15,8 +20,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install native build and emulator tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils curl make xorriso ovmf qemu-system-x86
+      - name: Install compiler tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils curl make
+      - name: Install x86 UEFI and QEMU tools
+        if: matrix.arch == 'x86_64'
+        run: sudo apt-get install -y xorriso ovmf qemu-system-x86
       - name: Validate shell entry points
         run: |
           for script in scripts/*.sh tests/*.sh; do sh -n "$script"; done
