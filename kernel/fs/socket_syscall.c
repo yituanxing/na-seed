@@ -1017,7 +1017,7 @@ struct nas_netlink_rx_snapshot {
     bool message,nonblocking;
     uint64_t user_ptr,user_source,user_source_length;
     struct nas_msghdr msg;
-    struct nas_iovec iov[32];
+    struct nas_fs_io_vectors vectors; /* single kernel-owned import */
     uint32_t source_capacity;
 };
 static uint64_t netlink_rx_import(struct nas_netlink_rx_snapshot *p,
@@ -1038,22 +1038,25 @@ static uint64_t netlink_rx_import(struct nas_netlink_rx_snapshot *p,
            !nas_user_prepare_write(p->user_ptr,sizeof(p->msg)))
             return (uint64_t)-EFAULT;
         if(p->msg.iovlen>32)return (uint64_t)-EMSGSIZE;
-        for(unsigned i=0;i<p->msg.iovlen;i++) {
-            if(p->msg.iov>UINT64_MAX-(uint64_t)i*sizeof(p->iov[i]) ||
-               !nas_user_read_bytes(p->msg.iov+(uint64_t)i*sizeof(p->iov[i]),
-                                    (uint8_t *)&p->iov[i],sizeof(p->iov[i])))
-                return (uint64_t)-EFAULT;
-            unsigned room=NAS_NETLINK_MAX_DATAGRAM-p->capacity;
-            if(p->iov[i].length<room)room=(unsigned)p->iov[i].length;
-            if(room && !nas_user_prepare_write(p->iov[i].base,room))
-                return (uint64_t)-EFAULT;
-            p->capacity+=room;
+        /* One copied, immutable vector survives a Task park; a later
+         * scheduler resume must never reload foreign userspace iovecs. */
+        int rc=nas_fs_io_vectors_import_datagram(p->slot,p->msg.iov,
+                                                 p->msg.iovlen,false,&p->vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        p->capacity=p->vectors.total>NAS_NETLINK_MAX_DATAGRAM ?
+                    NAS_NETLINK_MAX_DATAGRAM:(unsigned)p->vectors.total;
+        if(nas_fs_io_vectors_accessible_prefix(&p->vectors,p->capacity,
+                                                false)!=p->capacity) {
+            nas_fs_io_vectors_release(&p->vectors);
+            return (uint64_t)-EFAULT;
         }
         const uint32_t name_room=p->msg.namelen>NAS_NETLINK_SOCKADDR_SIZE ?
                               NAS_NETLINK_SOCKADDR_SIZE:p->msg.namelen;
         if(p->msg.name && name_room &&
-           !nas_user_prepare_write(p->msg.name,name_room))
+           !nas_user_prepare_write(p->msg.name,name_room)) {
+            nas_fs_io_vectors_release(&p->vectors);
             return (uint64_t)-EFAULT;
+        }
     } else {
         /* musl getifaddrs() calls recvfrom(..., MSG_DONTWAIT) with no
          * sockaddr. Preserve optional sockaddr/len preflight in full. */
@@ -1086,14 +1089,10 @@ static uint64_t netlink_rx_execute(const struct nas_netlink_rx_snapshot *p) {
     if(got<0)return (uint64_t)got;
     unsigned copied=(uint64_t)got<p->capacity?(unsigned)got:p->capacity;
     if(p->message) {
-        unsigned off=0;
-        for(unsigned i=0;i<p->msg.iovlen && off<copied;i++) {
-            unsigned n=p->iov[i].length>copied-off ?
-                       copied-off:(unsigned)p->iov[i].length;
-            if(n && !nas_user_write_bytes(p->iov[i].base,packet+off,n))
-                return (uint64_t)-EFAULT;
-            off+=n;
-        }
+        uint64_t transferred=0;
+        if(!nas_fs_io_vectors_copyout(&p->vectors,packet,copied,
+                                       &transferred))
+            return (uint64_t)-EFAULT;
         struct nas_msghdr msg=p->msg;
         if(msg.name) {
             uint32_t n=msg.namelen<source_length?msg.namelen:source_length;
@@ -1123,7 +1122,10 @@ static uint64_t sys_netlink_recvmsg(uint64_t fd,uint64_t user_message,
     uint64_t args[]={0,fd,user_message,flags,0,0,0};
     struct nas_netlink_rx_snapshot current;
     uint64_t rc=netlink_rx_import(&current,NAS_SC_recvmsg,args);
-    return (int64_t)rc<0 ? rc:netlink_rx_execute(&current);
+    if((int64_t)rc<0)return rc;
+    rc=netlink_rx_execute(&current);
+    nas_fs_io_vectors_release(&current.vectors);
+    return rc;
 }
 static uint64_t sys_netlink_recvfrom(uint64_t fd,uint64_t user_buffer,
                                      uint64_t length,uint64_t flags,
@@ -1133,7 +1135,10 @@ static uint64_t sys_netlink_recvfrom(uint64_t fd,uint64_t user_buffer,
                      user_source_length};
     struct nas_netlink_rx_snapshot current;
     uint64_t rc=netlink_rx_import(&current,NAS_SC_recvfrom,args);
-    return (int64_t)rc<0 ? rc:netlink_rx_execute(&current);
+    if((int64_t)rc<0)return rc;
+    rc=netlink_rx_execute(&current);
+    nas_fs_io_vectors_release(&current.vectors);
+    return rc;
 }
 void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
                                   struct nas_netlink_receive_attempt *out) {
@@ -1146,6 +1151,7 @@ void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
     if((int64_t)rc<0){out->result=rc;return;}
     out->slot=current.slot;
     if(!nas_fd_hold_description(current.slot)) {
+        nas_fs_io_vectors_release(&current.vectors);
         out->result=(uint64_t)-EBADF;return;
     }
     rc=netlink_rx_execute(&current);
@@ -1158,6 +1164,7 @@ void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
         }
         rc=(uint64_t)-ENOMEM;
     }
+    nas_fs_io_vectors_release(&current.vectors);
     nas_fs_drop_kernel_description(current.slot);
     out->result=rc;
 }
@@ -1166,7 +1173,10 @@ uint64_t nas_fs_netlink_receive_resume(void *pending) {
                      (uint64_t)-EINVAL;
 }
 void nas_fs_netlink_receive_release(void *pending) {
-    if(pending)(void)nas_heap_free(pending);
+    if(!pending)return;
+    struct nas_netlink_rx_snapshot *snapshot=pending;
+    nas_fs_io_vectors_release(&snapshot->vectors);
+    (void)nas_heap_free(snapshot);
 }
 static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
                                        uint64_t option,uint64_t value,
