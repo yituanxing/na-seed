@@ -16,7 +16,11 @@ mode=${1:---host-only}
 case "$mode" in --host-only|--native) ;; *) exit 2 ;; esac
 export PYTHONDONTWRITEBYTECODE=1
 python3 scripts/check-m141-candidates.py --profile ${profile}
-python3 scripts/test-${profile}-alpine-host.py
+case "$profile" in
+    m235) python3 scripts/test-m235-alpine-host.py ;;
+    m236|m237|m238)
+        python3 scripts/test-m236-m238-alpine-host.py --profile "$profile" ;;
+esac
 [ "$profile" = m235 ] || python3 scripts/test-m235-alpine-host.py
 python3 scripts/test-m223-http-host.py
 python3 scripts/test-m205-alpine-host.py

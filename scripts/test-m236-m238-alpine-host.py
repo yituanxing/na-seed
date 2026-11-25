@@ -301,4 +301,14 @@ class M236StrictTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=1)
+    import sys
+    cohorts = {'m236': M236StrictTests, 'm237': M237SignedNativeTests,
+               'm238': M238SignedNativeTests}
+    if len(sys.argv) == 1:
+        unittest.main(verbosity=1)
+    elif len(sys.argv) == 3 and sys.argv[1] == '--profile' and sys.argv[2] in cohorts:
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(cohorts[sys.argv[2]])
+        if not unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful():
+            sys.exit(1)
+    else:
+        sys.exit('usage: test-m236-m238-alpine-host.py [--profile m236|m237|m238]')
