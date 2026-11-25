@@ -39,6 +39,11 @@ jobs:
         run: python3 scripts/check-ci-checkout-head.py
       - name: Verify full original ELF marker profiles, fail-closed negatives and synthetic QEMU rejection
         run: python3 scripts/acceptance/test-batch-markers.py
+      - name: Verify selected M218-M225 original native network cohorts after deduplication
+        run: |
+          python3 scripts/test-m220-nping-host.py
+          python3 scripts/test-m221-dns-host.py
+          python3 scripts/test-m223-http-host.py
       - name: Verify consolidated M228-M233 service contract gates and independent protocol oracles
         run: |
           python3 scripts/test-m228-hostfwd-contract.py

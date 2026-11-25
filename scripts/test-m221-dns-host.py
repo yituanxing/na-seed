@@ -19,7 +19,7 @@ PILOT = ROOT / "scripts/probe-alpine-profile.sh"
 MANIFEST = ROOT / "scripts/m221-candidate-elfs.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m221-candidates.txt"
 REPORTER = ROOT / "scripts/alpine-compat-report.py"
-WORKFLOW = ROOT / ".github/workflows/m221-dns-update-alpine.yml"
+WORKFLOW = ROOT / ".github/workflows/alpine-real-network-originals.yml"
 
 spec = spec_from_file_location("m221_host_checked", CHECKER)
 assert spec and spec.loader
@@ -213,13 +213,13 @@ def integration_contract() -> None:
     flow = WORKFLOW.read_text()
     assert "  workflow_dispatch:" in flow and "  push:" in flow
     assert "    branches: [naseed-app-batch2]" in flow
-    assert "      - '.github/workflows/m221-dns-update-alpine.yml'" in flow
-    assert "      - 'tests/m205-software-workload.sh'" not in flow
-    assert "needs: [authoritative-dns-amd64]" in flow
+    assert "      - '.github/workflows/alpine-real-network-originals.yml'" in flow
+    assert "matrix.profile" in flow
+    scope = flow.split("      - name: Preserve exact original M221 amd64", 1)[1].split("      - name: Preserve exact original M222 amd64", 1)[0]
     for marker in ("m221-first-host-dns.log", "m221-reopen-host-dns.log",
                    "m221-first-wire.json", "m221-reopen-wire.json",
                    "m221-reopen-wire.pcap", "m197-public-wire.pcap"):
-        assert flow.count(marker) == 2, f"two cross-ISA evidence exports absent {marker}"
+        assert scope.count(marker) == 2, f"two cross-ISA evidence exports absent {marker}"
     for path in (GUEST, OWNER, RUNNER, PILOT, ROOT / "scripts/inventory-m141-signed-apks.sh"):
         checked = subprocess.run(["sh", "-n", str(path)], cwd=ROOT,
                                  capture_output=True, text=True, timeout=5)

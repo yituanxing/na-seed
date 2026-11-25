@@ -1,0 +1,433 @@
+# Unified signed original Alpine M218-M225 network cohort CI.
+# All signed ELF, host negatives, two real native QEMU boots, and 16 distinct
+# per-profile/per-ISA artifact inventories remain independently verifiable.
+name: NaSeed M218-M225 real original Alpine network cohorts
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/alpine-real-network-originals.yml'
+      - 'scripts/acceptance/ci-original-alpine-network.sh'
+      - 'scripts/test-m218-ifstat-host.py'
+      - 'scripts/test-m219-utmpdump-host.py'
+      - 'tests/m205-software-workload.sh'
+      - 'tests/m218-ifstat-workload.sh'
+      - 'tests/m219-utmpdump-workload.sh'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Exact original Alpine service/profile
+        type: choice
+        required: true
+        options: [m218, m219, m220, m221, m222, m223, m224, m225]
+      port:
+        description: Native ISA (or all three)
+        type: choice
+        default: all
+        required: true
+        options: [all, amd64, riscv64, arm64]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.profile || 'push' }}
+  cancel-in-progress: false
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      profiles: ${{ steps.choose.outputs.profiles }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Keep original per-profile push path selection
+        id: choose
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          python3 - <<'PY'
+          import fnmatch, json, os, subprocess
+          owner = {"m218":["tests/m218-ifstat-workload.sh","scripts/test-m218-ifstat-host.py","tests/m205-software-workload.sh"],"m219":["tests/m219-utmpdump-workload.sh","scripts/test-m219-utmpdump-host.py"],"m220":[],"m221":[],"m222":[],"m223":[],"m224":[],"m225":[]}
+          shared = {'.github/workflows/alpine-real-network-originals.yml',
+                    'scripts/acceptance/ci-original-alpine-network.sh'}
+          if os.environ['EVENT_NAME'] == 'workflow_dispatch':
+              profiles = [os.environ['PROFILE']]
+          else:
+              before = os.environ.get('BEFORE', '')
+              if not before or set(before) == {'0'}:
+                  profiles = list(owner)
+              else:
+                  files = subprocess.check_output(
+                      ['git', 'diff', '--name-only', before, os.environ['GITHUB_SHA']],
+                      text=True).splitlines()
+                  profiles = [p for p, patterns in owner.items()
+                              if any(f in shared or any(fnmatch.fnmatchcase(f, pat)
+                                    for pat in patterns) for f in files)]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              print('profiles=' + json.dumps(profiles, separators=(',', ':')),
+                    file=out)
+          PY
+  native:
+    needs: [select]
+    if: ${{ needs.select.outputs.profiles != '[]' }}
+    name: ${{ matrix.profile }} original first+reopen native Alpine / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.select.outputs.profiles) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port)) }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Verify original protocol host negative and native-ISA contracts
+        run: sh scripts/acceptance/ci-original-alpine-network.sh contract "$PROFILE" "$PORT"
+      - name: Install original native QEMU and host protocol dependencies
+        timeout-minutes: 25
+        run: sh scripts/acceptance/ci-original-alpine-network.sh install "$PROFILE" "$PORT"
+      - name: Preserve special original kernel or physical ext4 host checks
+        timeout-minutes: 15
+        run: sh scripts/acceptance/ci-original-alpine-network.sh extra "$PROFILE" "$PORT"
+      - name: Verify signed original native ELF and official offline APK closure
+        timeout-minutes: 35
+        run: sh scripts/acceptance/ci-original-alpine-network.sh verify "$PROFILE" "$PORT"
+      - name: Real two-boot native QEMU and independent original protocol workload
+        timeout-minutes: 125
+        run: sh scripts/acceptance/ci-original-alpine-network.sh runtime "$PROFILE" "$PORT"
+      - name: Preserve exact original M218 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm218' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m218-original-ifstat-amd64
+          path: |
+            build/external/m218-candidate-inventory/amd64/candidates.tsv
+            build/external/m218-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m218-candidate-inventory/amd64/apk-install.log
+            build/external/m218-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m218-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m218-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M218 cross evidence
+        if: ${{ always() && matrix.profile == 'm218' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m218-original-ifstat-${{ matrix.port }}
+          path: |
+            build/external/m218-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m218-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m218-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m218-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m218-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m218-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M219 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm219' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m219-original-utmpdump-amd64
+          path: |
+            build/external/m219-candidate-inventory/amd64/candidates.tsv
+            build/external/m219-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m219-candidate-inventory/amd64/apk-install.log
+            build/external/m219-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m219-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m219-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M219 cross evidence
+        if: ${{ always() && matrix.profile == 'm219' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m219-original-utmpdump-${{ matrix.port }}
+          path: |
+            build/external/m219-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m219-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m219-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m219-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m219-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m219-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M220 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm220' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m220-original-nping-amd64
+          path: |
+            build/external/m220-candidate-inventory/amd64/candidates.tsv
+            build/external/m220-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m220-candidate-inventory/amd64/apk-install.log
+            build/external/m220-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m220-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m220-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m220-first-host-udp.log
+            build/external/m191-alpine-rootfs/amd64/m220-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m220-reopen-host-udp.log
+            build/external/m191-alpine-rootfs/amd64/m220-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m220-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M220 cross evidence
+        if: ${{ always() && matrix.profile == 'm220' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m220-original-nping-${{ matrix.port }}
+          path: |
+            build/external/m220-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m220-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m220-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m220-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-first-host-udp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-reopen-host-udp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m220-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M221 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm221' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m221-original-dns-amd64
+          path: |
+            build/external/m221-candidate-inventory/amd64/candidates.tsv
+            build/external/m221-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m221-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m221-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m221-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m221-first-host-dns.log
+            build/external/m191-alpine-rootfs/amd64/m221-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m221-reopen-host-dns.log
+            build/external/m191-alpine-rootfs/amd64/m221-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m221-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M221 cross evidence
+        if: ${{ always() && matrix.profile == 'm221' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m221-original-dns-${{ matrix.port }}
+          path: |
+            build/external/m221-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m221-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m221-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-first-host-dns.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-reopen-host-dns.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m221-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+      - name: Preserve exact original M222 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm222' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m222-original-ssh-amd64
+          path: |
+            build/external/m222-candidate-inventory/amd64/candidates.tsv
+            build/external/m222-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m222-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m222-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m222-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m222-first-host-sshd.log
+            build/external/m191-alpine-rootfs/amd64/m222-first-public-fingerprint.log
+            build/external/m191-alpine-rootfs/amd64/m222-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m222-reopen-host-sshd.log
+            build/external/m191-alpine-rootfs/amd64/m222-reopen-public-fingerprint.log
+            build/external/m191-alpine-rootfs/amd64/m222-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m222-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M222 cross evidence
+        if: ${{ always() && matrix.profile == 'm222' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m222-original-ssh-${{ matrix.port }}
+          path: |
+            build/external/m222-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m222-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m222-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-first-host-sshd.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-first-public-fingerprint.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-reopen-host-sshd.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-reopen-public-fingerprint.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m222-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M223 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm223' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m223-original-http-amd64
+          path: |
+            build/external/m223-candidate-inventory/amd64/candidates.tsv
+            build/external/m223-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m223-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m223-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m223-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m223-first-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M223 cross evidence
+        if: ${{ always() && matrix.profile == 'm223' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m223-original-http-${{ matrix.port }}
+          path: |
+            build/external/m223-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m223-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m223-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M224 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm224' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m224-original-tcp-amd64
+          path: |
+            build/external/m224-candidate-inventory/amd64/candidates.tsv
+            build/external/m224-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m224-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m224-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m224-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m224-first-host-tcp.log
+            build/external/m191-alpine-rootfs/amd64/m224-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m224-reopen-host-tcp.log
+            build/external/m191-alpine-rootfs/amd64/m224-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m224-reopen-wire.json
+            build/external/m191-alpine-rootfs/amd64/m224-host-first/iperf3.log
+            build/external/m191-alpine-rootfs/amd64/m224-host-reopen/iperf3.log
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M224 cross evidence
+        if: ${{ always() && matrix.profile == 'm224' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m224-original-tcp-${{ matrix.port }}
+          path: |
+            build/external/m224-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m224-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m224-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-first-host-tcp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-reopen-host-tcp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-reopen-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-host-first/iperf3.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m224-host-reopen/iperf3.log
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M225 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm225' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m225-original-ftp-amd64
+          path: |
+            build/external/m225-candidate-inventory/amd64/candidates.tsv
+            build/external/m225-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m225-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/amd64/m225-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m225-first-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m225-first-host-ftp.log
+            build/external/m191-alpine-rootfs/amd64/m225-first-wire.json
+            build/external/m191-alpine-rootfs/amd64/m225-reopen-host-ftp.log
+            build/external/m191-alpine-rootfs/amd64/m225-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m225-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact original M225 cross evidence
+        if: ${{ always() && matrix.profile == 'm225' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m225-original-ftp-${{ matrix.port }}
+          path: |
+            build/external/m225-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m225-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m225-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-first-host-ftp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-first-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-reopen-host-ftp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m225-reopen-wire.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn

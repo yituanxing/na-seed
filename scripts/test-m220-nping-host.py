@@ -23,7 +23,7 @@ INVENTORY = ROOT / "scripts/inventory-m141-signed-apks.sh"
 MANIFEST = ROOT / "scripts/m220-candidate-elfs.tsv"
 REPORTER = ROOT / "scripts/alpine-compat-report.py"
 PACKAGE = ROOT / "rootfs/alpine/packages-m220-candidates.txt"
-WORKFLOW = ROOT / ".github/workflows/m220-nping-alpine.yml"
+WORKFLOW = ROOT / ".github/workflows/alpine-real-network-originals.yml"
 
 spec = spec_from_file_location("m220_checked_pcap", CHECKER)
 assert spec and spec.loader
@@ -163,13 +163,13 @@ def integration_contract() -> None:
     workflow = WORKFLOW.read_text()
     assert "  workflow_dispatch:" in workflow and "  push:" in workflow
     assert "    branches: [naseed-app-batch2]" in workflow
-    assert "      - '.github/workflows/m220-nping-alpine.yml'" in workflow
-    assert "      - 'tests/m205-software-workload.sh'" not in workflow
-    assert "needs: [original-nping-amd64]" in workflow
+    assert "      - '.github/workflows/alpine-real-network-originals.yml'" in workflow
+    assert "matrix.profile" in workflow
+    scope = workflow.split("      - name: Preserve exact original M220 amd64", 1)[1].split("      - name: Preserve exact original M221 amd64", 1)[0]
     for marker in ("m220-first-host-udp.log", "m220-reopen-host-udp.log",
                    "m220-first-wire.json", "m220-reopen-wire.json",
                    "m220-reopen-wire.pcap", "m197-public-wire.pcap"):
-        assert workflow.count(marker) == 2, f"native per-ISA artifact missing {marker}"
+        assert scope.count(marker) == 2, f"native per-ISA artifact missing {marker}"
     for file in (GUEST, OWNER, RUNNER, PILOT, INVENTORY):
         passed = subprocess.run(["sh", "-n", str(file)], cwd=ROOT,
                                 capture_output=True, text=True, timeout=5)

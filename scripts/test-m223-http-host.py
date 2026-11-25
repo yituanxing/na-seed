@@ -185,7 +185,7 @@ class StrictHttpTests(unittest.TestCase):
         runner = (ROOT / 'probe-m197-alpine-software-cohort.sh').read_text()
         guest = (ROOT.parent / 'tests/m205-software-workload.sh').read_text()
         http = (ROOT.parent / 'tests/m223-http-workload.sh').read_text()
-        workflow = (ROOT.parent / '.github/workflows/m223-http-alpine.yml').read_text()
+        workflow = (ROOT.parent / '.github/workflows/alpine-real-network-originals.yml').read_text()
         for mark in ('m223_start_host first', 'm223_start_host reopen',
                      'm223_stop_host', 'm223-http-wire-check.py first',
                      'm223-http-wire-check.py reopen', 'm223-host-first',
@@ -203,7 +203,8 @@ class StrictHttpTests(unittest.TestCase):
                      '$busy cmp -s', 'http://10.0.2.2:15431/',
                      'http://127.0.0.1:15432/'):
             self.assertIn(mark, http)
-        self.assertIn('needs: [http-original-amd64]', workflow)
+        self.assertIn("matrix.profile == 'm223'", workflow)
+        self.assertIn('scripts/acceptance/ci-original-alpine-network.sh', workflow)
         self.assertIn('m223-reopen-wire.pcap', workflow)
         self.assertNotIn('m197-software-disposable.img', workflow)
         self.assertNotIn('m223-host-first/wget.source', workflow)
