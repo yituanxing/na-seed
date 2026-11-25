@@ -74,7 +74,7 @@ concurrency:
   # Reusable jobs inherit the caller's github.workflow name. Give this inner
   # gate a distinct group or GitHub cancels M254 before creating any job as a
   # self-deadlock between caller and callee.
-  group: ${{ github.workflow }}-${{ github.ref }}-m252-native-worker
+  group: ${{ github.workflow }}-${{ github.ref }}-m252-native-worker-${{ inputs.m257_shutdown && 'm257' || inputs.m256_initctl && 'm256' || inputs.m255_init && 'm255' || inputs.m254_shell && 'm254' || 'm252' }}
   cancel-in-progress: false
 
 jobs:

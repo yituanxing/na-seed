@@ -1,0 +1,126 @@
+# M254-M257 are distinct configurations of the one proven M252 physical-ext4 QEMU.
+name: NaSeed M254-M257 original Debian native lifecycle
+on:
+  push:
+    branches:
+      - 'feat/m253-alpine-nonroot-dac'
+      - 'feat/m254-255-alpine-debian-20261110'
+      - 'feat/m255-original-debian-init-20261110'
+      - 'feat/m256-debian-initctl-20261110'
+      - 'feat/m257-original-debian-shutdown-20261110'
+      - 'naseed-app-batch2'
+    paths:
+      - '.github/workflows/debian-native-lifecycle.yml'
+      - '.github/workflows/m252-debian-text-tools-ext4.yml'
+      - 'Makefile'
+      - 'kernel/**'
+      - 'kernel/arch/linux_stat_abi.h'
+      - 'kernel/arch/linux_syscall_abi.h'
+      - 'kernel/boot_image.c'
+      - 'kernel/drivers/tty*'
+      - 'kernel/drivers/virtio_blk*'
+      - 'kernel/fd.h'
+      - 'kernel/fs/**'
+      - 'kernel/init/**'
+      - 'kernel/mm/**'
+      - 'kernel/pipe.c'
+      - 'kernel/pipe.h'
+      - 'kernel/syscall/**'
+      - 'kernel/task/**'
+      - 'ports/lwext4/**'
+      - 'scripts/acceptance/debian-ext4.sh'
+      - 'scripts/build-aarch64-full.sh'
+      - 'scripts/build-native-full.sh'
+      - 'scripts/build-riscv64-full.sh'
+      - 'scripts/m245-*'
+      - 'scripts/m248-*'
+      - 'scripts/m249-*'
+      - 'scripts/m250-*'
+      - 'scripts/m251-*'
+      - 'scripts/m252-*'
+      - 'scripts/m254-*'
+      - 'scripts/m255-*'
+      - 'scripts/m256-*'
+      - 'scripts/m257-*'
+      - 'scripts/native-*'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/probe-port-busybox-matrix.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+      - 'scripts/run.sh'
+      - 'tests/m254-*'
+      - 'tests/m255-*'
+      - 'tests/m256-*'
+      - 'tests/m257-*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Independent original signed Debian lifecycle
+        required: true
+        type: choice
+        default: m254
+        options: [m254, m255, m256, m257]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.profile || 'push' }}
+  cancel-in-progress: false
+jobs:
+  pick:
+    runs-on: ubuntu-24.04
+    outputs:
+      profiles: ${{ steps.choose.outputs.profiles }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Keep former feature-branch and source-path selection
+        id: choose
+        env:
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          python3 - <<'PY'
+          import json, os, fnmatch, subprocess
+          entries = {"m254":{"branches":["naseed-app-batch2","feat/m254-255-alpine-debian-20261110","feat/m253-alpine-nonroot-dac"],"paths":["scripts/acceptance/debian-ext4.sh",".github/workflows/m252-debian-text-tools-ext4.yml","scripts/m254-*","tests/m254-*","scripts/m252-*","scripts/m251-*","scripts/m250-*","scripts/m249-*","scripts/m248-*","scripts/m245-*","scripts/native-*","scripts/probe-x86-busybox-parity.sh","scripts/probe-port-busybox-matrix.sh","scripts/probe-riscv64-busybox-matrix.sh","scripts/probe-aarch64-busybox-matrix.sh","scripts/run.sh","scripts/build-native-full.sh","scripts/build-riscv64-full.sh","scripts/build-aarch64-full.sh","kernel/boot_image.c","kernel/arch/linux_stat_abi.h","kernel/arch/linux_syscall_abi.h","kernel/syscall/**","kernel/init/**","kernel/fs/**","kernel/task/**","kernel/mm/**","kernel/drivers/tty*","kernel/drivers/virtio_blk*","ports/lwext4/**"]},"m255":{"branches":["naseed-app-batch2","feat/m255-original-debian-init-20261110"],"paths":["scripts/acceptance/debian-ext4.sh",".github/workflows/m252-debian-text-tools-ext4.yml","scripts/m255-*","tests/m255-*","scripts/m252-*","scripts/m251-*","scripts/m248-*","scripts/m245-*","scripts/native-*","scripts/probe-x86-busybox-parity.sh","scripts/probe-port-busybox-matrix.sh","scripts/probe-riscv64-busybox-matrix.sh","scripts/probe-aarch64-busybox-matrix.sh","kernel/boot_image.c","kernel/init/**","kernel/task/**","kernel/fs/**","kernel/mm/**","kernel/syscall/**","kernel/drivers/tty*","kernel/drivers/virtio_blk*","ports/lwext4/**"]},"m256":{"branches":["naseed-app-batch2","feat/m256-debian-initctl-20261110"],"paths":["scripts/acceptance/debian-ext4.sh",".github/workflows/m252-debian-text-tools-ext4.yml","scripts/m256-*","tests/m256-*","scripts/m255-*","tests/m255-*","scripts/m252-*","scripts/m251-*","scripts/m248-*","scripts/m245-*","scripts/native-*","scripts/probe-x86-busybox-parity.sh","scripts/probe-port-busybox-matrix.sh","scripts/probe-riscv64-busybox-matrix.sh","scripts/probe-aarch64-busybox-matrix.sh","kernel/boot_image.c","kernel/init/**","kernel/task/**","kernel/fs/**","kernel/mm/**","kernel/syscall/**","kernel/arch/linux_syscall_abi.h","kernel/fd.h","kernel/pipe.c","kernel/pipe.h","kernel/drivers/tty*","kernel/drivers/virtio_blk*","ports/lwext4/**"]},"m257":{"branches":["feat/m257-original-debian-shutdown-20261110"],"paths":["scripts/acceptance/debian-ext4.sh",".github/workflows/m252-debian-text-tools-ext4.yml","scripts/m257-*","tests/m257-*","scripts/m256-*","tests/m256-*","scripts/m255-*","tests/m255-*","scripts/m252-*","scripts/native-*","scripts/probe-x86-busybox-parity.sh","scripts/probe-port-busybox-matrix.sh","scripts/probe-riscv64-busybox-matrix.sh","scripts/probe-aarch64-busybox-matrix.sh","scripts/build-native-full.sh","scripts/build-riscv64-full.sh","scripts/build-aarch64-full.sh","Makefile","kernel/**","ports/lwext4/**"]}}
+          if os.environ['EVENT'] == 'workflow_dispatch':
+              chosen = [os.environ['PROFILE']]
+          else:
+              branch = os.environ['BRANCH']
+              before = os.environ.get('BEFORE', '')
+              if not before or set(before) == {'0'}:
+                  changed = None
+              else:
+                  cmd = subprocess.run(['git', 'diff', '--name-only', before,
+                                        os.environ['GITHUB_SHA']],
+                                       capture_output=True, text=True)
+                  changed = None if cmd.returncode else cmd.stdout.splitlines()
+              shared = '.github/workflows/debian-native-lifecycle.yml'
+              chosen = [profile for profile, cfg in entries.items()
+                        if branch in cfg['branches'] and
+                          (changed is None or shared in changed or
+                           any(fnmatch.fnmatchcase(file, pat)
+                               for file in changed for pat in cfg['paths']))]
+          if any(name not in entries for name in chosen):
+              raise SystemExit('unrecognized original Debian profile')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('profiles='+json.dumps(chosen,separators=(',',':')),file=output)
+          PY
+  native:
+    needs: [pick]
+    if: ${{ needs.pick.outputs.profiles != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.pick.outputs.profiles) }}
+    name: ${{ matrix.profile }} original Debian three-ISA real ext4
+    uses: ./.github/workflows/m252-debian-text-tools-ext4.yml
+    with:
+      m254_shell: ${{ matrix.profile == 'm254' }}
+      m255_init: ${{ matrix.profile == 'm255' }}
+      m256_initctl: ${{ matrix.profile == 'm256' }}
+      m257_shutdown: ${{ matrix.profile == 'm257' }}

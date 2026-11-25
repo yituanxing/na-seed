@@ -131,10 +131,10 @@ class DebianSysvinitIntegrationHost(unittest.TestCase):
         self.assertNotIn("m255-init\t", (ROOT / "scripts/m252-debian-uart.py").read_text())
 
     def test_reusable_workflow_and_three_isa_long_run(self):
-        wrapper = (ROOT / ".github/workflows/m255-debian-init-service.yml").read_text()
+        wrapper = (ROOT / ".github/workflows/debian-native-lifecycle.yml").read_text()
         reused = (ROOT / ".github/workflows/m252-debian-text-tools-ext4.yml").read_text()
         self.assertIn("feat/m255-original-debian-init-20261110", wrapper)
-        self.assertIn("m255_init: true", wrapper)
+        self.assertIn("m255_init: ${{ matrix.profile == 'm255' }}", wrapper)
         self.assertIn("m255_init:", reused)
         self.assertIn("NAS_ENABLE_M255_DEBIAN_INIT", reused)
         self.assertIn("m255-extra.json", reused)

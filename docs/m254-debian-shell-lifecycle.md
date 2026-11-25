@@ -38,7 +38,7 @@ NAS_ENABLE_M254_DEBIAN_SHELL=1 sh scripts/m252-probe-debian-text-tools.sh riscv6
 NAS_ENABLE_M254_DEBIAN_SHELL=1 sh scripts/m252-probe-debian-text-tools.sh arm64
 ```
 
-The `m254-debian-shell-lifecycle.yml` workflow uses the reviewed M252 setup as
+The `debian-native-lifecycle.yml` workflow uses the reviewed M252 setup as
 a reusable workflow, but runs M254 and M252 together in **one** physical QEMU
 boot for each architecture. Its three green native jobs and uploaded UART,
 provenance, clean-unmount and disk oracle logs are required for a three-ISA
