@@ -163,7 +163,7 @@ struct nas_open_file {
     /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
      * were removed: all mounted File identities live in vnode+mount.
      * Keep only the non-VFS Limine module's opaque boot_file pointer. */
-    /* Diagnostic-only open-time hint for /proc/*/fd. The VFS Dentry is
+    /* Diagnostic-only open-time hint for procfs fd symlinks. The VFS Dentry is
      * authoritative. This heap string is optional on allocation failure,
      * shared across dup/fork and freed exactly once at File final close. */
     char *origin_path;
