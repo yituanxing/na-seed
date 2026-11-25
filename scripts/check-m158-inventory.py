@@ -6,11 +6,11 @@ historical duplication, manifest/test drift and omitted per-ELF markers.
 """
 from pathlib import Path
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 manifest = ROOT / "scripts/m158-original-elfs.txt"
 runner = ROOT / "tests/m158-batch-run.sh"
-marker_file = ROOT / "scripts/m158-expected-markers.txt"
 paths = [x.strip() for x in manifest.read_text().splitlines()
          if x.strip() and not x.startswith("#")]
 apps = [Path(x).name for x in paths]
@@ -24,8 +24,7 @@ case_groups = re.findall(r"^      ([a-z0-9|]+)\)",
                          code[case_begin:case_end], flags=re.M)
 case_labels = [name for group in case_groups for name in group.split("|")
                if name in apps]
-markers = [x.strip() for x in marker_file.read_text().splitlines()
-           if x.strip() and not x.startswith("#")]
+markers = subprocess.check_output(["python3", "scripts/acceptance/profile_markers.py", "m158"], cwd=ROOT, text=True).splitlines()
 expected = ["M158_" + app.upper().replace("-", "_") + "_PASS"
             for app in apps]
 

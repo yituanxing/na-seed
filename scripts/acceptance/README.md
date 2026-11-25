@@ -44,3 +44,5 @@ physical disk verifiers are not replaced. The five simple disk profiles use
 application, key-cleanup and network persistence checks retain their owners.
 
 For M112–M116, M119–M122, M124–M133, M135–M136 and M139, the original signed ELF manifest is the sole source of the one-to-one expected per-program marker names. `profile_markers.py` derives these deterministically; no guest logs or pass markers are used to construct expectations. Profiles with aliases, nontrivial marker names or additional assertions keep authored manifests. The host regression exercises all resulting marker sets and missing/duplicate/summary-only negative cases.
+
+For M146, M148, M150, M153, M154, M157–M159, M163 and M165 the original signed ELF inventory is the sole authority for the exactly equivalent expected per-program markers. The native launcher and independent inventory gates use one fail-closed generator. M151/M155 and other special marker contracts remain authored.

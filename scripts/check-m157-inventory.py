@@ -6,11 +6,11 @@ native QEMU, without pretending static checks prove guest behavior.
 """
 from pathlib import Path
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 manifest = ROOT / "scripts/m157-original-elfs.txt"
 runner = ROOT / "tests/m157-batch-run.sh"
-marker_file = ROOT / "scripts/m157-expected-markers.txt"
 paths = [x.strip() for x in manifest.read_text().splitlines()
          if x.strip() and not x.startswith("#")]
 apps = [Path(x).name for x in paths]
@@ -19,8 +19,7 @@ loop = re.search(r"^for app in (.*?); do$", text, flags=re.M | re.S)
 assert loop, "runner loop missing"
 called = re.findall(r"[a-z0-9-]+", loop.group(1).replace("\\", ""))
 case_labels = re.findall(r"^      ([a-z0-9-]+)\)", text, flags=re.M)
-marks = [x.strip() for x in marker_file.read_text().splitlines()
-         if x.strip() and not x.startswith("#")]
+marks = subprocess.check_output(["python3", "scripts/acceptance/profile_markers.py", "m157"], cwd=ROOT, text=True).splitlines()
 expected = ["M157_" + a.upper().replace("-", "_") + "_PASS" for a in apps]
 assert len(apps) == 30 and len(set(apps)) == 30, "not 30 independent names"
 assert len(set(paths)) == 30 and all(p.startswith("usr/bin/") for p in paths)

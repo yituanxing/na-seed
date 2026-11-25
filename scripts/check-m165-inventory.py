@@ -2,6 +2,7 @@
 """Thirty NEW ELF identities and thirty exact functional images/codec cases."""
 from pathlib import Path
 import re
+import subprocess
 
 root = Path(__file__).resolve().parent.parent
 manifest = root / 'scripts/m165-original-elfs.txt'
@@ -9,9 +10,7 @@ paths = [s.strip() for s in manifest.read_text().splitlines()
          if s.strip() and not s.startswith('#')]
 apps = [Path(p).name for p in paths]
 runner = (root / 'tests/m165-batch-run.sh').read_text()
-markers = [s.strip() for s in
-           (root / 'scripts/m165-expected-markers.txt').read_text().splitlines()
-           if s.strip() and not s.startswith('#')]
+markers = subprocess.check_output(["python3", "scripts/acceptance/profile_markers.py", "m165"], cwd=root, text=True).splitlines()
 assert len(paths) == len(set(paths)) == 30
 assert len(set(apps)) == 30 and all(p.startswith('usr/bin/') for p in paths)
 assert len(markers) == len(set(markers)) == 31

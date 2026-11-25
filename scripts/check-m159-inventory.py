@@ -6,11 +6,11 @@ actual kernel [EXEC] evidence is mandatory for each architecture.
 """
 from pathlib import Path
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 manifest = ROOT / "scripts/m159-original-elfs.txt"
 runner = ROOT / "tests/m159-batch-run.sh"
-marker_file = ROOT / "scripts/m159-expected-markers.txt"
 
 paths = [line.strip() for line in manifest.read_text().splitlines()
          if line.strip() and not line.startswith("#")]
@@ -23,8 +23,7 @@ labels = [name for names in re.findall(r"^      ([a-z0-9-|]+)\)",
                                          script, flags=re.M)
           for name in names.split("|")]
 pattern = ["M159_" + name.upper().replace("-", "_") + "_PASS" for name in apps]
-expected = [line.strip() for line in marker_file.read_text().splitlines()
-            if line.strip() and not line.startswith("#")]
+expected = subprocess.check_output(["python3", "scripts/acceptance/profile_markers.py", "m159"], cwd=ROOT, text=True).splitlines()
 
 assert len(paths) == 30 and len(set(paths)) == len(paths)
 assert len(set(apps)) == 30 and all(p.startswith("usr/bin/") for p in paths)

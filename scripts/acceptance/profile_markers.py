@@ -15,6 +15,8 @@ DERIVED = frozenset({
     "m112", "m113", "m114", "m115", "m116", "m119", "m120", "m121",
     "m122", "m124", "m125", "m126", "m127", "m128", "m129", "m130",
     "m131", "m132", "m133", "m135", "m136", "m139",
+    "m146", "m148", "m150", "m153", "m154", "m157", "m158",
+    "m159", "m163", "m165",
 })
 
 
@@ -30,10 +32,12 @@ def expected_markers(profile: str, repo: Path = REPO) -> list[str]:
         binaries = [line.strip() for line in manifest.read_text().splitlines()
                     if line.strip() and not line.startswith("#")]
         n = int(profile[1:])
-        expected_count = 20 if n in (136, 139) else 15
+        extended_counts = {146: 24, 148: 35, 150: 26, 153: 36, 154: 30,
+                           157: 30, 158: 30, 159: 30, 163: 33, 165: 30}
+        expected_count = extended_counts.get(n, 20 if n in (136, 139) else 15)
         if len(binaries) != expected_count or len(set(binaries)) != len(binaries):
             raise ValueError(f"{profile}: invalid independent ELF inventory count")
-        if any(not re.fullmatch(r"(?:usr/)?(?:s?bin|libexec)/[A-Za-z0-9_.-]+", b)
+        if any(not re.fullmatch(r"(?:usr/(?:s?bin|libexec)|usr/lib/llvm21/bin|s?bin|libexec)/[A-Za-z0-9_.-]+", b)
                for b in binaries):
             raise ValueError(f"{profile}: invalid original ELF pathname")
         markers = [f"{profile.upper()}_{Path(b).name.upper().replace('-', '_').replace('.', '_')}_PASS"

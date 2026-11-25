@@ -97,21 +97,21 @@ jobs:
               sh scripts/check-vfs-provider.sh
               sh scripts/check-host-fixture.sh m86-txn
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-original-elfs.txt)" -eq 24
-              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-expected-markers.txt)" -eq 25
+              test "$(python3 scripts/acceptance/profile_markers.py m146 | wc -l)" -eq 25
               test "$(awk '!/^#/ && NF {print $0}' scripts/m146-original-elfs.txt | sort -u | wc -l)" -eq 24
               ;;
             m148)
               sh scripts/check-vfs-provider.sh
               sh scripts/check-host-fixture.sh m86-txn
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-original-elfs.txt)" -eq 35
-              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-expected-markers.txt)" -eq 36
+              test "$(python3 scripts/acceptance/profile_markers.py m148 | wc -l)" -eq 36
               test "$(awk '!/^#/ && NF {print $0}' scripts/m148-original-elfs.txt | sort -u | wc -l)" -eq 35
               ;;
             m150)
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m150-original-elfs.txt)" -eq 26
-              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m150-expected-markers.txt)" -eq 27
+              test "$(python3 scripts/acceptance/profile_markers.py m150 | wc -l)" -eq 27
               test "$(awk '!/^#/ && NF {print $0}' scripts/m150-original-elfs.txt | sort -u | wc -l)" -eq 26
-              test "$(awk '!/^#/ && NF {print $0}' scripts/m150-expected-markers.txt | sort -u | wc -l)" -eq 27
+              test "$(python3 scripts/acceptance/profile_markers.py m150 | sort -u | wc -l)" -eq 27
               ;;
             m151)
               sh scripts/check-vfs-provider.sh
@@ -133,9 +133,9 @@ jobs:
               ;;
             m153)
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m153-original-elfs.txt)" -eq 36
-              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m153-expected-markers.txt)" -eq 37
+              test "$(python3 scripts/acceptance/profile_markers.py m153 | wc -l)" -eq 37
               test "$(awk '!/^#/ && NF {print $0}' scripts/m153-original-elfs.txt | sort -u | wc -l)" -eq 36
-              test "$(awk '!/^#/ && NF {print $0}' scripts/m153-expected-markers.txt | sort -u | wc -l)" -eq 37
+              test "$(python3 scripts/acceptance/profile_markers.py m153 | sort -u | wc -l)" -eq 37
               for program in $(awk '!/^#/ && NF {print $0}' scripts/m153-original-elfs.txt); do
                 matches=$(grep -Flx "$program" scripts/m[0-9]*-original-elfs.txt | wc -l)
                 test "$matches" -eq 1 || { echo "M153 historical duplicate $program ($matches)" >&2; exit 1; }
@@ -143,9 +143,9 @@ jobs:
               ;;
             m154)
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m154-original-elfs.txt)" -eq 30
-              test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m154-expected-markers.txt)" -eq 31
+              test "$(python3 scripts/acceptance/profile_markers.py m154 | wc -l)" -eq 31
               test "$(awk '!/^#/ && NF {print $0}' scripts/m154-original-elfs.txt | sort -u | wc -l)" -eq 30
-              test "$(awk '!/^#/ && NF {print $0}' scripts/m154-expected-markers.txt | sort -u | wc -l)" -eq 31
+              test "$(python3 scripts/acceptance/profile_markers.py m154 | sort -u | wc -l)" -eq 31
               ;;
             m155)
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m155-original-elfs.txt)" -eq 33

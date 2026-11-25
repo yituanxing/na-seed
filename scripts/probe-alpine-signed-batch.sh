@@ -60,30 +60,11 @@ test -s "$log" || { echo "[$label BATCH FAIL] $port missing guest serial" >&2; e
 # explicitly authored exception manifests, including extra semantic markers.
 manifest="scripts/$profile-expected-markers.txt"
 case "$profile" in
-    m112|m113|m114|m115|m116|m119|m120|m121|m122|m124|m125|m126|m127|m128|m129|m130|m131|m132|m133|m135|m136|m139)
+    m112|m113|m114|m115|m116|m119|m120|m121|m122|m124|m125|m126|m127|m128|m129|m130|m131|m132|m133|m135|m136|m139|m146|m148|m150|m153|m154|m157|m158|m159|m163|m165)
         mkdir -p "$work"
         manifest="$work/derived-expected-markers.txt"
-        # Fail closed on malformed, duplicate or drifted signed ELF inventories.
-        # This is HOST-side expectation generation; it never reads guest logs.
-        awk -v label="$label" -v expected="$count" '
-            /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-            {
-                name=$0
-                if (name !~ /^(usr\/)?(s?bin|libexec)\/[A-Za-z0-9_.-]+$/) {
-                    bad=1; exit 2
-                }
-                sub(/^.*\//,"",name)
-                gsub(/[-.]/,"_",name)
-                marker=label "_" toupper(name) "_PASS"
-                if (seen[marker]++) { bad=1; exit 2 }
-                print marker
-                found++
-            }
-            END {
-                if (bad || found!=expected) exit 2
-                print label "_BATCH_PASS"
-            }
-        ' "scripts/$profile-original-elfs.txt" > "$manifest" ;;
+        # Single host-side marker authority; independent signed ELF identities.
+        python3 scripts/acceptance/profile_markers.py "$profile" > "$manifest" || exit 2 ;;
 esac
 sh scripts/acceptance/check-batch-markers.sh "$label" "$port" "$manifest" "$log" "$count" "$marker_tail"
 case "$profile" in

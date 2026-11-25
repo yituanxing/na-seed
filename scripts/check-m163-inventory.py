@@ -2,6 +2,7 @@
 """Strict new 33-ELF identity + real guest operation static gate (not QEMU)."""
 from pathlib import Path
 import re
+import subprocess
 
 root = Path(__file__).resolve().parent.parent
 manifest = root / 'scripts/m163-original-elfs.txt'
@@ -9,9 +10,7 @@ paths = [line.strip() for line in manifest.read_text().splitlines()
          if line.strip() and not line.startswith('#')]
 apps = [Path(p).name for p in paths]
 runner = (root / 'tests/m163-batch-run.sh').read_text()
-markers = [line.strip() for line in
-           (root / 'scripts/m163-expected-markers.txt').read_text().splitlines()
-           if line.strip() and not line.startswith('#')]
+markers = subprocess.check_output(["python3", "scripts/acceptance/profile_markers.py", "m163"], cwd=root, text=True).splitlines()
 assert len(paths) == 33 and len(set(paths)) == 33
 assert all(x.startswith('usr/bin/') for x in paths)
 assert len(set(apps)) == 33
