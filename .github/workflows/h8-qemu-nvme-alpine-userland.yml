@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/acceptance/check-qemu-storage-network-negative.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h8-qemu-nvme-alpine-userland.yml'
@@ -22,7 +23,7 @@ on:
       - 'scripts/check-h8-*.sh'
       - 'scripts/h8-guest-workload.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
-      - 'scripts/build-h8-nvme-iso.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h8-nvme.conf'
       - 'scripts/run.sh'
@@ -72,9 +73,9 @@ jobs:
           set -eu
           sh -n scripts/stage-h8-alpine-nvme.sh
           sh -n scripts/h8-guest-workload.sh
-          sh -n scripts/build-h8-nvme-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/check-h8-nvme-alpine-qemu.sh
-          sh -n scripts/check-h8-no-nvme-qemu.sh
+          sh -n scripts/acceptance/check-qemu-storage-network-negative.sh
           sh -n scripts/build-lwext4-guest.sh
           sh -n scripts/run.sh
           make hw-h8-host-check
@@ -91,7 +92,7 @@ jobs:
         run: sh scripts/check-h8-nvme-alpine-qemu.sh
       - name: Negative control absent NVMe must refuse root, dynamic loader, and all Alpine tests
         timeout-minutes: 3
-        run: sh scripts/check-h8-no-nvme-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h8 no-nvme
       - name: Preserve real positive and negative QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4

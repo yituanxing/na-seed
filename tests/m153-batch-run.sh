@@ -11,16 +11,8 @@ changed=/tests/m153-native-v2.o
 source=/tests/m153-fixture.c
 style=/tests/m153-style.c
 rule=/tests/m153-rule.yar
-original_elf() {
-    executable=$1
-    [ -x "$executable" ] || return 1
-    resolved=$(busy readlink -f "$executable") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null | \
-        busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || return 1
-    printf '%s\n' "$executable"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '' "$1"; }
 nonempty() { [ -s "$work/$1" ]; }
 contains() { busy grep -Fq "$2" "$work/$1"; }
 case_run() {

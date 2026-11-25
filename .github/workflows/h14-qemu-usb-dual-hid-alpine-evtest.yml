@@ -9,7 +9,7 @@ on:
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_qemu_xhci.h'
       - 'scripts/acceptance/stage-qemu-usb-alpine.sh'
-      - 'scripts/acceptance/build-qemu-usb-iso.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'scripts/acceptance/qemu-negative-observer.sh'
       - 'kernel/platform/x86_qemu_hid_input.h'
       - 'kernel/platform/x86_h11_bar.h'
@@ -94,7 +94,7 @@ jobs:
           set -eu
           sh -n scripts/acceptance/stage-qemu-usb-alpine.sh
           sh -n scripts/h14-guest-workload.sh
-          sh -n scripts/acceptance/build-qemu-usb-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/acceptance/check-qemu-usb-hid.sh
           sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/check-host-fixture.sh

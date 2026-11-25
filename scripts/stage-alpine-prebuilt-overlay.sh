@@ -161,6 +161,12 @@ case "$copies_file" in
         done < "$copies_file" ;;
 esac
 
+# Shared guest identity check used by the original software workload family.
+case "$profile" in
+    m10[9]-batch|m11[0-9]-batch|m12[0-9]-batch|m13[0-9]-batch|m140-batch|m146-batch|m148-batch|m150-batch|m153-batch|m154-batch)
+        copy_fixture tests/original-elf-common.sh tests/original-elf-common.sh ;;
+esac
+
 (
     cd "$root"
     find . \( -type f -o -type d -o -type l \) -print |

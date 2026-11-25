@@ -360,7 +360,7 @@ hw-h7-kernel:
 hw-h7-iso: hw-h7-kernel
 	$(MAKE) OUT=build/h7-qemu-only build/h7-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/stage-h7-nvme-userland.sh
-	sh scripts/build-h7-nvme-iso.sh
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h7
 
 # H8 keeps the H0-H7 hardware regressions, then replaces H7's /mnt Debian
 # staging path with a genuine original Alpine musl / root on NVMe ext4. The
@@ -373,7 +373,7 @@ hw-h8-kernel:
 hw-h8-iso: hw-h8-kernel
 	$(MAKE) OUT=build/h8-qemu-only build/h8-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/stage-h8-alpine-nvme.sh
-	sh scripts/build-h8-nvme-iso.sh
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h8
 
 # H9: built-in Q35 ICH9 AHCI 00:1f.2 with one readonly SATA ext4 root.
 # Keep H9 objects, signed Alpine image and UEFI media isolated from H8.
@@ -386,7 +386,7 @@ hw-h9-kernel:
 hw-h9-iso: hw-h9-kernel
 	$(MAKE) OUT=build/h9-qemu-only build/h9-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/stage-h9-ahci-alpine.sh
-	sh scripts/build-h9-ahci-iso.sh
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h9
 
 # H10 keeps real signed Alpine/musl ELF and native lwIP syscalls from H8,
 # but routes every TCP frame through the new E1000 PCI MAC/RX/TX descriptor
@@ -400,7 +400,7 @@ hw-h10-kernel:
 hw-h10-iso: hw-h10-kernel
 	$(MAKE) OUT=build/h10-qemu-only build/h10-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/stage-h10-e1000-alpine.sh
-	sh scripts/build-h10-e1000-iso.sh
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h10
 
 # H11: real QEMU PCI xHCI -> USB Mass Storage BOT/SCSI -> readonly ext4 `/`
 # -> signed original dynamic Alpine ELF; no NVMe, AHCI or VirtIO substitution.
@@ -413,7 +413,7 @@ hw-h11-kernel:
 hw-h11-iso: hw-h11-kernel
 	$(MAKE) OUT=build/h11-qemu-only build/h11-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/stage-h11-usb-alpine.sh
-	sh scripts/build-h11-usb-iso.sh
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h11
 
 # H12 changes only the input provider to USB HID over xHCI; keep the
 # independently signed H8 NVMe ext4 Alpine root and the common evdev ABI.
@@ -428,7 +428,7 @@ hw-h12-kernel:
 hw-h12-iso: hw-h12-kernel
 	$(MAKE) OUT=build/h12-qemu-only build/h12-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/acceptance/stage-qemu-usb-alpine.sh h12
-	sh scripts/acceptance/build-qemu-usb-iso.sh h12
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h12
 
 # H13 QEMU USB Boot Mouse: original signed Alpine evtest reports actual
 # REL_X/Y/WHEEL and BTN_LEFT transitions after independent QMP injection.
@@ -442,7 +442,7 @@ hw-h13-kernel:
 hw-h13-iso: hw-h13-kernel
 	$(MAKE) OUT=build/h13-qemu-only build/h13-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/acceptance/stage-qemu-usb-alpine.sh h13
-	sh scripts/acceptance/build-qemu-usb-iso.sh h13
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h13
 
 # H14: real single-controller/two-root-port xHCI HID and original evtest.
 hw-h14-host-check: hw-h13-host-check
@@ -454,7 +454,7 @@ hw-h14-kernel:
 hw-h14-iso: hw-h14-kernel
 	$(MAKE) OUT=build/h14-qemu-only build/h14-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/acceptance/stage-qemu-usb-alpine.sh h14
-	sh scripts/acceptance/build-qemu-usb-iso.sh h14
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h14
 
 # H15: USB Bulk-IN/Bulk-OUT FT232BM, original signed Alpine BusyBox.
 hw-h15-host-check: hw-h14-host-check
@@ -466,7 +466,7 @@ hw-h15-kernel:
 hw-h15-iso: hw-h15-kernel
 	$(MAKE) OUT=build/h15-qemu-only build/h15-qemu-only/deps/limine-binary/BOOTX64.EFI
 	sh scripts/acceptance/stage-qemu-usb-alpine.sh h15
-	sh scripts/acceptance/build-qemu-usb-iso.sh h15
+	sh scripts/acceptance/build-qemu-hardware-iso.sh h15
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)

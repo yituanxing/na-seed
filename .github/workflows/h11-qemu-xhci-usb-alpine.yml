@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/acceptance/check-qemu-storage-network-negative.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_qemu_xhci.h'
       - 'kernel/platform/x86_qemu_hid_input.h'
@@ -25,7 +26,7 @@ on:
       - 'scripts/check-h11-*.sh'
       - 'scripts/h11-guest-workload.sh'
       - 'scripts/stage-h11-usb-alpine.sh'
-      - 'scripts/build-h11-usb-iso.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h11-usb.conf'
@@ -76,10 +77,9 @@ jobs:
           set -eu
           sh -n scripts/stage-h11-usb-alpine.sh
           sh -n scripts/h11-guest-workload.sh
-          sh -n scripts/build-h11-usb-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/check-h11-usb-qemu.sh
-          sh -n scripts/check-h11-no-usb-media-qemu.sh
-          sh -n scripts/check-h11-no-xhci-qemu.sh
+          sh -n scripts/acceptance/check-qemu-storage-network-negative.sh
           sh -n scripts/check-h11-usb-host.sh
           sh -n scripts/check-h11-usb-guest-boot-guard.sh
           sh -n scripts/build-lwext4-guest.sh
@@ -99,10 +99,10 @@ jobs:
         run: sh scripts/check-h11-usb-qemu.sh
       - name: Negative genuine QEMU with xHCI but no USB mass-storage disk blocks Alpine
         timeout-minutes: 3
-        run: sh scripts/check-h11-no-usb-media-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h11 no-usb-media
       - name: Negative genuine QEMU with no xHCI blocks Alpine and no fallback
         timeout-minutes: 3
-        run: sh scripts/check-h11-no-xhci-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h11 no-xhci
       - name: Verify original USB backing image and signed ELF bytes unchanged after all genuine boots
         if: success()
         run: |

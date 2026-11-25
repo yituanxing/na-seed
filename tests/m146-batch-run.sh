@@ -7,16 +7,8 @@ LC_ALL=C
 export PATH HOME LC_ALL
 busy() { /bin/busybox "$@"; }
 
-original_elf() {
-    executable=$1
-    [ -x "$executable" ] || return 1
-    resolved=$(busy readlink -f "$executable") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-            busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || return 1
-    printf '%s\n' "$executable"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '' "$1"; }
 seed_images() {
     busy printf '%s\n' 'P3' '4 4' '255' \
         '255 0 0  0 255 0  0 0 255  255 255 255' \

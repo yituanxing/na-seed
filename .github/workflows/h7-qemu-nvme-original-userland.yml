@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/acceptance/check-qemu-storage-network-negative.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h7-qemu-nvme-original-userland.yml'
@@ -22,7 +23,7 @@ on:
       - 'scripts/check-h7-*.sh'
       - 'scripts/h7-guest-workload.sh'
       - 'scripts/stage-h7-nvme-userland.sh'
-      - 'scripts/build-h7-nvme-iso.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h7-nvme.conf'
       - 'scripts/run.sh'
@@ -73,9 +74,9 @@ jobs:
           set -eu
           sh -n scripts/stage-h7-nvme-userland.sh
           sh -n scripts/h7-guest-workload.sh
-          sh -n scripts/build-h7-nvme-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/check-h7-nvme-userland-qemu.sh
-          sh -n scripts/check-h7-no-nvme-qemu.sh
+          sh -n scripts/acceptance/check-qemu-storage-network-negative.sh
           sh -n scripts/run.sh
           make hw-h7-host-check
       - name: Generate isolated H7 real kernel, original Debian ELFs and 32MiB NVMe ext4 UEFI media
@@ -91,7 +92,7 @@ jobs:
         run: sh scripts/check-h7-nvme-userland-qemu.sh
       - name: Negative QEMU UEFI H7 absent-NVMe must not execute CPIO substitute
         timeout-minutes: 3
-        run: sh scripts/check-h7-no-nvme-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h7 no-nvme
       - name: Preserve actual positive and negative guest serial transcripts
         if: always()
         uses: actions/upload-artifact@v4

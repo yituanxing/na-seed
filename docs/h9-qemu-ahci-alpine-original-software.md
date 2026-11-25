@@ -30,7 +30,7 @@ The image's unchanged SHA-256 is still required after actual guest execution.
 make hw-h9-host-check
 make hw-h9-iso
 sh scripts/check-h9-ahci-alpine-qemu.sh
-sh scripts/check-h9-no-ahci-qemu.sh
+sh scripts/acceptance/check-qemu-storage-network-negative.sh h9 no-ahci
 ```
 
 Only the H9 profile enables `NAS_ENABLE_H9_QEMU_AHCI_USERLAND=1`; it requires

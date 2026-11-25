@@ -11,16 +11,8 @@ image=/tests/m150-ext2.img
 disk=/tests/m150-mbr.img
 input=/tests/m150-input.txt
 evidence=/tests/m150-seed/evidence.txt
-original_elf() {
-    executable=$1
-    [ -x "$executable" ] || return 1
-    resolved=$(busy readlink -f "$executable") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-            busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || return 1
-    printf '%s\n' "$executable"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '' "$1"; }
 evidence_inode() {
     # The inode comes from the ORIGINAL TSK directory parser, not an assumed
     # ext2 allocator layout or a fake fixed inode number.

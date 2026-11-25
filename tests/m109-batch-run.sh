@@ -17,25 +17,8 @@ busy() { /bin/busybox "$@"; }
 # Return the first actual ELF executable, not a BusyBox multicall alias or
 # a wrapper script. Host staging separately verifies signed APK ownership,
 # the target ELF machine and each dependency closure.
-original_elf() {
-    [ "$#" -gt 0 ] || return 1
-    for candidate do
-        [ -x "$candidate" ] || continue
-        resolved=$(busy readlink -f "$candidate") || continue
-        [ -x "$resolved" ] || continue
-        case "$resolved" in
-          /bin/busybox|/usr/bin/busybox) continue ;;
-        esac
-        magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-                busy od -An -tx1 | busy tr -d ' \n')
-        if [ "$magic" = 7f454c46 ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    echo "[M109 MISSING ORIGINAL ELF] $*" >&2
-    return 1
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_find '[M109 MISSING ORIGINAL ELF]' yes yes "$@"; }
 
 run_case() {
     app=$1

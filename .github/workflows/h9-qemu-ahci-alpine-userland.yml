@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/acceptance/check-qemu-storage-network-negative.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h9-qemu-ahci-alpine-userland.yml'
@@ -23,7 +24,7 @@ on:
       - 'scripts/check-h9-*.sh'
       - 'scripts/h9-guest-workload.sh'
       - 'scripts/stage-h9-ahci-alpine.sh'
-      - 'scripts/build-h9-ahci-iso.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h9-ahci.conf'
@@ -74,9 +75,9 @@ jobs:
           set -eu
           sh -n scripts/stage-h9-ahci-alpine.sh
           sh -n scripts/h9-guest-workload.sh
-          sh -n scripts/build-h9-ahci-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/check-h9-ahci-alpine-qemu.sh
-          sh -n scripts/check-h9-no-ahci-qemu.sh
+          sh -n scripts/acceptance/check-qemu-storage-network-negative.sh
           sh -n scripts/build-lwext4-guest.sh
           sh -n scripts/run.sh
           make hw-h9-host-check
@@ -93,7 +94,7 @@ jobs:
         run: sh scripts/check-h9-ahci-alpine-qemu.sh
       - name: Negative real QEMU with no SATA HDD rejects optical and CPIO substitutes
         timeout-minutes: 3
-        run: sh scripts/check-h9-no-ahci-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h9 no-ahci
       - name: Preserve genuine positive and no-SATA negative serial transcripts
         if: always()
         uses: actions/upload-artifact@v4

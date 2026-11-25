@@ -8,16 +8,8 @@ LC_ALL=C
 export PATH HOME LC_ALL
 busy() { /bin/busybox "$@"; }
 
-original_elf() {
-    elf=$1
-    [ -x "$elf" ] || return 1
-    resolved=$(busy readlink -f "$elf") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-            busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || return 1
-    printf '%s\n' "$elf"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '' "$1"; }
 seed_images() {
     # 16x16 PBM supplies nontrivial white and black fields and fits legacy
     # formats that use 16-bit raster storage and byte-aligned row boundaries.

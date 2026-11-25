@@ -14,7 +14,7 @@ substitution and is not a physical-machine claim.
 make hw-h8-host-check
 make hw-h8-iso
 sh scripts/check-h8-nvme-alpine-qemu.sh
-sh scripts/check-h8-no-nvme-qemu.sh
+sh scripts/acceptance/check-qemu-storage-network-negative.sh h8 no-nvme
 ```
 
 The H8 build uses `OUT=build/h8-qemu-only` and feature flag

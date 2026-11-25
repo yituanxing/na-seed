@@ -8,19 +8,8 @@ LANG=C
 export PATH HOME LC_ALL LANG
 busy() { /bin/busybox "$@"; }
 
-original_elf() {
-    candidate=$1
-    [ -x "$candidate" ] || return 1
-    resolved=$(busy readlink -f "$candidate") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-            busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || {
-        echo "[M130 NOT AN ORIGINAL ELF] $candidate" >&2
-        return 1
-    }
-    printf '%s\n' "$candidate"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '[M130 NOT AN ORIGINAL ELF]' "$1"; }
 
 seed_image() {
     # Four actual RGB pixels, used by independent BMP/GIF transformations.

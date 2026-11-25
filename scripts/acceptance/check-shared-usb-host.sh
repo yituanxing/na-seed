@@ -3,7 +3,7 @@
 set -eu
 root=$(pwd -P)
 for script in scripts/acceptance/stage-qemu-usb-alpine.sh \
-              scripts/acceptance/build-qemu-usb-iso.sh \
+              scripts/acceptance/build-qemu-hardware-iso.sh \
               scripts/acceptance/qemu-negative-observer.sh \
               scripts/acceptance/run-local-alpine-cohort.sh \
               scripts/acceptance/check-qemu-usb-hid.sh \
@@ -11,7 +11,7 @@ for script in scripts/acceptance/stage-qemu-usb-alpine.sh \
               scripts/check-h15-usb-serial-qemu.sh; do
     sh -n "$script"
 done
-for script in stage-qemu-usb-alpine build-qemu-usb-iso run-local-alpine-cohort check-qemu-usb-hid; do
+for script in stage-qemu-usb-alpine build-qemu-hardware-iso run-local-alpine-cohort check-qemu-usb-hid; do
     status=0
     sh "scripts/acceptance/$script.sh" invalid || status=$?
     [ "$status" -eq 2 ]

@@ -8,23 +8,8 @@ LANG=C
 export PATH HOME LC_ALL LANG
 busy() { /bin/busybox "$@"; }
 
-original_elf() {
-    [ "$#" -gt 0 ] || return 1
-    for candidate do
-        [ -x "$candidate" ] || continue
-        resolved=$(busy readlink -f "$candidate") || continue
-        [ -x "$resolved" ] || continue
-        case "$resolved" in /bin/busybox|/usr/bin/busybox) continue ;; esac
-        magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-                busy od -An -tx1 | busy tr -d ' \n')
-        if [ "$magic" = 7f454c46 ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    echo "[M124 MISSING SIGNED ORIGINAL ELF] $*" >&2
-    return 1
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_find '[M124 MISSING SIGNED ORIGINAL ELF]' yes yes "$@"; }
 
 assert_minix_magic() {
     # V1 Minix with the default 30-byte filenames: magic 0x138F at +16.

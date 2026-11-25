@@ -6,6 +6,8 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/acceptance/check-qemu-storage-network-negative.sh'
+      - 'scripts/acceptance/build-qemu-hardware-iso.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h10-qemu-e1000-alpine-http.yml'
@@ -75,9 +77,9 @@ jobs:
           sh -n scripts/run.sh
           sh -n scripts/stage-h10-e1000-alpine.sh
           sh -n scripts/h10-guest-e1000-http.sh
-          sh -n scripts/build-h10-e1000-iso.sh
+          sh -n scripts/acceptance/build-qemu-hardware-iso.sh
           sh -n scripts/check-h10-e1000-qemu.sh
-          sh -n scripts/check-h10-no-e1000-qemu.sh
+          sh -n scripts/acceptance/check-qemu-storage-network-negative.sh
           make hw-h10-host-check
       - name: Build isolated signed Alpine NVMe and E1000 QEMU-only UEFI boot
         timeout-minutes: 33
@@ -92,7 +94,7 @@ jobs:
         run: sh scripts/check-h10-e1000-qemu.sh
       - name: Negative genuine QEMU no-E1000 refuses signed Alpine network program
         timeout-minutes: 3
-        run: sh scripts/check-h10-no-e1000-qemu.sh
+        run: sh scripts/acceptance/check-qemu-storage-network-negative.sh h10 no-e1000
       - name: Preserve independent guest, wire and host HTTP evidence
         if: always()
         uses: actions/upload-artifact@v4

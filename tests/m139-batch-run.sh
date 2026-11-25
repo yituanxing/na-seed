@@ -10,16 +10,8 @@ XDG_CACHE_HOME=/tmp/m139-font-cache
 export PATH HOME LANG LC_ALL TERM XDG_CACHE_HOME
 busy() { /bin/busybox "$@"; }
 
-original_elf() {
-    candidate=$1
-    [ -x "$candidate" ] || return 1
-    resolved=$(busy readlink -f "$candidate") || return 1
-    case "$resolved" in /bin/busybox|/usr/bin/busybox) return 1 ;; esac
-    magic=$(busy dd if="$resolved" bs=1 count=4 2>/dev/null |
-            busy od -An -tx1 | busy tr -d ' \n')
-    [ "$magic" = 7f454c46 ] || return 1
-    printf '%s\n' "$candidate"
-}
+. "${0%/*}/original-elf-common.sh"
+original_elf() { nas_original_elf_one '' "$1"; }
 
 font_file=/usr/share/fonts/dejavu/DejaVuSans.ttf
 need_font() {
