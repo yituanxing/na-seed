@@ -1369,6 +1369,14 @@ int main(void) {
      * would ordinarily discard a write without touching its source. */
     nas_open_files[22].status_flags=NAS_LINUX_O_PATH;
     assert((int64_t)nas_fs_fd_write(28,TEST_BASE,1)==-EBADF);
+    /* Metadata on an O_PATH character device is valid for both ABIs. */
+    assert(sys_fstat_boot(28,old_stat)==0);
+    assert(sys_statx_boot(28,empty_name,0x1000ULL,0x7ffULL,new_statx)==0);
+    struct nas_linux_stat device_stat;
+    struct nas_linux_statx device_statx;
+    assert(nas_user_read_bytes(old_stat,(uint8_t *)&device_stat,sizeof(device_stat)));
+    assert(nas_user_read_bytes(new_statx,(uint8_t *)&device_statx,sizeof(device_statx)));
+    assert(device_stat.ino==device_statx.ino && device_stat.mode==device_statx.mode);
     nas_open_files[22].status_flags=2;
 
     /* Linux /dev/random and /dev/urandom share getrandom(2)'s real seeded

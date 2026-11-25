@@ -73,14 +73,6 @@ static int fill_mounted_stat(const struct nas_fs_node *node,
     st->ctime_nsec=fresh.ctime_nsec;
     return 0;
 }
-static uint64_t write_mounted_stat(const struct nas_fs_node *node,
-                                   uint64_t destination) {
-    struct nas_linux_stat st;
-    int rc=fill_mounted_stat(node,&st);
-    if(rc)return (uint64_t)(int64_t)rc;
-    return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
-        ? 0:(uint64_t)-EFAULT;
-}
 /* Linux statfs and fstatfs query the same already-resolved mount/inode.
  * No provider sees a user pointer, pathname or Linux-native wire layout. */
 static uint64_t write_mounted_statfs(const struct nas_fs_node *node,
@@ -580,6 +572,16 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
 /* newfstatat and statx share one pathname, mount-inode and bootstrap
  * fallback policy. ABI layout and AT_EMPTY_PATH semantics stay syscall-local.
  * Capture metadata while the Path is pinned; then release its owner. */
+/* AT_EMPTY_PATH with AT_FDCWD reads the already-owned cwd inode. The
+ * optional rootless-bootstrap spelling is consulted only if no inode is
+ * pinned, identically for fstatat and statx. */
+static int stat_cwd_snapshot(struct nas_linux_stat *out) {
+    if(TASK.fs->cwd_pinned)return fill_mounted_stat(&TASK.fs->cwd_node,out);
+    struct nas_fs_node cwd;
+    char canonical[256];
+    int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
+    return rc ? rc : fill_mounted_stat(&cwd,out);
+}
 static int stat_path_snapshot(uint64_t dirfd,uint64_t pathname,
                               bool follow_final,struct nas_linux_stat *out) {
     struct nas_fs_path_request request;
@@ -610,6 +612,20 @@ static int stat_path_snapshot(uint64_t dirfd,uint64_t pathname,
     fill_bootstrap_stat(&info,out);
     return 0;
 }
+/* Once the caller has validated its distinct Linux flag mask, the
+ * snapshot is the same for both stat wire formats: a pinned cwd, a held
+ * File description or a normal anchored pathname. */
+static int stat_at_snapshot(uint64_t dirfd,uint64_t pathname,uint64_t flags,
+                            struct nas_linux_stat *out) {
+    uint8_t first;
+    if(!nas_user_read_bytes(pathname,&first,1))return -EFAULT;
+    if(!first && (flags&0x1000ULL)) {
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100)return stat_cwd_snapshot(out);
+        return fd<0 ? -EBADF : stat_fd_snapshot((uint64_t)fd,out);
+    }
+    return stat_path_snapshot(dirfd,pathname,(flags&0x100ULL)==0,out);
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -620,27 +636,8 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     const uint64_t AT_EMPTY_PATH = 0x1000ULL;
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
-    uint8_t first;
-    if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
-    if (first == 0 && (flags & AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            /* Linux AT_FDCWD + AT_EMPTY_PATH refers to the current
-             * directory's inode, not an invalid file descriptor. */
-            if(TASK.fs->cwd_pinned)
-                return write_mounted_stat(&TASK.fs->cwd_node,statbuf);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int err=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return err ? (uint64_t)(int64_t)err :
-                         write_mounted_stat(&cwd,statbuf);
-        }
-        return fd<0 ? (uint64_t)-EBADF :
-                      sys_fstat_boot((uint64_t)fd,statbuf);
-    }
     struct nas_linux_stat st;
-    int rc=stat_path_snapshot(dirfd,pathname,
-                     !(flags&AT_SYMLINK_NOFOLLOW),&st);
+    int rc=stat_at_snapshot(dirfd,pathname,flags,&st);
     if(rc)return (uint64_t)(int64_t)rc;
     return nas_user_write_bytes(statbuf,(const uint8_t *)&st,sizeof(st)) ?
            0:(uint64_t)-EFAULT;
@@ -676,12 +673,6 @@ static uint64_t write_linux_statx(const struct nas_linux_stat *st,
     return nas_user_write_bytes(destination,(const uint8_t *)&sx,sizeof(sx))
         ? 0:(uint64_t)-EFAULT;
 }
-static uint64_t write_mounted_statx(const struct nas_fs_node *node,
-                                    uint64_t destination) {
-    struct nas_linux_stat st;
-    int rc=fill_mounted_stat(node,&st);
-    return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,destination);
-}
 /* statx extends fstatat with a uniform 256-byte ABI and a separate mask.
  * The root/dirfd lookup and symlink policy are the existing VFS path API.
  * AT_STATX_SYNC_FORCE/DONT_SYNC are coherent no-ops: NaSeed has no delayed
@@ -697,27 +688,8 @@ static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
                  AT_EMPTY_PATH|AT_STATX_SYNC_TYPE))return (uint64_t)-EINVAL;
     if((flags&AT_STATX_SYNC_TYPE)==AT_STATX_SYNC_TYPE ||
        (mask&0x80000000ULL))return (uint64_t)-EINVAL;
-    uint8_t first;
-    if(!nas_user_read_bytes(pathname,&first,1))return (uint64_t)-EFAULT;
-    if(first==0 && (flags&AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return write_mounted_statx(&TASK.fs->cwd_node,statbuf);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return rc ? (uint64_t)(int64_t)rc :
-                        write_mounted_statx(&cwd,statbuf);
-        }
-        if(fd<0)return (uint64_t)-EBADF;
-        struct nas_linux_stat st;
-        int rc=stat_fd_snapshot((uint64_t)fd,&st);
-        return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,statbuf);
-    }
     struct nas_linux_stat st;
-    int rc=stat_path_snapshot(dirfd,pathname,
-                     !(flags&AT_SYMLINK_NOFOLLOW),&st);
+    int rc=stat_at_snapshot(dirfd,pathname,flags,&st);
     return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,statbuf);
 }
 
