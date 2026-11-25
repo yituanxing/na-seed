@@ -60,7 +60,7 @@ test -s "$log" || { echo "[$label BATCH FAIL] $port missing guest serial" >&2; e
 # explicitly authored exception manifests, including extra semantic markers.
 manifest="scripts/$profile-expected-markers.txt"
 case "$profile" in
-    m112|m113|m114|m115|m116|m119|m120|m121|m122|m124|m125|m126|m127|m128|m129|m130|m131|m132|m133|m135|m136|m139|m146|m148|m150|m153|m154|m157|m158|m159|m163|m165)
+    m112|m113|m114|m115|m116|m119|m120|m121|m122|m124|m125|m126|m127|m128|m129|m130|m131|m132|m133|m135|m136|m139|m146|m148|m150|m153|m154|m157|m158|m159|m163|m165|m109|m110|m111|m117|m118|m123|m134|m137|m138)
         mkdir -p "$work"
         manifest="$work/derived-expected-markers.txt"
         # Single host-side marker authority; independent signed ELF identities.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual shared marker gate; no QEMU success is inferred."""
 from pathlib import Path
+import hashlib
 from profile_markers import DERIVED, expected_markers
 import re
 import subprocess
@@ -54,6 +55,23 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["sh", CHECKER, prefix, "amd64", manifest, log,
                         str(expected), "0"], check=True)
         migrated += 1
+    # Independently hash-lock each original ordered guest oracle list.
+    # Deleting the redundant marker manifests may never silently rename,
+    # reorder, omit or add a historical functional acceptance marker.
+    expected_alias_sha256 = {
+        "m109": "0657d67e3301a939da8ebdee8f6f36c02dee2838394f46c8e7ae87932de765a5",
+        "m110": "f1a891499e2c383b0f418f5095ee97062d093e7a00c11846fdeefa9239a77ff2",
+        "m111": "f663055fc2dd02d59732c6f423d9b99fa132fdd238d540d180837881e8bba5f3",
+        "m117": "64974a0cde14767b224fb962648e63263eca0ca589217f241ab6d9165c238372",
+        "m118": "267d52f63eb87a92db26267d6c99650d2266771148164a4675dab9d188196e5e",
+        "m123": "acbca54a2ee5c0f6cbf479f37fcf052a249993f6072c570d77f829c42efbc45e",
+        "m134": "31e55c4c9fa50cae8ceda381c791069c6f00998d749e34790b21c75d6d32975d",
+        "m137": "5f004418c19ad6260f6a73d7fe914a93f721da2713b74e57bc1f61729135db31",
+        "m138": "8688f53c231d2ebbd2aa8ba670a07d8e6d8d82178c2dcec1a454b996e983df46",
+    }
+    for profile, digest in expected_alias_sha256.items():
+        data = ("\n".join(expected_markers(profile)) + "\n").encode()
+        assert hashlib.sha256(data).hexdigest() == digest, profile
     # Run the actual shared probe with an isolated fake transport to test
     # wiring and rejection, NOT as evidence of a native guest execution.
     # The same marker gate is exercised against every original manifest.

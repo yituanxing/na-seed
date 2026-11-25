@@ -17,7 +17,44 @@ DERIVED = frozenset({
     "m131", "m132", "m133", "m135", "m136", "m139",
     "m146", "m148", "m150", "m153", "m154", "m157", "m158",
     "m159", "m163", "m165",
+    "m109", "m110", "m111", "m117", "m118", "m123", "m134", "m137", "m138",
 })
+
+# Nine historical profiles intentionally used different semantic oracle names
+# from signed ELF filenames. Retain only those pinned renames and omissions,
+# deriving the rest from the validated original ELF manifest.
+MARKER_ALIASES = {
+    "m109": {"xxhsum": "XXHASH", "7zz": "7ZIP"},
+    "m110": {"dot": "GRAPHVIZ", "eu-readelf": "EUREADELF"},
+    "m111": {"mlr": "MILLER"},
+    "m117": {"c++filt": "CXXFILT"},
+    "m137": {"protoc-31.1.0": "PROTOC"},
+}
+
+
+def marker_from_elf(profile: str, elf: str) -> str | None:
+    name = Path(elf).name
+    if profile == "m110" and name == "age-keygen":
+        # Signed ELF identity is checked separately, but this guest had
+        # 20 independent functional oracles for its 21 signed executables.
+        return None
+    if profile == "m118":
+        if not name.startswith("eu-"):
+            raise ValueError("M118 ELF must have eu- prefix")
+        name = name[3:]
+    if profile == "m138":
+        if name.startswith("llvm21-"):
+            name = name[len("llvm21-"):]
+        elif name in ("opt21", "llc21"):
+            name = name[:-2]
+        else:
+            raise ValueError("M138 ELF is not a pinned LLVM21 program")
+    if profile == "m134" and name in ("lua5.4", "luac5.4"):
+        name = name.replace(".", "")
+    name = MARKER_ALIASES.get(profile, {}).get(name, name)
+    label = re.sub(r"[^A-Za-z0-9]+", "_", name).upper()
+    return f"{profile.upper()}_{label}_PASS"
+
 
 
 def expected_markers(profile: str, repo: Path = REPO) -> list[str]:
@@ -34,14 +71,18 @@ def expected_markers(profile: str, repo: Path = REPO) -> list[str]:
         n = int(profile[1:])
         extended_counts = {146: 24, 148: 35, 150: 26, 153: 36, 154: 30,
                            157: 30, 158: 30, 159: 30, 163: 33, 165: 30}
-        expected_count = extended_counts.get(n, 20 if n in (136, 139) else 15)
+        expected_count = extended_counts.get(n, 21 if n == 110 else
+                                            20 if n in (136, 137, 138, 139) else 15)
         if len(binaries) != expected_count or len(set(binaries)) != len(binaries):
             raise ValueError(f"{profile}: invalid independent ELF inventory count")
-        if any(not re.fullmatch(r"(?:usr/(?:s?bin|libexec)|usr/lib/llvm21/bin|s?bin|libexec)/[A-Za-z0-9_.-]+", b)
-               for b in binaries):
+        allowed = r"(?:usr/(?:s?bin|libexec)|usr/lib/(?:llvm21|ninja-build)/bin|s?bin|libexec)/"
+        basename = r"[A-Za-z0-9_.+-]+" if n in (117, 123) else r"[A-Za-z0-9_.-]+"
+        if any(not re.fullmatch(allowed + basename, b) for b in binaries):
             raise ValueError(f"{profile}: invalid original ELF pathname")
-        markers = [f"{profile.upper()}_{Path(b).name.upper().replace('-', '_').replace('.', '_')}_PASS"
-                   for b in binaries]
+        markers = [m for b in binaries if (m := marker_from_elf(profile, b)) is not None]
+        required_markers = 20 if n == 110 else expected_count
+        if len(markers) != required_markers:
+            raise ValueError(f"{profile}: expected {required_markers} program oracles")
         markers.append(f"{profile.upper()}_BATCH_PASS")
     if len(set(markers)) != len(markers) or not markers or \
             any(not re.fullmatch(profile.upper() + r"_[A-Z0-9_]+_PASS", m)
