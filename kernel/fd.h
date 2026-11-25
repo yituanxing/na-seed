@@ -121,7 +121,11 @@ struct nas_timerfd_state {
     uint32_t clockid;
     bool armed;
 };
+struct ep_state;
+struct in_instance;
 union nas_file_private {
+    struct ep_state *epoll;
+    struct in_instance *inotify;
     struct { uint64_t counter; bool semaphore; } eventfd;
     struct nas_timerfd_state timerfd;
     uint64_t pidfd_target;

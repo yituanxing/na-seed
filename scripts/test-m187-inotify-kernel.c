@@ -11,6 +11,7 @@
 #include "../kernel/errno.h"
 #include "../kernel/fs/vfs.h"
 #include "../kernel/fs/path_request.h"
+#include "../kernel/fs/file_ops.h"
 
 static struct nas_task task;
 static struct nas_files files;
@@ -18,6 +19,10 @@ struct nas_task *nas_current_task=&task;
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 static unsigned path_drops,allocations;
 static struct nas_fs_node path_identity;
+static const struct nas_file_ops test_inotify_ops={0};
+const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
+    return kind==FD_INOTIFY ? &test_inotify_ops : NULL;
+}
 void *nas_heap_calloc(size_t count,size_t size) {
     void *p=calloc(count,size);if(p)allocations++;return p;
 }
@@ -36,6 +41,7 @@ bool nas_fd_install_new(struct nas_task *owner,unsigned fd,unsigned slot,
     owner->fds->entries[fd]=(struct nas_fd_entry){kind,(uint8_t)slot,cloexec};
     nas_open_files[slot].refcount=1;
     nas_open_files[slot].status_flags=status;
+    nas_open_files[slot].ops=nas_fs_ops_for_kind(kind);
     return true;
 }
 int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t user_path,bool follow,
@@ -71,6 +77,8 @@ int main(void) {
     path_identity=(struct nas_fs_node){.mount=mount,.mount_id=77,
                   .filesystem=(struct nas_vfs_type *)(uintptr_t)0x12346000,
                   .inode=(void *)(uintptr_t)0x12347000,.ino=42,.is_dir=true};
+    nas_open_files[34].refcount=1;
+    nas_open_files[34].private.eventfd.counter=UINT64_MAX;
     const uint64_t fd=nas_inotify_init1(0x800ULL|0x80000ULL);
     assert(fd==5 && allocations==1 && files.table.entries[5].cloexec);
     assert(nas_inotify_init1(0x100ULL)==(uint64_t)-EINVAL);
@@ -120,7 +128,7 @@ int main(void) {
         char name[24];snprintf(name,sizeof(name),"child%03u",i);
         nas_inotify_emit_child(&path_identity,name,NAS_IN_CREATE,0,false);
     }
-    assert(instances[33]->count==IN_EVENT_MAX && instances[33]->overflow_pending);
+    assert(inotify_state(33)->count==IN_EVENT_MAX && inotify_state(33)->overflow_pending);
     assert(nas_inotify_pending_bytes(33,&available)==0 &&
            available==IN_EVENT_MAX*28U+16U);
     unsigned overflow=0,create=0;
@@ -156,7 +164,7 @@ int main(void) {
     nas_open_files[33].refcount=0;
     nas_inotify_release(33);
     assert(nas_inotify_pending_bytes(33,&available)==-EBADF);
-    assert(!instances[33] && !allocations);
+    assert(!inotify_state(33) && !allocations);
     puts("[M187 INOTIFY HOST PASS] Linux wire ABI, padding, rename cookies, stale mount identity, overflow, nonblock, read atomicity, poll, shared OpenFile final release");
     return 0;
 }

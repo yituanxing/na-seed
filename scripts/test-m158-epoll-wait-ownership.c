@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../kernel/task.h"
 #include "../kernel/fd.h"
@@ -17,6 +18,18 @@ struct nas_task *nas_current_task=&task;
 struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 static uint16_t backend_ready[NAS_OPEN_FILE_LIMIT];
 static bool output_writable=true;
+static unsigned allocations;
+static const struct nas_file_ops test_epoll_ops={0};
+const struct nas_file_ops *nas_fs_ops_for_kind(uint8_t kind) {
+    return kind==FD_EPOLL ? &test_epoll_ops : NULL;
+}
+void *nas_heap_calloc(size_t count,size_t size) {
+    void *p=calloc(count,size);if(p)allocations++;return p;
+}
+bool nas_heap_free(void *p) {
+    if(!p)return false;
+    assert(allocations);allocations--;free(p);return true;
+}
 
 uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
                                      const struct nas_task *owner) {
@@ -59,8 +72,13 @@ int main(void) {
     task.fds=&files.table;
     task.fds->entries[3]=(struct nas_fd_entry){FD_EPOLL,40,0};
     nas_open_files[40].refcount=1;
+    nas_open_files[40].ops=&test_epoll_ops;
+    nas_open_files[40].private.epoll=nas_heap_calloc(1,sizeof(struct ep_state));
+    assert(nas_open_files[40].private.epoll);
     nas_open_files[50].refcount=1;
-    epolls[40].watches[0]=(struct ep_watch){
+    /* Non-epoll scalar storage must never be interpreted as a pointer. */
+    nas_open_files[50].private.eventfd.counter=UINT64_MAX;
+    epoll_state(40)->watches[0]=(struct ep_watch){
         .used=true,.slot=50,.fd=7,.kind=FD_EVENTFD,
         .events=EP_IN,.data=UINT64_C(0x12345678)
     };
@@ -80,8 +98,13 @@ int main(void) {
     assert(nas_open_files[40].refcount==1);
     task.fds->entries[3]=(struct nas_fd_entry){FD_EPOLL,41,0};
     nas_open_files[41].refcount=1;
+    nas_open_files[41].ops=&test_epoll_ops;
+    nas_open_files[41].private.epoll=nas_heap_calloc(1,sizeof(struct ep_state));
+    assert(nas_open_files[41].private.epoll);
     nas_open_files[51].refcount=1;
-    epolls[41].watches[0]=(struct ep_watch){
+    /* Non-epoll scalar storage must never be interpreted as a pointer. */
+    nas_open_files[51].private.eventfd.counter=UINT64_MAX;
+    epoll_state(41)->watches[0]=(struct ep_watch){
         .used=true,.slot=51,.fd=8,.kind=FD_EVENTFD,
         .events=EP_IN,.data=UINT64_C(0xeeee)
     };
@@ -111,7 +134,7 @@ int main(void) {
     nas_open_files[41].refcount=1;
     task.fds->entries[3]=(struct nas_fd_entry){0};
     nas_fs_drop_kernel_description(41);
-    assert(!nas_open_files[41].refcount);
+    assert(!nas_open_files[41].refcount && !allocations);
     puts("[M158 EPOLL WAIT PASS] real pinned-instance wake/completion, FD ABA, saturated hold and final cleanup");
     return 0;
 }
