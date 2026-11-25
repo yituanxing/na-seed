@@ -161,10 +161,41 @@ static void check_named_fifo(void) {
     nas_open_files[44].refcount=0;
     nas_pipe_release_description(44);
 }
+
+/* All 32 possible pipes must allocate and release their own 4 KiB storage.
+ * A 33rd attempt cannot corrupt another ring or claim File-slot tags. */
+static void check_pool_reuse(void) {
+    for(unsigned i=0;i<NAS_PIPE_COUNT;i++) {
+        unsigned a=2*i,b=a+1;
+        nas_open_files[a].refcount=nas_open_files[b].refcount=1;
+        assert(nas_pipe_create(a,b)==0);
+        write_pattern(b,16,150+i);
+        unsigned bytes=0;
+        assert(nas_pipe_snapshot(i,&bytes,NULL,NULL) && bytes==16);
+    }
+    nas_open_files[64].refcount=nas_open_files[65].refcount=1;
+    assert(nas_pipe_create(64,65)==-ENFILE);
+    nas_open_files[64].refcount=nas_open_files[65].refcount=0;
+    for(unsigned i=0;i<NAS_PIPE_COUNT;i++) {
+        unsigned a=2*i,b=a+1;
+        read_pattern(a,16,150+i);
+        nas_open_files[a].refcount=nas_open_files[b].refcount=0;
+        nas_pipe_release_description(a);
+        nas_pipe_release_description(b);
+        assert(!nas_pipe_snapshot(i,NULL,NULL,NULL));
+    }
+    nas_open_files[64].refcount=nas_open_files[65].refcount=1;
+    assert(nas_pipe_create(64,65)==0);
+    assert(nas_pipe_capacity(64)==NAS_PIPE_CAP);
+    nas_open_files[64].refcount=nas_open_files[65].refcount=0;
+    nas_pipe_release_description(64);
+    nas_pipe_release_description(65);
+}
 int main(void) {
     check_pipe_capacity();
     check_socketpair_stream();
     check_named_fifo();
+    check_pool_reuse();
     puts("[PIPE CAPACITY HOST PASS] ring grow/shrink, wrapped FIFO, pipe atomicity, socket stream, named FIFO, OpenFile lifetime");
     return 0;
 }

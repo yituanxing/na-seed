@@ -15,7 +15,8 @@ struct nas_pipe {
     bool socket_channel;
     bool named;
     uint64_t named_mount_id,named_ino;
-    uint8_t bytes[NAS_PIPE_CAP];
+    /* Allocate the 4 KiB ring only while an actual pipe/FIFO exists.
+     * The table itself is just 32 lightweight capacity/ownership records. */
     uint8_t *data;
     unsigned capacity;
     unsigned head, count, read_slot, write_slot;
@@ -56,9 +57,9 @@ int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested) {
     if (target == pipe->capacity) return (int64_t)target;
     if (target < pipe->count) return -EBUSY;
 
-    /* The embedded default buffer avoids 32 tiny heap allocations at boot;
-     * growth is transactional and may fail without touching live data. */
-    uint8_t *next = target == NAS_PIPE_CAP ? pipe->bytes : nas_heap_alloc(target);
+    /* Always switch to newly owned storage: the default 4 KiB ring is
+     * heap-backed too. Failed resize leaves the original ring unchanged. */
+    uint8_t *next = nas_heap_alloc(target);
     if (!next) return -ENOMEM;
     for (unsigned i = 0; i < pipe->count; i++)
         next[i] = pipe->data[(pipe->head + i) % pipe->capacity];
@@ -66,7 +67,7 @@ int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested) {
     pipe->data = next;
     pipe->capacity = target;
     pipe->head = 0;
-    if (old != pipe->bytes) (void)nas_heap_free(old);
+    (void)nas_heap_free(old);
     return (int64_t)target;
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
@@ -108,12 +109,16 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
         nas_print(" capacity="); nas_dec(NAS_PIPE_COUNT); nas_print("\n");
         return -ENFILE;
     }
+    /* Allocating before publication is transactional: on ENOMEM no
+     * ownership tag or pipe-table entry has been touched. */
+    uint8_t *data=nas_heap_alloc(NAS_PIPE_CAP);
+    if(!data)return -ENOMEM;
     struct nas_pipe *pipe = &pipe_table[index];
     pipe->used = true;
     pipe->socket_channel = false;
     pipe->named = false;
     pipe->named_mount_id=pipe->named_ino=0;
-    pipe->data = pipe->bytes;
+    pipe->data = data;
     pipe->capacity = NAS_PIPE_CAP;
     pipe->head = pipe->count = 0;
     pipe->read_slot = read_slot;
@@ -148,12 +153,16 @@ int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
     if(access==0U && !nonblock && !has_writers)
         return -EOPNOTSUPP;
     if(!pipe->used) {
+        /* A named FIFO can remain unopened forever. Never reserve a ring
+         * until the first real File successfully attaches. */
+        uint8_t *data=nas_heap_alloc(NAS_PIPE_CAP);
+        if(!data)return -ENOMEM;
         pipe->used=true;
         pipe->socket_channel=false;
         pipe->named=true;
         pipe->named_mount_id=mount_id;
         pipe->named_ino=ino;
-        pipe->data=pipe->bytes;
+        pipe->data=data;
         pipe->capacity=NAS_PIPE_CAP;
         pipe->head=pipe->count=0;
         pipe->read_slot=pipe->write_slot=NAS_OPEN_FILE_LIMIT;
@@ -200,13 +209,10 @@ static void pipe_release_direction(unsigned slot,bool writing) {
             }
     } else has_attached=pipe_has_reader(pipe)||pipe_has_writer(pipe);
     if(pipe->used && !has_attached) {
-        if (pipe->data != pipe->bytes) (void)nas_heap_free(pipe->data);
-        pipe->data=pipe->bytes;
-        pipe->capacity=NAS_PIPE_CAP;
-        pipe->used=false;
-        pipe->named=false;
-        pipe->named_mount_id=pipe->named_ino=0;
-        pipe->count=pipe->head=0;
+        /* Last File releases the ring (whether resized or not). Reset
+         * identity so a future FIFO incarnation starts from a blank slate. */
+        (void)nas_heap_free(pipe->data);
+        *pipe=(struct nas_pipe){0};
     }
 }
 int nas_pipe_socket_shutdown(unsigned slot,unsigned how) {
