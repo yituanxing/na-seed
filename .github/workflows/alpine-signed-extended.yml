@@ -154,12 +154,12 @@ jobs:
               test "$(awk '!/^#/ && NF {print $0}' scripts/m155-expected-markers.txt | sort -u | wc -l)" -eq 31
               ;;
             m157)
-              python3 scripts/check-m157-inventory.py
+              python3 scripts/check-signed-elf-batch-inventory.py m157 m158
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m157-original-elfs.txt)" -eq 30
               test "$(awk '!/^#/ && NF {print $0}' scripts/m157-original-elfs.txt | sort -u | wc -l)" -eq 30
               ;;
             m158)
-              python3 scripts/check-m158-inventory.py
+              # M158 included in the unified independent m157 m158 inventory gate
               python3 scripts/check-architecture-boundaries.py
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m158-original-elfs.txt)" -eq 30
               test "$(awk '!/^#/ && NF {print $0}' scripts/m158-original-elfs.txt | sort -u | wc -l)" -eq 30
