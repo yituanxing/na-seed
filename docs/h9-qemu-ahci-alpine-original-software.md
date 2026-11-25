@@ -59,7 +59,7 @@ The independent negative boots the **same** ISO without any SATA hard disk.
 Q35's default AHCI controller and the ISO optical device still exist; those
 may not fake a SATA ATA disk or Alpine ELF source. It must reject the absent
 disk before userland, with no CPIO/NVMe/VirtIO fallback. Both serial logs are
-saved by `.github/workflows/h9-qemu-ahci-alpine-userland.yml`.
+saved by `.github/workflows/h7-h15-hardware-native.yml`.
 
 ## Safety and scope
 

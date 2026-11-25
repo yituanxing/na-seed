@@ -69,6 +69,7 @@ jobs:
       - name: Verify consolidated peripheral profile syntax and strict host contracts
         run: |
           bash -n scripts/acceptance/h0-h6-pci-nvme.sh
+          bash -n scripts/acceptance/h7-h15-hardware.sh
           python3 scripts/test-m203-fbcon-oracle.py
           python3 -B tests/m255-debian-init-host.py
 

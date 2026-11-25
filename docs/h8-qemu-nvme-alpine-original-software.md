@@ -56,5 +56,5 @@ AHCI/SATA, hot-plug, physical NVMe hardware, or USB. Those are separate
 devices and acceptance milestones after H8 is fully green.
 
 The isolated CI workflow is
-`.github/workflows/h8-qemu-nvme-alpine-userland.yml`; preserve both positive
+`.github/workflows/h7-h15-hardware-native.yml`; preserve both positive
 and negative serial artifact transcripts for every acceptance decision.

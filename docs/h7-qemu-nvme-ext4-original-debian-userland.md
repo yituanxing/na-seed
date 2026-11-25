@@ -46,7 +46,7 @@ sh scripts/check-h7-nvme-userland-qemu.sh
 sh scripts/acceptance/check-qemu-storage-network-negative.sh h7 no-nvme
 ```
 
-CI: `.github/workflows/h7-qemu-nvme-original-userland.yml` on the dedicated
+CI: `.github/workflows/h7-h15-hardware-native.yml` on the dedicated
 feature branch, with uploaded actual UEFI serial transcripts, isolated
 kernel/ISO, Debian package provenance and before/after media SHA evidence.
 
