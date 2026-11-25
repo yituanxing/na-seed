@@ -17,10 +17,9 @@
 
 static struct nas_x86_qemu_xhci h12_hw={.mmio={H12_XHCI_VIRT_BASE,NAS_H11_XHCI_MMIO_BYTES}};
 static struct nas_xhci_ro_session h12_xhci;
-static struct nas_usb_hid_boot_keyboard h12_report_state;
-static struct nas_input_device h12_input;
+static struct nas_x86_qemu_hid_device h12_input;
 static struct {
-    bool attached,input_published;
+    bool attached;
     uint64_t reports;
 } h12_persistent;
 
@@ -57,35 +56,26 @@ int nas_x86_h12_hid_bind(const struct nas_pci_function_info *fn,
 }
 
 int nas_x86_h12_hid_publish_input(void) {
-    if(!h12_persistent.attached || h12_persistent.input_published)
+    if(!h12_persistent.attached || h12_input.input.registered)
         return -ENODEV;
-    nas_usb_hid_boot_init(&h12_report_state);
-    int rc=nas_x86_qemu_hid_keyboard_register(&h12_input,0U);
+    int rc=nas_x86_qemu_hid_publish(&h12_input,0U,false);
     if(rc)return rc;
-    h12_persistent.input_published=true;
     nas_print("[H12 HID INPUT ATTACHED] /dev/input/event0 QEMU USB Boot Keyboard EV_KEY/SYN_REPORT\n");
     return 0;
 }
 
 int nas_x86_h12_hid_poll(unsigned budget) {
-    if(!h12_persistent.attached || !h12_persistent.input_published)
+    if(!h12_persistent.attached || !h12_input.input.registered)
         return -ENODEV;
-    if(!budget || budget>16U)return -EINVAL;
-    return nas_x86_qemu_hid_keyboard_poll(&h12_xhci,nas_xhci_hid_poll,
-        &h12_report_state,&h12_input,budget,&h12_persistent.reports,"[H12 HID REPORT REJECTED] malformed Boot Keyboard payload\n");
+    return nas_x86_qemu_hid_poll(&h12_xhci,nas_xhci_hid_poll,
+        &h12_input,budget,&h12_persistent.reports,"[H12 HID REPORT REJECTED] malformed Boot Keyboard payload\n");
 }
 
 int nas_x86_h12_hid_shutdown(void) {
     if(!h12_persistent.attached)return -ENODEV;
-    if(h12_persistent.input_published) {
-        /* Drop logical pressed keys while evdev is still a live publisher.
-         * PID1 already closed every input File before this orderly path. */
-        nas_usb_hid_boot_release_all(&h12_report_state,nas_x86_qemu_hid_emit,&h12_input);
-        int rc=nas_input_unregister_device(&h12_input);
-        if(rc)return rc; /* A pinned reader forbids DMA/BAR teardown. */
-        h12_persistent.input_published=false;
-    }
-    int rc=nas_xhci_hid_close(&h12_xhci);
+    int rc=nas_x86_qemu_hid_unpublish(&h12_input);
+    if(rc)return rc;
+    rc=nas_xhci_hid_close(&h12_xhci);
     if(rc)return rc; /* Keep 7 DMA leases and BAR if xHC won't halt. */
     rc=nas_x86_qemu_xhci_release(&h12_hw);
     if(rc)return rc;
