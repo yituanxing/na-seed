@@ -1,0 +1,230 @@
+# M200 remains the only push-driven display contract. The M201-M203
+# genuine signed Alpine framebuffer/VT QEMU suites remain opt-in and independent.
+name: NaSeed original framebuffer display and VT native cohorts
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/alpine-display-native-cohorts.yml'
+      - 'docs/m200-*'
+      - 'kernel/drivers/display/**'
+      - 'kernel/fs/file_io.c'
+      - 'kernel/fs/io.h'
+      - 'kernel/mm/**'
+      - 'scripts/m200-*'
+      - 'scripts/probe-aarch64-busybox-matrix.sh'
+      - 'scripts/probe-m200-fbdev.sh'
+      - 'scripts/probe-port-busybox-matrix.sh'
+      - 'scripts/probe-riscv64-busybox-matrix.sh'
+      - 'scripts/probe-x86-busybox-parity.sh'
+  workflow_dispatch:
+    inputs:
+      profile:
+        type: choice
+        description: Independent original framebuffer/VT native proof
+        required: true
+        default: m200
+        options: [m200, m201, m202, m203]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  host:
+    name: ${{ matrix.profile }} independent framebuffer/VT ABI negative and QMP tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.profile == 'm200' && 15 || 10 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'push' && '["m200"]' || format('["{0}"]', inputs.profile)) }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Real original per-profile host test and unchanged strict QMP oracles
+        run: |
+          set -eu
+          PROFILE="${PROFILE:-}"
+          case "$PROFILE" in
+            m200)
+          set -eu
+          sh -n scripts/probe-m200-fbdev.sh
+          python3 -m py_compile scripts/m200-qmp-verify.py
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          test -s scripts/m200-fbdev-mmap.c
+          test -s scripts/m200-fbdev-cases.tsv
+          sh scripts/check-host-fixture.sh m86-txn
+          sh scripts/check-m88-exceptions.sh
+          sh scripts/check-kernel-targets.sh m101
+          sh scripts/check-m167-fb-pwrite.sh
+          sh scripts/check-m177-gpu.sh
+              ;;
+            m201)
+          set -eu
+          sh -n scripts/stage-m201-alpine-fbi.sh
+          sh -n scripts/probe-m201-alpine-fbi.sh
+          python3 -m py_compile scripts/m201-image-fixture.py scripts/m201-qmp-alpine-fbi.py scripts/m201-alpine-uart.py
+          python3 scripts/test-m201-serial-lines.py
+          python3 scripts/m201-image-fixture.py /tmp/m201-original-bars.png
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import struct
+          import zlib
+          path = Path('/tmp/m201-original-bars.png')
+          data = path.read_bytes()
+          assert data.startswith(b'\x89PNG\r\n\x1a\n')
+          assert data[12:16] == b'IHDR'
+          assert struct.unpack('>II', data[16:24]) == (800, 600)
+          print('[M201 HOST ORIGINAL PNG PASS] actual 800x600 PNG input')
+          PY
+          grep -Fxq "$(printf 'm201-fbi\tcpio\t \t-\t-\t/sbin/init')" scripts/m201-fbi-cases.tsv
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+              ;;
+            m202)
+          set -eu
+          sh -n scripts/stage-m202-alpine-interactive-fbi.sh
+          sh -n scripts/probe-m202-alpine-interactive-fbi.sh
+          python3 -m py_compile scripts/m202-image-fixture.py \
+            scripts/m202-disk-fixture.py scripts/m202-qmp-alpine-interactive-fbi.py \
+            scripts/m202-alpine-uart.py scripts/m201-qmp-alpine-fbi.py
+          python3 scripts/test-m202-interactive-oracle.py
+          sh scripts/check-m202-vt.sh
+          sh scripts/check-host-fixture.sh m202-input-routing
+          grep -Fxq "$(printf 'm202-fbi\tcpio\t \t-\t-\t/sbin/init')" scripts/m202-fbi-cases.tsv
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+              ;;
+            m203)
+          set -eu
+          sh -n scripts/stage-m203-alpine-fbcon.sh
+          sh -n scripts/probe-m203-alpine-fbcon.sh
+          python3 -m py_compile scripts/m203-disk-fixture.py \
+            scripts/m203-qmp-alpine-fbcon.py scripts/m203-alpine-uart.py
+          python3 scripts/test-m203-fbcon-oracle.py
+          python3 scripts/test-m194-uart-prompt.py
+          python3 scripts/test-m202-interactive-oracle.py
+          sh scripts/check-host-fixture.sh m203-fbcon
+          sh scripts/check-m202-vt.sh
+          sh scripts/check-host-fixture.sh m202-input-routing
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+              ;;
+            *) echo 'unknown display host profile' >&2; exit 2 ;;
+          esac
+
+  native:
+    needs: [host]
+    name: ${{ matrix.profile }} genuine original QEMU framebuffer/VT / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.profile == 'm200' && 100 || 85 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'push' && '["m200"]' || format('["{0}"]', inputs.profile)) }}
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ matrix.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Install unchanged upstream ISA QEMU EFI and signed APK dependencies
+        timeout-minutes: ${{ matrix.profile == 'm200' && 20 || 18 }}
+        run: |
+          set -eu
+          sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ gcc:gcc clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
+          command -v sudo
+
+      - name: Run one independent original signed framebuffer/VT native QEMU proof
+        timeout-minutes: ${{ matrix.profile == 'm200' && 76 || 64 }}
+        run: |
+          set -eu
+          PROFILE="${PROFILE:-}"
+          PORT="${PORT:-}"
+          case "$PORT" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
+          case "$PROFILE" in
+            m200) sh scripts/probe-m200-fbdev.sh "$PORT" ;;
+            m201) sh scripts/probe-m201-alpine-fbi.sh "$PORT" ;;
+            m202) sh scripts/probe-m202-alpine-interactive-fbi.sh "$PORT" ;;
+            m203) sh scripts/probe-m203-alpine-fbcon.sh "$PORT" ;;
+            *) exit 2 ;;
+          esac
+
+      - name: Preserve original M200 genuine GPU/QMP/serial evidence
+        if: ${{ always() && matrix.profile == 'm200' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m200-fbdev-${{ matrix.port }}
+          path: |
+            build/external/m200-fbdev/${{ matrix.port }}/naseed-fb-mmap.elf
+            build/external/m200-fbdev/${{ matrix.port }}/m200-qmp-check.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-qmp-screen.ppm
+            build/external/m200-fbdev/${{ matrix.port }}/m200-guest.serial.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-guest.clean.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-*.log
+            build/external/m200-fbdev/${{ matrix.port }}/m200-*.ppm
+            build/busybox-source-parity-x86/m200-fbdev.*.log
+            build/port-riscv64/full/matrix-source/m200-fbdev.*.log
+            build/port-aarch64/full/matrix-source/m200-fbdev.*.log
+          if-no-files-found: warn
+      - name: Preserve original M201 genuine GPU/QMP/serial evidence
+        if: ${{ always() && matrix.profile == 'm201' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m201-original-fbi-${{ matrix.port }}
+          path: |
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi.sha256
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-alpine-rescue.sha256
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-official-installed-apk-db
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-signed-apk.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi-screen.ppm
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-original-fbi-qmp.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-native-runner.log
+            build/external/m201-alpine-fbi/${{ matrix.port }}/m201-physical-qmp-*
+            build/busybox-source-parity-x86/m201-fbi.*.log
+            build/port-riscv64/full/matrix-source/m201-fbi.*.log
+            build/port-aarch64/full/matrix-source/m201-fbi.*.log
+          if-no-files-found: warn
+      - name: Preserve original M202 genuine GPU/QMP/serial evidence
+        if: ${{ always() && matrix.profile == 'm202' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m202-original-interactive-fbi-${{ matrix.port }}
+          path: |
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-original-signed-fbi.sha256
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-official-installed-apk-db
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-first-physical-gpu.ppm
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-second-physical-gpu.ppm
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-original-fbi-qmp.log
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-native-runner.log
+            build/external/m202-alpine-interactive-fbi/${{ matrix.port }}/m202-physical-qmp-*
+            build/busybox-source-parity-x86/m202-fbi.*.log
+            build/port-riscv64/full/matrix-source/m202-fbi.*.log
+            build/port-aarch64/full/matrix-source/m202-fbi.*.log
+          if-no-files-found: warn
+      - name: Preserve original M203 genuine GPU/QMP/serial evidence
+        if: ${{ always() && matrix.profile == 'm203' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m203-original-alpine-fbcon-${{ matrix.port }}
+          path: |
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-original-signed-fbi.sha256
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-official-installed-apk-db
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/physical-gpu/*.ppm
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-original-fbcon-qmp.log
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-native-runner.log
+            build/external/m203-alpine-fbcon/${{ matrix.port }}/m203-physical-qmp-*
+            build/busybox-source-parity-x86/m202-fbi.*.log
+            build/port-riscv64/full/matrix-source/m202-fbi.*.log
+            build/port-aarch64/full/matrix-source/m202-fbi.*.log
+          if-no-files-found: warn

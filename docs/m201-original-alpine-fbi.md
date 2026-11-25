@@ -73,7 +73,7 @@ remain unchanged for all prior cases.
 
 ## Evidence and runtime
 
-- `.github/workflows/m201-original-alpine-fbi.yml`: one independent native
+- `.github/workflows/alpine-display-native-cohorts.yml`: one independent native
   case per ISA plus a fast deterministic PNG/script host contract.
 - `build/external/m201-alpine-fbi/$ISA/m201-original-fbi.sha256`: untouched
   actual package ELF, with original signed APK install log and installed DB.

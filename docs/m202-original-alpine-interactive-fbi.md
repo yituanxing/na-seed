@@ -67,7 +67,7 @@ sh scripts/probe-m202-alpine-interactive-fbi.sh riscv64
 sh scripts/probe-m202-alpine-interactive-fbi.sh arm64
 ```
 
-The targeted workflow is `.github/workflows/m202-original-alpine-interactive-fbi.yml`.
+The targeted workflow is `.github/workflows/alpine-display-native-cohorts.yml`.
 No M197 public APK WAN transaction, M198 double-reboot GUI/Vim, M191 warm-up
 QEMU, or whole historical CI gate is part of this focused proof. Host contracts
 are only preparation; final M202 PASS requires all three exact-head native
