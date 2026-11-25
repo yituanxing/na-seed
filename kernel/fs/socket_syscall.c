@@ -1438,23 +1438,22 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
             if(rc)return (uint64_t)(int64_t)rc;
             destination=lwip_address(ep);
         }
-        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
-        size_t total=0;
-        for(unsigned i=0;i<msg.iovlen;i++) {
-            struct nas_iovec v;
-            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(v) ||
-               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(v),
-                                    (uint8_t *)&v,sizeof(v)))
-                return (uint64_t)-EFAULT;
-            if(v.length>NAS_LWIP_BRIDGE_DATA-total)
-                return (uint64_t)-EMSGSIZE;
-            if(v.length && !nas_user_read_bytes(v.base,packet+total,v.length))
-                return (uint64_t)-EFAULT;
-            total+=(size_t)v.length;
+        /* Import the complete Linux iovec through the same File-owned path
+         * as writev. No second hand-rolled range or overflow validator. */
+        struct nas_fs_io_vectors vectors={0};
+        int rc=nas_fs_io_vectors_import(slot,msg.iov,msg.iovlen,true,&vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        if(vectors.total>NAS_LWIP_BRIDGE_DATA) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)-EMSGSIZE;
         }
-        return (uint64_t)nas_lwip_socket_sendto_pktinfo(slot,packet,
-                    (uint16_t)total,destination,
-                    ancillary ? &pktinfo:NULL);
+        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+        bool copied=nas_fs_io_vectors_copyin(&vectors,packet,vectors.total);
+        uint16_t bytes=(uint16_t)vectors.total;
+        nas_fs_io_vectors_release(&vectors);
+        if(!copied)return (uint64_t)-EFAULT;
+        return (uint64_t)nas_lwip_socket_sendto_pktinfo(slot,packet,bytes,
+                    destination,ancillary ? &pktinfo:NULL);
     }
     return (uint64_t)-EBADF;
 }
