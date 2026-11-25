@@ -30,7 +30,7 @@
  * passed the blocked Task, never made against another current Task. */
 uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
                                      const struct nas_task *task) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return 0;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->poll_description_task)
@@ -51,7 +51,7 @@ int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     if(TASK.fds->entries[fd].kind==FD_SOCKET &&
        nas_packet_socket_is_slot(slot)) {
@@ -73,7 +73,7 @@ int nas_fs_mmap_immutable_readonly(uint64_t fd) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
@@ -123,7 +123,7 @@ static int mmap_pin_file(uint64_t fd,bool shared,bool writable,
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
@@ -209,7 +209,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
     if (fd >= NAS_FD_LIMIT || TASK.fds->entries[fd].kind == FD_CLOSED)
         return -EBADF;
     unsigned slot = TASK.fds->entries[fd].slot;
-    if (slot >= NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if (!nas_file_slot_live(slot))
         return -EBADF;
     if(nas_open_files[slot].status_flags & NAS_LINUX_O_PATH)return -EBADF;
     if ((nas_open_files[slot].status_flags & 3ULL) == 1ULL)
@@ -235,7 +235,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 }
 
 static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return (uint64_t)-EBADF;
     /* O_PATH is never a writable description, irrespective of O_ACCMODE.
      * A combined mask would accidentally accept it as a write permission. */
@@ -294,7 +294,7 @@ static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) 
 }
 static uint64_t io_slot_read_mode(unsigned slot, uint64_t address,
                                   uint64_t length,bool peek) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1)
@@ -381,7 +381,7 @@ uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
                          uint64_t offset) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot)) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
     /* A mounted S_IFCHR inode owns its VFS namespace identity, while the
@@ -426,7 +426,7 @@ uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
                           uint64_t offset) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot)) return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
     const struct nas_open_file *write_open=&nas_open_files[slot];
@@ -493,12 +493,9 @@ struct nas_pending_io {
 /* Capture the process-local descriptor mapping once. A pending syscall
  * subsequently holds the shared File by slot, regardless of dup2/close. */
 static int io_resolve_fd(uint64_t fd,unsigned *slot) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
-        return -EBADF;
-    const unsigned target=TASK.fds->entries[fd].slot;
-    if(target>=NAS_OPEN_FILE_LIMIT || !nas_open_files[target].refcount)
-        return -EBADF;
-    *slot=target;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry)return -EBADF;
+    *slot=entry->slot;
     return 0;
 }
 static void io_request_release(struct nas_io_request *req) {
@@ -511,7 +508,7 @@ static int io_request_import_slot(unsigned slot,uint64_t user_iov,uint64_t count
     /* Linux looks up and checks the File before importing user iovecs,
      * including an empty iovec array. This also prevents zero-byte writev
      * from silently succeeding on an O_RDONLY/open(O_PATH) descriptor. */
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     uint64_t flags=nas_open_files[slot].status_flags;
     if((flags&NAS_LINUX_O_PATH) ||

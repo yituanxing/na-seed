@@ -447,6 +447,20 @@ uint64_t nas_process_getrusage(uint64_t who,uint64_t address) {
         return (uint64_t)-EFAULT;
     return 0;
 }
+static bool wait4_child_selected(const struct nas_task *child,
+                                 const struct nas_task *waiter,uint64_t desired) {
+    return child && child->state!=NAS_TASK_FREE && nas_process_wait_owner(child,waiter) &&
+           nas_wait_pid_matches(desired,child->pid,waiter->pgid,child->pgid);
+}
+bool nas_process_wait4_ready(const struct nas_task *waiter,uint64_t desired,
+                             uint64_t options) {
+    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
+        const struct nas_task *child=nas_task_at(slot);
+        if(wait4_child_selected(child,waiter,desired) &&
+           nas_process_waitable(child,options,waiter))return true;
+    }
+    return false;
+}
 uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
                            uint64_t options, uint64_t rusage) {
     if (options & ~NAS_WAIT_SUPPORTED)
@@ -454,12 +468,8 @@ uint64_t nas_process_wait4(uint64_t desired, uint64_t status_addr,
     bool have_child = false;
     for (unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
         struct nas_task *child=nas_task_at(slot);
-        if(child->state==NAS_TASK_FREE)continue;
-        if(!nas_process_wait_owner(child,nas_current_task))continue;
+        if(!wait4_child_selected(child,nas_current_task,desired))continue;
         uint64_t pid=child->pid;
-        if (!nas_wait_pid_matches(desired,pid,
-                                  nas_current_task->pgid,child->pgid))
-            continue;
         have_child=true;
         if (!nas_process_waitable(child,options,nas_current_task)) continue;
         bool zombie = child->state == NAS_TASK_ZOMBIE;

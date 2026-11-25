@@ -72,9 +72,6 @@ static bool unix_fd(uint64_t fd) {
            && !nas_packet_socket_is_slot(TASK.fds->entries[fd].slot)
            ;
 }
-static bool inet_fd(uint64_t fd) {
-    return lwip_fd(fd);
-}
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
     if(domain!=1 && domain!=2 && domain!=17
        && domain!=16 /* Linux AF_NETLINK */
@@ -624,7 +621,7 @@ uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
 }
 static uint64_t sys_socket_accept_fd(uint64_t fd,uint64_t address,
                                      uint64_t length_ptr,uint64_t flags) {
-    if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
+    if(!unix_fd(fd) && !lwip_fd(fd))return (uint64_t)-EBADF;
     return nas_fs_socket_accept_description(TASK.fds->entries[fd].slot,
                                              address,length_ptr,flags);
 }
@@ -1657,7 +1654,7 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
     return (uint64_t)-EBADF;
 }
 static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
-    if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
+    if(!unix_fd(fd) && !lwip_fd(fd))return (uint64_t)-EBADF;
     if(how>2ULL)return (uint64_t)-EINVAL;
     if(lwip_fd(fd))return lwip_control_result(nas_lwip_socket_shutdown(
         TASK.fds->entries[fd].slot,(unsigned)how));
@@ -1741,35 +1738,35 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
     }
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
-    case NAS_SC_bind: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_bind: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_bind(args[1],args[2],args[3]) :
         sys_unix_bind(args[1],args[2],args[3]));
-    case NAS_SC_listen: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_listen: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_listen(args[1],args[2]) : sys_unix_listen(args[1],args[2]));
-    case NAS_SC_connect: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_connect: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_connect(args[1],args[2],args[3]) :
         sys_unix_connect(args[1],args[2],args[3]));
     case NAS_SC_accept: SOCKET_RESULT(sys_socket_accept_fd(
         args[1],args[2],args[3],0));
     case NAS_SC_accept4: SOCKET_RESULT(sys_socket_accept_fd(
         args[1],args[2],args[3],args[4]));
-    case NAS_SC_getsockname: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_getsockname: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_name(args[1],args[2],args[3],false) :
         sys_unix_name(args[1],args[2],args[3],false));
-    case NAS_SC_getpeername: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_getpeername: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_name(args[1],args[2],args[3],true) :
         sys_unix_name(args[1],args[2],args[3],true));
     case NAS_SC_getsockopt:
-        SOCKET_RESULT(inet_fd(args[1]) ?
+        SOCKET_RESULT(lwip_fd(args[1]) ?
             sys_ipv4_getsockopt(args[1],args[2],args[3],args[4],args[5]) :
             sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
-    case NAS_SC_setsockopt: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_setsockopt: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_setsockopt(args[1],args[2],args[3],args[4],args[5]) :
         (uint64_t)-ENOPROTOOPT);
-    case NAS_SC_sendmsg: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_sendmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_sendmsg(args[1],args[2],args[3]) :
         sys_unix_sendmsg(args[1],args[2],args[3]));
-    case NAS_SC_recvmsg: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_recvmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_recvmsg(args[1],args[2],args[3]) :
         sys_unix_recvmsg(args[1],args[2],args[3]));
     case NAS_SC_sendto: SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],

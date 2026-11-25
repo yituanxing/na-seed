@@ -37,15 +37,6 @@ static void sched_fail(const char *s) { nas_print("[FAIL] M1 "); nas_print(s); n
 /* The leader is the stable Linux process identity, even after its
  * SYS_exit while other threads are alive. Do not allow wait4 to reap its
  * root or descriptor table until the LAST live member has terminated. */
-static bool group_has_live_workers(const struct nas_task *leader) {
-    for(unsigned slot=0;slot<NAS_TASK_LIMIT;slot++) {
-        const struct nas_task *peer=nas_task_at(slot);
-        if(peer!=leader && peer->tgid==leader->tgid && peer->is_thread &&
-           peer->state!=NAS_TASK_FREE && peer->state!=NAS_TASK_ZOMBIE)
-            return true;
-    }
-    return false;
-}
 void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     struct nas_task *child = nas_current_task;
     /* A CLONE_THREAD child inherits the leader's external PPID, which
@@ -71,7 +62,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
         child->resume_valid=false;
         nas_task_wait_dispose(child);
         struct nas_task *leader=child->group_leader;
-        if(leader->group_exit_pending && !group_has_live_workers(leader)) {
+        if(leader->group_exit_pending && !nas_task_group_has_live_peers(leader)) {
             /* Leader finished earlier: group becomes waitable NOW, only
              * after the last worker has cleared its TID and stopped. */
             struct nas_task *last=nas_current_task;
@@ -90,7 +81,7 @@ void nas_sched_child_exit(uint32_t code, uint32_t signum) {
     child->state=NAS_TASK_ZOMBIE;
     child->resume_valid=false;
     nas_task_wait_dispose(child);
-    if(group_has_live_workers(child)) {
+    if(nas_task_group_has_live_peers(child)) {
         child->group_exit_pending=true;
         nas_print("[THREAD GROUP] leader exit deferred tgid=");
         nas_dec(child->tgid);nas_print("\n");

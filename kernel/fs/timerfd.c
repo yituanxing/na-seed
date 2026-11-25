@@ -3,6 +3,7 @@
 #include "../arch/arch.h"
 #include "../errno.h"
 #include "../fd.h"
+#include "../lib/endian.h"
 #include "../mm/usercopy.h"
 #include "../task.h"
 #include "../time/clock.h"
@@ -36,15 +37,10 @@ static bool timerfd_now(uint32_t clockid,uint64_t *out) {
     }
     return clockid==0U && nas_time_realtime_ns(out);
 }
-static bool timerfd_live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
-}
 static bool timerfd_fd(uint64_t fd,unsigned *slot) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_TIMERFD)return false;
-    unsigned s=nas_current_task->fds->entries[fd].slot;
-    if(!timerfd_live(s))return false;
-    *slot=s;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry || entry->kind!=FD_TIMERFD)return false;
+    *slot=entry->slot;
     return true;
 }
 /* Advance one periodic timer mathematically even if the kernel was not
@@ -138,7 +134,7 @@ uint64_t nas_timerfd_settime(uint64_t fd,uint64_t flags,
 }
 
 uint64_t nas_timerfd_read_plan(unsigned slot,uint64_t count) {
-    if(!timerfd_live(slot))return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot))return (uint64_t)-EBADF;
     if(count<8)return (uint64_t)-EINVAL;
     timerfd_advance(slot);
     if(!timers[slot].expirations)
@@ -152,13 +148,13 @@ uint64_t nas_timerfd_read(unsigned slot,uint8_t *dst,uint64_t count) {
     if((int64_t)planned<0)return planned;
     if(!dst)return (uint64_t)-EFAULT;
     uint64_t n=timers[slot].expirations;
-    for(unsigned i=0;i<8;i++)dst[i]=(uint8_t)(n>>(i*8U));
+    nas_put_le64(dst,n);
     timers[slot].expirations=0;
     return 8;
 }
 
 uint16_t nas_timerfd_poll_slot(unsigned slot,uint16_t events) {
-    if(!timerfd_live(slot))return 0;
+    if(!nas_file_slot_live(slot))return 0;
     timerfd_advance(slot);
     return (events&POLLIN) && timers[slot].expirations ?
            POLLIN|POLLRDNORM:0;

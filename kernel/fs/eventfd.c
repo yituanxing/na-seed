@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../fd.h"
+#include "../lib/endian.h"
 #include "../task.h"
 #include "../errno.h"
 #include "file_ops.h"
@@ -17,9 +18,6 @@
 #define EFD_OUT 4U
 static uint64_t counters[NAS_OPEN_FILE_LIMIT];
 static bool semaphore_mode[NAS_OPEN_FILE_LIMIT];
-static bool eventfd_live_slot(unsigned slot){
-    return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
-}
 uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
     if(flags&~(EFD_SEMAPHORE|EFD_NONBLOCK|EFD_CLOEXEC))
         return (uint64_t)-EINVAL;
@@ -42,7 +40,7 @@ uint64_t nas_eventfd_create(uint64_t init,uint64_t flags){
  * Successful provider read consumes the counter when staging into a kernel
  * buffer; Linux also consumes it if the subsequent user copyout fails. */
 uint64_t nas_eventfd_read_plan(unsigned slot,uint64_t requested){
-    if(!eventfd_live_slot(slot))return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot))return (uint64_t)-EBADF;
     if(requested<8)return (uint64_t)-EINVAL;
     if(!counters[slot])
         return nas_open_files[slot].status_flags&EFD_NONBLOCK?
@@ -50,7 +48,7 @@ uint64_t nas_eventfd_read_plan(unsigned slot,uint64_t requested){
     return 8;
 }
 uint64_t nas_eventfd_write_plan(unsigned slot,uint64_t requested){
-    if(!eventfd_live_slot(slot))return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot))return (uint64_t)-EBADF;
     /* Unlike eventfd read(), Linux requires write() count to be exactly 8. */
     return requested!=8 ? (uint64_t)-EINVAL : 8;
 }
@@ -59,7 +57,7 @@ uint64_t nas_eventfd_read(unsigned slot,uint8_t *dst,uint64_t count){
     if((int64_t)planned<0)return planned;
     if(!dst)return (uint64_t)-EFAULT;
     uint64_t value=semaphore_mode[slot]?1:counters[slot];
-    for(unsigned i=0;i<8;i++)dst[i]=(uint8_t)(value>>(i*8U));
+    nas_put_le64(dst,value);
     counters[slot]-=value;
     return 8;
 }
@@ -67,8 +65,7 @@ uint64_t nas_eventfd_write(unsigned slot,const uint8_t *src,uint64_t count){
     uint64_t planned=nas_eventfd_write_plan(slot,count);
     if((int64_t)planned<0)return planned;
     if(!src)return (uint64_t)-EFAULT;
-    uint64_t value=0;
-    for(unsigned i=0;i<8;i++)value|=(uint64_t)src[i]<<(i*8U);
+    uint64_t value=nas_get_le64(src);
     if(value==UINT64_MAX)return (uint64_t)-EINVAL;
     if(value>EFD_MAX-counters[slot])
         return nas_open_files[slot].status_flags&EFD_NONBLOCK?
@@ -77,7 +74,7 @@ uint64_t nas_eventfd_write(unsigned slot,const uint8_t *src,uint64_t count){
     return 8;
 }
 uint16_t nas_eventfd_poll_slot(unsigned slot,uint16_t events){
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
+    if(!nas_file_slot_live(slot))return 0;
     uint16_t v=0;
     if((events&EFD_IN) && counters[slot])v|=EFD_IN;
     if((events&EFD_OUT) && counters[slot]<EFD_MAX)v|=EFD_OUT;

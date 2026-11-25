@@ -50,12 +50,9 @@ struct in_instance {
 static struct in_instance *instances[NAS_OPEN_FILE_LIMIT];
 static uint32_t next_cookie;
 static int fd_instance(uint64_t fd,unsigned *slot) {
-    if(fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_INOTIFY)return -EBADF;
-    unsigned s=nas_current_task->fds->entries[fd].slot;
-    if(s>=NAS_OPEN_FILE_LIMIT || !nas_open_files[s].refcount ||
-       !instances[s])return -EBADF;
-    *slot=s;return 0;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry || entry->kind!=FD_INOTIFY || !instances[entry->slot])return -EBADF;
+    *slot=entry->slot;return 0;
 }
 static struct in_event *last_event(struct in_instance *in) {
     if(!in->count)return NULL;

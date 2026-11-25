@@ -283,4 +283,22 @@ uint64_t nas_task_page_root(const struct nas_task *task);
 uint64_t nas_task_tls_base(const struct nas_task *task);
 struct nas_task *nas_task_by_pid(uint64_t pid);
 struct nas_task *nas_task_at(unsigned slot);
+/* TGID owns process lifetime, including a leader that exited before its peers. */
+static inline bool nas_task_group_has_live_peers(const struct nas_task *leader) {
+    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
+        const struct nas_task *peer=nas_task_at(i);
+        if(peer && peer!=leader && peer->tgid==leader->tgid &&
+           peer->state!=NAS_TASK_FREE && peer->state!=NAS_TASK_ZOMBIE)
+            return true;
+    }
+    return false;
+}
+/* Borrow the published descriptor only; callers that block must take a File ref. */
+static inline const struct nas_fd_entry *nas_task_fd_entry(const struct nas_task *task,
+                                                           uint64_t fd) {
+    if(!task || !task->fds || fd>=NAS_FD_LIMIT)return 0;
+    const struct nas_fd_entry *entry=&task->fds->entries[fd];
+    return entry->kind!=FD_CLOSED && nas_file_slot_live(entry->slot) &&
+           !nas_open_files[entry->slot].lease_token ? entry : 0;
+}
 #endif

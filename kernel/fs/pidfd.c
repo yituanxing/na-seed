@@ -29,24 +29,12 @@ uint64_t nas_pidfd_open(uint64_t raw_pid,uint64_t flags) {
     return fds[0];
 }
 
-static bool pidfd_process_finished(const struct nas_task *leader) {
-    if(leader->state!=NAS_TASK_ZOMBIE)return false;
-    /* The default pidfd_open() watches a thread GROUP, not the leader's
-     * early exit while sibling pthreads may still be executing userspace. */
-    for(unsigned i=0;i<NAS_TASK_LIMIT;i++) {
-        const struct nas_task *peer=nas_task_at(i);
-        if(!peer || peer==leader || peer->tgid!=leader->tgid)continue;
-        if(peer->state!=NAS_TASK_FREE && peer->state!=NAS_TASK_ZOMBIE)
-            return false;
-    }
-    return true;
-}
-
 uint16_t nas_pidfd_poll_description(unsigned slot,uint16_t events) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+    if(!nas_file_slot_live(slot) ||
        !targets[slot])return 0;
     const struct nas_task *target=nas_task_by_pid(targets[slot]);
-    if(target && !pidfd_process_finished(target))return 0;
+    if(target && (target->state!=NAS_TASK_ZOMBIE ||
+                  nas_task_group_has_live_peers(target)))return 0;
     /* Linux fs/pidfs.c: readable at zombie transition; after wait4 reaps
      * the task, readability persists and POLLHUP is additionally raised. */
     return (uint16_t)((events&PIDFD_IN ? PIDFD_IN|PIDFD_RDNORM : 0) |

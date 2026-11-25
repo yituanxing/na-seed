@@ -146,4 +146,7 @@ struct nas_open_file {
     char origin_path[256];
 };
 extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+static inline bool nas_file_slot_live(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
+}
 #endif
