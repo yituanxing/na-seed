@@ -306,6 +306,7 @@ int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned);
  * for crossings and the one CPIO covered-underlay fallback; providers see
  * only (parent inode, basename). The absolute spelling is a bounded
  * bootstrap/overlay compatibility input and is NEVER passed to them. */
+int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
                          const char *name,struct nas_fs_node *out);
 int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]);

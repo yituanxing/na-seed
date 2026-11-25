@@ -604,6 +604,30 @@ int nas_vfs_mount_snapshot(unsigned ordinal,
  * treats that ENOENT as permission to cross a separately attached /mnt
  * on its first component; we must NOT manufacture a synthetic root here.
  * A borrowed root inode needs no pin: open/path owners acquire one. */
+int nas_vfs_lookup(const char *absolute,struct nas_fs_node *out) {
+    if(!absolute || !out || absolute[0]!='/')return -EINVAL;
+    if(strlen(absolute)>=256)return -ENAMETOOLONG;
+    ensure_defaults();
+    if(strcmp(absolute,"/")) {
+        char canonical[256];
+        /* Direct callers historically inspect the final symlink itself.
+         * Intermediate symlinks, dot/dotdot and mounts now use namei. */
+        return nas_fs_lookup_node(absolute,false,out,canonical);
+    }
+    for(unsigned i=0;i<mount_slots;i++) {
+        const struct mount_slot *slot=mount_slot_at(i);
+        if(!slot->used || strcmp(slot->path,"/"))continue;
+        const struct nas_vfs_mount *mnt=&slot->superblock;
+        int rc=mnt->type->root(mnt,out);
+        if(!rc) {
+            out->filesystem=mnt->type;
+            out->mount=mnt;
+            out->mount_id=slot->device_id;
+        }
+        return rc;
+    }
+    return -ENOENT;
+}
 /* Overlay fallback is NOT mount selection. The parent inode already tells
  * us the exact mounted upper layer. If it misses a name, the VFS traverses
  * its OWN pinned covered Dentry in the lower layer, relative to this one
