@@ -176,7 +176,7 @@ static int stat_fd_snapshot(uint64_t fd,struct nas_linux_stat *out) {
         { fill_bootstrap_stat(&pty,out); return 0; }
     } else {
         const char *path=opened->origin_path;
-        if(!path[0]) {
+        if(!path || !path[0]) {
             path=kind==FD_NULL ? "/dev/null" :
                  kind==FD_ZERO ? "/dev/zero" :
                  kind==FD_RANDOM ? "/dev/urandom" : "/dev/console";

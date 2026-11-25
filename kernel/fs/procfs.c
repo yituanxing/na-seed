@@ -532,7 +532,7 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
      * describe that owned location before consulting the legacy 256-byte
      * open-time hint (which can become stale after rename). */
     char owned_path[256]={0};
-    const char *path=f->origin_path;
+    const char *path=f->origin_path ? f->origin_path : "";
     if(f->vpath.dentry && !nas_vfs_path_string(&f->vpath,owned_path))
         path=owned_path;
     char temporary[64];

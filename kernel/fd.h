@@ -15,6 +15,7 @@ struct nas_chrdev_node;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
 #define NAS_FD_LIMIT 64
+#define NAS_FILE_ORIGIN_LIMIT 256U
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
@@ -162,8 +163,10 @@ struct nas_open_file {
     /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
      * were removed: all mounted File identities live in vnode+mount.
      * Keep only the non-VFS Limine module's opaque boot_file pointer. */
-    /* Canonical path of the open description, shared by dup/fork. */
-    char origin_path[256];
+    /* Diagnostic-only open-time hint for /proc/*/fd. The VFS Dentry is
+     * authoritative. This heap string is optional on allocation failure,
+     * shared across dup/fork and freed exactly once at File final close. */
+    char *origin_path;
 };
 extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
 static inline bool nas_file_slot_live(unsigned slot) {

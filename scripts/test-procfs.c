@@ -434,6 +434,8 @@ int main(void) {
     tasks[0].fds=&files_fixture.table;
     tasks[0].fds->entries[1]=(struct nas_fd_entry){FD_NULL,4,0};
     nas_open_files[4].refcount=1;
+    nas_open_files[4].origin_path=nas_heap_alloc(sizeof("/dev/null"));
+    assert(nas_open_files[4].origin_path);
     strcpy(nas_open_files[4].origin_path,"/dev/null");
     nas_open_files[4].position=27;
     nas_open_files[4].status_flags=0;

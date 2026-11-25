@@ -85,7 +85,11 @@ static unsigned pending_accept_slot=NAS_OPEN_FILE_LIMIT, accepted_count;
 /* The real FileOps importer owns its iovec snapshot until completion. The
  * host fixture substitutes malloc/free for the kernel's frame-backed heap,
  * while testing the exact production import/release and provider paths. */
-void *nas_heap_alloc(size_t length){return malloc(length);}
+static bool m106_fail_optional_label;
+void *nas_heap_alloc(size_t length){
+    if(m106_fail_optional_label)return NULL;
+    return malloc(length);
+}
 bool nas_heap_free(void *ptr){free(ptr);return true;}
 /* Only synthetic /dev bootstrap may project a Path to a diagnostic string.
  * A missing root or stale/oversized anchor must never cause a blind lexical
@@ -1542,6 +1546,18 @@ int main(void) {
     assert(anonymous_factory_calls==3 && anonymous_unpins==2 &&
            live_fds()==before_fds && live_files()==before_files);
     anonymous_factory_error=0;
+    /* An optional /proc/fd display label must not turn a valid VFS
+     * anonymous inode admission into ENOMEM or strand its File slot. */
+    m106_fail_optional_label=true;
+    anonymous_fd=nas_fs_open_anon_tmpfs("label-oom",false);
+    assert(anonymous_fd<NAS_FD_LIMIT);
+    anonymous_entry=guest_task.fds->entries[anonymous_fd];
+    anonymous_open=&nas_open_files[anonymous_entry.slot];
+    assert(!anonymous_open->origin_path && anonymous_open->vnode_pinned);
+    nas_fs_close_fd(anonymous_fd);
+    m106_fail_optional_label=false;
+    assert(anonymous_unpins==3 &&
+           live_fds()==before_fds && live_files()==before_files);
     puts("[MEMFD OPENFILE TRANSACTION PASS] pinned unnamed VFS inode, OFD/FD close rollback, procfd label bounds");
     puts("[M106 USER-COPY SYSCALL PASS] real pipe + syscall adapters: RO atomicity, lazy/COW, no pipe loss, socketpair publication, accept retains pending peer, null/zero and random char File parity, O_PATH write EBADF");
     return 0;

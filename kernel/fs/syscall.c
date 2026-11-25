@@ -10,6 +10,7 @@
 #include "../tmpfs.h"
 #include "../pipe.h"
 #include "../lib/string.h"
+#include "../mm/heap.h"
 #include "../mm/usercopy.h"
 #include "../mm/frame.h"
 #include "../arch/arch.h"
@@ -213,6 +214,11 @@ void nas_fs_description_final_close(unsigned slot) {
         nas_fs_fail("File mount pin corrupted at final close");
     if(nas_open_files[slot].chrdev_node)
         nas_chrdev_node_put(nas_open_files[slot].chrdev_node);
+    /* File final close is the only owner of this optional diagnostic label.
+     * Other FDs/SCM_RIGHTS refs share it; a reused slot must never inherit it. */
+    if(nas_open_files[slot].origin_path &&
+       !nas_heap_free(nas_open_files[slot].origin_path))
+        nas_fs_fail("File diagnostic label ownership corrupted");
     nas_open_files[slot]=(struct nas_open_file){0};
 }
 void nas_fs_drop_kernel_description(unsigned slot) {
@@ -846,13 +852,15 @@ static uint64_t open_path_owned(const char *path,
     /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old
      * pathname after rename: its pinned VFS inode remains authoritative. */
     const char *origin=have_node && canonical[0]?canonical:path;
-    unsigned path_len=0;
-    while(origin[path_len] &&
-          path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
-        nas_open_files[slot].origin_path[path_len]=origin[path_len];
-        ++path_len;
+    size_t path_len=strnlen(origin,NAS_FILE_ORIGIN_LIMIT-1U);
+    if(path_len) {
+        char *hint=nas_heap_alloc(path_len+1U);
+        if(hint) {
+            memcpy(hint,origin,path_len);
+            hint[path_len]=0;
+            nas_open_files[slot].origin_path=hint;
+        }
     }
-    nas_open_files[slot].origin_path[path_len]=0;
     return fd;
 open_rollback:
     if(have_node) {
@@ -887,19 +895,21 @@ uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
     opened->vnode=node;
     opened->vnode_pinned=true;
     /* Linux presents /memfd:<description> (deleted) in /proc/self/fd.
-     * Existing OpenFile diagnostic hints are bounded to 256 bytes; keep
-     * the deletion suffix even when the permitted 249-byte name is longer.
-     * No operation may resolve or reopen this diagnostic string. */
+     * Build this non-authoritative hint only for a live memfd. Its absence
+     * on OOM cannot roll back an already-published anonymous VFS inode. */
     static const char prefix[]="/memfd:";
     static const char suffix[]=" (deleted)";
-    char *label=opened->origin_path;
-    unsigned written=0;
-    for(unsigned i=0;i<sizeof(prefix)-1;i++)label[written++]=prefix[i];
-    for(unsigned i=0;user_name[i] &&
-           written+sizeof(suffix)<sizeof(opened->origin_path);i++)
-        label[written++]=user_name[i];
-    for(unsigned i=0;i<sizeof(suffix)-1;i++)label[written++]=suffix[i];
-    label[written]=0;
+    const size_t max_name=NAS_FILE_ORIGIN_LIMIT-
+                          sizeof(prefix)-sizeof(suffix)+1U;
+    size_t name_bytes=strnlen(user_name,max_name);
+    size_t bytes=sizeof(prefix)-1U+name_bytes+sizeof(suffix)-1U;
+    char *label=nas_heap_alloc(bytes+1U);
+    if(label) {
+        memcpy(label,prefix,sizeof(prefix)-1U);
+        memcpy(label+sizeof(prefix)-1U,user_name,name_bytes);
+        memcpy(label+sizeof(prefix)-1U+name_bytes,suffix,sizeof(suffix));
+        opened->origin_path=label;
+    }
     return fd;
 }
 /* Direct Limine ELF modules have no mounted inode in the rootless boot.
