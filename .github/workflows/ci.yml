@@ -13,7 +13,9 @@ on:
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A superseded cleanup commit must not occupy the full native QEMU matrix
+  # while its latest replacement waits; main branch push evidence is unchanged.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/refactor/naseed-cleanup-') }}
 
 # GitHub runner already supplies most build tools. QEMU's suggested GUI,
 # SPICE and multimedia stack are unnecessary for the strictly headless
