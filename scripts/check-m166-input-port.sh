@@ -14,7 +14,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
     scripts/test-m166-virtio-input-port.c \
     kernel/drivers/input/virtio_input.c ports/unikraft/split_queue.c \
     kernel/drivers/virtio/transport.c kernel/drivers/port/dma.c \
-    kernel/lib/string.c -o build/m166-input-host/virtio-input
+    kernel/mm/heap.c kernel/lib/string.c -o build/m166-input-host/virtio-input
 build/m166-input-host/virtio-input
 if command -v clang >/dev/null 2>&1; then
     for target in x86_64-unknown-none-elf riscv64-unknown-elf aarch64-none-elf; do
