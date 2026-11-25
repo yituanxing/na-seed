@@ -83,16 +83,8 @@ static void reset_graphics_ownership(void) {
     vt.keyboard_mode=1; /* Linux K_XLATE, never pretend raw scancode output. */
 }
 static void default_termios(void) {
-    memset(&vt.termios,0,sizeof(vt.termios));
+    nas_termios_defaults(&vt.termios,NAS_TERMIOS_CONSOLE_CFLAG);
     vt.raw_owner_pid=0;
-    vt.termios.iflag=0000400U; /* ICRNL */
-    vt.termios.oflag=0000001U|0000004U;
-    vt.termios.cflag=0000060U|0000200U|0004000U|0000017U;
-    vt.termios.lflag=0000001U|0000002U|0000010U;
-    vt.termios.cc[0]=3;vt.termios.cc[1]=28;
-    vt.termios.cc[2]=127;vt.termios.cc[3]=21;
-    vt.termios.cc[4]=4;vt.termios.cc[6]=1;
-    vt.termios.cc[10]=26;vt.termios.cc[14]=23;
 }
 void nas_vt_init(void) {
     memset(&vt,0,sizeof(vt));

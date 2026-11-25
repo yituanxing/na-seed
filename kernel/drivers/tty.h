@@ -4,6 +4,20 @@
 #include <stdbool.h>
 struct nas_task;
 struct nas_termios { uint32_t iflag,oflag,cflag,lflag; uint8_t line,cc[19]; };
+/* One source of truth for native Linux N_TTY defaults. The caller supplies
+ * its actual hardware c_cflag: the USB-serial FTDI link is 115200 8N1,
+ * whereas the serial/PTY/virtual console use the historical B38400 mode.
+ * Linux termios padding and unused control characters must remain zero. */
+#define NAS_TERMIOS_CONSOLE_CFLAG (0000060U|0000200U|0004000U|0000017U)
+static inline void nas_termios_defaults(struct nas_termios *t,uint32_t cflag) {
+    *t=(struct nas_termios){
+        .iflag=0000400U, /* ICRNL */
+        .oflag=0000001U|0000004U, /* OPOST | ONLCR */
+        .cflag=cflag,
+        .lflag=0000001U|0000002U|0000010U, /* ISIG | ICANON | ECHO */
+        .cc={[0]=3,[1]=28,[2]=127,[3]=21,[4]=4,[6]=1,[10]=26,[14]=23}
+    };
+}
 _Static_assert(sizeof(struct nas_termios)==36,"native Linux TCGETS size");
 void nas_tty_init(void);
 void nas_tty_session_leader_exit(uint64_t sid);

@@ -56,14 +56,7 @@ void nas_tty_init(void) {
     tty.pending_signum=0;
     nas_ldisc_reset(&tty.ldisc);
     tty.rx_head=tty.rx_count=0;
-    /* Initialize native Linux termios with our shared freestanding klib. */
-    memset(&tty.t, 0, sizeof(tty.t));
-    tty.t.iflag=0000400; /* ICRNL */
-    tty.t.oflag=0000001|0000004; /* OPOST|ONLCR */
-    tty.t.cflag=0000060|0000200|0004000|0000017; /* CS8|CREAD|CLOCAL|B38400 */
-    tty.t.lflag=0000001|0000002|0000010; /* ISIG|ICANON|ECHO */
-    tty.t.cc[0]=3; tty.t.cc[1]=28; tty.t.cc[2]=127; tty.t.cc[3]=21;
-    tty.t.cc[4]=4; tty.t.cc[6]=1; tty.t.cc[10]=26; tty.t.cc[14]=23;
+    nas_termios_defaults(&tty.t,NAS_TERMIOS_CONSOLE_CFLAG);
 }
 bool nas_tty_enabled(void) { return tty.rx_enabled; }
 bool nas_tty_background_fd(uint64_t fd) {

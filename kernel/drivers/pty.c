@@ -97,15 +97,6 @@ unsigned nas_pty_number(unsigned slot) {
 bool nas_pty_present(unsigned number) {
     return number<NAS_PTY_LIMIT && ptys[number].used && ptys[number].master_open;
 }
-static void init_termios(struct nas_termios *t) {
-    memset(t,0,sizeof(*t));
-    t->iflag=0000400; /* ICRNL */
-    t->oflag=0000001|0000004; /* OPOST | ONLCR */
-    t->cflag=0000060|0000200|0004000|0000017;
-    t->lflag=0000001|0000002|0000010; /* ISIG | ICANON | ECHO */
-    t->cc[0]=3;t->cc[1]=28;t->cc[2]=127;t->cc[3]=21;
-    t->cc[4]=4;t->cc[6]=1;t->cc[10]=26;t->cc[14]=23;
-}
 int nas_pty_new(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || slot_device[slot])return -EINVAL;
     for(unsigned i=0;i<NAS_PTY_LIMIT;i++) {
@@ -114,7 +105,7 @@ int nas_pty_new(unsigned slot) {
         *p=(struct pty){0};
         p->used=p->master_open=p->locked=true;
         p->winsize[0]=24;p->winsize[1]=80;
-        init_termios(&p->termios);
+        nas_termios_defaults(&p->termios,NAS_TERMIOS_CONSOLE_CFLAG);
         nas_ldisc_reset(&p->input);
         slot_device[slot]=(uint8_t)(i+1);
         slot_is_master[slot]=1;
