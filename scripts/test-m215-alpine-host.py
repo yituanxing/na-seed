@@ -22,7 +22,7 @@ ALL = ROOT / "scripts/m213-candidate-elfs.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m215-candidates.txt"
 PROBE = ROOT / "tests/m213-software-workload.sh"
 OWNER = ROOT / "tests/m205-software-workload.sh"
-REOPEN = ROOT / "scripts/m215-alpine-reopen-cases.tsv"
+REOPEN = ROOT / "scripts/acceptance/reopen_cases.py"
 REPORTER = ROOT / "scripts/alpine-compat-report.py"
 DISK = ROOT / "scripts/m206-alpine-disk-check.py"
 RUNNER = ROOT / "scripts/probe-m197-alpine-software-cohort.sh"
@@ -75,14 +75,14 @@ def adapter_contract() -> None:
         "cohort=m215", "packages-$cohort-candidates.txt", "signed-cache.sha256",
         "sha256sum -c", "m215-first-runner.log",
         "M215_FIRST_DISCOVERY_COMPLETE", "M215_REOPEN_DISCOVERY_COMPLETE",
-        "scripts/m215-alpine-reopen-cases.tsv", "alpine-compat-report.py m215",
+        "scripts/acceptance/reopen_cases.py", "alpine-compat-report.py m215",
         "m206-alpine-disk-check.py m215", "--require-all"):
         assert needle in base, needle
     assert "apk --cache-dir /var/cache/apk --no-network" in dispatcher
     assert "M197_APP_WORKLOAD_PASS" in base and "m196-public-wire-check.py" in base
     assert "m191-alpine-root-disk.py verify" in base
     runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m215")
-    reopen = "\n".join(active(REOPEN))
+    reopen = runpy.run_path(str(REOPEN))["row_for"]("m215")
     for value in ("NAS_M215_PILOT=1", "m205-software-workload.sh --reopen",
                   "m197-software-workload.sh --reopen", "M197_PUBLIC_ALPINE_SOFTWARE_2026"):
         assert value in reopen

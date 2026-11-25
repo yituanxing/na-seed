@@ -153,7 +153,7 @@ def integration_contract() -> None:
                    "m220-reopen-wire.pcap", "m220-first-host-udp.log",
                    "m220-reopen-host-udp.log", "m220-first-wire.json",
                    "m220-reopen-wire.json", "NAS_VIRTIO_NET_PCAP",
-                   "m220-alpine-reopen-cases.tsv", "M220_REOPEN_DISCOVERY_COMPLETE",
+                   "scripts/acceptance/reopen_cases.py", "M220_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m220", "scripts/m206-alpine-disk-check.py m220",
                    "M220 ALPINE ORIGINAL NPING WIRE PASS"):
         assert marker in runner, f"host two-QEMU gate missing {marker}"

@@ -26,7 +26,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 CANDIDATES = ROOT / "scripts/m206-candidate-elfs.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m206-candidates.txt"
-REOPEN = ROOT / "scripts/m206-alpine-reopen-cases.tsv"
+REOPEN = ROOT / "scripts/acceptance/reopen_cases.py"
 GUEST = ROOT / "tests/m206-software-workload.sh"
 DISPATCH = ROOT / "tests/m205-software-workload.sh"
 REPORTER = ROOT / "scripts/alpine-compat-report.py"
@@ -140,7 +140,7 @@ def guest_contract(entries: list[tuple[str, str, str, str]]) -> None:
     assert "/sbin/sfdisk --dump" in script
     assert "2048[[:space:]]+4096" in script
 
-    reopen = "\n".join(records(REOPEN))
+    reopen = runpy.run_path(str(REOPEN))["row_for"]("m206")
     assert "NAS_M206_COMPAT_COHORT=1" in reopen
     assert "m205-software-workload.sh --reopen" in reopen
     assert "m197-software-workload.sh --reopen" in reopen

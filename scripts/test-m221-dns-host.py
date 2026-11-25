@@ -205,7 +205,7 @@ def integration_contract() -> None:
                    "scripts/m221-dns-wire-check.py reopen",
                    "m221-first-host-dns.log", "m221-reopen-host-dns.log",
                    "m221-first-wire.json", "m221-reopen-wire.json",
-                   "m221-reopen-wire.pcap", "m221-alpine-reopen-cases.tsv",
+                   "m221-reopen-wire.pcap", "scripts/acceptance/reopen_cases.py",
                    "M221_FIRST_DISCOVERY_COMPLETE", "M221_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m221", "scripts/m206-alpine-disk-check.py m221"):
         assert marker in runner, f"M197 shared first/reopen gate missing {marker}"

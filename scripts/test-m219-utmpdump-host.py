@@ -173,7 +173,7 @@ def main() -> None:
                    '"$overlay/root/m219-fixtures/utmpdump-fixture"',
                    "scripts/m219-candidate-elfs.tsv",
                    '"$overlay/root/m219-cohort.tsv"',
-                   "scripts/m219-alpine-reopen-cases.tsv",
+                   "scripts/acceptance/reopen_cases.py",
                    "M219_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m219",
                    "scripts/m206-alpine-disk-check.py m219",

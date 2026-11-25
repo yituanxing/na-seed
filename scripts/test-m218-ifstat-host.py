@@ -123,7 +123,7 @@ def main() -> None:
                    '"$overlay/root/m218-ifstat-workload.sh"',
                    "scripts/m218-candidate-elfs.tsv",
                    '"$overlay/root/m218-cohort.tsv"',
-                   "scripts/m218-alpine-reopen-cases.tsv",
+                   "scripts/acceptance/reopen_cases.py",
                    "M218_REOPEN_DISCOVERY_COMPLETE",
                    "scripts/alpine-compat-report.py m218",
                    "--require-all",

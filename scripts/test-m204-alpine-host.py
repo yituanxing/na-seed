@@ -93,7 +93,7 @@ old_probe += '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
 new_probe = (ROOT / "scripts/probe-alpine-profile.sh").read_text()
 assert "NAS_M204_COMPAT_COHORT:-0" in old_probe
 assert "scripts/m204-alpine-uart.py" in old_probe
-assert "scripts/m204-alpine-reopen-cases.tsv" in old_probe
+assert "scripts/acceptance/reopen_cases.py" in old_probe
 assert "m197-alpine-disk-check.py" in old_probe
 assert "m196-public-wire-check.py" in old_probe
 runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m204")

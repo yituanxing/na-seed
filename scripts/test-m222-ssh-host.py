@@ -185,7 +185,7 @@ def contract() -> None:
                    'm222_start_host first', 'm222_start_host reopen',
                    'm222_stop_host', 'm222-first-wire.json', 'm222-reopen-wire.json',
                    'alpine-compat-report.py m222', 'm222-alpine-disk-check.py',
-                   'm222-alpine-reopen-cases.tsv'):
+                   'scripts/acceptance/reopen_cases.py'):
         assert marker in runner, marker
     for marker in ('ListenAddress=127.0.0.1', 'PasswordAuthentication=no',
                    'UsePAM=no', 'KbdInteractiveAuthentication=no',

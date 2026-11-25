@@ -36,7 +36,7 @@ SOURCES = (
     "scripts/m197-alpine-cases.tsv",
     "scripts/m197-alpine-reopen-cases.tsv",
     "scripts/m204-alpine-cohort.tsv",
-    "scripts/m204-alpine-reopen-cases.tsv",
+    "scripts/acceptance/reopen_cases.py",
     "scripts/m204-alpine-replay-cases.tsv",
     "tests/m197-software-workload.sh",
     "tests/m204-software-workload.sh",

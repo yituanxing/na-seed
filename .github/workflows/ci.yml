@@ -36,6 +36,8 @@ jobs:
           fetch-depth: 2
       - name: Check all PR workflows run submitted commits, not synthetic merge refs
         run: python3 scripts/check-ci-checkout-head.py
+      - name: Verify original M204-M238 second-QEMU guest argv digest after removing duplicate TSVs
+        run: python3 scripts/acceptance/test-reopen-cases.py
       - name: Verify full original ELF marker profiles, fail-closed negatives and synthetic QEMU rejection
         run: python3 scripts/acceptance/test-batch-markers.py
       - name: Lint shared native network coordinator and reject invalid dispatches

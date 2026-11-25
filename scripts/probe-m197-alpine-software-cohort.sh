@@ -2236,28 +2236,18 @@ if [ "$m226" = 1 ]; then
 fi
 case "$nas_acceptance_profile" in
     m198) export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv ;;
-    m226) export BUSYBOX_PARITY_MANIFEST=scripts/m226-alpine-reopen-cases.tsv ;;
-    m225) export BUSYBOX_PARITY_MANIFEST=scripts/m225-alpine-reopen-cases.tsv ;;
-    m224) export BUSYBOX_PARITY_MANIFEST=scripts/m224-alpine-reopen-cases.tsv ;;
-    m223) export BUSYBOX_PARITY_MANIFEST=scripts/m223-alpine-reopen-cases.tsv ;;
-    m222) export BUSYBOX_PARITY_MANIFEST=scripts/m222-alpine-reopen-cases.tsv ;;
-    m221) export BUSYBOX_PARITY_MANIFEST=scripts/m221-alpine-reopen-cases.tsv ;;
-    m220) export BUSYBOX_PARITY_MANIFEST=scripts/m220-alpine-reopen-cases.tsv ;;
-    m219) export BUSYBOX_PARITY_MANIFEST=scripts/m219-alpine-reopen-cases.tsv ;;
-    m218) export BUSYBOX_PARITY_MANIFEST=scripts/m218-alpine-reopen-cases.tsv ;;
-    m215) export BUSYBOX_PARITY_MANIFEST=scripts/m215-alpine-reopen-cases.tsv ;;
-    m238) export BUSYBOX_PARITY_MANIFEST=scripts/m238-alpine-reopen-cases.tsv ;;
-    m237) export BUSYBOX_PARITY_MANIFEST=scripts/m237-alpine-reopen-cases.tsv ;;
-    m236) export BUSYBOX_PARITY_MANIFEST=scripts/m236-alpine-reopen-cases.tsv ;;
-    m235) export BUSYBOX_PARITY_MANIFEST=scripts/m235-alpine-reopen-cases.tsv ;;
-    m206) export BUSYBOX_PARITY_MANIFEST=scripts/m206-alpine-reopen-cases.tsv ;;
-    m205) export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv ;;
     m204)
         if [ "$replay" = 1 ]; then
             export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-replay-cases.tsv
         else
-            export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-reopen-cases.tsv
+            generated="$PWD/$work/m204-alpine-reopen-cases.tsv"
+            python3 scripts/acceptance/reopen_cases.py m204 > "$generated" || exit 2
+            export BUSYBOX_PARITY_MANIFEST="$generated"
         fi ;;
+    m205|m206|m215|m218|m219|m220|m221|m222|m223|m224|m225|m226|m235|m236|m237|m238)
+        generated="$PWD/$work/$nas_acceptance_profile-alpine-reopen-cases.tsv"
+        python3 scripts/acceptance/reopen_cases.py "$nas_acceptance_profile" > "$generated" || exit 2
+        export BUSYBOX_PARITY_MANIFEST="$generated" ;;
     *) export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv ;;
 esac
 case "$nas_acceptance_profile" in
