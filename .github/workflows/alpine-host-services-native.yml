@@ -7,6 +7,8 @@ on:
     paths:
       - '.github/actions/naseed-limine-seed/**'
       - '.github/workflows/alpine-host-services-native.yml'
+      - 'scripts/m228-*.py'
+      - 'scripts/test-m228-*.py'
       - 'scripts/m229-*.py'
       - 'scripts/m230-*.py'
       - 'scripts/m231-*.py'
@@ -65,42 +67,25 @@ jobs:
           case "$PROFILE" in
             m228)
               set -eu
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m228-guest-contract.py
               python3 scripts/test-m228-host-inbound.py
               python3 scripts/test-m228-inbound-oracle.py
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
               python3 -m py_compile scripts/m228-alpine-uart.py scripts/m228-host-inbound-check.py scripts/m228-inbound-oracle.py
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             m229)
               set -eu
               # M229 run #42379360720 reached real second-PID1 getty; the
               # same-line kernel [MISS] syscall diagnostic must not hide login.
               python3 scripts/test-m194-uart-prompt.py
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m229-cohort-contract.py
               python3 scripts/test-m229-valkey-guest-contract.py
               python3 scripts/test-m229-host-resp.py
               python3 scripts/test-m229-valkey-disk-check.py
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
               python3 -m py_compile scripts/m229-alpine-uart.py scripts/m229-host-resp-check.py \
                 scripts/m229-resp-oracle.py scripts/m229-valkey-disk-check.py
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             m230)
               set -eu
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m230-cohort-contract.py
               python3 scripts/test-m230-dropbear-guest-contract.py
               python3 scripts/test-m230-host-ssh.py
@@ -108,102 +93,56 @@ jobs:
               python3 -m py_compile scripts/m230-alpine-uart.py \
                 scripts/m230-host-ssh-check.py scripts/m230-dropbear-disk-check.py
               sh -n tests/m230-alpine-dropbear-workload.sh
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             m231)
               set -eu
               python3 scripts/test-m194-uart-prompt.py
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m231-mosquitto.py
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
               sh -n tests/m231-alpine-mosquitto-workload.sh
               python3 -m py_compile scripts/m231-alpine-uart.py \
                 scripts/m231-host-mqtt-check.py scripts/m231-mosquitto-disk-check.py
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             m232)
               set -eu
               python3 scripts/test-m194-uart-prompt.py
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m232-memcached.py
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
               sh -n tests/m232-alpine-memcached-workload.sh
               python3 -m py_compile scripts/m232-alpine-uart.py \
                 scripts/m232-host-cache-check.py scripts/m232-memcached-disk-check.py
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             m233)
               set -eu
               python3 scripts/test-m194-uart-prompt.py
-              python3 scripts/test-m227-uart-login.py
-              python3 scripts/test-m227-openrc-contract.py
-              python3 scripts/test-m228-hostfwd-contract.py
               python3 scripts/test-m233-hostfwd-udp-contract.py
               python3 scripts/test-m233-dnsmasq.py
-              sh -n scripts/probe-m197-alpine-software-cohort.sh
               sh -n tests/m233-alpine-dnsmasq-workload.sh
               python3 -m py_compile scripts/m233-alpine-uart.py \
                 scripts/m233-host-dns-check.py scripts/m233-dnsmasq-disk-check.py
-              python3 scripts/check-three-isa-core.py
-              python3 scripts/check-architecture-boundaries.py
-              python3 scripts/test-m197-alpine-host.py
               ;;
             *) exit 2 ;;
           esac
-      - name: Install exact profile-specific native dependencies
+          # Shared checks have one owner; keep all per-profile negative assertions.
+          python3 scripts/test-m227-uart-login.py
+          python3 scripts/test-m227-openrc-contract.py
+          python3 scripts/test-m228-hostfwd-contract.py
+          sh -n scripts/probe-m197-alpine-software-cohort.sh
+          python3 scripts/check-three-isa-core.py
+          python3 scripts/check-architecture-boundaries.py
+          python3 scripts/test-m197-alpine-host.py
+      - name: Install shared native dependencies with exact profile variants
         timeout-minutes: 20
         run: |
           set -eu
+          PATH=/usr/sbin:/sbin:$PATH
+          export PATH
+          tools='cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3'
           case "$PROFILE" in
-            m228)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
-              ;;
-            m229)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
-              ;;
-            m230)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl ssh:openssh-client ssh-keygen:openssh-client
-              ;;
-            m231)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
-              ;;
-            m232)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3
-              ;;
-            m233)
-              set -eu
-              PATH=/usr/sbin:/sbin:$PATH
-              export PATH
-              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
-              ;;
+            m230) tools="$tools openssl:openssl ssh:openssh-client ssh-keygen:openssh-client" ;;
+            m232) : ;;  # No openssl in original M232 prerequisite contract
+            m228|m229|m231|m233) tools="$tools openssl:openssl" ;;
             *) exit 2 ;;
           esac
+          sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback --cross-cxx --explicit-tools $tools
       - name: Recover signed three-ISA Limine when previously required
         if: ${{ matrix.profile != 'm228' }}
         uses: ./.github/actions/naseed-limine-seed
