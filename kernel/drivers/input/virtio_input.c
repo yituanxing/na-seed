@@ -54,7 +54,6 @@ struct virtinput_slot {
     struct nas_dma_page event_dma;
     const struct nas_bus_device *bus_device;
     uint16_t slot_by_head[VIRTINPUT_RING_SIZE]; /* 0=unused, otherwise DMA slot + 1 */
-    uint8_t device_name[80];
     bool registered;
     bool poisoned;
     bool busy;
@@ -139,7 +138,8 @@ static int read_caps(struct virtinput_slot *v,uint8_t select,uint8_t subsel,
     if (rc) return rc;
     for (unsigned i=0;i<(unsigned)n*8U;i++) {
         if (!(bitmap[i/8U] & (1U<<(i%8U)))) continue;
-        nas_input_set_capability(&v->input,type,(uint16_t)i);
+        rc=nas_input_set_capability(&v->input,type,(uint16_t)i);
+        if(rc)return rc; /* Reject malformed device-advertised bits. */
     }
     return 0;
 }
@@ -150,8 +150,10 @@ static int read_properties(struct virtinput_slot *v) {
                        bitmap,sizeof(bitmap),&n);
     if (rc) return rc;
     for (unsigned i=0;i<(unsigned)n*8U;i++)
-        if (bitmap[i/8U] & (1U<<(i%8U)))
-            (void)nas_input_set_property(&v->input,(uint16_t)i);
+        if (bitmap[i/8U] & (1U<<(i%8U))) {
+            rc=nas_input_set_property(&v->input,(uint16_t)i);
+            if(rc)return rc;
+        }
     return 0;
 }
 static int describe_input(struct virtinput_slot *v) {
@@ -160,11 +162,12 @@ static int describe_input(struct virtinput_slot *v) {
     int rc=read_config(&v->transport,VIRTIO_INPUT_CFG_ID_NAME,0,
                        name_buf,sizeof(name_buf),&n);
     if (rc) return rc;
-    unsigned length=n<sizeof(v->device_name)-1U ? n : sizeof(v->device_name)-1U;
-    memcpy(v->device_name,name_buf,length);
-    v->device_name[length]=0;
-    const char *name=length?(const char *)v->device_name:"VirtIO Input";
-    nas_input_device_init(&v->input,name);
+    /* Input core copies the name into its own published device; the
+     * VirtIO transport must not retain a second 80-byte copy. */
+    unsigned length=n<NAS_INPUT_NAME_BYTES-1U ? n : NAS_INPUT_NAME_BYTES-1U;
+    name_buf[length]=0;
+    nas_input_device_init(&v->input,
+                          length?(const char *)name_buf:"VirtIO Input");
     uint8_t devids[8]={0};
     rc=read_config(&v->transport,VIRTIO_INPUT_CFG_ID_DEVIDS,0,
                    devids,sizeof(devids),&n);
@@ -201,12 +204,13 @@ static int describe_input(struct virtinput_slot *v) {
                        abs,sizeof(abs),&n);
         if (rc) return rc;
         if (n!=sizeof(abs)) return -EIO;
-        nas_input_set_absinfo(&v->input,(uint16_t)axis,
-                             (int32_t)nas_get_le32(abs),
-                             (int32_t)nas_get_le32(abs+4),
-                             (int32_t)nas_get_le32(abs+8),
-                             (int32_t)nas_get_le32(abs+12),
-                             (int32_t)nas_get_le32(abs+16));
+        rc=nas_input_set_absinfo(&v->input,(uint16_t)axis,
+                                (int32_t)nas_get_le32(abs),
+                                (int32_t)nas_get_le32(abs+4),
+                                (int32_t)nas_get_le32(abs+8),
+                                (int32_t)nas_get_le32(abs+12),
+                                (int32_t)nas_get_le32(abs+16));
+        if(rc)return rc;
     }
     return 0;
 }

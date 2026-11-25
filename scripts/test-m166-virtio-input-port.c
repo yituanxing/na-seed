@@ -44,7 +44,7 @@ struct fake_vq {unsigned count;struct vring_desc *desc;
                 struct vring_avail *avail;struct vring_used *used;};
 struct fake_input {uint32_t status;uint64_t features;
     uint8_t select,subsel;unsigned resets,notifies;
-    bool tablet,fail_status_setup;
+    bool tablet,fail_status_setup,invalid_keycap;
     struct fake_vq queues[2];};
 
 static const struct nas_bus_driver *bound_driver;
@@ -151,8 +151,9 @@ static uint8_t mock_byte(struct fake_input *m,unsigned off){
         size=1;data[0]=m->tablet?0x02:0;break;
     case 0x11:
         if(m->subsel==1){
-            size=m->tablet?35:4;
-            if(m->tablet)data[272/8U]|=1U<<(272%8U);
+            size=m->invalid_keycap?101U:(m->tablet?35U:4U);
+            if(m->invalid_keycap)data[800/8U]|=1U<<(800%8U);
+            else if(m->tablet)data[272/8U]|=1U<<(272%8U);
             else data[30/8U]|=1U<<(30%8U);
         }else if(m->subsel==3 && m->tablet){size=1;data[0]=0x03;}
         break;
@@ -234,6 +235,18 @@ int main(void) {
     no_transport.virtio=NULL;
     assert(!bound_driver->match(&no_transport));
     assert(bound_driver->match(&kdev));
+    /* KEY code 800 is outside the Linux KEY_MAX 0x2ff bitmap. A device
+     * claiming it must never publish a partial InputDevice or retain a
+     * dead heap/DMA owner from its failed pre-queue probe. */
+    struct fake_input invalid={.features=NAS_VIRTIO_F_VERSION_1,
+                               .invalid_keycap=true};
+    struct nas_virtio_transport invalid_tr={
+        .context=&invalid,.ops=&mock_ops,.dma=&nas_dma_qemu_coherent};
+    struct nas_bus_device invalid_dev=kdev;
+    invalid_dev.virtio=&invalid_tr;
+    assert(bound_driver->probe(&invalid_dev)==-EINVAL);
+    assert(!nas_virtio_input_count() && !registered && !used_pages());
+    puts("[M166 INPUT CAP FAIL CLOSED PASS] malformed KEY bitmap rejected before publication or DMA");
     assert(bound_driver->probe(&kdev)==0);
     assert(nas_virtio_input_count()==1 && registered==1);
     assert(keyboard.queues[0].avail->idx==64);
