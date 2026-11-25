@@ -102,7 +102,7 @@ jobs:
         run: sh scripts/check-m166-input-port.sh
       - name: Validate existing M177/M186 GPU resource and DMA release oracles on cleanup
         if: startsWith(github.ref, 'refs/heads/refactor/naseed-cleanup-')
-        run: sh scripts/check-m177-gpu.sh
+        run: NAS_M177_GPU_ONLY=1 sh scripts/check-m177-gpu.sh
       - name: NAS-A013 Linux PTY oracle and real NaSeed TTY readv/VMIN/EOF contract
         run: sh scripts/check-a013-linux-tty-vectors.sh
       - name: M107 Path-owned AF_UNIX inode namespace, SCM_RIGHTS and Linux ABI oracle

@@ -26,6 +26,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
     kernel/drivers/core/chrdev.c -o build/m177/test-display-handoff
 ASAN_OPTIONS=detect_leaks=0 build/m177/test-display-handoff handoff
 ASAN_OPTIONS=detect_leaks=0 build/m177/test-display-handoff locked
+# The cleanup smoke already runs M106/M166 directly. Do not transitively
+# repeat those suites via M172 -> M166/M106 or M176 -> M175. The default
+# device workflow retains every full host and hardware contract below.
+if [ "${NAS_M177_GPU_ONLY:-0}" = 1 ]; then
+    echo '[M177/M186 FOCUSED GPU HOST PASS] 2D protocol, IRQ runtime, DMA failure/retry, display class handoff'
+    exit 0
+fi
 sh -n scripts/probe-m177-gpu-2d.sh
 sh -n scripts/probe-m174-batch.sh
 sh -n scripts/run.sh
