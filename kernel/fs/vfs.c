@@ -2182,38 +2182,6 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     int dropped_from=nas_vfs_path_put(&from);
     return dropped_to ? dropped_to : dropped_from ? dropped_from : rc;
 }
-int nas_vfs_link(const char *oldpath,const char *newpath) {
-    if(!oldpath || oldpath[0]!='/' || !newpath || newpath[0]!='/')
-        return -EINVAL;
-    struct nas_vfs_path source={0},parent={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,oldpath,false,&source);
-    if(rc)return rc;
-    struct nas_fs_node node;
-    rc=nas_vfs_path_node(&source,&node);
-    /* Preserve EPERM for linking root itself, whose Dentry has no parent. */
-    if(!rc && node.is_dir)rc=-EPERM;
-    char leaf[256];
-    if(!rc)rc=nas_fs_lookup_parent_at_policy(NULL,NULL,newpath,
-                                             NAS_FS_TRAILING_CREATE_DEST,
-                                             &parent,leaf);
-    if(!rc)rc=nas_vfs_link_path_child(&source,&parent,leaf);
-    int dropped_parent=parent.dentry ? nas_vfs_path_put(&parent) : 0;
-    int dropped_source=nas_vfs_path_put(&source);
-    return dropped_parent ? dropped_parent : dropped_source ? dropped_source : rc;
-}
-int nas_vfs_symlink(const char *target,const char *path) {
-    if(!target)return -EINVAL;
-    if(!path || path[0]!='/')return -EINVAL;
-    struct nas_vfs_path parent={0};
-    char leaf[256];
-    int rc=nas_fs_lookup_parent_at_policy(NULL,NULL,path,
-                                          NAS_FS_TRAILING_CREATE_DEST,
-                                          &parent,leaf);
-    if(rc)return rc;
-    rc=nas_vfs_symlink_child(target,&parent,leaf);
-    int dropped=nas_vfs_path_put(&parent);
-    return dropped ? dropped : rc;
-}
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     int status=vfs_node_status(node);
     if(status)return status;

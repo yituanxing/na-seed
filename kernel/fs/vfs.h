@@ -388,6 +388,4 @@ int nas_vfs_sync_all(void);
 int nas_vfs_mkdir(const char *absolute,uint64_t mode);
 int nas_vfs_unlink(const char *absolute,uint64_t flags);
 int nas_vfs_rename(const char *old_absolute,const char *new_absolute,uint64_t flags);
-int nas_vfs_link(const char *old_absolute,const char *new_absolute);
-int nas_vfs_symlink(const char *target,const char *absolute);
 #endif
