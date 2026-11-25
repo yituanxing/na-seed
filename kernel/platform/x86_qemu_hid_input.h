@@ -91,4 +91,85 @@ static inline int nas_x86_qemu_hid_poll(
     }
     return (int)reports;
 }
+/* A standalone QEMU HID profile owns exactly one xHC, one input device and
+ * one lifetime. Keyboard/mouse differ only by their HID class protocol.
+ * QEMU-specific diagnostics belong to the profile, never the controller. */
+struct nas_x86_qemu_hid_profile {
+    bool mouse;
+    const char *function_failure,*bar_failure,*bar_label,*bar_suffix;
+    const char *diagnostic,*pinned,*missing,*enumerated,*attached,*released,*rejected;
+};
+struct nas_x86_qemu_hid_port {
+    struct nas_x86_qemu_xhci hw;
+    struct nas_xhci_ro_session xhci;
+    struct nas_x86_qemu_hid_device input;
+    uint64_t reports;
+    bool attached;
+};
+static inline int nas_x86_qemu_hid_port_bind(
+    struct nas_x86_qemu_hid_port *port,
+    const struct nas_x86_qemu_hid_profile *profile,
+    const struct nas_pci_function_info *fn,
+    const struct nas_pci_resources *resources) {
+    uint64_t flags=0;
+    int rc=nas_x86_qemu_xhci_prepare(&port->hw,fn,resources,&flags,
+        profile->function_failure,profile->bar_failure,
+        profile->bar_label,profile->bar_suffix);
+    if(rc)return rc;
+    rc=profile->mouse ?
+        nas_xhci_hid_mouse_open(&port->hw.io,&nas_dma_qemu_coherent,&port->xhci) :
+        nas_xhci_hid_open(&port->hw.io,&nas_dma_qemu_coherent,&port->xhci);
+    if(rc) {
+        nas_print(profile->diagnostic);
+        nas_dec((unsigned)port->xhci.debug_stage);
+        nas_print(" rc=");nas_dec((unsigned)(rc<0?-rc:rc));
+        nas_print(" cc=");nas_dec((unsigned)port->xhci.debug_completion_code);
+        nas_print("\n");
+        int closed=profile->mouse ?
+            nas_xhci_hid_mouse_close(&port->xhci) :
+            nas_xhci_hid_close(&port->xhci);
+        if(closed)nas_print(profile->pinned);
+        else (void)nas_x86_qemu_xhci_release(&port->hw);
+        nas_x86_qemu_restore_if(flags);
+        nas_print(profile->missing);
+        return rc;
+    }
+    port->attached=true;
+    nas_x86_qemu_restore_if(flags);
+    nas_print(profile->enumerated);
+    return 0;
+}
+static inline int nas_x86_qemu_hid_port_publish(
+    struct nas_x86_qemu_hid_port *port,
+    const struct nas_x86_qemu_hid_profile *profile) {
+    if(!port->attached || port->input.input.registered)return -ENODEV;
+    int rc=nas_x86_qemu_hid_publish(&port->input,0U,profile->mouse);
+    if(rc)return rc;
+    nas_print(profile->attached);
+    return 0;
+}
+static inline int nas_x86_qemu_hid_port_poll(
+    struct nas_x86_qemu_hid_port *port,
+    const struct nas_x86_qemu_hid_profile *profile,unsigned budget) {
+    if(!port->attached || !port->input.input.registered)return -ENODEV;
+    return nas_x86_qemu_hid_poll(&port->xhci,
+        profile->mouse ? nas_xhci_hid_mouse_poll : nas_xhci_hid_poll,
+        &port->input,budget,&port->reports,profile->rejected);
+}
+static inline int nas_x86_qemu_hid_port_shutdown(
+    struct nas_x86_qemu_hid_port *port,
+    const struct nas_x86_qemu_hid_profile *profile) {
+    if(!port->attached)return -ENODEV;
+    int rc=nas_x86_qemu_hid_unpublish(&port->input);
+    if(rc)return rc;
+    rc=profile->mouse ? nas_xhci_hid_mouse_close(&port->xhci) :
+                        nas_xhci_hid_close(&port->xhci);
+    if(rc)return rc; /* Failed HCHalt still pins every DMA page and BAR. */
+    rc=nas_x86_qemu_xhci_release(&port->hw);
+    if(rc)return rc;
+    port->attached=false;
+    nas_print(profile->released);
+    return 0;
+}
+
 #endif
