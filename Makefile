@@ -392,7 +392,7 @@ $(HDR):
 
 
 # M0-only RV64 hardware smoke. Full RV64 shared-kernel build lives in
-# scripts/build-riscv64-full.sh until the target entrypoints are unified.
+# use 'make ARCH=riscv64 kernel' for the full shared-kernel build.
 RVCFLAGS := --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
  -mcmodel=medany -mno-relax -std=c11 -O2 -g -Wall -Wextra -Werror \
  -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
