@@ -31,3 +31,15 @@ jobs:
           path: build/cleanup-references.tsv
           if-no-files-found: error
           retention-days: 7
+      # One-shot exact-head export for full-file offline reachability audit.
+      - name: Export tracked source files for read-only offline review
+        run: |
+          mkdir -p build
+          git archive --format=tar.gz --output=build/naseed-source-review.tar.gz HEAD
+      - name: Transfer snapshot for exact-head cleanup analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-source-review
+          path: build/naseed-source-review.tar.gz
+          if-no-files-found: error
+          retention-days: 1
