@@ -1,0 +1,267 @@
+# M235-M238 share one native signed ELF host/guest acceptance pipeline.
+# Original independent two-boot oracles and exact per-ISA evidence are retained.
+# The former AMD64 gate is strengthened: other ISAs still run after a failure.
+name: NaSeed original signed Alpine 235-238 native two-boot cohorts
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/workflows/alpine-two-boot-batches.yml'
+      - 'rootfs/alpine/packages-m235-candidates.txt'
+      - 'rootfs/alpine/packages-m236-candidates.txt'
+      - 'rootfs/alpine/packages-m237-candidates.txt'
+      - 'rootfs/alpine/packages-m238-candidates.txt'
+      - 'scripts/acceptance/run-local-alpine-cohort.sh'
+      - 'scripts/alpine-compat-report.py'
+      - 'scripts/alpine-first-uart.py'
+      - 'scripts/check-m141-candidates.py'
+      - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
+      - 'scripts/inventory-m141-signed-apks.sh'
+      - 'scripts/m206-alpine-disk-check.py'
+      - 'scripts/m235-*'
+      - 'scripts/m236-*'
+      - 'scripts/m237-*'
+      - 'scripts/m238-*'
+      - 'scripts/probe-alpine-profile.sh'
+      - 'scripts/probe-m197-alpine-software-cohort.sh'
+      - 'scripts/test-m236-*'
+      - 'scripts/test-m237-*'
+      - 'scripts/test-m238-*'
+      - 'tests/m205-software-workload.sh'
+      - 'tests/m235-software-workload.sh'
+      - 'tests/m236-software-workload.sh'
+      - 'tests/m237-software-workload.sh'
+      - 'tests/m238-software-workload.sh'
+  workflow_dispatch:
+    inputs:
+      profile:
+        type: choice
+        description: Strict original ELF cohort
+        required: true
+        options: [m235, m236, m237, m238]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    name: ${{ matrix.profile }} signed ELF two native QEMUs / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'push' && '["m235","m236","m237","m238"]' || format('["{0}"]', inputs.profile)) }}
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ matrix.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Execute original signed ELF host oracles and two native QEMU boots
+        timeout-minutes: 105
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m235)
+              export NAS_M235_PUBLIC_SECONDS=4400
+              export NAS_M235_PUBLIC_QEMU_TIMEOUT=4500
+              export NAS_M235_REOPEN_SECONDS=1200
+              ;;
+            m236)
+              export NAS_M236_PUBLIC_SECONDS=4400
+              export NAS_M236_PUBLIC_QEMU_TIMEOUT=4500
+              export NAS_M236_REOPEN_SECONDS=1200
+              ;;
+            m237)
+              export NAS_M237_PUBLIC_SECONDS=4400
+              export NAS_M237_PUBLIC_QEMU_TIMEOUT=4500
+              export NAS_M237_REOPEN_SECONDS=1200
+              ;;
+            m238)
+              export NAS_M238_PUBLIC_SECONDS=4400
+              export NAS_M238_PUBLIC_QEMU_TIMEOUT=4500
+              export NAS_M238_REOPEN_SECONDS=1200
+              ;;
+            *) exit 2 ;;
+          esac
+          sh scripts/acceptance/run-local-alpine-cohort.sh "$PROFILE" --native "$PORT"
+      - name: Inspect real M237 original musl after a failed AMD64 boot
+        if: ${{ failure() && matrix.profile == 'm237' && matrix.port == 'amd64' }}
+        run: |
+          libc=$(find build/external/m237-candidate-inventory/amd64 \
+            -type f \( -name 'ld-musl-x86_64.so.1' -o -name 'libc.musl-x86_64.so.1' \) \
+            -print -quit 2>/dev/null || true)
+          if [ -n "$libc" ]; then
+            echo "[M237 MUSL HLT] original signed Alpine libc: $libc"
+            readelf -lW "$libc" | head -35
+            objdump -d -Mintel --start-address=0x41d90 --stop-address=0x41f00 \
+              "$libc" | tail -90
+          else
+            echo '[M237 MUSL HLT] no extracted original libc to inspect'
+          fi
+      - name: Preserve exact M235 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm235' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m235-real-alpine-amd64
+          path: |
+            build/external/m235-candidate-inventory/amd64/candidates.tsv
+            build/external/m235-candidate-inventory/amd64/apk-install.log
+            build/external/m235-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m235-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m235-*.json
+            build/external/m191-alpine-rootfs/amd64/m235-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m223-*-host-http.log
+            build/external/m191-alpine-rootfs/amd64/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+          if-no-files-found: ignore
+      - name: Preserve exact M235 other evidence
+        if: ${{ always() && matrix.profile == 'm235' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m235-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m235-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m235-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m235-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m235-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m235-*.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m235-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-*-host-http.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m223-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+          if-no-files-found: ignore
+      - name: Preserve exact M236 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm236' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m236-original-real-alpine-amd64
+          path: |
+            build/external/m236-candidate-inventory/amd64/candidates.tsv
+            build/external/m236-candidate-inventory/amd64/apk-install.log
+            build/external/m236-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m236-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m236-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m236-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/amd64/m236-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve exact M236 other evidence
+        if: ${{ always() && matrix.profile == 'm236' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m236-original-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m236-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m236-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m236-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m236-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m236-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve exact M237 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm237' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m237-original-real-alpine-amd64
+          path: |
+            build/external/m237-candidate-inventory/amd64/candidates.tsv
+            build/external/m237-candidate-inventory/amd64/apk-install.log
+            build/external/m237-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m237-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m237-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m237-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/amd64/m237-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+            build/busybox-source-parity-x86/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve exact M237 other evidence
+        if: ${{ always() && matrix.profile == 'm237' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m237-original-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m237-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m237-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m237-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m237-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m237-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m237-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m237-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+            build/port-riscv64/full/matrix-source/m197-batch*.log
+            build/port-aarch64/full/matrix-source/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve exact M238 amd64 evidence
+        if: ${{ always() && matrix.profile == 'm238' && matrix.port == 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m238-original-real-alpine-amd64
+          path: |
+            build/external/m238-candidate-inventory/amd64/candidates.tsv
+            build/external/m238-candidate-inventory/amd64/apk-install.log
+            build/external/m238-candidate-inventory/amd64/apk-offline-proof.log
+            build/external/m238-candidate-inventory/amd64/signed-cache.sha256
+            build/external/m191-alpine-rootfs/amd64/m238-compat-report.json
+            build/external/m191-alpine-rootfs/amd64/m238-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/amd64/m238-*runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-live.serial.log
+            build/external/m191-alpine-rootfs/amd64/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.json
+            build/external/m191-alpine-rootfs/amd64/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve exact M238 other evidence
+        if: ${{ always() && matrix.profile == 'm238' && matrix.port != 'amd64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m238-original-real-alpine-${{ matrix.port }}
+          path: |
+            build/external/m238-candidate-inventory/${{ matrix.port }}/candidates.tsv
+            build/external/m238-candidate-inventory/${{ matrix.port }}/apk-install.log
+            build/external/m238-candidate-inventory/${{ matrix.port }}/apk-offline-proof.log
+            build/external/m238-candidate-inventory/${{ matrix.port }}/signed-cache.sha256
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m238-compat-report.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m238-physical-ext4-evidence.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m238-*runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-live.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 7
