@@ -31,3 +31,16 @@ jobs:
           path: build/cleanup-references.tsv
           if-no-files-found: error
           retention-days: 7
+
+      # Temporary full-source transfer for an exact-head local, read-only audit.
+      - name: Export exact-head tracked sources for offline audit
+        run: |
+          mkdir -p build
+          git archive --format=tar.gz --output=build/naseed-source-review.tar.gz HEAD
+      - name: Preserve source snapshot for one-off offline review
+        uses: actions/upload-artifact@v4
+        with:
+          name: naseed-source-review
+          path: build/naseed-source-review.tar.gz
+          if-no-files-found: error
+          retention-days: 1
