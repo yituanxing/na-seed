@@ -89,7 +89,7 @@ jobs:
           sh -n scripts/probe-alpine-profile.sh
           sh -n tests/m206-software-workload.sh
           sh -n tests/m205-software-workload.sh
-          python3 -m py_compile scripts/m206-alpine-uart.py scripts/alpine-compat-report.py scripts/m206-alpine-disk-check.py
+          python3 -m py_compile scripts/alpine-first-uart.py scripts/alpine-compat-report.py scripts/m206-alpine-disk-check.py
       - name: Install native ISA QEMU, cross-GCC and real ext4 host tools
         timeout-minutes: 18
         run: |

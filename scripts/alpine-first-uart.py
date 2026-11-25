@@ -6,7 +6,26 @@ from pathlib import Path
 import sys
 
 # timeout, guest command, command description, ledger description, observation message
-PROFILES = {'m215': (2400,
+PROFILES = {'m204': (1800,
+          'sh /root/m204-software-workload.sh --first',
+          'all manifest entries measured with real public APK and application work',
+          'durable first-boot result ledger and installed original ELF files',
+          '[M204 ALPINE DISCOVERY RECORDED] official APK cohort '
+          '+ individual functional outcomes on ext4; '
+          'a package failure is NOT a package PASS'),
+ 'm205': (4400,
+          'sh /root/m205-software-workload.sh --first',
+          'original signed Alpine M205 entrypoints and real functional outcomes',
+          'durable M205 first-boot ledger, installation and function evidence',
+          '[M205 ALPINE DISCOVERY RECORDED] signed original APKs '
+          'plus per-ELF real outcomes; individual failures remain failures'),
+ 'm206': (4400,
+          'NAS_M206_COMPAT_COHORT=1 sh /root/m205-software-workload.sh --first',
+          '20 new original signed Alpine ELFs with real network/storage/markup probes',
+          'durable original M206 installed APK and first-boot function ledger',
+          '[M206 ALPINE DISCOVERY RECORDED] 20 original signed '
+          'ELF semantics with honest individual failures'),
+ 'm215': (2400,
           'NAS_M215_PILOT=1 sh /root/m205-software-workload.sh --first',
           'five independently probed original signed Alpine ELFs',
           'durable five-ELF first-boot signed APK and functionality ledger',
@@ -92,12 +111,12 @@ def main():
     profile, runner, serial, runner_log, fifo = sys.argv[1:]
     label = profile.upper()
     default, guest, description, ledger, message = PROFILES[profile]
-    spec = spec_from_file_location("alpine_first_uart_owner", Path(__file__).with_name("m205-alpine-uart.py"))
+    spec = spec_from_file_location("alpine_first_uart_owner", Path(__file__).with_name("m197-alpine-uart.py"))
     if spec is None or spec.loader is None:
         raise RuntimeError("missing native first-QEMU UART owner")
     owner = module_from_spec(spec)
     spec.loader.exec_module(owner)
-    commands = owner.m204.M197.build_commands(cache_index=True) + (
+    commands = owner.build_commands(cache_index=True) + (
         (guest + f"; printf '{label}_COHORT_SCRIPT_RC=%d\\n' \"$?\"\r",
          f"{label}_COHORT_SCRIPT_RC=0", description),
         (f"test -s /root/{profile}-first-results.tsv && sync; "
@@ -105,7 +124,7 @@ def main():
          f"{label}_DISCOVERY_SYNC_RC=0", ledger),
     )
     seconds = int(os.environ.get(f"NAS_{label}_PUBLIC_SECONDS", str(default)))
-    owner.m204.M197.M194.run(runner, Path(serial), Path(runner_log), Path(fifo),
+    owner.M194.run(runner, Path(serial), Path(runner_log), Path(fifo),
                              seconds + 35, commands=commands, stage=label, success_message=message)
 
 

@@ -1516,13 +1516,13 @@ else
         python3 scripts/alpine-first-uart.py m235 "$runner" "$serial" \
             "$PWD/$work/m235-first-runner.log" "$fifo"
     elif [ "$m206" = 1 ]; then
-        python3 scripts/m206-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m206 "$runner" "$serial" \
             "$PWD/$work/m206-first-runner.log" "$fifo"
     elif [ "$m205" = 1 ]; then
-        python3 scripts/m205-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m205 "$runner" "$serial" \
             "$PWD/$work/m205-first-runner.log" "$fifo"
     elif [ "$m204" = 1 ]; then
-        python3 scripts/m204-alpine-uart.py "$runner" "$serial" \
+        python3 scripts/alpine-first-uart.py m204 "$runner" "$serial" \
             "$PWD/$work/m204-first-runner.log" "$fifo"
     else
         python3 scripts/m197-alpine-uart.py "$runner" "$serial" \

@@ -27,7 +27,7 @@ SOURCES = (
     "scripts/m194-alpine-uart.py",
     "scripts/m197-alpine-stage.py",
     "scripts/m197-alpine-uart.py",
-    "scripts/m204-alpine-uart.py",
+    "scripts/alpine-first-uart.py",
     "scripts/m195-alpine-disk-check.py",
     "scripts/m196-public-wire-check.py",
     "scripts/m197-alpine-disk-check.py",

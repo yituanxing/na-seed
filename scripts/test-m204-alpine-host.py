@@ -92,23 +92,30 @@ assert '. scripts/acceptance/profile.sh' in old_probe
 old_probe += '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text()
 new_probe = (ROOT / "scripts/probe-alpine-profile.sh").read_text()
 assert "NAS_M204_COMPAT_COHORT:-0" in old_probe
-assert "scripts/m204-alpine-uart.py" in old_probe
+assert "scripts/alpine-first-uart.py m204" in old_probe
 assert "scripts/acceptance/reopen_cases.py" in old_probe
 assert "m197-alpine-disk-check.py" in old_probe
 assert "m196-public-wire-check.py" in old_probe
 runpy.run_path(str(ROOT / "scripts/test-acceptance-profiles.py"))["check_launch_profile"]("m204")
 assert "--allow-untrusted" not in new_probe
 
-# M197 retains its established no-cache baseline; M204 must reuse the
-# first public transaction's signed index, not run another WAN `apk update`.
-uart_path = ROOT / "scripts/m204-alpine-uart.py"
-uart_spec = importlib.util.spec_from_file_location("m204_cache_contract", uart_path)
-assert uart_spec is not None and uart_spec.loader is not None
-uart = importlib.util.module_from_spec(uart_spec)
-uart_spec.loader.exec_module(uart)
-assert uart.M197.COMMANDS[3][0].startswith("apk --no-cache add ")
-assert uart.COMMANDS[3][0].startswith("apk add bash lua5.4 sqlite git;")
-assert uart.M197.COMMANDS[3][1] == uart.COMMANDS[3][1]
+# The M204/M205/M206 first-boot serial drivers share one existing command
+# dispatcher. These profile contracts are still independent of QEMU results.
+profiles = runpy.run_path(str(ROOT / "scripts/alpine-first-uart.py"))["PROFILES"]
+assert {"m204", "m205", "m206"}.issubset(profiles)
+assert profiles["m204"][0] == 1800
+assert profiles["m205"][0] == profiles["m206"][0] == 4400
+assert profiles["m204"][1] == "sh /root/m204-software-workload.sh --first"
+assert profiles["m205"][1] == "sh /root/m205-software-workload.sh --first"
+assert profiles["m206"][1] == "NAS_M206_COMPAT_COHORT=1 sh /root/m205-software-workload.sh --first"
+original_uart = runpy.run_path(str(ROOT / "scripts/m197-alpine-uart.py"))
+assert original_uart["COMMANDS"][3][0].startswith("apk --no-cache add ")
+assert original_uart["build_commands"](cache_index=True)[3][0].startswith(
+    "apk add bash lua5.4 sqlite git;")
+assert original_uart["COMMANDS"][3][1] == original_uart["build_commands"](cache_index=True)[3][1]
+for profile in ("m204", "m205", "m206"):
+    assert f"scripts/alpine-first-uart.py {profile}" in old_probe
+
 guest_lines = (ROOT / "tests/m204-software-workload.sh").read_text().splitlines()
 guest = "\n".join(guest_lines)
 # The public-wire capture of the x86 Redis failure showed continuous HTTPS
