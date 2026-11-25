@@ -94,6 +94,15 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-usercopy-pages.c kernel/mm/usercopy.c kernel/lib/string.c -o /tmp/naseed-usercopy-pages && /tmp/naseed-usercopy-pages
       - name: M106 real filesystem syscall usercopy and pipe/socket transaction regression
         run: sh scripts/check-m106-usercopy-syscalls.sh
+      # Driver ownership was made conditional on actual device admission.
+      # Existing failure/rollback oracles must run on cleanup pushes too,
+      # not only on separately dispatched M166/M177 native workflows.
+      - name: Validate existing M166/M185 VirtIO Input allocation and DMA rollback on cleanup
+        if: startsWith(github.ref, 'refs/heads/refactor/naseed-cleanup-')
+        run: sh scripts/check-m166-input-port.sh
+      - name: Validate existing M177/M186 GPU resource and DMA release oracles on cleanup
+        if: startsWith(github.ref, 'refs/heads/refactor/naseed-cleanup-')
+        run: sh scripts/check-m177-gpu.sh
       - name: NAS-A013 Linux PTY oracle and real NaSeed TTY readv/VMIN/EOF contract
         run: sh scripts/check-a013-linux-tty-vectors.sh
       - name: M107 Path-owned AF_UNIX inode namespace, SCM_RIGHTS and Linux ABI oracle
