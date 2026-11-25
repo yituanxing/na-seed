@@ -16,7 +16,6 @@
 #define REG_CTRL  0x00000U
 #define REG_STATUS 0x00008U
 #define REG_EERD  0x00014U
-#define REG_ICR   0x000c0U
 #define REG_IMC   0x000d8U
 #define REG_RCTL  0x00100U
 #define REG_TCTL  0x00400U
@@ -160,8 +159,7 @@ int nas_e1000_close(struct nas_e1000_session *s) {
     if(__atomic_exchange_n(&s->closing,true,__ATOMIC_ACQ_REL))
         return -EBUSY;
     if(__atomic_load_n(&s->in_tx,__ATOMIC_ACQUIRE) ||
-       __atomic_load_n(&s->in_rx_poll,__ATOMIC_ACQUIRE) ||
-       __atomic_load_n(&s->in_irq,__ATOMIC_ACQUIRE)) {
+       __atomic_load_n(&s->in_rx_poll,__ATOMIC_ACQUIRE)) {
         __atomic_store_n(&s->closing,false,__ATOMIC_RELEASE);
         return -EBUSY;
     }
@@ -378,15 +376,4 @@ bool nas_e1000_link_up(void *backend) {
     if(!s || !s->ready || s->closing)return false;
     uint32_t status=0;
     return !reg_read(s,REG_STATUS,&status) && (status&STATUS_LU)!=0U;
-}
-
-int nas_e1000_irq_ack(struct nas_e1000_session *s) {
-    if(!s)return -EINVAL;
-    if(__atomic_exchange_n(&s->in_irq,true,__ATOMIC_ACQUIRE))
-        return -EAGAIN;
-    uint32_t cause=0;
-    int rc=s->ready && !s->closing ?
-           reg_read(s,REG_ICR,&cause) : -ENODEV;
-    __atomic_store_n(&s->in_irq,false,__ATOMIC_RELEASE);
-    return rc ? rc : (int)(cause&0x7fffffffU);
 }

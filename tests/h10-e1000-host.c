@@ -18,7 +18,6 @@
 #define REG_CTRL   0x0000U
 #define REG_STATUS 0x0008U
 #define REG_EERD   0x0014U
-#define REG_ICR    0x00c0U
 #define REG_IMS    0x00d0U
 #define REG_IMC    0x00d8U
 #define REG_RCTL   0x0100U
@@ -126,17 +125,11 @@ static void fake_tx_execute(struct fake_e1000 *f,uint32_t tail) {
         head=(head+1U)%count;
     }
     f->r[REG_TDH/4U]=head;
-    f->r[REG_ICR/4U]|=1U; /* TXDW */
 }
 static int fake_read(void *ctx,uint32_t offset,uint32_t *value) {
     struct fake_e1000 *f=ctx;
     if(!f || !value || (offset&3U) ||
        offset>=E1000_REG_BYTES)return -EIO;
-    if(offset==REG_ICR) {
-        *value=f->r[REG_ICR/4U];
-        f->r[REG_ICR/4U]=0U;
-        return 0;
-    }
     if(offset==REG_STATUS) {
         *value=f->no_link ? 0U : f->r[offset/4U];
         return 0;
@@ -233,7 +226,6 @@ static int inject_rx(struct fake_e1000 *f,const uint8_t *data,
     d[12U]=status;
     d[13U]=errors;
     f->r[REG_RDH/4U]=(head+1U)%count;
-    f->r[REG_ICR/4U]|=(1U<<7); /* RXT0 */
     ++f->rx_count;
     return 0;
 }

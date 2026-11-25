@@ -34,7 +34,7 @@ struct nas_e1000_session {
     uint8_t mac[6];
     uint8_t rx_head,tx_head;
     bool tx_pending,ready,may_dma;
-    bool in_rx_poll,in_tx,in_irq,closing;
+    bool in_rx_poll,in_tx,closing;
 };
 
 int nas_e1000_open(const struct nas_e1000_io *,
@@ -44,7 +44,4 @@ int nas_e1000_close(struct nas_e1000_session *);
 int nas_e1000_transmit(void *,const uint8_t *,uint32_t);
 int nas_e1000_poll(void *,uint32_t,nas_netdev_rx,void *);
 bool nas_e1000_link_up(void *);
-/* IRQ caller must own a live device reference; this only reads/acks ICR.
- * It never performs RX delivery or calls lwIP from the interrupt handler. */
-int nas_e1000_irq_ack(struct nas_e1000_session *);
 #endif

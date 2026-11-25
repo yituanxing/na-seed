@@ -58,7 +58,7 @@ A small read-only bootfs maps genuine Limine-provided file bytes for openat/read
 
 ## M4.5 engineering checkpoint
 
-The read-only Limine-module BootFS and one-process syscall switch remain temporary and intentionally unchanged in this checkpoint. For the completed pre-M5 audit, review `docs/audit-m45.md` before extending file or process semantics. Run `make preflight` before opening a PR; GitHub Actions repeats preflight before real QEMU acceptance. Cached musl Bash no longer recompiles solely due to checkout mtimes; the CI cache key includes the Bash builder script's content hash. To deliberately rebuild after changing the script locally: `rm -f build/userspace/bash && make bash-probe`.
+The read-only Limine-module BootFS and one-process syscall switch remain temporary and intentionally unchanged in this checkpoint. The original pre-M5 audit is retained in Git history; current filesystem and task ownership are defined in `docs/architecture-foundation-contract.md` and `docs/vfs-block-foundation.md`. Run `make preflight` before opening a PR; GitHub Actions repeats preflight before real QEMU acceptance. Cached musl Bash no longer recompiles solely due to checkout mtimes; the CI cache key includes the Bash builder script's content hash. To deliberately rebuild after changing the script locally: `rm -f build/userspace/bash && make bash-probe`.
 
 ## Linux syscall number policy (x86-64 native)
 
