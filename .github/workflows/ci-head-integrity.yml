@@ -66,6 +66,10 @@ jobs:
       - name: Check every PR job uses submitted source, never synthetic merge
         run: python3 scripts/check-ci-checkout-head.py
 
+      - name: Exercise original PATH_MAX, live Dentry depth and namespace syscall invariants
+        run: sh scripts/check-path-contract-host.sh
+      - name: Check M204 genuine post-reopen checkpoint eligibility, origin and SHA negative cases
+        run: python3 scripts/test-m204-checkpoint.py -q
       - name: Run merged M236-M238 native ELF provenance and independent semantic oracles
         run: python3 scripts/test-m236-m238-alpine-host.py
       - name: Verify the sole M167-M170 desktop host evidence chain
