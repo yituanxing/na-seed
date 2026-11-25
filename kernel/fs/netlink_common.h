@@ -120,6 +120,22 @@ static inline unsigned nas_nl_receive_record(struct nas_nl_endpoint *e,
     }
     return result;
 }
+/* Shared userspace-adapter-independent receive admission for ROUTE,
+ * GENERIC and NETFILTER. The protocol retains its own queue, address
+ * groups and asynchronous overrun ordering. */
+static inline int64_t nas_nl_receive_checked(struct nas_nl_endpoint *e,
+    unsigned limit,uint8_t *dst,unsigned capacity,const uint8_t *data,
+    unsigned actual,unsigned flags,uint8_t *source,uint32_t groups,
+    uint32_t *source_length,uint32_t *msg_flags,bool *overrun) {
+    int rc=nas_nl_recv_check(capacity,dst,flags);
+    if(rc)return rc;
+    /* The ROUTE multicast overflow is a one-shot ENOBUFS before queued
+     * datagrams, but invalid MSG flags still take precedence. */
+    if(overrun && *overrun) {*overrun=false;return -ENOBUFS;}
+    if(!e->count)return -EAGAIN;
+    return nas_nl_receive_record(e,limit,dst,capacity,data,actual,
+                                 flags,source,groups,source_length,msg_flags);
+}
 static inline uint64_t nas_nl_read_plan(const struct nas_nl_endpoint *e,
     uint64_t requested,unsigned length) {
     if(!requested)return 0;

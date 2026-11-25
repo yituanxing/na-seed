@@ -591,16 +591,10 @@ int64_t nas_netlink_route_recvmsg(unsigned slot,uint8_t *destination,
                                  uint32_t *source_length,uint32_t *msg_flags) {
     struct netlink_socket *s=live(slot);
     if(!s)return -EBADF;
-    int rc=nas_nl_recv_check(capacity,destination,flags);
-    if(rc)return rc;
-    /* Linux reports an asynchronous multicast receive overflow as one
-     * ENOBUFS. This is not a successful empty read, and retained queued
-     * datagrams remain readable on the following call. */
-    if(s->overrun) {s->overrun=false;return -ENOBUFS;}
-    if(!s->ep.count)return -EAGAIN;
     struct netlink_reply *r=&s->replies[s->ep.head];
-    return nas_nl_receive_record(&s->ep,NETLINK_REPLY_QUEUE,destination,capacity,
-        r->bytes,r->length,flags,source,r->source_groups,source_length,msg_flags);
+    return nas_nl_receive_checked(&s->ep,NETLINK_REPLY_QUEUE,
+        destination,capacity,r->bytes,r->length,flags,source,
+        r->source_groups,source_length,msg_flags,&s->overrun);
 }
 
 static uint64_t read_plan(unsigned slot,uint64_t requested) {

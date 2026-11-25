@@ -645,12 +645,9 @@ int64_t nas_netlink_filter_recvmsg(unsigned slot,uint8_t *destination,
                                   uint32_t *msg_flags) {
     struct nf_socket *s=live(slot);
     if(!s)return -EBADF;
-    int rc=nas_nl_recv_check(capacity,destination,flags);
-    if(rc)return rc;
-    if(!s->ep.count)return -EAGAIN;
     struct nf_reply *r=&s->replies[s->ep.head];
-    return nas_nl_receive_record(&s->ep,NF_REPLY_LIMIT,destination,capacity,
-        r->data,r->len,flags,source,0,source_length,msg_flags);
+    return nas_nl_receive_checked(&s->ep,NF_REPLY_LIMIT,destination,capacity,
+        r->data,r->len,flags,source,0,source_length,msg_flags,NULL);
 }
 static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct nf_socket *s=live(slot);
