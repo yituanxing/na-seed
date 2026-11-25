@@ -74,6 +74,7 @@ int main(void) {
     original[12]=8;original[13]=0; /* real IPv4 EtherType */
     assert(nas_netdev_register(&nic)==0);
     nas_open_files[12].refcount=1;
+    nas_open_files[12].ops=nas_packet_socket_ops();
     assert(nas_packet_socket_open(12,3,0)==0);
     assert(nas_packet_socket_is_slot(12));
     /* There is no attached kernel BPF filter. Linux SO_DETACH_FILTER must
@@ -154,6 +155,7 @@ int main(void) {
      * one 262208-byte frame per 524288-byte block and 262080-byte slack.
      * Frame #1 is at block #1, NOT immediately after frame #0. */
     nas_open_files[13].refcount=1;
+    nas_open_files[13].ops=nas_packet_socket_ops();
     assert(nas_packet_socket_open(13,3,0)==0);
     assert(nas_packet_socket_bind(13,2,3)==0);
     setting=1;

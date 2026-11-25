@@ -70,17 +70,17 @@ static inline unsigned nas_nl_copy_reply(uint8_t *dst,unsigned capacity,
  * (e.g. eventfd counters) from being mistaken for a Netlink socket. */
 static inline void *nas_nl_private(unsigned slot,const struct nas_file_ops *ops) {
     if(slot>=NAS_OPEN_FILE_LIMIT || nas_open_files[slot].ops!=ops)return NULL;
-    return nas_open_files[slot].private.netlink;
+    return nas_open_files[slot].private.provider;
 }
 static inline int nas_nl_socket_alloc(unsigned slot,const struct nas_file_ops *ops,
                                       size_t bytes,void **out) {
     if(!out)return -EINVAL;
     *out=NULL;
     if(!nas_file_slot_live(slot) || nas_open_files[slot].ops!=ops)return -EBADF;
-    if(nas_open_files[slot].private.netlink)return -EBUSY;
+    if(nas_open_files[slot].private.provider)return -EBUSY;
     void *p=nas_heap_calloc(1,bytes);
     if(!p)return -ENOMEM;
-    nas_open_files[slot].private.netlink=p;
+    nas_open_files[slot].private.provider=p;
     *out=p;
     return 0;
 }
@@ -88,7 +88,7 @@ static inline void nas_nl_socket_release(unsigned slot,
                                           const struct nas_file_ops *ops) {
     void *p=nas_nl_private(slot,ops);
     if(!p)return;
-    nas_open_files[slot].private.netlink=NULL;
+    nas_open_files[slot].private.provider=NULL;
     (void)nas_heap_free(p);
 }
 struct nas_nl_endpoint {

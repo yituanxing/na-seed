@@ -126,7 +126,7 @@ struct in_instance;
 union nas_file_private {
     struct ep_state *epoll;
     struct in_instance *inotify;
-    void *netlink; /* ROUTE/FILTER/GENERIC share File-owned heap lifetime. */
+    void *provider; /* Opaque File-owned heap state; validated by FileOps. */
     struct { uint64_t counter; bool semaphore; } eventfd;
     struct nas_timerfd_state timerfd;
     uint64_t pidfd_target;
