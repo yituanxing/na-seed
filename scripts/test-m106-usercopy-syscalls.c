@@ -116,6 +116,7 @@ static struct nas_fs_node bootstrap_real_inode={
 };
 static struct nas_fs_node bootstrap_real_symlink={
     .inode=&bootstrap_inode_storage,.ino=9002,.mode=0120777U,.nlink=1,
+    .is_symlink=true,
     .size=12,.filesystem=(const struct nas_vfs_type *)(uintptr_t)1,
     .mount=(const struct nas_vfs_mount *)(uintptr_t)1,.mount_id=1
 };
