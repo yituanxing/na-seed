@@ -101,8 +101,7 @@ block_port=(root/"kernel/drivers/port/block.c").read_text()
 block_core=(root/"kernel/block/device.c").read_text()
 assert "nas_block_begin_remove(&port->block)" in block_port
 assert "!dev->removing" in block_core and "dev->removing = true;" in block_core
-for runner in ("scripts/run.sh", "scripts/probe-riscv64-busybox-matrix.sh",
-               "scripts/probe-aarch64-busybox-matrix.sh"):
+for runner in ("scripts/run.sh", "scripts/probe-port-busybox-matrix.sh"):
     assert "NAS_VIRTIO_NET_SECOND_USER" in (root/runner).read_text(), \
         f"two-real-NIC QEMU option missing: {runner}"
 for probe in ("scripts/probe-lwip-virtio-wire-smoke.sh",

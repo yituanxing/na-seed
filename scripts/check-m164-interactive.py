@@ -20,8 +20,7 @@ for element in ('b\'wrong\\r\'', 'b\'flip\\r\'', 'b\'quit\\r\'',
                 "qmp['verify_ppm']", "qmp['qmp_command']", 'os.O_RDWR'):
     assert element in oracle, element
 for host in ('scripts/probe-x86-busybox-parity.sh',
-             'scripts/probe-riscv64-busybox-matrix.sh',
-             'scripts/probe-aarch64-busybox-matrix.sh'):
+             'scripts/probe-port-busybox-matrix.sh'):
     source = (root / host).read_text()
     assert 'NAS_QEMU_SERIAL_FIFO:-/dev/null' in source
     assert '< "$serial_input"' in source

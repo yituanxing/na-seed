@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/m241-original-alpine-poweroff-ports.yml'
       - 'scripts/probe-m241-alpine-poweroff.sh'
+      - 'scripts/probe-port-busybox-matrix.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/build-riscv64-full.sh'

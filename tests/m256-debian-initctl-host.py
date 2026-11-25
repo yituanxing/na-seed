@@ -131,8 +131,7 @@ class M256NativeGate(unittest.TestCase):
             self.assertIn(text, script)
         self.assertNotIn("NAS_M256_PLATFORM_POWERDOWN=1", script)
         for path in ("probe-x86-busybox-parity.sh",
-                     "probe-riscv64-busybox-matrix.sh",
-                     "probe-aarch64-busybox-matrix.sh"):
+                     "probe-port-busybox-matrix.sh"):
             text = (ROOT / "scripts" / path).read_text()
             self.assertIn("m256-initctl)", text)
             self.assertIn("NAS_M256_QEMU_TIMEOUT:-480", text)

@@ -14,10 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNNERS = (
     ('scripts/run.sh', 'virtio-net-pci,netdev=naseed_net,disable-legacy=on',
      'virtio-net-pci,netdev=naseed_net2,disable-legacy=on'),
-    ('scripts/probe-riscv64-busybox-matrix.sh',
-     'virtio-net-device,netdev=naseed_net',
-     'virtio-net-device,netdev=naseed_net2'),
-    ('scripts/probe-aarch64-busybox-matrix.sh',
+    ('scripts/probe-port-busybox-matrix.sh',
      'virtio-net-device,netdev=naseed_net',
      'virtio-net-device,netdev=naseed_net2'),
 )

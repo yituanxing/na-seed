@@ -2,7 +2,7 @@
 # Static/host gate only. The actual signed Alpine ELF and writable /tmp
 # machine-ID semantics must run inside real NaSeed on all three ISAs.
 set -eu
-sh scripts/m174-software-check-manifest.sh
+sh scripts/check-software-batch-manifest.sh m174
 python3 scripts/check-prebuilt-profile-catalog.py
 sh -n tests/m174-software-run.sh
 sh -n scripts/probe-m174-batch.sh

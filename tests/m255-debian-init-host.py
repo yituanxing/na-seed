@@ -141,8 +141,7 @@ class DebianSysvinitIntegrationHost(unittest.TestCase):
         self.assertIn("port: [amd64, riscv64, arm64]", reused)
         self.assertIn("-m252-native-worker", reused)
         for wrapper_name in ("probe-x86-busybox-parity.sh",
-                             "probe-riscv64-busybox-matrix.sh",
-                             "probe-aarch64-busybox-matrix.sh"):
+                             "probe-port-busybox-matrix.sh"):
             with self.subTest(isa=wrapper_name):
                 script = (ROOT / "scripts" / wrapper_name).read_text()
                 self.assertIn("m255-init)", script)

@@ -8,6 +8,7 @@ on:
       - 'scripts/acceptance/**'
       - 'scripts/probe-m197-alpine-software-cohort.sh'
       - 'scripts/run.sh'
+      - 'scripts/probe-port-busybox-matrix.sh'
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/m194-alpine-uart.py'

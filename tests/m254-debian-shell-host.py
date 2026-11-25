@@ -28,8 +28,7 @@ class DebianShellLifecycleHost(unittest.TestCase):
         # The default x86 15-second cap previously killed genuine QEMU after
         # the eleventh inherited M252 UART command.
         for wrapper in ("probe-x86-busybox-parity.sh",
-                        "probe-riscv64-busybox-matrix.sh",
-                        "probe-aarch64-busybox-matrix.sh"):
+                        "probe-port-busybox-matrix.sh"):
             with self.subTest(wrapper=wrapper):
                 content = (ROOT / "scripts" / wrapper).read_text()
                 self.assertIn("m254-shell)", content)

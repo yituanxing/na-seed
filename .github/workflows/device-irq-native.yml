@@ -76,7 +76,7 @@ jobs:
               ;;
             m174)
               sh scripts/check-m174-devfs.sh
-              sh scripts/m174-software-check-manifest.sh
+              sh scripts/check-software-batch-manifest.sh m174
               sh -n scripts/stage-m174-devfs-software-gui.sh
               sh -n scripts/probe-m174-batch.sh
               ;;
@@ -84,7 +84,7 @@ jobs:
               sh scripts/check-m175-irq-core.sh
               sh scripts/check-m166-input-port.sh
               sh scripts/check-m174-devfs.sh
-              sh scripts/m174-software-check-manifest.sh
+              sh scripts/check-software-batch-manifest.sh m174
               sh -n scripts/stage-m174-devfs-software-gui.sh
               sh -n scripts/probe-m174-batch.sh
               sh -n scripts/probe-m175-irq.sh
@@ -101,7 +101,7 @@ jobs:
               ;;
             m179|m180)
               sh scripts/check-m179-fs-irq.sh
-              sh scripts/m188-software-check-manifest.sh
+              sh scripts/check-software-batch-manifest.sh m188
               sh scripts/check-m187-vt100.sh
               sh scripts/check-m188-pty.sh
               sh scripts/check-m189-session.sh

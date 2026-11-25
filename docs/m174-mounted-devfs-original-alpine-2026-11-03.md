@@ -73,7 +73,7 @@ guest manifest and exact rootfs fixture preservation fail closed at staging.
 
 - Host: `sh scripts/check-m174-devfs.sh` proves production devfs/VFS and
   mounted character OpenFile integration, plus historical core/driver owners.
-- Software catalog: `sh scripts/m174-software-check-manifest.sh` verifies
+- Software catalog: `sh scripts/check-software-batch-manifest.sh m174` verifies
   historical path de-duplication and 13 APK candidates.
 - Native: `sh scripts/probe-m174-batch.sh amd64`, `riscv64`, `arm64` builds
   the real kernel + 20 original ELF overlay and starts an independent static

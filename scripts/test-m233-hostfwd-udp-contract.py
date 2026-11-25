@@ -12,8 +12,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parent.parent
 RUNNERS = (
     ('scripts/run.sh', 'virtio-net-pci,netdev=naseed_net,disable-legacy=on'),
-    ('scripts/probe-riscv64-busybox-matrix.sh', 'virtio-net-device,netdev=naseed_net'),
-    ('scripts/probe-aarch64-busybox-matrix.sh', 'virtio-net-device,netdev=naseed_net'),
+    ('scripts/probe-port-busybox-matrix.sh', 'virtio-net-device,netdev=naseed_net'),
 )
 SECOND_NET = 'if [ "${NAS_VIRTIO_NET_SECOND_USER:-0}" = 1 ]; then'
 BAD_PORTS = ('0', '0000', '65536', '-1', '1e3', '20:80',
