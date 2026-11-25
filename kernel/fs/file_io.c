@@ -629,26 +629,28 @@ static bool io_scatter_vector(const struct nas_io_request *req,
 /* M180 uses the original iovec validator, cursor and usercopy rules.
  * Metadata belongs to the blocked Task; ext4 receives only a kernel-owned
  * transfer buffer on the dedicated parkable Worker stack. */
-int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
-                             bool writing,struct nas_fs_io_vectors *out) {
+/* A datagram owns its protocol read/write callback and must not be
+ * rejected solely because scalar FileOps are intentionally absent. */
+static int io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,bool require_scalar,
+                             struct nas_fs_io_vectors *out) {
     if(!out)return -EINVAL;
     *out=(struct nas_fs_io_vectors){0};
     struct nas_io_request req={0};
-    int rc=io_request_import_slot(slot,user_iov,count,writing,true,&req);
+    int rc=io_request_import_slot(slot,user_iov,count,writing,
+                                   require_scalar,&req);
     if(rc)return rc;
     *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
     return 0;
 }
+int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_fs_io_vectors *out) {
+    return io_vectors_import(slot,user_iov,count,writing,true,out);
+}
 int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
                                       uint64_t count,bool writing,
                                       struct nas_fs_io_vectors *out) {
-    if(!out)return -EINVAL;
-    *out=(struct nas_fs_io_vectors){0};
-    struct nas_io_request req={0};
-    int rc=io_request_import_slot(slot,user_iov,count,writing,false,&req);
-    if(rc)return rc;
-    *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
-    return 0;
+    return io_vectors_import(slot,user_iov,count,writing,false,out);
 }
 static struct nas_io_request io_view(const struct nas_fs_io_vectors *vectors) {
     return (struct nas_io_request){.vectors=vectors->entries,
@@ -773,38 +775,27 @@ static uint64_t io_aggregate_write(const struct nas_io_request *req) {
 /* Legacy scalar callback fallback. The metadata has ALREADY been imported
  * and verified, avoiding the old bug where a later invalid iovec caused
  * partial pipe writes/consumption before Linux's import_iovec EFAULT. */
-static uint64_t io_segmented_read(const struct nas_io_request *req) {
-    uint64_t done=0;
-    for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
-        uint64_t bytes=req->vectors[i].length;
-        if(!bytes)continue;
-        if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t got=io_slot_read(req->slot,req->vectors[i].address,bytes);
-        if((int64_t)got<0)return done ? done:got;
-        done+=got;
-        if(got!=bytes || bytes!=req->vectors[i].length)break;
-    }
-    return done;
-}
-static uint64_t io_segmented_write(const struct nas_io_request *req) {
+/* The scalar-only FileOps fallback has a single checked transfer cursor.
+ * Zero-length writev segments are intentionally still submitted before
+ * progress (eventfd/pipe legacy behavior); empty readv segments are skipped. */
+static uint64_t io_segmented(const struct nas_io_request *req,bool writing) {
     uint64_t done=0;
     for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
         uint64_t bytes=req->vectors[i].length;
         if(!bytes) {
-            /* A leading zero-length segment is handed to a scalar-only
-             * provider when later data exists: Linux eventfd.write(0)
-             * rejects [0,8], but skips zero entries after progress. */
-            if(!done && req->total) {
+            if(writing && !done && req->total) {
                 uint64_t rc=io_slot_write(req->slot,req->vectors[i].address,0);
                 if((int64_t)rc<0)return rc;
             }
             continue;
         }
         if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t wrote=io_slot_write(req->slot,req->vectors[i].address,bytes);
-        if((int64_t)wrote<0)return done ? done:wrote;
-        done+=wrote;
-        if(wrote!=bytes || bytes!=req->vectors[i].length)break;
+        uint64_t transferred=writing ?
+            io_slot_write(req->slot,req->vectors[i].address,bytes) :
+            io_slot_read(req->slot,req->vectors[i].address,bytes);
+        if((int64_t)transferred<0)return done ? done : transferred;
+        done+=transferred;
+        if(transferred!=bytes || bytes!=req->vectors[i].length)break;
     }
     return done;
 }
@@ -812,34 +803,35 @@ static uint64_t io_vector_execute(const struct nas_io_request *req,bool writing)
     if(!req->total)return 0;
     if(writing)
         return req->ops->aggregate_writev ? io_aggregate_write(req) :
-                                           io_segmented_write(req);
+                                           io_segmented(req,true);
     return req->ops->aggregate_readv ? io_aggregate_read(req) :
-                                      io_segmented_read(req);
+                                      io_segmented(req,false);
 }
 /* The issuing syscall may park after -EAGAIN. Return the already-imported
  * logical request size as a kernel-owned wait hint: the scheduler must NEVER
  * dereference a different task's iovec pointer just to check TTY readiness. */
-uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
-                                  uint64_t *requested_out) {
+/* Metadata import and its owner are identical for readv/writev; only
+ * the access mode and scalar/aggregate provider dispatch differ. */
+static uint64_t io_vector_syscall(uint64_t fd,uint64_t iov,uint64_t count,
+                                  bool writing,uint64_t *requested_out) {
     if(requested_out)*requested_out=0;
     struct nas_io_request req;
-    int rc=io_request_import(fd,iov,count,false,&req);
+    int rc=io_request_import(fd,iov,count,writing,&req);
     if(rc)return (uint64_t)(int64_t)rc;
     if(requested_out)*requested_out=req.total;
-    uint64_t result=io_vector_execute(&req,false);
+    uint64_t result=io_vector_execute(&req,writing);
     io_request_release(&req);
     return result;
+}
+uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
+                                  uint64_t *requested_out) {
+    return io_vector_syscall(fd,iov,count,false,requested_out);
 }
 uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
-    return nas_fs_fd_readv_with_size(fd,iov,count,0);
+    return io_vector_syscall(fd,iov,count,false,NULL);
 }
 uint64_t nas_fs_fd_writev(uint64_t fd,uint64_t iov,uint64_t count) {
-    struct nas_io_request req;
-    int rc=io_request_import(fd,iov,count,true,&req);
-    if(rc)return (uint64_t)(int64_t)rc;
-    uint64_t result=io_vector_execute(&req,true);
-    io_request_release(&req);
-    return result;
+    return io_vector_syscall(fd,iov,count,true,NULL);
 }
 /* A File is a shared open-description, not a mutable fd number. This
  * single executor is used by both the first attempt and wake completion. */
