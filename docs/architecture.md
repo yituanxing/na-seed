@@ -28,3 +28,12 @@ Run `make check-host` to compile the real framebuffer/display implementation
 and check mode ABI, boot handoff, device takeover, byte-range bounds, VMA
 owner pins, and detach/rebind. This restores focused coverage lost when the
 historical host-only framebuffer test was deleted. It does not emulate a GPU.
+
+## VMA contract
+
+`make check-host` also compiles the production `anon_regions.c` with only heap,
+file-reference and device callbacks stubbed. It verifies VMA gap selection,
+coalescing, private-file offsets after protect/split, MM clone ownership,
+failed backing-pin rollback and DMA-device pin balances. Old, uncalled M11
+anonymous overlay/record compatibility wrappers have been retired; all live
+callers use the typed VMA interface.

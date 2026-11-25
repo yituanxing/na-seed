@@ -106,8 +106,6 @@ bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
 bool nas_vma_set_dontfork(struct nas_anon_regions *,uint64_t addr,
                            uint64_t length,bool enabled);
-/* M11 reservation APIs are retained as compatibility wrappers. These and
- * the typed VMA routines manipulate the SAME canonical MM-owned slots. */
 /* Reset releases table storage. Clone preserves the destination on OOM;
  * both operands must be zero-initialized or already own valid VMA tables.
  * Commit transfers ownership of staged slots, zeroing the staged handle. */
@@ -120,9 +118,7 @@ bool nas_anon_find_gap(const struct nas_anon_regions *,uint64_t length,uint64_t 
 /* Whole MAP_FIXED interval must stay in the historical low VA domain or the
  * extended mmap domain; never overwrite the intervening user stack/gap. */
 bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length);
-bool nas_anon_record(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_forget(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_covered(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_intersects(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
-bool nas_anon_overlay(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 #endif

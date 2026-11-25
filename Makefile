@@ -852,6 +852,8 @@ check-host:
 	mkdir -p $(OUT)/test
 	cc -std=c11 -O2 -Wall -Wextra -Werror kernel/drivers/display/fbdev.c tests/display-contract.c -o $(OUT)/test/display-contract
 	$(OUT)/test/display-contract
+	cc -std=c11 -O2 -Wall -Wextra -Werror kernel/mm/anon_regions.c tests/vma-contract.c -o $(OUT)/test/vma-contract
+	$(OUT)/test/vma-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:

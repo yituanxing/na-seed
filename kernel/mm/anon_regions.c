@@ -222,11 +222,6 @@ bool nas_vma_record_device(struct nas_anon_regions *regions,uint64_t addr,
     return device && record_file(regions,addr,length,prot,
                                  NAS_VMA_DEVICE_SHARED,file_offset,NULL,device);
 }
-bool nas_anon_record(struct nas_anon_regions *regions,
-                     uint64_t addr,uint64_t length) {
-    if(addr>=NAS_ANON_CEILING || length>NAS_ANON_CEILING-addr)return false;
-    return nas_vma_record(regions,addr,length,0,NAS_VMA_ANON_PRIVATE,0);
-}
 bool nas_anon_forget(struct nas_anon_regions *regions,
                      uint64_t addr,uint64_t length) {
     if (!regions || !length || !aligned(addr) || !aligned(length) ||
@@ -297,22 +292,6 @@ bool nas_anon_intersects(const struct nas_anon_regions *regions,
         if (r->end && addr<r->end && r->start<end) return true;
     }
     return false;
-}
-bool nas_anon_overlay(struct nas_anon_regions *regions,
-                      uint64_t addr,uint64_t length) {
-    if (!regions || !valid_interval(addr,length) ||
-        addr>=NAS_ANON_CEILING || length>NAS_ANON_CEILING-addr)
-        return false;
-    if (nas_anon_covered(regions,addr,length)) return true;
-    struct nas_anon_regions next={0};
-    if (!nas_vma_clone(&next,regions))return false;
-    if (!nas_anon_forget(&next,addr,length) ||
-        !nas_anon_record(&next,addr,length)) {
-        nas_anon_reset(&next);
-        return false;
-    }
-    nas_vma_commit(regions,&next);
-    return true;
 }
 
 /* Replacement is staged in a separately owned allocation so a grow/split
