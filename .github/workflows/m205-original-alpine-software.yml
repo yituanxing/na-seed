@@ -55,7 +55,7 @@ jobs:
       - name: Validate new unaccepted ELF manifest, real guest oracle and shared ABI
         run: |
           set -eu
-          sh scripts/check-packet-socket.sh
+          sh scripts/check-host-fixture.sh packet-socket
           python3 scripts/check-m141-candidates.py --profile m205
           python3 scripts/test-m205-alpine-host.py
           python3 scripts/test-m197-alpine-host.py

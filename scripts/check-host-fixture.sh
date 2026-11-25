@@ -3,6 +3,11 @@
 set -eu
 [ "$#" -eq 1 ] || exit 2
 profile=$1
+# Keep the Linux oracle entry points runnable from outside the repository.
+case "$profile" in a008-linux-vectors|a009-a010-linux-fcntl|a012-linux-socket-stream|a014-linux-blocked-readv|packet-socket) cd "$(dirname "$0")/.." ;; esac
+compiler=cc
+standard=c11
+optimization=-O2
 case "$profile" in
     bootfs-scale)
         output=build/tests/bootfs-scale
@@ -53,8 +58,61 @@ case "$profile" in
         "${CC:-cc}" -std=c11 -O2 -g -Wall -Wextra -Werror "$@" -o "$output"
         "$output"
         exit 0 ;;
+    m111-getrusage)
+        output=build/m111-rusage/host
+        set -- -ffunction-sections -fdata-sections -fno-builtin -I kernel scripts/test-m111-getrusage.c kernel/task/process.c -Wl,--gc-sections ;;
+    m187-inotify)
+        output=build/m187-inotify/test
+        standard=gnu11
+        set -- -fno-builtin -I kernel scripts/test-m187-inotify-kernel.c kernel/lib/string.c ;;
+    pipe-capacity)
+        output=build/pipe-capacity/test
+        set -- -fno-builtin -I kernel scripts/test-pipe-capacity.c kernel/pipe.c kernel/mm/heap.c kernel/lib/string.c ;;
+    a008-linux-vectors)
+        output=/tmp/naseed-a008-linux-vectors
+        set -- scripts/test-a008-linux-vectors.c ;;
+    a009-a010-linux-fcntl)
+        output=/tmp/naseed-a009-a010-linux-fcntl
+        set -- -static -no-pie scripts/test-a009-a010-linux-fcntl.c ;;
+    a012-linux-socket-stream)
+        output=/tmp/naseed-a012-linux-socket-stream
+        set -- scripts/test-a012-linux-socket-stream.c ;;
+    a014-linux-blocked-readv)
+        output=/tmp/naseed-a014-linux-blocked-readv
+        set -- -pthread scripts/test-a014-linux-blocked-readv.c ;;
+    timerfd|pt-directory|m203-fbcon|h0-acpi-host|packet-socket)
+        tmp=$(mktemp -d "${TMPDIR:-/tmp}/naseed-host-fixture.XXXXXX")
+        trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+        case "$profile" in
+            timerfd) optimization=; output="$tmp/timerfd"; set -- -ffreestanding -I kernel scripts/test-timerfd-host.c kernel/fs/timerfd.c ;;
+            pt-directory)  output="$tmp/pt"; set -- scripts/test-pt-directory.c kernel/arch/aarch64/mmu.c kernel/arch/riscv64/mmu.c kernel/arch/aarch64/mmu_test.c kernel/arch/riscv64/mmu_test.c ;;
+            m203-fbcon) compiler=gcc; output="$tmp/fbcon-test"; set -- -g -ffreestanding -fno-builtin -I . -I kernel -fsanitize=address,undefined -fno-omit-frame-pointer scripts/test-m203-fbcon.c kernel/drivers/display/fbcon.c ;;
+            h0-acpi-host)  output="$tmp/h0-acpi-host"; set -- -Wpedantic tests/h0-acpi-host.c kernel/platform/firmware_acpi.c ;;
+            packet-socket)  output="$tmp/packet-socket"; set -- -I kernel scripts/test-packet-socket.c kernel/fs/packet_socket.c kernel/drivers/port/net.c ;;
+        esac ;;
     *) exit 2 ;;
 esac
 mkdir -p "${output%/*}"
-cc -std=c11 -O2 -Wall -Wextra -Werror "$@" -o "$output"
-"$output"
+"$compiler" -std="$standard" $optimization -Wall -Wextra -Werror "$@" -o "$output"
+case "$profile" in
+    m203-fbcon) ASAN_OPTIONS=detect_leaks=0 "$output" ;;
+    a014-linux-blocked-readv)
+        # Repeat the real thread race, each process has its own watchdog.
+        for attempt in 1 2 3 4 5; do "$output"; done
+        printf '[A014 LINUX OWNERSHIP ORACLE PASS] 5x iov and fd rebinding while readv blocked\n' ;;
+    *) "$output" ;;
+esac
+case "$profile" in
+    m111-getrusage)
+        cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -I kernel kernel/task.c
+        cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -I kernel kernel/syscall/dispatch.c ;;
+    m187-inotify)
+        cc -std=gnu11 -O2 -Wall -Wextra -Werror -fno-builtin \
+          -I scripts/m89-test-include -fsyntax-only \
+          kernel/fs/inotify.c kernel/fs/vfs.c kernel/fs/syscall.c kernel/fs/file_io.c ;;
+    pipe-capacity)
+        cc -std=c11 -O2 -Wall -Wextra -Werror scripts/test-pipe-fcntl-linux.c -o build/pipe-capacity/linux-oracle
+        build/pipe-capacity/linux-oracle ;;
+    timerfd) echo '[TIMERFD HOST PASS] clock, expiry, poll, read, dup/close/reuse, three-ISA shared provider' ;;
+    a009-a010-linux-fcntl) echo '[A009/A010 LINUX ORACLE PASS] native fcntl + positional append' ;;
+esac

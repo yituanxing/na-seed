@@ -108,7 +108,7 @@ jobs:
           python3 scripts/check-three-isa-core.py
           case "$PROFILE" in
             m111)
-              sh scripts/check-m111-getrusage.sh
+              sh scripts/check-host-fixture.sh m111-getrusage
               sh scripts/check-a005-cross-mm.sh ;;
             m124)
               sh scripts/check-host-fixture.sh m86-txn

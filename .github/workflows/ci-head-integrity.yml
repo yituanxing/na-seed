@@ -16,6 +16,11 @@ on:
       - 'scripts/probe-alpine-signed-batch.sh'
       - 'scripts/stage-alpine-signed-batch.sh'
       - 'scripts/stage-alpine-basic.sh'
+      - 'scripts/stage-alpine-network.sh'
+      - 'scripts/probe-m*-network*.sh'
+      - 'scripts/probe-m143-http-wire-smoke.sh'
+      - 'scripts/probe-m144-server-cohort.sh'
+      - 'scripts/probe-m145-service-multiarch.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'scripts/*-rootfs-copies.tsv'
@@ -34,7 +39,7 @@ on:
       - 'kernel/task/**'
       - 'scripts/check-netlink-providers.sh'
       - 'scripts/test-netlink-*.c'
-      - 'scripts/check-pt-directory.sh'
+      - 'scripts/check-host-fixture.sh'
       - 'scripts/test-pt-directory.c'
       - 'scripts/acceptance/**'
       - 'scripts/m25[0124]-debian-uart.py'
@@ -74,7 +79,7 @@ jobs:
         run: sh scripts/check-file-readiness.sh
 
       - name: Exercise actual RV64 and ARM64 directory paths, including allocation rollback
-        run: sh scripts/check-pt-directory.sh
+        run: sh scripts/check-host-fixture.sh pt-directory
 
       - name: Verify shared native batch marker checker and every migrated manifest
         run: python3 scripts/acceptance/test-batch-markers.py

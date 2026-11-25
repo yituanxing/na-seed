@@ -38,7 +38,7 @@ jobs:
           python3 scripts/test-m206-alpine-host.py
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
-          sh scripts/check-timerfd.sh
+          sh scripts/check-host-fixture.sh timerfd
           sh scripts/check-m191-pid1-quiesce.sh
           sh -n scripts/probe-alpine-profile.sh
       - name: Install native QEMU, cross-GCC, UEFI and physical ext4 host tools

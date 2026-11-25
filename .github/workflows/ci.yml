@@ -130,7 +130,7 @@ jobs:
       - name: Linux open flags ABI regression (including ARM64 values)
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-fcntl-abi.c -o /tmp/naseed-fcntl-abi && /tmp/naseed-fcntl-abi
       - name: A009/A010 Linux fcntl and positional append oracle
-        run: sh scripts/check-a009-a010-linux-fcntl.sh
+        run: sh scripts/check-host-fixture.sh a009-a010-linux-fcntl
       - name: Single CPU Linux affinity mask/size ABI
         run: cc -std=c11 -Wall -Wextra -Werror scripts/test-cpu-affinity.c -o /tmp/naseed-affinity && /tmp/naseed-affinity
       - name: Process-owned POSIX record locks and overlapping ranges

@@ -266,7 +266,7 @@ iso: $(ISO)
 kernel: $(KERNEL)
 
 hw-h0-host-check:
-	sh scripts/check-h0-acpi-host.sh
+	sh scripts/check-host-fixture.sh h0-acpi-host
 	sh scripts/check-pci-scan.sh
 
 # Keep H0's compile-time feature flag and objects away from ordinary NaSeed

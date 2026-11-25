@@ -10,6 +10,6 @@ cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
     kernel/fs/eventfd.c kernel/pipe.c kernel/lib/string.c \
     -o /tmp/naseed-m106-usercopy-syscalls
 /tmp/naseed-m106-usercopy-syscalls
-sh scripts/check-a008-linux-vectors.sh
-sh scripts/check-a012-linux-socket-stream.sh
-sh scripts/check-a014-linux-blocked-readv.sh
+sh scripts/check-host-fixture.sh a008-linux-vectors
+sh scripts/check-host-fixture.sh a012-linux-socket-stream
+sh scripts/check-host-fixture.sh a014-linux-blocked-readv

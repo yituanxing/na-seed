@@ -12,5 +12,5 @@ printf '[M141 SYSVIPC HOST PASS]\n'
 
 sh scripts/check-lwip-socket-abi.sh
 
-sh scripts/check-a012-linux-socket-stream.sh
+sh scripts/check-host-fixture.sh a012-linux-socket-stream
 printf '[M141 HOST PRIMITIVES PASS]\n'

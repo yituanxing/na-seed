@@ -153,6 +153,23 @@ def validate_wrappers(profiles: set[str]) -> int:
             if probe.read_text().count(call) != 1:
                 fail(f"{profile}: probe does not use shared staging owner exactly once")
             wrappers[profile] = shared.name
+    network = ROOT / "scripts/stage-alpine-network.sh"
+    source = network.read_text()
+    names = re.findall(r"^    (m\d+)\) expected=\d+; output=[\w.-]+ ;;$", source, re.M)
+    if not names or len(names) != len(set(names)):
+        fail("invalid or duplicate network stage owners")
+    if source.count('sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$cohort-batch"') != 1:
+        fail("network stage must call canonical signed overlay exactly once")
+    for name in names:
+        profile = name + "-batch"
+        if profile in wrappers:
+            fail(f"{profile}: duplicate network stage owner")
+        call = f'sh scripts/stage-alpine-network.sh "$port" {name}'
+        probes = [p for p in (ROOT / "scripts").glob(f"probe-{name}-*.sh")
+                  if p.read_text().count(call) == 1]
+        if len(probes) != 1:
+            fail(f"{profile}: expected exactly one canonical network probe")
+        wrappers[profile] = network.name
     if profiles != wrappers.keys():
         fail(f"catalog/wrapper mismatch: missing={sorted(wrappers.keys() - profiles)}, "
              f"orphan={sorted(profiles - wrappers.keys())}")

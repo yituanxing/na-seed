@@ -34,7 +34,7 @@ for script in scripts/stage-m174-devfs-software-gui.sh \
     sh -n "$script"
 done
 sh scripts/check-m178-blk-irq.sh
-sh scripts/check-m187-inotify.sh
+sh scripts/check-host-fixture.sh m187-inotify
 sh scripts/check-m187-vt100.sh
 sh scripts/check-m186-software-functions.sh
 sh scripts/m187-software-check-manifest.sh

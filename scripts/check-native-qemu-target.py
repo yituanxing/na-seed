@@ -81,6 +81,8 @@ def catalog_probes() -> list[Path]:
                 stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
             elif f"    {profile}) ;;" in basic.read_text():
                 stage = f'sh scripts/stage-alpine-basic.sh "$port" {profile}'
+            elif re.search(rf"^    {milestone}\) expected=\d+; output=", (ROOT / "scripts/stage-alpine-network.sh").read_text(), re.M):
+                stage = f'sh scripts/stage-alpine-network.sh "$port" {milestone}'
             else:
                 stage = f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}'
             if milestone == "m174":
@@ -101,6 +103,11 @@ def catalog_probes() -> list[Path]:
             f"{path}: missing or duplicate canonical staging call {stage}"
         )
         found[milestone] = path
+    supplemental = ROOT / "scripts/probe-m145-service-multiarch.sh"
+    source = supplemental.read_text()
+    assert source.count('sh scripts/stage-alpine-network.sh "$port" "$cohort"') == 1, supplemental
+    assert 'case "$cohort" in m143|m144)' in source, supplemental
+    validate_probe(supplemental, source)
     assert len(found) >= 14, "historical M58+ signed APK profiles were lost"
     # No orphan consumer may call a cataloged stage wrapper from another
     # probe. This also rejects a second probe added under a different name.
