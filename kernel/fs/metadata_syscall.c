@@ -392,13 +392,11 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
     if(err==-ENOENT) {
         /* Only a failed lookup reaches this explicit bootstrap whitelist;
          * it must reuse the SAME still-owned request/anchor. */
-        bool allowed=nas_fs_bootstrap_candidate(&request,path);
-        bool genuinely_missing=allowed &&
-            nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-        end_mounted_lookup(&request,&located);
-        if(!genuinely_missing)return (uint64_t)-ENOENT;
         struct nas_fs_bootstrap_info bootstrap;
-        if(nas_fs_bootstrap_describe(path,&bootstrap))return (uint64_t)-ENOENT;
+        int fallback=nas_fs_bootstrap_if_absent(&request,request.pathname,
+                                                &bootstrap);
+        end_mounted_lookup(&request,&located);
+        if(fallback)return (uint64_t)-ENOENT;
         /* Synthetic bootstrap path has no pinned inode or auditable
          * owner. Do not give nonroot an unprotected fallback. */
         if(nas_dac_nonroot())return (uint64_t)-EACCES;
@@ -604,16 +602,11 @@ static int stat_path_snapshot(uint64_t dirfd,uint64_t pathname,
     }
     /* Stale or unlinked dirfd never falls back to a string lookup.
      * Only explicitly accepted boot device/module endpoints qualify. */
-    char legacy_path[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,legacy_path);
-    bool missing=allowed &&
-        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-    end_mounted_lookup(&request,&path);
-    if(!missing)return -ENOENT;
-    if(nas_dac_nonroot())return -EACCES;
     struct nas_fs_bootstrap_info info;
-    rc=nas_fs_bootstrap_describe(legacy_path,&info);
-    if(rc)return rc;
+    rc=nas_fs_bootstrap_if_absent(&request,request.pathname,&info);
+    end_mounted_lookup(&request,&path);
+    if(rc)return rc==-EEXIST ? -ENOENT : rc;
+    if(nas_dac_nonroot())return -EACCES;
     fill_bootstrap_stat(&info,out);
     return 0;
 }

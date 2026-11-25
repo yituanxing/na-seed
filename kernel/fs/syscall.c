@@ -694,18 +694,10 @@ static uint64_t open_path_owned(const char *path,
          * literal whitelist from the SAME owned request, then run a
          * side-effect-free nofollow namei. An existing real inode (also a
          * symlink) proceeds through ordinary VFS open, never this bridge. */
-        char candidate[256];
-        const char *literal=NULL;
-        if(request && nas_fs_bootstrap_candidate(request,candidate))
-            literal=candidate;
-        else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
-        if(literal) {
-            int checked=nas_fs_bootstrap_nofollow_probe(request,path);
-            if(checked==-ENOENT) {
-                if(!nas_fs_bootstrap_describe(literal,&bootstrap))
-                    bootstrap_ready=true;
-            } else if(checked)return (uint64_t)(int64_t)checked;
-        }
+        int checked=nas_fs_bootstrap_if_absent(request,path,&bootstrap);
+        if(!checked)bootstrap_ready=true;
+        else if(checked!=-ENOENT && checked!=-EEXIST)
+            return (uint64_t)(int64_t)checked;
     }
     if(!bootstrap_ready) {
         /* The VFS owns namei, O_CREAT, inode mode/permission validation,
@@ -755,14 +747,7 @@ static uint64_t open_path_owned(const char *path,
              * transaction. Keep the owned root/dirfd anchors through its
              * nofollow probe; never reconstruct a name and reopen it via
              * the process root after the first namei already failed. */
-            char candidate[256];
-            const char *literal=NULL;
-            if(request && nas_fs_bootstrap_candidate(request,candidate))
-                literal=candidate;
-            else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
-            if(!literal ||
-               nas_fs_bootstrap_nofollow_probe(request,path)!=-ENOENT ||
-               nas_fs_bootstrap_describe(literal,&bootstrap))
+            if(nas_fs_bootstrap_if_absent(request,path,&bootstrap))
                 return (uint64_t)(int64_t)rc;
             bootstrap_ready=true;
         } else return (uint64_t)(int64_t)rc;
@@ -1013,6 +998,23 @@ int nas_fs_bootstrap_nofollow_probe(const struct nas_fs_path_request *request,
     if(existing.dentry && nas_vfs_path_put(&existing))
         nas_fs_fail("bootstrap nofollow Path reference corrupted");
     return rc;
+}
+/* Boot-only synthetic names are never a second path resolver. This
+ * single decision is reused by open/stat/access; policy specific to an
+ * operation (DAC, O_CREAT, error translation) stays with that operation. */
+int nas_fs_bootstrap_if_absent(const struct nas_fs_path_request *request,
+                               const char *path,struct nas_fs_bootstrap_info *out) {
+    if(!path || !out)return -EINVAL;
+    char candidate[256];
+    const char *literal=NULL;
+    if(request && nas_fs_bootstrap_candidate(request,candidate))
+        literal=candidate;
+    else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
+    if(!literal)return -ENOENT;
+    int checked=nas_fs_bootstrap_nofollow_probe(request,path);
+    if(!checked)return -EEXIST; /* A genuine mounted inode or symlink won. */
+    if(checked!=-ENOENT)return checked;
+    return nas_fs_bootstrap_describe(literal,out);
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
