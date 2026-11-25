@@ -53,6 +53,8 @@ jobs:
           python3 scripts/test-m223-http-host.py
       - name: Verify consolidated M228-M233 service contract gates and independent protocol oracles
         run: |
+          python3 scripts/test-m227-uart-login.py
+          sh scripts/test-acceptance-host-supervisor.sh
           python3 scripts/test-m228-hostfwd-contract.py
           python3 scripts/test-m229-cohort-contract.py
           python3 scripts/test-m230-cohort-contract.py
