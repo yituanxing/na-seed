@@ -67,14 +67,14 @@ jobs:
           NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img sh scripts/probe-port-full.sh aarch64
       - name: One source Linux ext4 RW syscalls in genuine x86-64 RV64 AArch64 QEMU
         run: |
-          sh scripts/build-lwext4-native-rw-probes.sh
-          NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-writable-x86.sh
-          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf sh scripts/probe-port-full.sh riscv64
-          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf sh scripts/probe-port-full.sh aarch64
+          sh scripts/build-native-vfs-probe.sh lwext4 user/ext4-guest-rw.c 'LWEXT4 COMMON RW'
+          NAS_LWEXT4_RW_PROBE=build/lwext4-native/x86_64/probe.elf sh scripts/probe-lwext4-writable-x86.sh
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native/riscv64/probe.elf sh scripts/probe-port-full.sh riscv64
+          NAS_ENABLE_LWEXT4=1 NAS_LWEXT4_TEST_IMAGE=build/external/lwext4/ext4.img NAS_LWEXT4_RW_PROBE=build/lwext4-native/aarch64/probe.elf sh scripts/probe-port-full.sh aarch64
       - name: Genuine x86-64 modern VirtIO-PCI disk, independent ext4 persistence and e2fsck
         run: |
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent-x86.img
-          NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-x86.img NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/x86_64/probe.elf sh scripts/probe-lwext4-virtio-pci-x86.sh
+          NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-x86.img NAS_LWEXT4_RW_PROBE=build/lwext4-native/x86_64/probe.elf sh scripts/probe-lwext4-virtio-pci-x86.sh
           sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent-x86.img
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-x86.img > build/external/lwext4/virtio-x86-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-x86-content.txt
@@ -85,7 +85,7 @@ jobs:
         run: |
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent.img
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 sh scripts/build-aarch64-full.sh
-          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/aarch64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent.img sh scripts/probe-port-full.sh aarch64
+          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native/aarch64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent.img sh scripts/probe-port-full.sh aarch64
           sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent.img
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent.img > build/external/lwext4/virtio-persisted-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-persisted-content.txt
@@ -94,7 +94,7 @@ jobs:
         run: |
           cp build/external/lwext4/ext4.img build/external/lwext4/virtio-persistent-rv.img
           NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 sh scripts/build-riscv64-full.sh
-          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native-rw/riscv64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-rv.img sh scripts/probe-port-full.sh riscv64
+          NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_LWEXT4_RW_PROBE=build/lwext4-native/riscv64/probe.elf NAS_VIRTIO_BLK_IMAGE=build/external/lwext4/virtio-persistent-rv.img sh scripts/probe-port-full.sh riscv64
           sh scripts/check-ext4-fsck-clean.sh build/external/lwext4/virtio-persistent-rv.img
           debugfs -R 'cat /sandbox/cross-isa-created' build/external/lwext4/virtio-persistent-rv.img > build/external/lwext4/virtio-rv-content.txt
           grep -Fq 'NaSeed one portable Linux ELF for x86 RV64 AArch64 ext4 RW' build/external/lwext4/virtio-rv-content.txt
