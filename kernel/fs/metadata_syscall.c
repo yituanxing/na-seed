@@ -412,54 +412,51 @@ static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
     if(!opened->vnode_pinned)return (uint64_t)-EBADF;
     return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
 }
-static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
-                               uint64_t mode,uint64_t flags) {
-    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
-    const uint64_t AT_EMPTY_PATH=0x1000ULL;
-    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH))
-        return (uint64_t)-EINVAL;
+/* One inode selector for chmodat and chownat: an owned named Path, a
+ * borrowed O_PATH File, or the pinned cwd. DAC and link mutation remain VFS
+ * policy. Successful name lookups alone require end_mounted_lookup(). */
+static int metadata_target_begin(uint64_t dirfd,uint64_t user_path,uint64_t flags,
+                                  struct nas_fs_path_request *request,
+                                  struct nas_vfs_path *path,
+                                  struct nas_fs_node *node) {
     uint8_t first=0;
-    if(!filename || !nas_user_read_bytes(filename,&first,1))
-        return (uint64_t)-EFAULT;
-    if(!first && (flags&AT_EMPTY_PATH)) {
+    if(!user_path || !nas_user_read_bytes(user_path,&first,1))return -EFAULT;
+    if(!first) {
+        if(!(flags&0x1000ULL))return -ENOENT; /* AT_EMPTY_PATH */
         int64_t fd=nas_linux_signed_dirfd(dirfd);
         if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return (uint64_t)(int64_t)nas_vfs_chmod(&TASK.fs->cwd_node,mode);
-            struct nas_fs_node cwd;
+            if(TASK.fs->cwd_pinned) {
+                *node=TASK.fs->cwd_node;
+                return 0;
+            }
             char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return (uint64_t)(int64_t)(rc?rc:nas_vfs_chmod(&cwd,mode));
+            return nas_fs_lookup_node(TASK.fs->cwd,true,node,canonical);
         }
         if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
+           TASK.fds->entries[fd].kind==FD_CLOSED)return -EBADF;
         const struct nas_open_file *opened=
             &nas_open_files[TASK.fds->entries[fd].slot];
-        /* Unlike fchmod(2), AT_EMPTY_PATH also accepts O_PATH handles. */
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
+        if(!opened->vnode_pinned)return -EBADF;
+        *node=opened->vnode;
+        return 0;
     }
-    if(!first)return (uint64_t)-ENOENT;
+    return nas_fs_user_lookup_begin(dirfd,user_path,
+                                    !(flags&0x100ULL),request,path,node);
+}
+static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
+                               uint64_t mode,uint64_t flags) {
+    if(flags & ~(0x100ULL|0x1000ULL))return (uint64_t)-EINVAL;
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=nas_fs_user_lookup_begin(dirfd,filename,
-                                    !(flags&AT_SYMLINK_NOFOLLOW),
-                                    &request,&path,&node);
+    int rc=metadata_target_begin(dirfd,filename,flags,&request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
-    /* Linux filesystems commonly cannot change a symlink's own mode.
-     * Never silently chmod its referent when NOFOLLOW was requested. */
-    rc=(node.is_symlink && (flags&AT_SYMLINK_NOFOLLOW)) ?
+    /* Named symlink nofollow cannot silently mutate its referent. */
+    rc=(path.dentry && node.is_symlink && (flags&0x100ULL)) ?
        -EOPNOTSUPP : nas_vfs_chmod(&node,mode);
-    end_mounted_lookup(&request,&path);
+    if(path.dentry)end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
-/* Linux chown/fchown/fchownat share one opened-inode VFS operation. Current
- * NaSeed credentials are root; providers must still perform an ACTUAL owner
- * mutation (or reject it) and must never report success for missing support.
- * uid_t/gid_t are 32-bit even on the supported LP64 syscall ABIs; each
- * 0xffffffff value means leave that field unchanged. */
 static uint64_t sys_fchown_fd(uint64_t fd,uint64_t uid,uint64_t gid) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
@@ -471,43 +468,14 @@ static uint64_t sys_fchown_fd(uint64_t fd,uint64_t uid,uint64_t gid) {
 }
 static uint64_t sys_chown_path(uint64_t dirfd,uint64_t pathname,
                                uint64_t uid,uint64_t gid,uint64_t flags) {
-    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
-    const uint64_t AT_EMPTY_PATH=0x1000ULL;
-    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH))return (uint64_t)-EINVAL;
-    uint8_t first=0;
-    if(!pathname || !nas_user_read_bytes(pathname,&first,1))
-        return (uint64_t)-EFAULT;
-    if(!first && (flags&AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return (uint64_t)(int64_t)nas_vfs_chown(&TASK.fs->cwd_node,
-                                           (uint32_t)uid,(uint32_t)gid);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return (uint64_t)(int64_t)(rc?rc:nas_vfs_chown(&cwd,
-                                           (uint32_t)uid,(uint32_t)gid));
-        }
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        /* Unlike fchown(2), AT_EMPTY_PATH accepts a pinned O_PATH inode. */
-        return (uint64_t)(int64_t)nas_vfs_chown(&opened->vnode,
-                                           (uint32_t)uid,(uint32_t)gid);
-    }
-    if(!first)return (uint64_t)-ENOENT;
+    if(flags & ~(0x100ULL|0x1000ULL))return (uint64_t)-EINVAL;
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=nas_fs_user_lookup_begin(dirfd,pathname,
-                                    !(flags&AT_SYMLINK_NOFOLLOW),
-                                    &request,&path,&node);
+    int rc=metadata_target_begin(dirfd,pathname,flags,&request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
     rc=nas_vfs_chown(&node,(uint32_t)uid,(uint32_t)gid);
-    end_mounted_lookup(&request,&path);
+    if(path.dentry)end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
 /* Linux utimensat: native 64-bit timespec ABI common to all three ISAs.

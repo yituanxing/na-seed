@@ -205,9 +205,43 @@ int nas_vfs_path_node(const struct nas_vfs_path *path,
                                       bootstrap_real_inode;
     return 0;
 }
+/* Production namei owns the request and Dentry; the isolated fixture
+ * supplies only its mount-lookup transport and a borrowed inode. */
+int nas_fs_user_lookup_begin(uint64_t dirfd,uint64_t pathname,bool follow,
+                            struct nas_fs_path_request *request,
+                            struct nas_vfs_path *found,
+                            struct nas_fs_node *node) {
+    *found=(struct nas_vfs_path){0};
+    int rc=nas_fs_user_path_begin(dirfd,pathname,request);
+    if(!rc)rc=nas_fs_lookup_path_at(
+        request->start.dentry?&request->start:NULL,
+        request->root.dentry?&request->root:NULL,
+        request->pathname,follow,found);
+    if(!rc)rc=nas_vfs_path_node(found,node);
+    if(rc) {
+        if(found->dentry)(void)nas_vfs_path_put(found);
+        nas_fs_path_end(request);
+    }
+    return rc;
+}
 int nas_vfs_getattr(const struct nas_fs_node *inode,
                     struct nas_fs_node *out) {
     *out=*inode;return 0;
+}
+static unsigned m106_chmod_calls,m106_chown_calls;
+static uint64_t m106_last_mode;
+static uint32_t m106_last_uid,m106_last_gid;
+int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
+    assert(node && (node->ino==bootstrap_real_inode.ino ||
+                    node->ino==bootstrap_real_symlink.ino));
+    m106_chmod_calls++;m106_last_mode=mode;
+    return 0;
+}
+int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
+    assert(node && (node->ino==bootstrap_real_inode.ino ||
+                    node->ino==bootstrap_real_symlink.ino));
+    m106_chown_calls++;m106_last_uid=uid;m106_last_gid=gid;
+    return 0;
 }
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
     (void)node;return 777;
@@ -789,6 +823,37 @@ static void test_bootstrap_metadata_and_vfs_priority(void) {
     struct nas_linux_stat st=bootstrap_guest_stat(stat_address);
     assert(st.ino==9001 && st.dev==777 && st.mode==0100644U);
     assert(bootstrap_vfs_open_calls && bootstrap_vfs_lookup_calls);
+    /* The real chmodat/chownat syscall adapters reuse one inode selector
+     * for pinned cwd, O_PATH File, and named/no-follow inode lookups. */
+    const uint64_t empty_metadata=TEST_BASE+31;
+    *user_ptr(empty_metadata)=0;
+    guest_fs.cwd_pinned=true;
+    guest_fs.cwd_node=bootstrap_real_inode;
+    unsigned previous_chmod=m106_chmod_calls,previous_chown=m106_chown_calls;
+    assert(sys_chmod_path((uint64_t)-100,empty_metadata,0600,0x1000)==0);
+    assert(sys_chown_path((uint64_t)-100,empty_metadata,17,23,0x1000)==0);
+    assert(m106_chmod_calls==previous_chmod+1 && m106_last_mode==0600);
+    assert(m106_chown_calls==previous_chown+1 &&
+           m106_last_uid==17 && m106_last_gid==23);
+    guest_fs.cwd_pinned=false;
+    guest_fs.cwd_node=(struct nas_fs_node){0};
+    assert(sys_chmod_path((uint64_t)-100,path,0700,0)==0);
+    assert(sys_chown_path((uint64_t)-100,path,21,34,0)==0);
+    uint64_t saved_flags=nas_open_files[entry.slot].status_flags;
+    nas_open_files[entry.slot].status_flags=NAS_LINUX_O_PATH;
+    assert(sys_fchmod_fd(fd,0600)==(uint64_t)-EBADF);
+    assert(sys_fchown_fd(fd,21,34)==(uint64_t)-EBADF);
+    assert(sys_chmod_path(fd,empty_metadata,0400,0x1000)==0);
+    assert(sys_chown_path(fd,empty_metadata,31,47,0x1000)==0);
+    nas_open_files[entry.slot].status_flags=saved_flags;
+    bootstrap_vfs_dangling_link=true;
+    previous_chmod=m106_chmod_calls;
+    assert(sys_chmod_path((uint64_t)-100,path,0600,0x100)==
+           (uint64_t)-EOPNOTSUPP);
+    assert(m106_chmod_calls==previous_chmod);
+    assert(sys_chown_path((uint64_t)-100,path,51,59,0x100)==0);
+    bootstrap_vfs_dangling_link=false;
+    puts("[M106 METADATA TARGET PASS] cwd/namei/O_PATH File and nofollow symlink mutation");
     nas_fs_close_fd(fd);
     /* O_CREAT on an existing /dev endpoint must still select its real
      * VFS inode, including with the conflicting bootstrap whitelist. */
