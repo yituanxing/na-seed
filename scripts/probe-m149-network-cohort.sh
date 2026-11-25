@@ -10,7 +10,7 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=540
 export NAS_ACCEPTANCE_QEMU_RAM=2048M NAS_ACCEPTANCE_DISK_MB=1024
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m149-network-cases.tsv
-sh scripts/stage-m149-prebuilt.sh "$port"
+sh scripts/stage-alpine-network.sh "$port" m149
 root="build/external/m149-batch/$port"
 test -s "$root/rootfs.cpio" && test -s "$root/rootfs/bin/busybox"
 test -s "$root/m149-original-elfs.sha256"

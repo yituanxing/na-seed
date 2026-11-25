@@ -7,7 +7,7 @@ unset NAS_SYSCALL_TRACE # The production-style gate must not rely on debug traci
 export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=2048M BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m144-server-cases.tsv
-sh scripts/stage-m144-prebuilt.sh "$port"
+sh scripts/stage-alpine-network.sh "$port" m144
 root=build/external/m144-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/m144-original-elfs.sha256"

@@ -9,7 +9,7 @@ Memcached, Mosquitto broker and clients, MTR, nghttp2 clients/servers, Stunnel,
 TCPFlow, Unbound, Websocat and Whois. No existing milestone ELF path is reused;
 the already-known signed Ncat is a dependency and is **not** counted again.
 
-`scripts/stage-m147-prebuilt.sh` will demand signed Alpine APK installation,
+`scripts/stage-alpine-network.sh` will demand signed Alpine APK installation,
 correct target ELF machine type, a unique actual file hash for every identity,
 and no duplicate historical path on each target ISA. No executable is rebuilt,
 substituted by a stub or linked inside NaSeed.

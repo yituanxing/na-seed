@@ -1381,46 +1381,46 @@ alpine-selector-probe: $(ALPINE_ARCHIVE_ISO) $(ALPINE_SELECTOR_IMAGE)
 	sh scripts/probe-alpine-selector.sh
 
 ash-diagnostic: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-diagnostic.sh
+	sh scripts/probe-ash.sh diagnostic
 
 ash-execve-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-execve.sh
+	sh scripts/probe-ash.sh execve
 
 ash-fork-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-fork.sh
+	sh scripts/probe-ash.sh fork
 
 ash-pipes-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-pipes.sh
+	sh scripts/probe-ash.sh pipes
 
 ash-pipe-backend-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-pipe-backend.sh
+	sh scripts/probe-ash.sh pipe-backend
 
 boot-handoff-probe: $(ALPINE_ARCHIVE_ISO)
 	sh scripts/probe-boot-handoff.sh
 
 ash-resources-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-resources.sh
+	sh scripts/probe-ash.sh resources
 
 ash-lifecycle-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-lifecycle.sh
+	sh scripts/probe-ash.sh lifecycle
 
 ash-symlinks-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-symlinks.sh
+	sh scripts/probe-ash.sh symlinks
 
 ash-tmp-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-tmp.sh
+	sh scripts/probe-ash.sh tmp
 
 ash-tree-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-tree.sh
+	sh scripts/probe-ash.sh tree
 
 ash-rename-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-rename.sh
+	sh scripts/probe-ash.sh rename
 
 ash-fds-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-fds.sh
+	sh scripts/probe-ash.sh fds
 
 ash-paths-probe: $(ALPINE_ARCHIVE_ISO)
-	sh scripts/probe-ash-paths.sh
+	sh scripts/probe-ash.sh paths
 
 # Optional direct Linux ABI probe, additional to (not in place of) the
 # unchanged BusyBox QEMU regression. Stage a dedicated CPIO ISO fixture.

@@ -12,7 +12,7 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=240
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m143-http-cases.tsv
-sh scripts/stage-m143-prebuilt.sh "$port"
+sh scripts/stage-alpine-network.sh "$port" m143
 root=build/external/m143-batch/amd64
 test -s "$root/rootfs.cpio"
 test -s "$root/m143-original-signed-elfs.sha256"

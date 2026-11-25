@@ -29,7 +29,7 @@ jobs:
           for script in scripts/probe-m145-service-multiarch.sh \
                         scripts/probe-riscv64-busybox-matrix.sh \
                         scripts/probe-aarch64-busybox-matrix.sh \
-                        scripts/stage-m143-prebuilt.sh scripts/stage-m144-prebuilt.sh \
+                        scripts/stage-alpine-network.sh \
                         tests/m143-http-run.sh tests/m144-*-run.sh; do
             sh -n "$script"
           done

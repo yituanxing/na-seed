@@ -26,7 +26,7 @@ jobs:
       - name: Check unique profile, 35 distinct paths and guest/host syntax
         run: |
           set -eu
-          for f in scripts/stage-m149-prebuilt.sh scripts/probe-m149-network-cohort.sh scripts/host-configure-alpine-fixtures.sh tests/m149-network-run.sh; do sh -n "$f"; done
+          for f in scripts/stage-alpine-network.sh scripts/probe-m149-network-cohort.sh scripts/host-configure-alpine-fixtures.sh tests/m149-network-run.sh; do sh -n "$f"; done
           python3 -m py_compile scripts/m149-http-oracle.py
           python3 scripts/check-prebuilt-profile-catalog.py
           test "$(awk '$1 !~ /^#/ && NF {n++} END {print n+0}' scripts/m149-original-elfs.txt)" -eq 35

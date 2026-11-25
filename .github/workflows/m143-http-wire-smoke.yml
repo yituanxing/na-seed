@@ -19,7 +19,7 @@ jobs:
       - name: Static check original signed ELF admission and HTTP oracle
         run: |
           set -eu
-          for script in scripts/stage-m143-prebuilt.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-m143-http-wire-smoke.sh tests/m143-http-run.sh; do
+          for script in scripts/stage-alpine-network.sh scripts/host-configure-alpine-fixtures.sh scripts/probe-m143-http-wire-smoke.sh tests/m143-http-run.sh; do
             sh -n "$script"
           done
           python3 -m py_compile scripts/m143-http-server.py

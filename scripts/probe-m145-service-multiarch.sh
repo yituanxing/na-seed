@@ -41,7 +41,7 @@ case "$cohort" in
 esac
 # All ELF identities are the host-verified originals, with the actual
 # architecture's machine type confirmed by shared APK staging.
-sh "scripts/stage-$cohort-prebuilt.sh" "$port"
+sh scripts/stage-alpine-network.sh "$port" "$cohort"
 root="build/external/$profile/$port"
 test -s "$root/rootfs.cpio"
 test -s "$root/rootfs/bin/busybox"

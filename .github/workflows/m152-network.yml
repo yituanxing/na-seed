@@ -24,7 +24,7 @@ jobs:
       - name: Validate unique signed ELF inventory and host guest syntax
         run: |
           set -eu
-          for f in scripts/stage-m152-prebuilt.sh scripts/probe-m152-network-cohort.sh scripts/host-configure-alpine-fixtures.sh tests/m152-network-run.sh; do sh -n "$f"; done
+          for f in scripts/stage-alpine-network.sh scripts/probe-m152-network-cohort.sh scripts/host-configure-alpine-fixtures.sh tests/m152-network-run.sh; do sh -n "$f"; done
           python3 -m py_compile scripts/m152-host-oracle.py
           python3 tests/m152-host-oracle-selftest.py
           python3 scripts/check-prebuilt-profile-catalog.py
