@@ -499,18 +499,18 @@ H0_HW_SRCS += kernel/platform/x86_h11_usb.c \
  kernel/drivers/usb/xhci.c kernel/drivers/usb/msc.c \
  kernel/drivers/port/dma.c kernel/drivers/port/block.c
 endif
+ifneq ($(filter 1,$(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) $(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) $(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)),)
+H0_HW_SRCS += kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c \
+ kernel/drivers/usb/hid_boot_mouse.c
+endif
 ifeq ($(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND),1)
-H0_HW_SRCS += kernel/platform/x86_h12_hid.c \
- kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c
+H0_HW_SRCS += kernel/platform/x86_h12_hid.c
 endif
 ifeq ($(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND),1)
-H0_HW_SRCS += kernel/platform/x86_h13_mouse.c \
- kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot_mouse.c
+H0_HW_SRCS += kernel/platform/x86_h13_mouse.c
 endif
 ifeq ($(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND),1)
-H0_HW_SRCS += kernel/platform/x86_h14_dual_hid.c \
-  kernel/drivers/usb/xhci.c kernel/drivers/usb/hid_boot.c \
-  kernel/drivers/usb/hid_boot_mouse.c
+H0_HW_SRCS += kernel/platform/x86_h14_dual_hid.c
 endif
 ifeq ($(NAS_ENABLE_H15_QEMU_USB_SERIAL_USERLAND),1)
 H0_HW_SRCS += kernel/platform/x86_h15_ftdi.c \

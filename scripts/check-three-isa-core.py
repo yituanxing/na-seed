@@ -557,8 +557,10 @@ process_src=(root/"kernel/task/process.c").read_text()
 wait_src=(root/"kernel/task/wait.c").read_text()
 fd_src=(root/"kernel/fs/syscall.c").read_text()
 socket_src=(root/"kernel/fs/unix_socket.c").read_text()
-if "nas_process_wait_owner(child,nas_current_task)" not in process_src or \
-   "nas_process_wait_owner(child,task)" not in wait_src or \
+if "wait4_child_selected(child,nas_current_task,desired)" not in process_src or \
+   "wait4_child_selected(child,waiter,desired)" not in process_src or \
+   "nas_process_wait_owner(child,waiter)" not in process_src or \
+   "nas_process_wait4_ready(task,task->wait.blocked_args[0]," not in wait_src or \
    "nas_task_process_pid(waiter)" not in process_src:
     raise SystemExit("parent TGID and ptrace TID wait owner drifted apart")
 if "nas_locks_apply(&inode->posix_locks,TASK.pid" in fd_src:
