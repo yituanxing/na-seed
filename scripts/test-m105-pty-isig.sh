@@ -9,7 +9,7 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 timeout 30 "$work/m105-pty-isig" --linux-pty-oracle
 "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \
   -I kernel scripts/test-m105-pty-isig-kernel.c \
-  kernel/drivers/pty.c kernel/drivers/tty_ldisc.c \
+  kernel/drivers/pty.c kernel/drivers/tty_ldisc.c kernel/mm/heap.c \
   -o "$work/m105-pty-isig-kernel"
 timeout 10 "$work/m105-pty-isig-kernel"
 "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror \

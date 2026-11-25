@@ -164,6 +164,17 @@ int main(void) {
     assert(nas_pty_read(slot_for_fd(2),&observed,1)==1);
     assert(observed==final);
     assert((nas_pty_poll(slot_for_fd(2),1U)&0x19U)==0x18U);
+    for(unsigned i=2;i<NAS_PTY_LIMIT;i++)
+        assert(nas_pty_new(80+i)==0);
+    assert(nas_pty_new(99)==-ENOSPC);
+    for(unsigned i=2;i<NAS_PTY_LIMIT;i++)
+        nas_pty_release(80+i);
+    assert(nas_pty_new(90)==0);
+    assert(nas_pty_number(90)==2U);
+    nas_pty_release(90);
+    nas_pty_release(slot_for_fd(1));
+    nas_pty_release(slot_for_fd(0));
+    nas_pty_release(slot_for_fd(2));
     (void)other;
     return 0;
 }

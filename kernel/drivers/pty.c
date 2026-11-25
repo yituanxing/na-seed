@@ -6,6 +6,7 @@
 #include "../arch/arch.h"
 #include "../mm/usercopy.h"
 #include "../lib/string.h"
+#include "../mm/heap.h"
 #include "tty.h"
 #include "tty_ldisc.h"
 #include "pty.h"
@@ -33,7 +34,9 @@ struct pty {
     struct nas_ldisc input;
     struct pty_ring master_input,slave_input;
 };
-static struct pty ptys[NAS_PTY_LIMIT];
+/* Reserve only PTY index pointers: each real /dev/ptmx owner allocates
+ * its own two 2 KiB rings and line discipline state. */
+static struct pty *ptys[NAS_PTY_LIMIT];
 static uint8_t slot_device[NAS_OPEN_FILE_LIMIT]; /* index + 1 */
 static uint8_t slot_is_master[NAS_OPEN_FILE_LIMIT];
 /* The same class endpoint can represent successive PTY incarnations.
@@ -88,25 +91,28 @@ unsigned nas_pty_take_signal(uint64_t *sid,uint64_t *pgid) {
 
 static struct pty *get(unsigned slot) {
     unsigned id=slot<NAS_OPEN_FILE_LIMIT?slot_device[slot]:0;
-    return id && id<=NAS_PTY_LIMIT && ptys[id-1].used ? &ptys[id-1]:0;
+    return id && id<=NAS_PTY_LIMIT && ptys[id-1] && ptys[id-1]->used ? ptys[id-1]:0;
 }
 unsigned nas_pty_number(unsigned slot) {
     return slot<NAS_OPEN_FILE_LIMIT && slot_device[slot] ?
            (unsigned)slot_device[slot]-1 : NAS_PTY_LIMIT;
 }
 bool nas_pty_present(unsigned number) {
-    return number<NAS_PTY_LIMIT && ptys[number].used && ptys[number].master_open;
+    return number<NAS_PTY_LIMIT && ptys[number] &&
+           ptys[number]->used && ptys[number]->master_open;
 }
 int nas_pty_new(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || slot_device[slot])return -EINVAL;
     for(unsigned i=0;i<NAS_PTY_LIMIT;i++) {
-        if(ptys[i].used)continue;
-        struct pty *p=&ptys[i];
-        *p=(struct pty){0};
+        if(ptys[i])continue;
+        struct pty *p=nas_heap_alloc(sizeof(*p));
+        if(!p)return -ENOMEM;
+        memset(p,0,sizeof(*p));
         p->used=p->master_open=p->locked=true;
         p->winsize[0]=24;p->winsize[1]=80;
         nas_termios_defaults(&p->termios,NAS_TERMIOS_CONSOLE_CFLAG);
         nas_ldisc_reset(&p->input);
+        ptys[i]=p;
         slot_device[slot]=(uint8_t)(i+1);
         slot_is_master[slot]=1;
         return 0;
@@ -116,7 +122,7 @@ int nas_pty_new(unsigned slot) {
 int nas_pty_attach(unsigned number,unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || slot_device[slot])return -EINVAL;
     if(!nas_pty_present(number))return -ENOENT;
-    struct pty *p=&ptys[number];
+    struct pty *p=ptys[number];
     if(p->locked)return -EIO;
     slot_device[slot]=(uint8_t)(number+1);
     slot_is_master[slot]=0;
@@ -127,7 +133,7 @@ bool nas_pty_controlling(void) {
     uint64_t sid=nas_current_task->sid;
     if(!sid)return false;
     for(unsigned i=0;i<NAS_PTY_LIMIT;i++)
-        if(ptys[i].used && ptys[i].sid==sid)return true;
+        if(ptys[i] && ptys[i]->used && ptys[i]->sid==sid)return true;
     return false;
 }
 void nas_pty_open_session(unsigned slot,uint64_t flags) {
@@ -147,7 +153,7 @@ void nas_pty_open_session(unsigned slot,uint64_t flags) {
 int nas_pty_attach_controlling(unsigned slot) {
     uint64_t sid=nas_current_task->sid;
     for(unsigned i=0;sid && i<NAS_PTY_LIMIT;i++)
-        if(ptys[i].used && ptys[i].sid==sid)
+        if(ptys[i] && ptys[i]->used && ptys[i]->sid==sid)
             return nas_pty_attach(i,slot);
     return -ENXIO;
 }
@@ -156,8 +162,12 @@ void nas_pty_release(unsigned slot) {
     if(!p)return;
     if(slot_is_master[slot])p->master_open=false;
     else if(p->slave_descriptions)p->slave_descriptions--;
+    unsigned number=(unsigned)slot_device[slot]-1U;
     slot_device[slot]=slot_is_master[slot]=0;
-    if(!p->master_open && !p->slave_descriptions)*p=(struct pty){0};
+    if(!p->master_open && !p->slave_descriptions) {
+        ptys[number]=NULL;
+        (void)nas_heap_free(p);
+    }
 }
 static void ring_put(struct pty_ring *r,uint8_t value) {
     r->bytes[(r->head+r->count)%PTY_RING_CAP]=value;
