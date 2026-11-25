@@ -1,3 +1,0 @@
-# Original signed Alpine framebuffer capture and image tools.
-fbgrab
-imagemagick

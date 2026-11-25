@@ -1,2 +1,0 @@
-# name mode args expected extra entry
-rtc-epoch	module	date +%s	-	-	/bin/busybox

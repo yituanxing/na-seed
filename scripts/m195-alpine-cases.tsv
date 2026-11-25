@@ -1,3 +1,0 @@
-# Original Alpine ext4 /sbin/init, OpenRC and password-authenticated shell.
-# The UART state machine, not an artificial PID1 exit, owns acceptance.
-m195-batch	cpio	 	-	-	/sbin/init

@@ -1,3 +1,0 @@
-# Original signed v3.23 Linux terminal programs. Install exclusively on host.
-less
-tmux

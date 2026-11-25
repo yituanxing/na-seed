@@ -1,3 +1,0 @@
-nmap
-iperf3
-nmap-ncat

@@ -1,6 +1,0 @@
-# M160: existing original signed Alpine 3.23 applications chained over a
-# genuine TLS wire. All ELF identities were admitted in earlier milestones.
-curl
-wget
-netpbm
-chafa

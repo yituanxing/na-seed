@@ -1,4 +1,0 @@
-# M140: one signed GNU Coreutils multicall ELF, nineteen separate Netpbm
-# native ELFs. Extra GNU entrypoints are functional regressions, not SHA-counted.
-coreutils
-netpbm

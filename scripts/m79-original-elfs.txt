@@ -1,4 +1,0 @@
-bin/bash
-usr/bin/vim
-usr/bin/git
-usr/bin/python3

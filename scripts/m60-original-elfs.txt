@@ -1,2 +1,0 @@
-usr/bin/less
-usr/bin/tmux

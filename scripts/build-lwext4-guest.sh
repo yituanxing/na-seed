@@ -112,7 +112,61 @@ if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; th
         echo '[H11 LWEXT4 BUILD FAIL] compiled guest_boot.c never references physical BlockDevice' >&2
         exit 1
     }
-    sh scripts/check-h11-usb-guest-boot-guard.sh "$out/lwext4_guest.o"
+    nm -u "$out/lwext4_guest.o" | grep -Eq '[[:space:]]U[[:space:]]+nas_partition_probe
+fi
+undefined="$(nm -u "$out/lwext4_guest.o" | awk 'NF {print $NF}' | sort -u)"
+if [ "$mode" = closed ]; then
+    if [ -n "$undefined" ]; then
+        printf '[LWEXT4 GUEST LINK FAIL] %s:\n%s\n' "$target" "$undefined" >&2
+        exit 1
+    fi
+else
+    # Strong common symbols belong to the kernel, not a duplicate in lwext4.
+    for symbol in $undefined; do
+        case "$symbol" in
+            nas_heap_*|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_partition_probe|nas_partition_attach|nas_partition_detach|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|nas_module|nas_platform_virtio_blk_probe) ;;
+            nas_vfs_shutdown_external_root_pseudos|nas_vfs_shutdown_runtime_tmpfs)
+                [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] external root pseudo-unmount without M191/H8/H9/H11 opt-in' >&2
+                    exit 1
+                } ;;
+            # M179 is kernel-only: these are actual common-kernel worker,
+            # VFS and IRQ-backed block engine exports, never hosted copies.
+            nas_dec)
+                [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H9_QEMU_AHCI_USERLAND:-0}" = 1 ] ||
+                                         [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; } || {
+                    echo '[LWEXT4 KERNEL LINK FAIL] diagnostic printer without M179/M191/H8/H9/H11' >&2
+                    exit 1
+                } ;;
+            nas_async_blk_fixture_ready|nas_async_blk_get_stats|nas_async_blk_mountable_partition|nas_async_blk_register_block_device|nas_kthread_is_current|nas_kthread_spawn|nas_vfs_lookup|nas_vfs_create|nas_vfs_node_pin|nas_vfs_node_unpin|nas_vfs_write_at|nas_vfs_sync|nas_arch_halt)
+                [ "$mode" = kernel ] && [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ] || {
+                    echo "[LWEXT4 KERNEL LINK FAIL] unexpected M179 worker reference: $symbol" >&2
+                    exit 1
+                } ;;
+            nas_fs_broker_*|nas_lwext4_async_worker_current)
+                [ "$mode" = kernel ] && [ "${NAS_ENABLE_M180_FS_USER_IRQ:-0}" = 1 ] || {
+                    echo "[LWEXT4 KERNEL LINK FAIL] unexpected M180 broker reference: $symbol" >&2
+                    exit 1
+                } ;;
+            *) echo "[LWEXT4 KERNEL LINK FAIL] undefined: $symbol" >&2; exit 1 ;;
+        esac
+    done
+fi
+printf '[LWEXT4 GUEST LINK PASS] %s mode=%s\n' "$target" "$mode"
+ || {
+        echo '[H11 LWEXT4 BUILD FAIL] USB partition probe not linked' >&2
+        exit 1
+    }
+    strings "$out/lwext4_guest.o" | grep -Fq '[H11 USB ROOT MOUNTED] / read-only source=usb0' || {
+        echo '[H11 LWEXT4 BUILD FAIL] USB root mount branch missing' >&2
+        exit 1
+    }
 fi
 undefined="$(nm -u "$out/lwext4_guest.o" | awk 'NF {print $NF}' | sort -u)"
 if [ "$mode" = closed ]; then

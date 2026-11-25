@@ -1,3 +1,0 @@
-# Build artifacts do not enter the source history.
-*.o
-app
