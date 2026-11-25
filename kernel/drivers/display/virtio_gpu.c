@@ -12,6 +12,7 @@
 #include "../../arch/arch.h"
 #include "../../time/clock.h"
 #include "../../mm/frame.h"
+#include "../../mm/heap.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
 #include "../../../ports/unikraft/split_queue.h"
@@ -83,7 +84,9 @@ struct gpu_device {
     struct nas_irq_action irq;
     struct nas_dma_page command, response;
     struct nas_dma_page entries[GPU_ENTRY_PAGES];
-    struct nas_dma_page pixels[GPU_PAGES];
+    /* Descriptors are live only while this GPU has allocated backing.
+     * Their DMA pages remain individually provider-owned until quiescence. */
+    struct nas_dma_page *pixels;
     struct nas_display_device display;
     uint64_t submitted, completed, transfers, flushes, irq_acks, next_fence;
     uint32_t irq_pending;
@@ -233,10 +236,11 @@ static int release_dma(struct gpu_device *g) {
     /* Scan the WHOLE stable array, not pixel_pages/entry_pages: M184 DMA
      * allocation may fail validation AND then fail rollback, leaving the
      * failing slot owned despite no successful-count increment. */
-    for(unsigned i=0;i<GPU_PAGES;i++)if(g->pixels[i].cpu) {
-        rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
-        if(rc)return rc;
-    }
+    if(g->pixels)
+        for(unsigned i=0;i<GPU_PAGES;i++)if(g->pixels[i].cpu) {
+            rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
+            if(rc)return rc;
+        }
     for(unsigned i=0;i<GPU_ENTRY_PAGES;i++)if(g->entries[i].cpu) {
         rc=nas_dma_free_page(g->transport.dma,&g->entries[i]);
         if(rc)return rc;
@@ -248,6 +252,13 @@ static int release_dma(struct gpu_device *g) {
     if(g->response.cpu) {
         rc=nas_dma_free_page(g->transport.dma,&g->response);
         if(rc)return rc;
+    }
+    /* The record array may be released only AFTER every DMA page,
+     * queue and IRQ source is proven disarmed. Failed teardown retries
+     * operate on this same pointer with unchanged owner identity. */
+    if(g->pixels) {
+        if(!nas_heap_free(g->pixels))__builtin_trap();
+        g->pixels=NULL;
     }
     return 0;
 }
@@ -418,6 +429,8 @@ static int setup_resource(struct gpu_device *g) {
     int rc=nas_virtio_negotiate(&g->transport,0,0,&features);
     if(rc)return rc;
     if(!nas_virtio_config32(&g->transport,8U))return -ENODEV;
+    g->pixels=nas_heap_calloc(GPU_PAGES,sizeof(*g->pixels));
+    if(!g->pixels)return -ENOMEM;
     for(unsigned i=0;i<GPU_PAGES;i++) {
         rc=nas_dma_alloc_page(g->transport.dma,&g->pixels[i]);
         if(rc)return rc;

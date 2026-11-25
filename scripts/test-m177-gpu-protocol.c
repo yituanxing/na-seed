@@ -8,6 +8,15 @@
 #include <stdint.h>
 #define NAS_ENABLE_VIRTIO_GPU 1
 #include "../kernel/drivers/display/virtio_gpu.c"
+/* All controller I/O and page provenance remain mocked here. The extra
+ * descriptor-table owner uses the same kernel allocation contract, with
+ * libc as this host-only fixture's backing allocator. */
+void *nas_heap_calloc(size_t count,size_t bytes) {
+    return calloc(count,bytes);
+}
+bool nas_heap_free(void *ptr) {
+    free(ptr);return true;
+}
 
 enum failure {
     GOOD, BAD_RESPONSE, BAD_FENCE, SHORT_REPLY, MISSING_SCANOUT,
