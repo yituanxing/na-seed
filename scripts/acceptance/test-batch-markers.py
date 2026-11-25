@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual shared marker gate; no QEMU success is inferred."""
 from pathlib import Path
+from profile_markers import DERIVED, expected_markers
 import re
 import subprocess
 import tempfile
@@ -66,6 +67,7 @@ with tempfile.TemporaryDirectory() as tmp:
         scripts.mkdir()
         (scripts / "acceptance").mkdir()
         shutil.copyfile(CHECKER, scripts / "acceptance/check-batch-markers.sh")
+        shutil.copyfile(ROOT / "scripts/acceptance/profile_markers.py", scripts / "acceptance/profile_markers.py")
         shutil.copyfile(ROOT / "scripts/acceptance/batch-manifest.sh", scripts / "acceptance/batch-manifest.sh")
         shutil.copyfile(ROOT / "scripts/native-qemu-target.sh", scripts / "native-qemu-target.sh")
         (scripts / "stage-alpine-signed-batch.sh").write_text(
@@ -124,8 +126,12 @@ cp fixture.log "$log"
             profile = f"m{n}"
             prefix = profile.upper()
             path = ROOT / "scripts" / (profile + "-expected-markers.txt")
-            shutil.copyfile(path, scripts / path.name)
-            entries = [s for s in path.read_text().splitlines() if s and not s.startswith("#")]
+            if profile in DERIVED:
+                elf_path = ROOT / "scripts" / (profile + "-original-elfs.txt")
+                shutil.copyfile(elf_path, scripts / elf_path.name)
+            else:
+                shutil.copyfile(path, scripts / path.name)
+            entries = expected_markers(profile)
             config = extended.get(profile)
             count = config[0] if config else (39 if n == 140 else 20 if n == 110 or n >= 136 else 15)
             assert len(entries) == len(set(entries)) == count + 1
@@ -156,6 +162,24 @@ cp fixture.log "$log"
                             status=1)
             if special:
                 run_profile(profile, "amd64", evidence[:-1], status=1)
+            if profile == "m112":
+                # A malformed or forged canonical ELF manifest must be rejected
+                # before consulting the synthetic guest log, even if that log
+                # claims every expected success marker.
+                canonical = scripts / "m112-original-elfs.txt"
+                original = canonical.read_text()
+                names = [line for line in original.splitlines()
+                         if line and not line.startswith("#")]
+                assert len(names) == 15
+                try:
+                    canonical.write_text(original.replace(names[1], names[0]))
+                    run_profile(profile, "amd64", evidence, status=2)
+                    canonical.write_text(original.replace(names[0], "../../forged/path"))
+                    run_profile(profile, "amd64", evidence, status=2)
+                    canonical.write_text(original + "usr/bin/forged-extra\n")
+                    run_profile(profile, "amd64", evidence, status=2)
+                finally:
+                    canonical.write_text(original)
             migrated += 1
         run_profile("m999", "amd64", [], status=2)
         run_profile("m109", "invalid", [], status=2)

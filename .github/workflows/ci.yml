@@ -35,6 +35,8 @@ jobs:
           fetch-depth: 2
       - name: Check all PR workflows run submitted commits, not synthetic merge refs
         run: python3 scripts/check-ci-checkout-head.py
+      - name: Verify full original ELF marker profiles, fail-closed negatives and synthetic QEMU rejection
+        run: python3 scripts/acceptance/test-batch-markers.py
       - name: Install dependencies
         run: |
           sh scripts/ci-ubuntu-mirror.sh

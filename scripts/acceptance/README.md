@@ -42,3 +42,5 @@ through M205/M197. The independent second boot, host-wire, signed-package and
 physical disk verifiers are not replaced. The five simple disk profiles use
 `../m206-alpine-disk-check.py PROFILE PORT SIGNED_ROOT DISK`; specialized
 application, key-cleanup and network persistence checks retain their owners.
+
+For M112–M116, M119–M122, M124–M133, M135–M136 and M139, the original signed ELF manifest is the sole source of the one-to-one expected per-program marker names. `profile_markers.py` derives these deterministically; no guest logs or pass markers are used to construct expectations. Profiles with aliases, nontrivial marker names or additional assertions keep authored manifests. The host regression exercises all resulting marker sets and missing/duplicate/summary-only negative cases.
