@@ -993,7 +993,7 @@ static uint64_t sys_netlink_sendmsg(uint64_t fd,uint64_t user_message,
      * as writev: no separate netlink-only copy loop or overflow policy. */
     unsigned slot=TASK.fds->entries[fd].slot;
     struct nas_fs_io_vectors vectors={0};
-    int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,&vectors);
+    int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,true,&vectors);
     if(rc)return (uint64_t)(int64_t)rc;
     if(vectors.total>NAS_NETLINK_MAX_DATAGRAM) {
         nas_fs_io_vectors_release(&vectors);
@@ -1474,47 +1474,56 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
            !nas_user_prepare_write(address,sizeof(msg)))
             return (uint64_t)-EFAULT;
         if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
-        struct nas_iovec iov[32];
-        uint64_t capacity=0;
-        for(unsigned i=0;i<msg.iovlen;i++) {
-            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov[i]) ||
-               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov[i]),
-                                    (uint8_t *)&iov[i],sizeof(iov[i])))
-                return (uint64_t)-EFAULT;
-            uint64_t budget=NAS_LWIP_BRIDGE_DATA-capacity;
-            if(iov[i].length<budget)budget=iov[i].length;
-            if(budget && !nas_user_prepare_write(iov[i].base,budget))
-                return (uint64_t)-EFAULT;
-            capacity+=budget;
+        /* Import the whole iovec using the canonical File-owned validator.
+         * Preflight the bounded RX payload before consuming the datagram;
+         * unrelated trailing iovecs cannot escape checked user ranges. */
+        struct nas_fs_io_vectors vectors={0};
+        int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,
+                                                false,&vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        uint64_t capacity=vectors.total;
+        if(capacity>NAS_LWIP_BRIDGE_DATA)capacity=NAS_LWIP_BRIDGE_DATA;
+        bool writable=nas_fs_io_vectors_accessible_prefix(&vectors,capacity,
+                                                            false)==capacity;
+        if(!writable) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)-EFAULT;
         }
         unsigned name_capacity=msg.namelen>16?16U:msg.namelen;
         if(msg.name && name_capacity &&
-           !nas_user_prepare_write(msg.name,name_capacity))
+           !nas_user_prepare_write(msg.name,name_capacity)) {
+            nas_fs_io_vectors_release(&vectors);
             return (uint64_t)-EFAULT;
+        }
         bool enabled=false;
         int option=socket_type==NAS_LWIP_BRIDGE_UDP ?
             nas_lwip_socket_ip_pktinfo(slot,false,&enabled):0;
-        if(option)return (uint64_t)(int64_t)option;
+        if(option) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)(int64_t)option;
+        }
         /* Preflight ancillary output BEFORE consuming the datagram. */
         unsigned control_bytes=enabled && msg.control && msg.controllen>=28 ?
                                (msg.controllen>=32 ? 32U:28U):0U;
-        if(control_bytes && !nas_user_prepare_write(msg.control,control_bytes))
+        if(control_bytes && !nas_user_prepare_write(msg.control,control_bytes)) {
+            nas_fs_io_vectors_release(&vectors);
             return (uint64_t)-EFAULT;
+        }
         uint8_t packet[NAS_LWIP_BRIDGE_DATA];
         struct nas_lwip_bridge_address source={0};
         struct nas_lwip_bridge_pktinfo info={0};
         bool truncated=false;
         int64_t received=nas_lwip_socket_recvfrom(slot,packet,
             (uint16_t)capacity,&source,&truncated,&info);
-        if(received<0)return (uint64_t)received;
-        unsigned offset=0;
-        for(unsigned i=0;i<msg.iovlen && offset<(unsigned)received;i++) {
-            uint64_t count=iov[i].length;
-            if(count>(uint64_t)received-offset)count=(uint64_t)received-offset;
-            if(count && !nas_user_write_bytes(iov[i].base,packet+offset,count))
-                return (uint64_t)-EFAULT;
-            offset+=(unsigned)count;
+        if(received<0) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)received;
         }
+        uint64_t copied=0;
+        bool scattered=nas_fs_io_vectors_copyout(&vectors,packet,
+                                                (uint64_t)received,&copied);
+        nas_fs_io_vectors_release(&vectors);
+        if(!scattered)return (uint64_t)-EFAULT;
         if(msg.name) {
             uint8_t bytes[16];
             ipv4_sockaddr((struct nas_ipv4_endpoint){source.ipv4,

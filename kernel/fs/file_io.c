@@ -640,11 +640,12 @@ int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
     return 0;
 }
 int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
-                                      uint64_t count,struct nas_fs_io_vectors *out) {
+                                      uint64_t count,bool writing,
+                                      struct nas_fs_io_vectors *out) {
     if(!out)return -EINVAL;
     *out=(struct nas_fs_io_vectors){0};
     struct nas_io_request req={0};
-    int rc=io_request_import_slot(slot,user_iov,count,true,false,&req);
+    int rc=io_request_import_slot(slot,user_iov,count,writing,false,&req);
     if(rc)return rc;
     *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
     return 0;
