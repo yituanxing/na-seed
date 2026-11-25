@@ -283,6 +283,79 @@ with tempfile.TemporaryDirectory() as d:
             manifest.write_text("\n".join(rows) + "\n")
     run(shared, "amd64", "m999", cwd=cwd, status=2)
     run(shared, "unknown", "m109", cwd=cwd, status=2)
-migrated += len(profiles)
+# Count logical profiles rather than obsolete per-profile shell wrappers.
+network = scripts / "stage-alpine-network.sh"
+subprocess.run(["sh", "-n", str(network)], check=True)
+network_counts = {"m143": 3, "m144": 5, "m147": 29, "m149": 35, "m152": 35}
+assert not profiles.keys() & network_counts.keys()
+for profile, count in network_counts.items():
+    name = profile + "-original-elfs.txt"
+    entries = [x for x in manifests[name] if x and not x.startswith("#")]
+    assert len(entries) == count
+    conflict = any(x in rows for x in entries for k, rows in manifests.items() if k != name)
+    result = run(HISTORY, profile.upper(), "scripts/" + name, "--count", cwd=ROOT,
+                 status=int(conflict))
+    if not conflict:
+        assert result == f"{count}\n"
+
+with tempfile.TemporaryDirectory() as d:
+    cwd = Path(d)
+    (cwd / "scripts/acceptance").mkdir(parents=True)
+    shutil.copyfile(HASH, cwd / "scripts/acceptance/hash-original-elfs.sh")
+    shutil.copyfile(HISTORY, cwd / "scripts/acceptance/check-elf-history.sh")
+    (cwd / "scripts/stage-alpine-prebuilt-overlay.sh").write_text("#!/bin/sh\nexit 0\n")
+    for profile, count in network_counts.items():
+        rows = [f"usr/bin/{profile}-{i}" for i in range(count)]
+        manifest = cwd / "scripts" / (profile + "-original-elfs.txt")
+        manifest.write_text("\n".join(rows) + "\n")
+        for port in ("amd64", "riscv64", "arm64"):
+            work = cwd / "build/external" / (profile + "-batch") / port
+            root = work / "rootfs"
+            (root / "usr/bin").mkdir(parents=True)
+            (root / "lib/apk/db").mkdir(parents=True)
+            db = root / "lib/apk/db/installed"
+            db.write_text("P:fixture\n")
+            cpio = work / "rootfs.cpio"
+            cpio.write_bytes(b"host fixture")
+            for row in rows:
+                p = root / row
+                p.write_bytes(b"\x7fELF" + row.encode())
+                p.chmod(0o755)
+            suffix = "-original-signed-elfs.sha256" if profile == "m143" else "-original-elfs.sha256"
+            run(network, port, profile, cwd=cwd)
+            assert (work / (profile + suffix)).read_text() == subprocess.check_output(
+                ["sha256sum", *(str(root / row) for row in rows)], text=True)
+            cpio.unlink()
+            run(network, port, profile, cwd=cwd, status=1)
+            cpio.write_bytes(b"host fixture")
+            db.unlink()
+            run(network, port, profile, cwd=cwd, status=0 if profile == "m144" else 1)
+            db.write_text("P:fixture\n")
+            first = root / rows[0]
+            original = first.read_bytes()
+            first.chmod(0o644)
+            run(network, port, profile, cwd=cwd, status=1)
+            first.chmod(0o755)
+            first.write_bytes((root / rows[1]).read_bytes())
+            run(network, port, profile, cwd=cwd, status=1)
+            first.unlink()
+            outside = cwd / "outside"
+            outside.write_bytes(original)
+            outside.chmod(0o755)
+            first.symlink_to(outside)
+            run(network, port, profile, cwd=cwd, status=1)
+            first.unlink()
+            first.write_bytes(original)
+            first.chmod(0o755)
+            collision = cwd / "scripts/m999-original-elfs.txt"
+            collision.write_text(rows[0] + "\n")
+            run(network, port, profile, cwd=cwd, status=1)
+            collision.unlink()
+            manifest.write_text("\n".join(rows[:-1]) + "\n")
+            run(network, port, profile, cwd=cwd, status=1)
+            manifest.write_text("\n".join(rows) + "\n")
+    run(network, "amd64", "m999", cwd=cwd, status=2)
+    run(network, "unknown", "m143", cwd=cwd, status=2)
+migrated += len(profiles) + len(network_counts)
 assert migrated >= 52, migrated
-print(f"[ELF ADMISSION HOST PASS] {migrated} migrated scripts; exact path, count, hash and negative cases")
+print(f"[ELF ADMISSION HOST PASS] {migrated} migrated profiles; exact path, count, hash and negative cases")
