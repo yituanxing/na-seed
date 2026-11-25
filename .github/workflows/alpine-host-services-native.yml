@@ -1,0 +1,398 @@
+# M228-M233 share one native CI pipeline while retaining six independent
+# signed host/guest contracts and the original per-profile evidence payloads.
+name: NaSeed original Alpine host service ingress and persistence
+on:
+  push:
+    branches: [naseed-app-batch2]
+    paths:
+      - '.github/actions/naseed-limine-seed/**'
+      - '.github/workflows/alpine-host-services-native.yml'
+      - 'scripts/m229-*.py'
+      - 'scripts/m230-*.py'
+      - 'scripts/m231-*.py'
+      - 'scripts/m232-*.py'
+      - 'scripts/m233-*.py'
+      - 'scripts/test-m229-*.py'
+      - 'scripts/test-m230-*.py'
+      - 'scripts/test-m231-*.py'
+      - 'scripts/test-m232-*.py'
+      - 'scripts/test-m233-*.py'
+      - 'tests/m229-alpine-valkey-workload.sh'
+      - 'tests/m230-alpine-dropbear-workload.sh'
+      - 'tests/m231-alpine-mosquitto-workload.sh'
+      - 'tests/m232-alpine-memcached-workload.sh'
+      - 'tests/m233-alpine-dnsmasq-workload.sh'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Independent signed Alpine host protocol cohort
+        type: choice
+        required: true
+        options: [m228, m229, m230, m231, m232, m233]
+      port:
+        description: Exact native ISA, or all three
+        type: choice
+        required: true
+        default: amd64
+        options: [amd64, riscv64, arm64, all]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  service:
+    name: ${{ matrix.profile }} original host service / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'push' && '["m228","m229","m230","m231","m232","m233"]' || format('["{0}"]', inputs.profile)) }}
+        port: ${{ fromJSON(github.event_name == 'push' && '["amd64","riscv64","arm64"]' || (inputs.port == 'all' && '["amd64","riscv64","arm64"]' || format('["{0}"]', inputs.port))) }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Preserve each profile's original host and ABI negative assertions
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m228)
+              set -eu
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m228-guest-contract.py
+              python3 scripts/test-m228-host-inbound.py
+              python3 scripts/test-m228-inbound-oracle.py
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              python3 -m py_compile scripts/m228-alpine-uart.py scripts/m228-host-inbound-check.py scripts/m228-inbound-oracle.py
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            m229)
+              set -eu
+              # M229 run #42379360720 reached real second-PID1 getty; the
+              # same-line kernel [MISS] syscall diagnostic must not hide login.
+              python3 scripts/test-m194-uart-prompt.py
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m229-cohort-contract.py
+              python3 scripts/test-m229-valkey-guest-contract.py
+              python3 scripts/test-m229-host-resp.py
+              python3 scripts/test-m229-valkey-disk-check.py
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              python3 -m py_compile scripts/m229-alpine-uart.py scripts/m229-host-resp-check.py \
+                scripts/m229-resp-oracle.py scripts/m229-valkey-disk-check.py
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            m230)
+              set -eu
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m230-cohort-contract.py
+              python3 scripts/test-m230-dropbear-guest-contract.py
+              python3 scripts/test-m230-host-ssh.py
+              python3 scripts/test-m230-dropbear-disk-check.py
+              python3 -m py_compile scripts/m230-alpine-uart.py \
+                scripts/m230-host-ssh-check.py scripts/m230-dropbear-disk-check.py
+              sh -n tests/m230-alpine-dropbear-workload.sh
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            m231)
+              set -eu
+              python3 scripts/test-m194-uart-prompt.py
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m231-mosquitto.py
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              sh -n tests/m231-alpine-mosquitto-workload.sh
+              python3 -m py_compile scripts/m231-alpine-uart.py \
+                scripts/m231-host-mqtt-check.py scripts/m231-mosquitto-disk-check.py
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            m232)
+              set -eu
+              python3 scripts/test-m194-uart-prompt.py
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m232-memcached.py
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              sh -n tests/m232-alpine-memcached-workload.sh
+              python3 -m py_compile scripts/m232-alpine-uart.py \
+                scripts/m232-host-cache-check.py scripts/m232-memcached-disk-check.py
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            m233)
+              set -eu
+              python3 scripts/test-m194-uart-prompt.py
+              python3 scripts/test-m227-uart-login.py
+              python3 scripts/test-m227-openrc-contract.py
+              python3 scripts/test-m228-hostfwd-contract.py
+              python3 scripts/test-m233-hostfwd-udp-contract.py
+              python3 scripts/test-m233-dnsmasq.py
+              sh -n scripts/probe-m197-alpine-software-cohort.sh
+              sh -n tests/m233-alpine-dnsmasq-workload.sh
+              python3 -m py_compile scripts/m233-alpine-uart.py \
+                scripts/m233-host-dns-check.py scripts/m233-dnsmasq-disk-check.py
+              python3 scripts/check-three-isa-core.py
+              python3 scripts/check-architecture-boundaries.py
+              python3 scripts/test-m197-alpine-host.py
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Install exact profile-specific native dependencies
+        timeout-minutes: 20
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m228)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
+              ;;
+            m229)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
+              ;;
+            m230)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl ssh:openssh-client ssh-keygen:openssh-client
+              ;;
+            m231)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
+              ;;
+            m232)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3
+              ;;
+            m233)
+              set -eu
+              PATH=/usr/sbin:/sbin:$PATH
+              export PATH
+              sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --arm64-efi-fallback --cross-cxx --explicit-tools cmake:cmake g++:g++ clang:clang ld.lld:lld readelf:binutils cpio:cpio mke2fs:e2fsprogs debugfs:e2fsprogs e2fsck:e2fsprogs xorriso:xorriso mformat:mtools sgdisk:gdisk curl:curl python3:python3 openssl:openssl
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Recover signed three-ISA Limine when previously required
+        if: ${{ matrix.profile != 'm228' }}
+        uses: ./.github/actions/naseed-limine-seed
+        with:
+          github-token: ${{ github.token }}
+      - name: Run two real Alpine PID1 QEMUs with independent host protocol oracle
+        timeout-minutes: 85
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m228)
+              export NAS_M228_HOST_INBOUND=1
+              export NAS_M228_PUBLIC_QEMU_TIMEOUT=2650
+              export NAS_M228_FIRST_SECONDS=2500
+              export NAS_M228_REOPEN_QEMU_TIMEOUT=1050
+              export NAS_M228_REOPEN_SECONDS=900
+              export NAS_M228_HOST_PORT=15433
+              ;;
+            m229)
+              export NAS_M229_VALKEY_HOST=1
+              export NAS_M229_PUBLIC_QEMU_TIMEOUT=2650
+              export NAS_M229_FIRST_SECONDS=2500
+              export NAS_M229_REOPEN_QEMU_TIMEOUT=1100
+              export NAS_M229_REOPEN_SECONDS=950
+              export NAS_M229_HOST_PORT=15445
+              ;;
+            m230)
+              export NAS_M230_DROPBEAR_HOST=1
+              export NAS_M230_PUBLIC_QEMU_TIMEOUT=2850
+              export NAS_M230_FIRST_SECONDS=2700
+              export NAS_M230_REOPEN_QEMU_TIMEOUT=1300
+              export NAS_M230_REOPEN_SECONDS=1150
+              export NAS_M230_HOST_PORT=12222
+              ;;
+            m231)
+              export NAS_M231_MOSQUITTO_HOST=1
+              export NAS_M231_PUBLIC_QEMU_TIMEOUT=2750
+              export NAS_M231_FIRST_SECONDS=2600
+              export NAS_M231_REOPEN_QEMU_TIMEOUT=1100
+              export NAS_M231_REOPEN_SECONDS=950
+              export NAS_M231_HOST_PORT=15447
+              ;;
+            m232)
+              export NAS_M232_MEMCACHED_HOST=1
+              export NAS_M232_PUBLIC_QEMU_TIMEOUT=2750
+              export NAS_M232_FIRST_SECONDS=2600
+              export NAS_M232_REOPEN_QEMU_TIMEOUT=1100
+              export NAS_M232_REOPEN_SECONDS=950
+              export NAS_M232_HOST_PORT=15448
+              ;;
+            m233)
+              export NAS_M233_DNSMASQ_HOST=1
+              export NAS_M233_PUBLIC_QEMU_TIMEOUT=2750
+              export NAS_M233_FIRST_SECONDS=2600
+              export NAS_M233_REOPEN_QEMU_TIMEOUT=1100
+              export NAS_M233_REOPEN_SECONDS=950
+              export NAS_M233_TCP_HOST_PORT=15453
+              export NAS_M233_UDP_HOST_PORT=15453
+              ;;
+            *) exit 2 ;;
+          esac
+          sh scripts/probe-m197-alpine-software-cohort.sh "$PORT"
+      - name: Preserve exact M228 artifact evidence
+        if: ${{ always() && matrix.profile == 'm228' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m228-host-inbound-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-host-inbound.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-host-inbound.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-first-host-inbound.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-host-inbound.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m228-inbound-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+      - name: Preserve exact M229 artifact evidence
+        if: ${{ always() && matrix.profile == 'm229' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # Raw PCAP necessarily includes the ephemeral disposable Valkey AUTH.
+          # It is a fresh one-run test token, never reused outside this disk;
+          # do NOT upload m229-auth files, guest disk images or private creds.
+          name: m229-valkey-host-resp-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-host-resp.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-host-resp.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-first-host-resp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-host-resp.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m229-valkey-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Preserve exact M230 artifact evidence
+        if: ${{ always() && matrix.profile == 'm230' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # No client private key, guest disk, host known_hosts, or ephemeral
+          # host-only credentials are ever uploaded. Encrypted SSH PCAP is
+          # evidence of wire traffic, not decrypted remote-command proof.
+          name: m230-dropbear-host-ssh-original-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-host-ssh.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-host-ssh.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-first-host-ssh.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-host-ssh.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m230-dropbear-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Preserve exact M231 artifact evidence
+        if: ${{ always() && matrix.profile == 'm231' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m231-mosquitto-original-retained-mqtt-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-first-host-mqtt.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-reopen-host-mqtt.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-first-host-mqtt.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-reopen-host-mqtt.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m231-mosquitto-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Preserve exact M232 artifact evidence
+        if: ${{ always() && matrix.profile == 'm232' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m232-memcached-original-volatile-host-cache-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-host-cache.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-host-cache.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-first-host-cache.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-host-cache.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m232-memcached-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Preserve exact M233 artifact evidence
+        if: ${{ always() && matrix.profile == 'm233' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m233-dnsmasq-original-host-udp-tcp-${{ matrix.port }}
+          path: |
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-first.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen.serial.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-first-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen-runner.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-first-host-dns.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen-host-dns.json
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-first-host-dns.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen-host-dns.log
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m197-public-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-reopen-wire.pcap
+            build/external/m191-alpine-rootfs/${{ matrix.port }}/m233-dnsmasq-final-oracle.json
+            build/acceptance/**/m197-batch*.log
+          if-no-files-found: warn
+          retention-days: 3
