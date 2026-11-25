@@ -1,2 +1,0 @@
-# id	mode	args	expected	evidence	entry
-m162-batch	cpio	ash /tests/m162-batch-run.sh	M162_NETWORK_SCREEN_PASS	-	/bin/busybox

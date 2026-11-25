@@ -111,7 +111,7 @@ jobs:
               sh scripts/check-m111-getrusage.sh
               sh scripts/check-a005-cross-mm.sh ;;
             m124)
-              sh scripts/check-m86-txn.sh
+              sh scripts/check-host-fixture.sh m86-txn
               sh scripts/check-vfs-provider.sh ;;
             m129)
               cc -O2 -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-m129-itimer-host.c kernel/time/clock.c -o /tmp/naseed-m129-itimer-host
@@ -123,7 +123,7 @@ jobs:
               sh scripts/check-m108-tmp-index.sh ;;
             m140|m141)
               sh scripts/check-vfs-provider.sh
-              sh scripts/check-m86-txn.sh ;;
+              sh scripts/check-host-fixture.sh m86-txn ;;
           esac
       - name: Install original signed APK staging and native QEMU tools
         timeout-minutes: 12

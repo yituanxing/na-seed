@@ -30,7 +30,7 @@ jobs:
           python3 -m py_compile scripts/m191-alpine-root-disk.py scripts/m191-host-smoke.py scripts/m191-export-alpine-elf.py scripts/test-m191-export-alpine-elf.py
           python3 scripts/m191-host-smoke.py
           python3 scripts/test-m191-export-alpine-elf.py
-          sh scripts/check-m191-root-provider.sh
+          sh scripts/check-host-fixture.sh m191-root-provider
 
   original-alpine-physical-root:
     name: M191 official Alpine root / and real QEMU user PID1 / ${{ matrix.port }}

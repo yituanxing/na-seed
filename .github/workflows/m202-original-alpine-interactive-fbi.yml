@@ -33,7 +33,7 @@ jobs:
             scripts/m202-alpine-uart.py scripts/m201-qmp-alpine-fbi.py
           python3 scripts/test-m202-interactive-oracle.py
           sh scripts/check-m202-vt.sh
-          sh scripts/check-m202-input-routing.sh
+          sh scripts/check-host-fixture.sh m202-input-routing
           grep -Fxq "$(printf 'm202-fbi\tcpio\t \t-\t-\t/sbin/init')" scripts/m202-fbi-cases.tsv
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py

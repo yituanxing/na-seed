@@ -17,7 +17,7 @@ on:
       - 'ports/lwext4/guest_boot.c'
       - 'scripts/check-m241-original-alpine-shutdown.sh'
       - 'scripts/check-m191-pid1-quiesce.sh'
-      - 'scripts/check-m191-root-provider.sh'
+      - 'scripts/check-host-fixture.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'scripts/test-m191-root-provider.c'
       - 'scripts/check-m105-signal-group.sh'

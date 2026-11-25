@@ -42,7 +42,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
           python3 scripts/m191-host-smoke.py
           python3 scripts/test-m191-export-alpine-elf.py
-          sh scripts/check-m191-root-provider.sh
+          sh scripts/check-host-fixture.sh m191-root-provider
           python3 - <<'PY'
           from pathlib import Path
           import runpy

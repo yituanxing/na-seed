@@ -95,14 +95,14 @@ jobs:
           case "$PROFILE" in
             m146)
               sh scripts/check-vfs-provider.sh
-              sh scripts/check-m86-txn.sh
+              sh scripts/check-host-fixture.sh m86-txn
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-original-elfs.txt)" -eq 24
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m146-expected-markers.txt)" -eq 25
               test "$(awk '!/^#/ && NF {print $0}' scripts/m146-original-elfs.txt | sort -u | wc -l)" -eq 24
               ;;
             m148)
               sh scripts/check-vfs-provider.sh
-              sh scripts/check-m86-txn.sh
+              sh scripts/check-host-fixture.sh m86-txn
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-original-elfs.txt)" -eq 35
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m148-expected-markers.txt)" -eq 36
               test "$(awk '!/^#/ && NF {print $0}' scripts/m148-original-elfs.txt | sort -u | wc -l)" -eq 35
@@ -115,7 +115,7 @@ jobs:
               ;;
             m151)
               sh scripts/check-vfs-provider.sh
-              sh scripts/check-m86-txn.sh
+              sh scripts/check-host-fixture.sh m86-txn
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m151-original-elfs.txt)" -eq 35
               test "$(awk '!/^#/ && NF {n++} END {print n+0}' scripts/m151-expected-markers.txt)" -eq 36
               test "$(awk '!/^#/ && NF {print $0}' scripts/m151-original-elfs.txt | sort -u | wc -l)" -eq 35

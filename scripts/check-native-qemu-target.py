@@ -66,7 +66,7 @@ def catalog_probes() -> list[Path]:
             assert f'{milestone}) {stage}; work="build/external/{milestone}-batch/$port" ;;' in path.read_text()
             if milestone == "m168":
                 assert 'm170) sh scripts/stage-m168-prebuilt.sh "$port"; work="build/external/m168-batch/$port" ;;' in path.read_text()
-            assert 'BUSYBOX_PARITY_MANIFEST="scripts/$profile-batch-cases.tsv"' in path.read_text()
+            assert 'BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh "$profile")' in path.read_text()
         else:
             dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
             basic = ROOT / "scripts/stage-alpine-basic.sh"

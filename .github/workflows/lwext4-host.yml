@@ -17,7 +17,7 @@ jobs:
       - name: '[HOST] Linux path semantics oracle plus real NaSeed VFS namespace regression'
         run: sh scripts/check-path-first-oracle.sh
       - name: '[HOST] Production Path-first dirfd and owned File request checks'
-        run: sh scripts/check-path-request-host.sh
+        run: sh scripts/check-host-fixture.sh path-request-host
       - name: '[HOST] Production exec source Path lease fault injection and one cleanup owner'
         run: sh scripts/check-exec-path-owner.sh
       - name: 'Second independent upstream FS: pinned littlefs against shared BlockDevice'

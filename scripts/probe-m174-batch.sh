@@ -17,7 +17,8 @@ fi
 export NAS_ACCEPTANCE_QEMU_RAM=2048M NAS_ACCEPTANCE_DISK_MB=1024
 export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_APP_BATCH_QEMU_TIMEOUT:-850}
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST=scripts/m174-batch-cases.tsv
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m174)
+export BUSYBOX_PARITY_MANIFEST
 sh scripts/stage-m174-devfs-software-gui.sh "$port"
 work="build/external/m174-software-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

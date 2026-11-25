@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 # Keep each provider linked to its existing real implementation and fixture.
-sh scripts/check-netlink-filter.sh
-sh scripts/check-netlink-generic.sh
+sh scripts/check-host-fixture.sh netlink-filter
+sh scripts/check-host-fixture.sh netlink-generic
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 for protocol in route diag; do

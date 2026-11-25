@@ -330,7 +330,7 @@ VFS open attempts.
 | `sh scripts/check-vfs-provider.sh` | Real VFS mount/lease + anonymous inode lifecycle; memfd ABI | Host tests only |
 | `sh scripts/check-path-contract-host.sh` | 4095/4096 length and root namespace error codes | Host tests only |
 | `sh scripts/check-m106-usercopy-syscalls.sh` | Real File/FD syscall publication/close, failure rollback, memfd diagnostic bounds, Path-first bootstrap metadata and symlink/FD-full behavior | Host tests only |
-| `sh scripts/check-path-request-host.sh` | Real 255/256/4095/4096 user/kernel pathname ownership, inline/heap release | Host tests only |
+| `sh scripts/check-host-fixture.sh path-request-host` | Real 255/256/4095/4096 user/kernel pathname ownership, inline/heap release | Host tests only |
 | `sh scripts/check-path-contract-host.sh` (extended) | Real deep provider: 4095-byte output, >256 ancestors, actual chdir/fchdir/getcwd, ERANGE and owned File Path | Host tests only |
 | `scripts/test-procfs.c` (extended) | Long `/proc/<pid>/cwd` full and truncated readlink outputs | Host tests only |
 | `python3 scripts/check-three-isa-core.py` | All 70 shared source units selected in three build manifests, including the single generic bus registry | Static manifest, **not** cross-compilation |

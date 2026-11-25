@@ -43,7 +43,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
           test -s scripts/m200-fbdev-mmap.c
           test -s scripts/m200-fbdev-cases.tsv
-          sh scripts/check-m86-txn.sh
+          sh scripts/check-host-fixture.sh m86-txn
           sh scripts/check-m88-exceptions.sh
           sh scripts/check-m101-cow.sh
           sh scripts/check-m167-fb-pwrite.sh

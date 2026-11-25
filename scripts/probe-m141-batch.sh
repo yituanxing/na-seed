@@ -11,7 +11,8 @@ export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
 export NAS_ACCEPTANCE_DISK_MB=768
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST=scripts/m141-batch-cases.tsv
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m141)
+export BUSYBOX_PARITY_MANIFEST
 
 log="$logs/m141-batch.clean.log"
 if ! sh "$runner"; then

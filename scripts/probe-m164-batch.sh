@@ -11,7 +11,8 @@ export NAS_ACCEPTANCE_QEMU_RAM=2048M
 export NAS_ACCEPTANCE_DISK_MB=1024
 export NAS_APP_BATCH_QEMU_TIMEOUT=700
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST=scripts/m164-batch-cases.tsv
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m164)
+export BUSYBOX_PARITY_MANIFEST
 sh scripts/stage-m164-prebuilt.sh "$port"
 work="build/external/m164-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

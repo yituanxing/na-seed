@@ -331,7 +331,7 @@ jobs:
           command -v docker
       - name: Reject CPIO fixed-file-count regressions
         if: steps.profile.outputs.bootfs == '1'
-        run: sh scripts/check-bootfs-scale.sh
+        run: sh scripts/check-host-fixture.sh bootfs-scale
       - name: Execute original native workload
         timeout-minutes: ${{ fromJSON('{"m38":24,"m39":12,"m40":12,"m41":12,"m42":12,"m43":12,"m44":12,"m45":12,"m46":12,"m47":12,"m48":24,"m49":24,"m51":28,"m52":28,"m53":36,"m54":47,"m65":24,"m66":24,"m67":24,"m69":24,"m70":24,"m79":24}')[inputs.profile] }}
         run: sh "${{ steps.profile.outputs.probe }}" "$PORT"

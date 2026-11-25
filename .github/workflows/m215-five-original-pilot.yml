@@ -79,7 +79,7 @@ jobs:
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
           sh scripts/check-pipe-capacity.sh
-          sh scripts/check-netlink-generic.sh
+          sh scripts/check-host-fixture.sh netlink-generic
           sh scripts/check-m191-pid1-quiesce.sh
       - name: Install native x86 QEMU and physical ext4 tools
         timeout-minutes: 18

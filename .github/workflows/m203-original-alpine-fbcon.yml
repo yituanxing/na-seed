@@ -35,7 +35,7 @@ jobs:
           python3 scripts/test-m202-interactive-oracle.py
           sh scripts/check-m203-fbcon.sh
           sh scripts/check-m202-vt.sh
-          sh scripts/check-m202-input-routing.sh
+          sh scripts/check-host-fixture.sh m202-input-routing
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
 

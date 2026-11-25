@@ -87,7 +87,7 @@ jobs:
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
       - name: Reject hardcoded CPIO file limit regressions before costly native QEMU
-        run: sh scripts/check-bootfs-scale.sh
+        run: sh scripts/check-host-fixture.sh bootfs-scale
       - name: Run declared fast or full original workloads in this ISA (zero suppressed failures)
         timeout-minutes: 65
         run: sh scripts/probe-alpine-batch.sh ${{ matrix.suite }} ${{ matrix.port }}

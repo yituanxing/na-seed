@@ -39,7 +39,8 @@ if [ "${NAS_M81_FS:-0}" = 1 ]; then
   fi
   log="$logs/m81-fs.clean.log"
 else
-  export BUSYBOX_PARITY_MANIFEST=scripts/m80-batch-cases.tsv
+  BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m80)
+  export BUSYBOX_PARITY_MANIFEST
   log="$logs/m80-batch.clean.log"
 fi
 if ! sh "$runner"; then

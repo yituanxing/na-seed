@@ -9,7 +9,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -I kernel \
 build/vfs-provider/test
 # Real registered disks and partitions must be reflected in both devfs and
 # the Linux sysfs block-class topology, never in image-specific mock files.
-sh scripts/check-sysfs-block.sh
+sh scripts/check-host-fixture.sh sysfs-block
 # memfd_create validates Linux arguments then asks for a pathless mounted
 # tmpfs inode. Provider tests above prove last-pin orphan reclamation and
 # removable mount EBUSY without ever creating a temporary namespace name.

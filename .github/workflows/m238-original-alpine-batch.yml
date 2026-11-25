@@ -9,7 +9,7 @@ on:
       - 'scripts/m238-*'
       - 'scripts/test-m238-*'
       - 'scripts/probe-alpine-profile.sh'
-      - 'scripts/run-m238-local.sh'
+      - 'scripts/acceptance/run-local-alpine-cohort.sh'
       - 'scripts/acceptance/run-local-alpine-cohort.sh'
       - 'scripts/inventory-m141-signed-apks.sh'
       - 'scripts/check-m141-candidates.py'
@@ -41,7 +41,7 @@ jobs:
           NAS_M238_PUBLIC_SECONDS: '4400'
           NAS_M238_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M238_REOPEN_SECONDS: '1200'
-        run: sh scripts/run-m238-local.sh --native amd64
+        run: sh scripts/acceptance/run-local-alpine-cohort.sh m238 --native amd64
       - name: Preserve signed APK census, both QEMUs, native semantics and physical ext4 SHA proof
         if: always()
         uses: actions/upload-artifact@v4
@@ -84,7 +84,7 @@ jobs:
           NAS_M238_PUBLIC_SECONDS: '4400'
           NAS_M238_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M238_REOPEN_SECONDS: '1200'
-        run: sh scripts/run-m238-local.sh --native '${{ matrix.port }}'
+        run: sh scripts/acceptance/run-local-alpine-cohort.sh m238 --native '${{ matrix.port }}'
       - name: Preserve signed APK census, both QEMUs, native semantics and physical ext4 SHA proof
         if: always()
         uses: actions/upload-artifact@v4

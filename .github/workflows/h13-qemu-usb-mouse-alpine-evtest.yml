@@ -88,8 +88,7 @@ jobs:
           sh -n scripts/acceptance/build-qemu-usb-iso.sh
           sh -n scripts/acceptance/check-qemu-usb-hid.sh
           sh -n scripts/acceptance/check-qemu-usb-negative.sh
-          sh -n scripts/check-h13-mouse-host.sh
-          sh -n scripts/check-h13-xhci-host.sh
+          sh -n scripts/check-host-fixture.sh
           sh -n scripts/run.sh
           python3 -m py_compile scripts/h13-qmp-evtest.py
           make hw-h13-host-check

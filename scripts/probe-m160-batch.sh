@@ -22,7 +22,8 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=600
 export NAS_ACCEPTANCE_QEMU_RAM=2048M
 export NAS_ACCEPTANCE_DISK_MB=1024
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST=scripts/m160-batch-cases.tsv
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m160)
+export BUSYBOX_PARITY_MANIFEST
 unset NAS_SYSCALL_TRACE
 
 sh scripts/stage-m160-prebuilt.sh "$port"

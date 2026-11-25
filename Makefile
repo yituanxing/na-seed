@@ -297,7 +297,7 @@ hw-h2-iso:
 	$(MAKE) OUT=build/h2-hardware NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 iso
 
 hw-h3-host-check: hw-h2-host-check
-	sh scripts/check-h3-nvme-identify-host.sh
+	sh scripts/check-host-fixture.sh h3-nvme-identify-host
 
 hw-h3-kernel:
 	$(MAKE) OUT=build/h3-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 kernel
@@ -308,7 +308,7 @@ hw-h3-iso:
 # H4 cannot be booted on a real PC: it writes QEMU NVMe admin/I/O queues.
 # A separate OUT prevents incremental-build reuse with all other profiles.
 hw-h4-host-check: hw-h3-host-check
-	sh scripts/check-h4-nvme-readonly-host.sh
+	sh scripts/check-host-fixture.sh h4-nvme-readonly-host
 
 hw-h4-kernel:
 	$(MAKE) OUT=build/h4-qemu-only NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 kernel
@@ -378,7 +378,7 @@ hw-h8-iso: hw-h8-kernel
 # H9: built-in Q35 ICH9 AHCI 00:1f.2 with one readonly SATA ext4 root.
 # Keep H9 objects, signed Alpine image and UEFI media isolated from H8.
 hw-h9-host-check: hw-h2-host-check
-	sh scripts/check-h9-ahci-readonly-host.sh
+	sh scripts/check-host-fixture.sh h9-ahci-readonly-host
 
 hw-h9-kernel:
 	$(MAKE) OUT=build/h9-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H9_QEMU_AHCI_USERLAND=1 kernel
@@ -392,7 +392,7 @@ hw-h9-iso: hw-h9-kernel
 # but routes every TCP frame through the new E1000 PCI MAC/RX/TX descriptor
 # driver. No VirtIO-Net and no simulated host socket stand-in.
 hw-h10-host-check: hw-h8-host-check
-	sh scripts/check-h10-e1000-host.sh
+	sh scripts/check-host-fixture.sh h10-e1000-host
 
 hw-h10-kernel:
 	$(MAKE) OUT=build/h10-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_LWIP=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H10_QEMU_E1000_USERLAND=1 kernel
@@ -433,8 +433,8 @@ hw-h12-iso: hw-h12-kernel
 # H13 QEMU USB Boot Mouse: original signed Alpine evtest reports actual
 # REL_X/Y/WHEEL and BTN_LEFT transitions after independent QMP injection.
 hw-h13-host-check: hw-h8-host-check
-	sh scripts/check-h13-mouse-host.sh
-	sh scripts/check-h13-xhci-host.sh
+	sh scripts/check-host-fixture.sh h13-mouse-host
+	sh scripts/check-host-fixture.sh h13-xhci-host
 
 hw-h13-kernel:
 	$(MAKE) OUT=build/h13-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND=1 kernel
@@ -446,7 +446,7 @@ hw-h13-iso: hw-h13-kernel
 
 # H14: real single-controller/two-root-port xHCI HID and original evtest.
 hw-h14-host-check: hw-h13-host-check
-	sh scripts/check-h14-dual-hid-host.sh
+	sh scripts/check-host-fixture.sh h14-xhci-host
 
 hw-h14-kernel:
 	$(MAKE) OUT=build/h14-qemu-only NAS_ENABLE_LWEXT4=1 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 NAS_ENABLE_H1_ECAM_DISCOVERY=1 NAS_ENABLE_H2_PCI_RESOURCE_INVENTORY=1 NAS_ENABLE_H3_QEMU_NVME_IDENTIFY=1 NAS_ENABLE_H4_QEMU_NVME_READONLY=1 NAS_ENABLE_H5_QEMU_PCI_RESOURCE=1 NAS_ENABLE_H6_QEMU_RESOURCE_LIFETIME=1 NAS_ENABLE_H7_QEMU_NVME_USERLAND=1 NAS_ENABLE_H8_QEMU_ALPINE_ROOT=1 NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND=1 kernel

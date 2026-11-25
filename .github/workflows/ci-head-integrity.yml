@@ -85,9 +85,9 @@ jobs:
         run: sh scripts/acceptance/check-shared-usb-host.sh
       - name: Run three original local host-only acceptance cohorts
         run: |
-          sh scripts/run-m236-local.sh --host-only
-          sh scripts/run-m237-local.sh --host-only
-          sh scripts/run-m238-local.sh --host-only
+          sh scripts/acceptance/run-local-alpine-cohort.sh m236 --host-only
+          sh scripts/acceptance/run-local-alpine-cohort.sh m237 --host-only
+          sh scripts/acceptance/run-local-alpine-cohort.sh m238 --host-only
 
       - name: Verify common PCI, VirtIO class and MM policy contracts
         run: |

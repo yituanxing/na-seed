@@ -10,7 +10,8 @@ mkdir -p "$work"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST=scripts/m161-batch-cases.tsv
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m161)
+export BUSYBOX_PARITY_MANIFEST
 export NAS_ACCEPTANCE_QEMU_RAM=2048M
 export NAS_ACCEPTANCE_DISK_MB=1024
 export NAS_APP_BATCH_QEMU_TIMEOUT=700

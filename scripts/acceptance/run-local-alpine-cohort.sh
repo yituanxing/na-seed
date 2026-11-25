@@ -40,7 +40,7 @@ if [ "$mode" = --host-only ]; then
     echo "[${label} HOST ONLY PASS] strict manifest, original APK SHA and ledger negative cases; no native-QEMU acceptance claimed"
     exit 0
 fi
-test "$#" -eq 2 || { echo "usage: run-${profile}-local.sh --native amd64|arm64|riscv64" >&2; exit 2; }
+test "$#" -eq 2 || { echo "usage: sh scripts/acceptance/run-local-alpine-cohort.sh ${profile} --native amd64|arm64|riscv64" >&2; exit 2; }
 port=$2
 case "$port" in amd64|arm64|riscv64) ;; *) exit 2 ;; esac
 # Match M235's successful Ubuntu 24.04 signed-APK and native-QEMU toolchain

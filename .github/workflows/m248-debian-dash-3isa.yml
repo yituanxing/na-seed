@@ -77,7 +77,7 @@ jobs:
           for path in sorted(Path('scripts').glob('m248-*.py')):
               ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
           PY
-          sh scripts/check-m86-txn.sh
+          sh scripts/check-host-fixture.sh m86-txn
       - name: Install signed Debian metadata and native RISC-V or AArch64 QEMU
         timeout-minutes: 15
         run: |

@@ -49,7 +49,7 @@ jobs:
       - name: M108 indexed tmpfs namespace large-directory and inode-recycle regression
         run: sh scripts/check-m108-tmp-index.sh
       - name: Shared scalable CPIO archive index regression (>1200 files)
-        run: sh scripts/check-bootfs-scale.sh
+        run: sh scripts/check-host-fixture.sh bootfs-scale
       - name: Page-granularity shared usercopy regression (cross-page, RX, read-only, atomic failures)
         run: cc -std=c11 -Wall -Wextra -Werror -fno-builtin -I kernel scripts/test-usercopy-pages.c kernel/mm/usercopy.c kernel/lib/string.c -o /tmp/naseed-usercopy-pages && /tmp/naseed-usercopy-pages
       - name: M106 real filesystem syscall usercopy and pipe/socket transaction regression
@@ -108,7 +108,7 @@ jobs:
       - name: '[HOST + x86 OBJECT] M88 user ISR routing and saved error frames'
         run: sh scripts/check-x86-isr-routing.sh
       - name: '[HOST] x86 production PTE NX and ELF overlap compatibility'
-        run: sh scripts/check-x86-nx.sh
+        run: sh scripts/check-host-fixture.sh x86-nx
       - name: '[HOST + x86 OBJECT] x86 early NXE capability and EFER bootstrap contract'
         run: sh scripts/check-x86-nxe-bootstrap.sh
       - name: '[HOST + TARGET-COMPILE] M103 Linux clone TID and robust futex lifecycle'

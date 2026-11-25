@@ -66,6 +66,7 @@ with tempfile.TemporaryDirectory() as tmp:
         scripts.mkdir()
         (scripts / "acceptance").mkdir()
         shutil.copyfile(CHECKER, scripts / "acceptance/check-batch-markers.sh")
+        shutil.copyfile(ROOT / "scripts/acceptance/batch-manifest.sh", scripts / "acceptance/batch-manifest.sh")
         shutil.copyfile(ROOT / "scripts/native-qemu-target.sh", scripts / "native-qemu-target.sh")
         (scripts / "stage-alpine-signed-batch.sh").write_text(
             '#!/bin/sh\n[ "$#" -eq 2 ] && [ "$1" = "$TEST_PORT" ] && [ "$2" = "$TEST_PROFILE" ]\n')
@@ -77,7 +78,8 @@ set -eu
 [ "$NAS_ACCEPTANCE_QEMU_RAM" = "$TEST_RAM" ]
 [ "$NAS_ACCEPTANCE_DISK_MB" = "$TEST_DISK" ]
 if [ -n "$TEST_TIMEOUT" ]; then [ "$NAS_APP_BATCH_QEMU_TIMEOUT" = "$TEST_TIMEOUT" ]; fi
-[ "$BUSYBOX_PARITY_MANIFEST" = "scripts/$TEST_PROFILE-batch-cases.tsv" ]
+[ "$BUSYBOX_PARITY_MANIFEST" = "build/acceptance-manifests/$TEST_PROFILE.tsv" ]
+[ -s "$BUSYBOX_PARITY_MANIFEST" ]
 if [ "$TEST_PROFILE" = m110 ]; then [ "$NAS_SYSCALL_TRACE" = 1 ]; fi
 case "$TEST_PORT" in
     amd64) logs=build/busybox-source-parity-x86 ;;

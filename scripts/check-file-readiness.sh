@@ -8,7 +8,7 @@ git grep -n -E '\b(nas_epoll_fd_poll|nas_eventfd_poll|nas_timerfd_poll_fd|nas_in
 [ "$rc" -eq 1 ]
 sh scripts/check-m89-poll.sh
 sh scripts/check-m90-io-wait.sh
-sh scripts/check-m141-pidfd-host.sh
+sh scripts/check-host-fixture.sh m141-pidfd-host
 sh scripts/check-timerfd.sh
 sh scripts/check-m187-inotify.sh
 echo '[FILE READINESS PASS] OpenFile/Task readiness, epoll, pidfd, timerfd, inotify'

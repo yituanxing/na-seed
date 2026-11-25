@@ -34,7 +34,7 @@ sh scripts/check-m101-cow.sh
 sh scripts/check-m102-tty-cow.sh
 sh scripts/check-m100-signal-failure.sh
 sh scripts/check-frame-refs.sh
-sh scripts/check-m86-txn.sh
+sh scripts/check-host-fixture.sh m86-txn
 sh scripts/check-m88-exceptions.sh
 sh scripts/check-m89-poll.sh
 sh scripts/check-m90-io-wait.sh

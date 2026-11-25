@@ -9,7 +9,8 @@ case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 export NAS_QEMU_RAMFB=1 NAS_QEMU_INPUT_OPTIN=1 NAS_ENABLE_VIRTIO_INPUT=1
 export NAS_ACCEPTANCE_QEMU_RAM=2048M NAS_ACCEPTANCE_DISK_MB=1024
 export NAS_APP_BATCH_QEMU_TIMEOUT=700 BUSYBOX_PARITY_EXPECTED_COUNT=1
-export BUSYBOX_PARITY_MANIFEST="scripts/$profile-batch-cases.tsv"
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh "$profile")
+export BUSYBOX_PARITY_MANIFEST
 case "$profile" in
     m166) sh scripts/stage-m166-prebuilt.sh "$port"; work="build/external/m166-batch/$port" ;;
     m167) sh scripts/stage-m167-prebuilt.sh "$port"; work="build/external/m167-batch/$port" ;;

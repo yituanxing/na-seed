@@ -43,7 +43,8 @@ export NAS_ACCEPTANCE_QEMU_RAM="$ram"
 export NAS_ACCEPTANCE_DISK_MB="$disk"
 if [ -n "$timeout" ]; then export NAS_APP_BATCH_QEMU_TIMEOUT="$timeout"; fi
 if [ "$profile" = m110 ]; then export NAS_SYSCALL_TRACE=1; fi
-export BUSYBOX_PARITY_MANIFEST="scripts/$profile-batch-cases.tsv"
+BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh "$profile")
+export BUSYBOX_PARITY_MANIFEST
 log="$logs/$profile-batch.clean.log"
 if ! sh "$runner"; then
     echo "[$label BATCH FAIL] $port original signed Alpine runtime" >&2
