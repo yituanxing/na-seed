@@ -66,6 +66,12 @@ jobs:
       - name: Check every PR job uses submitted source, never synthetic merge
         run: python3 scripts/check-ci-checkout-head.py
 
+      - name: Verify consolidated peripheral profile syntax and strict host contracts
+        run: |
+          bash -n scripts/acceptance/h0-h6-pci-nvme.sh
+          python3 scripts/test-m203-fbcon-oracle.py
+          python3 -B tests/m255-debian-init-host.py
+
       - name: Validate canonical signed APK profile manifests
         run: |
           python3 scripts/check-prebuilt-profile-catalog.py
