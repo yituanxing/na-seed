@@ -924,6 +924,39 @@ if [ "$m226" = 1 ]; then
     m226_start_host first
 fi
 
+# One strict receipt/reap contract for real external host observers. A service
+# still owns its own protocol, challenge, credentials, PCAP and disk oracle.
+nas_wait_host_receipt() {
+    [ "$#" -eq 5 ] || return 2
+    observer_pid=$1
+    observer_receipt=$2
+    observer_log=$3
+    observer_label=$4
+    observer_phase=$5
+    [ -n "$observer_pid" ] || {
+        echo "[$observer_label HOST FAIL] $observer_phase observer was not started" >&2
+        return 1
+    }
+    observer_seconds=0
+    while [ ! -s "$observer_receipt" ] && kill -0 "$observer_pid" 2>/dev/null && \
+          [ "$observer_seconds" -lt 8 ]; do
+        sleep 1
+        observer_seconds=$((observer_seconds+1))
+    done
+    if [ ! -s "$observer_receipt" ]; then
+        echo "[$observer_label HOST FAIL] $observer_phase no independent host receipt" >&2
+        kill "$observer_pid" 2>/dev/null || :
+        wait "$observer_pid" 2>/dev/null || :
+        tail -100 "$observer_log" >&2 || :
+        return 1
+    fi
+    if ! wait "$observer_pid"; then
+        echo "[$observer_label HOST FAIL] $observer_phase host protocol challenge failed" >&2
+        tail -100 "$observer_log" >&2 || :
+        return 1
+    fi
+}
+
 if [ "$m228" = 1 ]; then
     # Exactly one independent host observer per native QEMU. It waits for
     # the signed guest's real UART READY line before initiating host TCP GET.
@@ -952,36 +985,11 @@ if [ "$m228" = 1 ]; then
     }
     m228_finish_host() {
         phase=$1
-        test -n "$m228_host_pid" || {
-            echo '[M228 HOST FAIL] no live host watcher' >&2; exit 1;
-        }
-        # UART has already completed the guest's bounded 45-second window.
-        # An absent host receipt can never be repaired by waiting another
-        # 45-minute ready-timeout after QEMU has EXITED. Bound this join.
-        m228_join_seconds=0
-        while [ ! -s "$PWD/$work/m228-$phase-host-inbound.json" ] && \
-              kill -0 "$m228_host_pid" 2>/dev/null && \
-              [ "$m228_join_seconds" -lt 8 ]; do
-            sleep 1
-            m228_join_seconds=$((m228_join_seconds+1))
-        done
-        if [ ! -s "$PWD/$work/m228-$phase-host-inbound.json" ]; then
-            echo "[M228 HOST FAIL] $phase QEMU exited without actual host HTTP receipt" >&2
+        if ! nas_wait_host_receipt "$m228_host_pid" "$PWD/$work/m228-$phase-host-inbound.json" "$PWD/$work/m228-$phase-host-inbound.log" M228 "$phase"; then
             m228_stop_host
-            tail -100 "$PWD/$work/m228-$phase-host-inbound.log" >&2 || :
             exit 1
         fi
-        if wait "$m228_host_pid"; then
-            m228_host_pid=
-            test -s "$PWD/$work/m228-$phase-host-inbound.json" || {
-                echo '[M228 HOST FAIL] actual host HTTP receipt absent' >&2; exit 1;
-            }
-        else
-            m228_host_pid=
-            echo "[M228 HOST FAIL] $phase real hostfwd HTTP observation" >&2
-            tail -100 "$PWD/$work/m228-$phase-host-inbound.log" >&2 || :
-            exit 1
-        fi
+        m228_host_pid=
     }
     trap 'm228_stop_host' EXIT
     trap 'exit 129' HUP
@@ -1020,30 +1028,11 @@ if [ "$m229" = 1 ]; then
     }
     m229_finish_host() {
         phase=$1
-        test -n "$m229_host_pid" || {
-            echo '[M229 HOST FAIL] host RESP watcher was never started' >&2; exit 1;
-        }
-        join_seconds=0
-        while [ ! -s "$PWD/$work/m229-$phase-host-resp.json" ] && \
-              kill -0 "$m229_host_pid" 2>/dev/null && \
-              [ "$join_seconds" -lt 8 ]; do
-            sleep 1
-            join_seconds=$((join_seconds+1))
-        done
-        if [ ! -s "$PWD/$work/m229-$phase-host-resp.json" ]; then
-            echo "[M229 HOST FAIL] $phase native QEMU had no external RESP receipt" >&2
+        if ! nas_wait_host_receipt "$m229_host_pid" "$PWD/$work/m229-$phase-host-resp.json" "$PWD/$work/m229-$phase-host-resp.log" M229 "$phase"; then
             m229_stop_host
-            tail -100 "$PWD/$work/m229-$phase-host-resp.log" >&2 || :
             exit 1
         fi
-        if wait "$m229_host_pid"; then
-            m229_host_pid=
-        else
-            m229_host_pid=
-            echo "[M229 HOST FAIL] $phase real guest Valkey RESP transaction" >&2
-            tail -100 "$PWD/$work/m229-$phase-host-resp.log" >&2 || :
-            exit 1
-        fi
+        m229_host_pid=
     }
 fi
 
@@ -1081,30 +1070,11 @@ if [ "$m230" = 1 ]; then
     }
     m230_finish_host() {
         phase=$1
-        test -n "$m230_host_pid" || {
-            echo '[M230 HOST FAIL] no live SSH watcher' >&2; exit 1;
-        }
-        join_seconds=0
-        while [ ! -s "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json" ] && \
-              kill -0 "$m230_host_pid" 2>/dev/null && \
-              [ "$join_seconds" -lt 8 ]; do
-            sleep 1
-            join_seconds=$((join_seconds+1))
-        done
-        if [ ! -s "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json" ]; then
-            echo "[M230 HOST FAIL] $phase native QEMU lacks real SSH receipt" >&2
+        if ! nas_wait_host_receipt "$m230_host_pid" "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.json" "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log" M230 "$phase"; then
             m230_stop_host
-            tail -100 "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log" >&2 || :
             exit 1
         fi
-        if wait "$m230_host_pid"; then
-            m230_host_pid=
-        else
-            m230_host_pid=
-            echo "[M230 HOST FAIL] $phase authenticated Dropbear command" >&2
-            tail -100 "$PWD/$work/$ssh_profile-$phase-$ssh_host_suffix.log" >&2 || :
-            exit 1
-        fi
+        m230_host_pid=
     }
 fi
 
@@ -1137,30 +1107,11 @@ if [ "$m231" = 1 ]; then
     }
     m231_finish_host() {
         phase=$1
-        test -n "$m231_host_pid" || {
-            echo '[M231 HOST FAIL] host MQTT observer absent' >&2; exit 1;
-        }
-        join_seconds=0
-        while [ ! -s "$PWD/$work/m231-$phase-host-mqtt.json" ] && \
-              kill -0 "$m231_host_pid" 2>/dev/null && \
-              [ "$join_seconds" -lt 8 ]; do
-            sleep 1
-            join_seconds=$((join_seconds+1))
-        done
-        if [ ! -s "$PWD/$work/m231-$phase-host-mqtt.json" ]; then
-            echo "[M231 HOST FAIL] $phase original QEMU lacks real MQTT receipt" >&2
+        if ! nas_wait_host_receipt "$m231_host_pid" "$PWD/$work/m231-$phase-host-mqtt.json" "$PWD/$work/m231-$phase-host-mqtt.log" M231 "$phase"; then
             m231_stop_host
-            tail -100 "$PWD/$work/m231-$phase-host-mqtt.log" >&2 || :
             exit 1
         fi
-        if wait "$m231_host_pid"; then
-            m231_host_pid=
-        else
-            m231_host_pid=
-            echo "[M231 HOST FAIL] $phase true retained MQTT transaction" >&2
-            tail -100 "$PWD/$work/m231-$phase-host-mqtt.log" >&2 || :
-            exit 1
-        fi
+        m231_host_pid=
     }
 fi
 
@@ -1193,30 +1144,11 @@ if [ "$m232" = 1 ]; then
     }
     m232_finish_host() {
         phase=$1
-        test -n "$m232_host_pid" || {
-            echo '[M232 HOST FAIL] external host watcher absent' >&2; exit 1;
-        }
-        join_seconds=0
-        while [ ! -s "$PWD/$work/m232-$phase-host-cache.json" ] && \
-              kill -0 "$m232_host_pid" 2>/dev/null && \
-              [ "$join_seconds" -lt 8 ]; do
-            sleep 1
-            join_seconds=$((join_seconds+1))
-        done
-        if [ ! -s "$PWD/$work/m232-$phase-host-cache.json" ]; then
-            echo "[M232 HOST FAIL] $phase QEMU lacks independent real host cache" >&2
+        if ! nas_wait_host_receipt "$m232_host_pid" "$PWD/$work/m232-$phase-host-cache.json" "$PWD/$work/m232-$phase-host-cache.log" M232 "$phase"; then
             m232_stop_host
-            tail -100 "$PWD/$work/m232-$phase-host-cache.log" >&2 || :
             exit 1
         fi
-        if wait "$m232_host_pid"; then
-            m232_host_pid=
-        else
-            m232_host_pid=
-            echo "[M232 HOST FAIL] $phase true cache miss/SET/GET" >&2
-            tail -100 "$PWD/$work/m232-$phase-host-cache.log" >&2 || :
-            exit 1
-        fi
+        m232_host_pid=
     }
 fi
 

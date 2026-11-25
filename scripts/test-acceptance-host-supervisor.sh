@@ -105,4 +105,33 @@ if kill -0 "$pid" 2>/dev/null; then fail 'TERM path leaked an observer'; fi
 test_elapsed=$(($(date +%s)-test_started))
 test "$test_elapsed" -lt 12 || fail 'cleanup exceeded bounded shutdown time'
 
+# Exercise the shared host receipt/reap gate with real direct child processes.
+# Extract its exact implementation to ensure source and unit test do not drift.
+awk '/^nas_wait_host_receipt\(\) \{/{yes=1} yes{print; if ($0 == "}") exit}' \
+    scripts/probe-m197-alpine-software-cohort.sh > "$test_dir/receipt.sh"
+sh -n "$test_dir/receipt.sh"
+printf 'original observer log\n' > "$test_dir/observer.log"
+sh -c '
+    set -eu
+    . "$1"
+    receipt=$2
+    log=$3
+    (printf "original native host receipt\n" > "$receipt") &
+    child=$!
+    nas_wait_host_receipt "$child" "$receipt" "$log" M229 first
+    test "$(cat "$receipt")" = "original native host receipt"
+    # Even a forged receipt cannot turn a failed host process into success.
+    (exit 41) &
+    child=$!
+    if nas_wait_host_receipt "$child" "$receipt" "$log" M229 reopen; then exit 14; fi
+    rm -f "$receipt"
+    # Speed up only the polling delay; retain all eight readiness attempts.
+    sleep() { :; }
+    (exec sleep 30) &
+    child=$!
+    if nas_wait_host_receipt "$child" "$receipt" "$log" M229 first; then exit 15; fi
+    if kill -0 "$child" 2>/dev/null; then exit 16; fi
+' sh "$test_dir/receipt.sh" "$test_dir/receipt.json" "$test_dir/observer.log" ||
+    fail 'forged receipt, failed observer, or missing-receipt child was accepted'
+
 printf '%s\n' '[ACCEPTANCE SUPERVISOR PASS] invalid PID rejection, two-child dedup, exit 37, durable logs/PCAP, unregister, repeated cleanup, TERM 143'
