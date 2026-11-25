@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/actions/naseed-limine-seed/**'
       - '.github/workflows/alpine-host-services-native.yml'
+      - 'scripts/m227-alpine-uart.py'
       - 'scripts/m228-*.py'
       - 'scripts/test-m228-*.py'
       - 'scripts/m229-*.py'
@@ -70,7 +71,7 @@ jobs:
               python3 scripts/test-m228-guest-contract.py
               python3 scripts/test-m228-host-inbound.py
               python3 scripts/test-m228-inbound-oracle.py
-              python3 -m py_compile scripts/m228-alpine-uart.py scripts/m228-host-inbound-check.py scripts/m228-inbound-oracle.py
+              python3 -m py_compile scripts/m227-alpine-uart.py scripts/m228-host-inbound-check.py scripts/m228-inbound-oracle.py
               ;;
             m229)
               set -eu
@@ -81,7 +82,7 @@ jobs:
               python3 scripts/test-m229-valkey-guest-contract.py
               python3 scripts/test-m229-host-resp.py
               python3 scripts/test-m229-valkey-disk-check.py
-              python3 -m py_compile scripts/m229-alpine-uart.py scripts/m229-host-resp-check.py \
+              python3 -m py_compile scripts/m227-alpine-uart.py scripts/m229-host-resp-check.py \
                 scripts/m229-resp-oracle.py scripts/m229-valkey-disk-check.py
               ;;
             m230)
@@ -99,7 +100,7 @@ jobs:
               python3 scripts/test-m194-uart-prompt.py
               python3 scripts/test-m231-mosquitto.py
               sh -n tests/m231-alpine-mosquitto-workload.sh
-              python3 -m py_compile scripts/m231-alpine-uart.py \
+              python3 -m py_compile scripts/m227-alpine-uart.py \
                 scripts/m231-host-mqtt-check.py scripts/m231-mosquitto-disk-check.py
               ;;
             m232)
@@ -107,7 +108,7 @@ jobs:
               python3 scripts/test-m194-uart-prompt.py
               python3 scripts/test-m232-memcached.py
               sh -n tests/m232-alpine-memcached-workload.sh
-              python3 -m py_compile scripts/m232-alpine-uart.py \
+              python3 -m py_compile scripts/m227-alpine-uart.py \
                 scripts/m232-host-cache-check.py scripts/m232-memcached-disk-check.py
               ;;
             m233)

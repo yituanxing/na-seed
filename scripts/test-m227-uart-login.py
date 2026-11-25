@@ -62,6 +62,14 @@ def check() -> None:
     assert 'authenticated_login_host = detected_host' in source_text
     assert 'if authenticated_login_host is None:' in source_text
     assert 'getty_login_host(text, (authenticated_login_host,))' not in source_text
+    # Independent SHA256 of original four profiles, both genuine UART boots.
+    import hashlib, runpy
+    shared = runpy.run_path(str(Path(__file__).with_name('m227-alpine-uart.py')))
+    fingerprints = {"m228":{"first":"c10698e268d412aabed324c4b5dd34191e485151b13609014e987b1bc346bd8a","reopen":"737f0317a2f32e32431536bc2032192f90892b67ddc19f2e0ba8bb4c1e665705"},"m229":{"first":"6a919d41b98e6845c0a6023a52f91e99a53942924bfa01d8eb3a80b35cc05475","reopen":"725bec0c33b26c631818b0169ef47a0159b7556f6de424af800cb9ad47f8ce65"},"m231":{"first":"ec4a9ef49e3f9968feb0eaf260b7787bd0d862cdb9976fa3f2025230185db544","reopen":"8902bdfc99995414d7199fbcc047c308deea2ce7928c487574de798266039d0c"},"m232":{"first":"3046b5aa678eb9773e80a68b5442b44c54867e3dd5d3f0c4e526f53f70f592ed","reopen":"81afe7605713f455aa656d1bd6c99a3e9c79339f6e443c95164f39cb8a44c800"}}
+    for name, phases in fingerprints.items():
+        for phase, digest in phases.items():
+            original = shared['service_commands'](name, phase)
+            assert hashlib.sha256(repr(original).encode()).hexdigest() == digest, (name, phase)
     print('[M227 UART LOGIN UNIT PASS] original naseed and restored localhost '
           'whole-line getty accepted only when opted in; command echo rejected')
 

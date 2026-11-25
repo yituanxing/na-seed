@@ -38,7 +38,7 @@ def contract(probe, workflow, guest):
         'm232_finish_host first',
         'm232_start_host reopen "$serial"',
         'm232_finish_host reopen',
-        'scripts/m232-alpine-uart.py reopen',
+        'scripts/m227-alpine-uart.py m232 reopen',
         'M232_REOPEN_HOST_CACHE_WINDOW_COMPLETE',
         '"$PWD/$work/m232-reopen-wire.pcap"',
         'scripts/m232-memcached-disk-check.py',

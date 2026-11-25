@@ -1270,7 +1270,7 @@ else
         }
         echo "[M232 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         m232_start_host first "$serial"
-        if python3 scripts/m232-alpine-uart.py first "$runner" "$serial" \
+        if python3 scripts/m227-alpine-uart.py m232 first "$runner" "$serial" \
                 "$PWD/$work/m232-first-runner.log" "$fifo"; then
             cp "$serial" "$PWD/$work/m232-first.serial.log"
             m232_finish_host first
@@ -1308,7 +1308,7 @@ else
         }
         echo "[M231 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         m231_start_host first "$serial"
-        if python3 scripts/m231-alpine-uart.py first "$runner" "$serial" \
+        if python3 scripts/m227-alpine-uart.py m231 first "$runner" "$serial" \
                 "$PWD/$work/m231-first-runner.log" "$fifo"; then
             cp "$serial" "$PWD/$work/m231-first.serial.log"
             m231_finish_host first
@@ -1348,7 +1348,7 @@ else
         }
         echo "[M229 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         m229_start_host first "$serial"
-        if python3 scripts/m229-alpine-uart.py first "$runner" "$serial" \
+        if python3 scripts/m227-alpine-uart.py m229 first "$runner" "$serial" \
                 "$PWD/$work/m229-first-runner.log" "$fifo"; then
             cp "$serial" "$PWD/$work/m229-first.serial.log"
             m229_finish_host first
@@ -1372,7 +1372,7 @@ else
         }
         echo "[M228 FIRST ORIGINAL PID1 UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         m228_start_host first "$serial"
-        if python3 scripts/m228-alpine-uart.py first "$runner" "$serial" \
+        if python3 scripts/m227-alpine-uart.py m228 first "$runner" "$serial" \
                 "$PWD/$work/m228-first-runner.log" "$fifo"; then
             cp "$serial" "$PWD/$work/m228-first.serial.log"
             m228_finish_host first
@@ -1721,7 +1721,7 @@ if [ "$m232" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_REOPEN_QEMU_TIMEOUT:-1100}
     m232_start_host reopen "$serial"
-    if python3 scripts/m232-alpine-uart.py reopen "$runner" "$serial" \
+    if python3 scripts/m227-alpine-uart.py m232 reopen "$runner" "$serial" \
             "$PWD/$work/m232-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
         cp "$serial" "$PWD/$work/m232-reopen.serial.log"
         m232_finish_host reopen
@@ -1850,7 +1850,7 @@ if [ "$m231" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_REOPEN_QEMU_TIMEOUT:-1100}
     m231_start_host reopen "$serial"
-    if python3 scripts/m231-alpine-uart.py reopen "$runner" "$serial" \
+    if python3 scripts/m227-alpine-uart.py m231 reopen "$runner" "$serial" \
             "$PWD/$work/m231-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
         cp "$serial" "$PWD/$work/m231-reopen.serial.log"
         m231_finish_host reopen
@@ -1968,7 +1968,7 @@ if [ "$m229" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_REOPEN_QEMU_TIMEOUT:-1100}
     m229_start_host reopen "$serial"
-    if python3 scripts/m229-alpine-uart.py reopen "$runner" "$serial" \
+    if python3 scripts/m227-alpine-uart.py m229 reopen "$runner" "$serial" \
             "$PWD/$work/m229-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
         cp "$serial" "$PWD/$work/m229-reopen.serial.log"
         m229_finish_host reopen
@@ -2030,7 +2030,7 @@ if [ "$m228" = 1 ]; then
     export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_REOPEN_QEMU_TIMEOUT:-1050}
     m228_start_host reopen "$serial"
-    if python3 scripts/m228-alpine-uart.py reopen "$runner" "$serial" \
+    if python3 scripts/m227-alpine-uart.py m228 reopen "$runner" "$serial" \
             "$PWD/$work/m228-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"; then
         cp "$serial" "$PWD/$work/m228-reopen.serial.log"
         m228_finish_host reopen

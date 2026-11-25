@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COHORT = ((ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
           + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text())
-UART = (ROOT / 'scripts/m229-alpine-uart.py').read_text()
+UART = (ROOT / 'scripts/m227-alpine-uart.py').read_text()
 WORKFLOW = (ROOT / '.github/workflows/alpine-host-services-native.yml').read_text()
 
 
@@ -48,8 +48,8 @@ def check() -> None:
             'scripts/m229-valkey-disk-check.py' in COHORT,
             'explicit disposable disk geometry and exact physical verifier')
     require('apk add valkey valkey-cli valkey-openrc' in UART and
-            'owner.FIRST_COMMANDS[:-2]' in UART and
-            'owner.REBOOT_COMMANDS[:1]' in UART,
+            'FIRST_COMMANDS[:-2]' in UART and
+            'REBOOT_COMMANDS[:1]' in UART,
             'signed public packages and original PID1/OpenRC lifecycle reused')
     require('alpine-host-services-native.yml' in WORKFLOW and
             'm229)' in WORKFLOW and 'export NAS_M229_VALKEY_HOST=1' in WORKFLOW,

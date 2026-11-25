@@ -32,7 +32,7 @@ def contract(probe, workflow, guest):
         'm231_finish_host first',
         'm231_start_host reopen "$serial"',
         'm231_finish_host reopen',
-        'scripts/m231-alpine-uart.py reopen',
+        'scripts/m227-alpine-uart.py m231 reopen',
         'M231_REOPEN_HOST_MQTT_WINDOW_COMPLETE',
         '"$PWD/$work/m231-reopen-wire.pcap"',
         'scripts/m231-mosquitto-disk-check.py',
