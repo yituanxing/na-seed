@@ -596,6 +596,7 @@ static uint16_t m106_poll_description(unsigned slot,uint16_t events) {
 static const struct nas_file_ops m106_poll_ops={
     .poll_description=m106_poll_description
 };
+static void a008_iov(uint64_t iov,unsigned index,uint64_t source,uint64_t size);
 /* Genuine Netlink syscall adapter + shared File importer + usercopy.
  * The mock below supplies only an immutable kernel datagram and EAGAIN;
  * no iovec parser, Task snapshot or File lifetime is mocked. */
