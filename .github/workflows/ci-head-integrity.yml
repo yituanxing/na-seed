@@ -66,6 +66,8 @@ jobs:
       - name: Check every PR job uses submitted source, never synthetic merge
         run: python3 scripts/check-ci-checkout-head.py
 
+      - name: Run merged M236-M238 native ELF provenance and independent semantic oracles
+        run: python3 scripts/test-m236-m238-alpine-host.py
       - name: Verify consolidated peripheral profile syntax and strict host contracts
         run: |
           bash -n scripts/acceptance/h0-h6-pci-nvme.sh
