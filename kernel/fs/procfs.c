@@ -494,6 +494,24 @@ static void ipc_columns(struct writer *w,enum nas_sysvipc_kind kind) {
  * Open-description identity is preserved by dup/fork, never copied into
  * independent per-process pathname records. A pseudo target does not
  * pretend to be a reopenable regular file. */
+/* A Dentry is the authoritative live path for both proc cwd and fd
+ * symlinks. Short names need no heap; deep valid names use PATH_MAX exactly
+ * once. The caller releases *full when it differs from its inline buffer. */
+static int proc_owned_path_name(const struct nas_vfs_path *owned,
+                                char short_name[256],char **full) {
+    *full=short_name;
+    int rc=nas_vfs_path_string(owned,short_name);
+    if(rc!=-ENAMETOOLONG)return rc;
+    char *long_name=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
+    if(!long_name)return -ENOMEM;
+    rc=nas_vfs_path_string_buf(owned,long_name,NAS_VFS_WALK_PATH_LIMIT);
+    if(rc) {
+        (void)nas_heap_free(long_name);
+        return rc;
+    }
+    *full=long_name;
+    return 0;
+}
 int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     if(node.kind==NAS_PROC_PID_CWD_LINK) {
         const struct nas_task *task=living(node.pid);
@@ -501,17 +519,8 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
         char pathname[256];
         char *full=pathname;
         if(task->fs->cwd_path.dentry) {
-            int rc=nas_vfs_path_string(&task->fs->cwd_path,pathname);
-            if(rc==-ENAMETOOLONG) {
-                full=nas_heap_alloc(NAS_VFS_WALK_PATH_LIMIT);
-                if(!full)return -ENOMEM;
-                rc=nas_vfs_path_string_buf(&task->fs->cwd_path,full,
-                                            NAS_VFS_WALK_PATH_LIMIT);
-            }
-            if(rc) {
-                if(full!=pathname)(void)nas_heap_free(full);
-                return rc;
-            }
+            int rc=proc_owned_path_name(&task->fs->cwd_path,pathname,&full);
+            if(rc)return rc;
         } else if(task->fs->cwd_pinned)return -ENOENT;
         else {
             memcpy(pathname,task->fs->cwd,sizeof(pathname));
@@ -532,9 +541,14 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
      * describe that owned location before consulting the legacy 256-byte
      * open-time hint (which can become stale after rename). */
     char owned_path[256]={0};
+    char *owned_name=owned_path;
     const char *path=f->origin_path ? f->origin_path : "";
-    if(f->vpath.dentry && !nas_vfs_path_string(&f->vpath,owned_path))
-        path=owned_path;
+    if(f->vpath.dentry) {
+        int rc=proc_owned_path_name(&f->vpath,owned_path,&owned_name);
+        if(!rc)path=owned_name;
+        else if(rc==-ENOMEM)return rc; /* no stale hint on heap failure */
+        /* Detached/unspeakable Path retains the old diagnostic fallback. */
+    }
     char temporary[64];
     if(!path[0]) {
         switch(e.kind) {
@@ -561,6 +575,7 @@ int64_t nas_proc_readlink(struct nas_proc_node node,char *out,unsigned cap) {
     }
     unsigned n=0;
     while(path[n] && n<cap){if(out)out[n]=path[n];n++;}
+    if(owned_name!=owned_path)(void)nas_heap_free(owned_name);
     return n;
 }
 /* Linux /proc/pid/maps reports logical VMA ranges, not only present

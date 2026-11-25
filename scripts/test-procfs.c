@@ -477,6 +477,18 @@ int main(void) {
     char link[64]={0};
     assert(nas_proc_readlink(fd_by_ino,link,sizeof(link))==9);
     assert(!memcmp(link,"/dev/null",9));
+    /* A long owned Dentry path outranks an old optional 256-byte File
+     * label; its heap copy belongs only to the individual readlink call. */
+    fixture_long_cwd=true;
+    nas_open_files[4].vpath.dentry=(struct nas_vfs_dentry *)(uintptr_t)1;
+    char deep_fd[3902]={0};
+    assert(nas_proc_readlink(fd_by_ino,deep_fd,3900)==3900);
+    assert(deep_fd[0]=='/' && deep_fd[3899]=='q' && !deep_fd[3900]);
+    memset(link,0,sizeof(link));
+    assert(nas_proc_readlink(fd_by_ino,link,24)==24);
+    assert(link[0]=='/' && link[23]=='q' && !link[24]);
+    nas_open_files[4].vpath.dentry=NULL;
+    fixture_long_cwd=false;
     assert(nas_proc_lookup("/proc/1/fdinfo/1",&fd_info));
     uint8_t info[128]={0};
     assert(nas_proc_read(fd_info,0,info,sizeof(info)-1)>0);
