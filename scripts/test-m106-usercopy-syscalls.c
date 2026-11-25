@@ -337,7 +337,7 @@ uint64_t nas_arch_monotonic_ns(void){return 1000000000ULL;}
 #ifndef NAS_TEST_REAL_TTY
 bool nas_tty_poll_readable(void){return false;}
 #endif
-void nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;}
+int nas_unix_socket_pair_ready(unsigned a,unsigned b){(void)a;(void)b;return 0;}
 #if !defined(NAS_ENABLE_LWIP) || !NAS_ENABLE_LWIP
 bool nas_lwip_socket_is_slot(unsigned slot){(void)slot;return false;}
 bool nas_netlink_core_is_slot(unsigned slot){(void)slot;return false;}
