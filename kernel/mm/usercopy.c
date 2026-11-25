@@ -3,6 +3,7 @@
 #include "../errno.h"
 #include "../arch/mmu.h"
 #include "../lib/string.h"
+#include "../lib/endian.h"
 #include "usercopy.h"
 #include "mm.h"
 #include "fault.h"
@@ -110,9 +111,7 @@ bool nas_user_prepare_write(uint64_t addr,uint64_t len) {
         } else if(!(access&NAS_UP_WRITE)) {
             if(nas_mm_handle_fault(mm,at,NAS_UP_WRITE,true)!=
                NAS_MM_FAULT_RESOLVED)return false;
-        } else if((!v || (v->kind!=NAS_VMA_FILE_MUTABLE_SHARED &&
-                         v->kind!=NAS_VMA_ANON_SHARED &&
-                         v->kind!=NAS_VMA_DEVICE_SHARED)) &&
+        } else if((!v || !nas_vma_preserves_shared_frames(v->kind)) &&
                   nas_frame_refs(pa&~UINT64_C(4095))>1 &&
                   !nas_mm_break_cow(mm,at,access,false))return false;
         if(!nas_mmu_user_writable(at))return false;
@@ -136,25 +135,16 @@ bool nas_user_write_bytes(uint64_t addr, const uint8_t *src, uint64_t len) {
            nas_fs_mmap_dirty(v->backing)<0)return false;
         checked+=nas_user_page_chunk(at,len-checked);
     }
-    for (uint64_t done = 0; done < len;) {
-        uint64_t at = addr + done;
-        uint8_t *dest = nas_mmu_user_byte(at);
-        if (!dest) return false;
-        uint64_t n = nas_user_page_chunk(at, len - done);
-        memcpy(dest, src + done, (size_t)n);
-        done += n;
-    }
-    return true;
+    return nas_user_copy_to_mapped(addr,src,len);
 }
 bool nas_user_read_u64(uint64_t addr, uint64_t *value) {
     uint8_t bytes[8];
     if (!nas_user_read_bytes(addr, bytes, 8)) return false;
-    *value = 0;
-    for (unsigned n = 0; n < 8; n++) *value |= (uint64_t)bytes[n] << (8 * n);
+    *value=nas_get_le64(bytes);
     return true;
 }
 bool nas_user_write_u64(uint64_t addr, uint64_t value) {
     uint8_t bytes[8];
-    for (unsigned n = 0; n < 8; n++) bytes[n] = (uint8_t)(value >> (8 * n));
+    nas_put_le64(bytes,value);
     return nas_user_write_bytes(addr, bytes, 8);
 }

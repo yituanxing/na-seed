@@ -377,102 +377,72 @@ uint64_t nas_fs_fd_peek(uint64_t fd,uint64_t address,uint64_t length) {
  * provided seekable-character-device FileOp. Pipes, sockets and nonseekable
  * devices still fail with ESPIPE. Neither path changes the dup/fork-shared
  * open-file position; device callbacks receive only kernel-owned buffers. */
-uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
-                         uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(!nas_file_slot_live(slot)) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
-    /* A mounted S_IFCHR inode owns its VFS namespace identity, while the
-     * character FileOps still owns positioned I/O. Regular VFS files use
-     * their filesystem's read_at. Never infer a data-plane backend solely
-     * from the fact that this OpenFile has a pinned VFS inode. */
-    const struct nas_open_file *read_open=&nas_open_files[slot];
-    const bool regular_vfs=read_open->vnode_pinned &&
-        (read_open->vnode.mode&0170000U)!=0020000U;
-    if(regular_vfs) {
-        if(read_open->vnode.is_dir)return (uint64_t)-EISDIR;
-        if(!read_open->vnode.filesystem ||
-           !read_open->vnode.filesystem->read_at)return (uint64_t)-ESPIPE;
-    } else if((!read_open->ops || !read_open->ops->read_at) &&
-              TASK.fds->entries[fd].kind!=FD_BOOTFS)
-        return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
-    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
-    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
-    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
-        return (uint64_t)-EFAULT;
-    uint8_t buffer[1024];
-    uint64_t done=0;
-    while(done<count) {
-        uint64_t take=count-done;
-        if(take>sizeof(buffer))take=sizeof(buffer);
-        int64_t got=(!regular_vfs && read_open->ops &&
-                     read_open->ops->read_at) ?
-            (int64_t)read_open->ops->read_at(slot,offset+done,buffer,take) :
-            nas_fs_mmap_read(fd,offset+done,buffer,take);
-        if(got<0)return done ? done : (uint64_t)got;
-        if((uint64_t)got>take)return done ? done : (uint64_t)-EIO;
-        if(!got)break;
-        if(!nas_user_write_bytes(address+done,buffer,(uint64_t)got))
-            return done ? done : (uint64_t)-EFAULT;
-        done+=(uint64_t)got;
-        if((uint64_t)got<take)break;
-    }
-    return done;
-}
-uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
-                          uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(!nas_file_slot_live(slot)) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
-    const struct nas_open_file *write_open=&nas_open_files[slot];
-    /* Same owner boundary as pread: devfs is a namespace, fbdev's original
-     * seekable-char FileOps supplies pwrite instead of devfs.write_at. */
-    const bool regular_vfs=write_open->vnode_pinned &&
-        (write_open->vnode.mode&0170000U)!=0020000U;
-    if(regular_vfs) {
-        if(write_open->vnode.is_dir)return (uint64_t)-EISDIR;
-        if(!write_open->vnode.filesystem ||
-           !write_open->vnode.filesystem->write_at)return (uint64_t)-ESPIPE;
-    } else if(!write_open->ops || !write_open->ops->write_at)
-        return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
-    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
-    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
-    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
-        return (uint64_t)-EFAULT;
+static uint64_t positioned_io(uint64_t fd,uint64_t address,uint64_t count,
+                              uint64_t offset,bool writing) {
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry)return (uint64_t)-EBADF;
+    unsigned slot=entry->slot;
     struct nas_open_file *opened=&nas_open_files[slot];
-    if(regular_vfs && !nas_vfs_can_write(&opened->vnode))
-        return (uint64_t)-EROFS;
-    /* Linux intentionally differs from POSIX: pwrite() on an O_APPEND
-     * description appends to the live inode size without changing the
-     * shared OFD seek position. Providers still see explicit write_at. */
-    if(regular_vfs && (opened->status_flags&0x400ULL))
-        offset=nas_vfs_node_size(&opened->vnode);
-    if(offset>INT64_MAX || count>INT64_MAX-offset)
-        return (uint64_t)-EFBIG;
-    uint64_t done=0;
+    if((opened->status_flags&NAS_LINUX_O_PATH) ||
+       (opened->status_flags&3ULL)==(writing ? 0ULL : 1ULL))
+        return (uint64_t)-EBADF;
+    const bool regular_vfs=opened->vnode_pinned &&
+        (opened->vnode.mode&0170000U)!=0020000U;
+    if(regular_vfs) {
+        if(opened->vnode.is_dir)return (uint64_t)-EISDIR;
+        if(!opened->vnode.filesystem ||
+           (writing ? !opened->vnode.filesystem->write_at :
+                      !opened->vnode.filesystem->read_at))return (uint64_t)-ESPIPE;
+    } else if((!opened->ops ||
+               (writing ? !opened->ops->write_at : !opened->ops->read_at)) &&
+              (writing || entry->kind!=FD_BOOTFS))return (uint64_t)-ESPIPE;
+    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
+    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
+    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
+    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
+        return (uint64_t)-EFAULT;
+    if(writing && regular_vfs) {
+        if(!nas_vfs_can_write(&opened->vnode))return (uint64_t)-EROFS;
+        /* Linux pwrite on O_APPEND uses the live inode size, never f_pos. */
+        if(opened->status_flags&0x400ULL)offset=nas_vfs_node_size(&opened->vnode);
+        if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EFBIG;
+    }
     uint8_t buffer[1024];
+    uint64_t done=0;
     while(done<count) {
         uint64_t n=count-done;
         if(n>sizeof(buffer))n=sizeof(buffer);
-        if(!nas_user_read_bytes(address+done,buffer,n))
+        int64_t transferred;
+        if(writing) {
+            if(!nas_user_read_bytes(address+done,buffer,n))
+                return done ? done : (uint64_t)-EFAULT;
+            transferred=regular_vfs ?
+                nas_vfs_write_at(&opened->vnode,offset+done,buffer,n) :
+                (int64_t)opened->ops->write_at(slot,offset+done,buffer,n);
+        } else {
+            transferred=(!regular_vfs && opened->ops && opened->ops->read_at) ?
+                (int64_t)opened->ops->read_at(slot,offset+done,buffer,n) :
+                nas_fs_mmap_read(fd,offset+done,buffer,n);
+        }
+        if(transferred<0)return done ? done : (uint64_t)transferred;
+        if((uint64_t)transferred>n)return done ? done : (uint64_t)-EIO;
+        if(!transferred)break;
+        if(!writing && !nas_user_write_bytes(address+done,buffer,(uint64_t)transferred))
             return done ? done : (uint64_t)-EFAULT;
-        int64_t wrote=regular_vfs ?
-            nas_vfs_write_at(&opened->vnode,offset+done,buffer,n) :
-            (int64_t)opened->ops->write_at(slot,offset+done,buffer,n);
-        if(wrote<0)return done ? done : (uint64_t)wrote;
-        if((uint64_t)wrote>n)return done ? done : (uint64_t)-EIO;
-        done+=(uint64_t)wrote;
-        if(regular_vfs && offset+done>opened->vnode.size)
+        done+=(uint64_t)transferred;
+        if(writing && regular_vfs && offset+done>opened->vnode.size)
             opened->vnode.size=offset+done;
-        if((uint64_t)wrote<n)break;
+        if((uint64_t)transferred<n)break;
     }
     return done;
+}
+uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
+                         uint64_t offset) {
+    return positioned_io(fd,address,count,offset,false);
+}
+uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
+                          uint64_t offset) {
+    return positioned_io(fd,address,count,offset,true);
 }
 /* LP64 Linux iovec data plane. Every iovec is imported once into heap-owned
  * kernel memory BEFORE any provider can consume data or change File offsets.
