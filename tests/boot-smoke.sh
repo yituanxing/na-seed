@@ -12,7 +12,7 @@ if [ "$rc" -ne 1 ]; then
     echo "FAIL: QEMU returned $rc (expected isa-debug-exit=1)" >&2
     exit 1
 fi
-for marker in '[PASS] M0 memory allocator' '[PASS] M0 boot / serial / memory'; do
+for marker in '[PASS] memory allocator' '[PASS] boot / serial / memory'; do
     if ! grep -Fq "$marker" "$log"; then
         cat "$log"
         echo "FAIL: missing serial marker: $marker" >&2

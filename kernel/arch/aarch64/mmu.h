@@ -29,7 +29,6 @@ bool nas_arm_pt_translate(const struct nas_arm_pt *, uint64_t va,
                           uint64_t *pa, uint64_t *access);
 bool nas_arm_pt_unmap(struct nas_arm_pt *, uint64_t va);
 void nas_arm_pt_destroy(struct nas_arm_pt *);
-bool nas_arm_pt_smoke(void);
 /* Genuine EL0 PTE permission edits and lower-half user-only walk. */
 bool nas_arm_pt_protect(const struct nas_arm_pt *, uint64_t va,
                         unsigned access);

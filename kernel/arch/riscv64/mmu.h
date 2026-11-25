@@ -32,7 +32,6 @@ bool nas_rv_pt_translate(const struct nas_rv_page_table *pt, uint64_t user_va,
                          uint64_t *pa, uint64_t *perms);
 bool nas_rv_pt_unmap(struct nas_rv_page_table *pt, uint64_t user_va);
 uint64_t nas_rv_pt_user_limit(unsigned levels);
-bool nas_rv_pt_smoke(void);
 /* Genuine native 4K PTE permission edits and lower-half user-only walk. */
 bool nas_rv_pt_protect(const struct nas_rv_page_table *, uint64_t va,
                        unsigned access);

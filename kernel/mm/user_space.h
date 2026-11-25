@@ -19,5 +19,4 @@ bool nas_space_protect(struct nas_user_space *space, uint64_t va,
                        uint64_t pages, unsigned protection);
 bool nas_space_user_writable(const struct nas_user_space *space, uint64_t va);
 uint8_t *nas_space_user_byte(const struct nas_user_space *space, uint64_t va);
-bool nas_space_regression(void);
 #endif

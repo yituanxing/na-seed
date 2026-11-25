@@ -17,3 +17,7 @@
 5. Reintroduce hardware and distribution integration tests only after a feature has a maintained build path and a focused observable contract. Avoid duplicating transitive test suites.
 
 This reset replaces the historical test forest. It does not delete the kernel and is not a claim of regression-free operation.
+
+## Retired parallel M0 kernel
+
+The obsolete `NASEED_PORT_M0` RISC-V/AArch64 miniature boot/test stack, its standalone ELF loader and page-table smoke tests have been removed. All three targets now build the shared kernel and native user-space sample through the same maintained build route. Removing the old internal tests does not prove complete ABI or device correctness; the build and x86 UEFI boot matrix is the current safety gate.

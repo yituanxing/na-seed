@@ -29,7 +29,6 @@ void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }
 
-#ifndef NASEED_PORT_M0
 #include "../../task.h"
 #include "../context.h"
 /* Use Limine's EL1 boot stack, but fix its SPSel=0 setting BEFORE
@@ -117,4 +116,3 @@ void nas_arch_set_user_tls(uint64_t addr) {
         nas_arch_context_set_tls(&nas_current_task->arch,addr);
     __asm__ volatile("msr tpidr_el0,%0" : : "r"(addr) : "memory");
 }
-#endif
