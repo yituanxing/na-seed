@@ -87,12 +87,15 @@ struct netlink_socket {
     uint32_t groups;
     struct netlink_reply replies[NETLINK_REPLY_QUEUE];
 };
-static struct netlink_socket sockets[NAS_OPEN_FILE_LIMIT];
+static const struct nas_file_ops ops;
+static struct netlink_socket *socket_at(unsigned slot) {
+    return (struct netlink_socket *)nas_nl_private(slot,&ops);
+}
 static uint32_t next_port_id=UINT32_C(0x40000000);
 
 static struct netlink_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && nas_nl_live(slot,&sockets[slot].ep)
-           ? &sockets[slot]:NULL;
+    struct netlink_socket *s=socket_at(slot);
+    return s && nas_nl_live(slot,&s->ep) ? s:NULL;
 }
 bool nas_netlink_route_is_slot(unsigned slot) {return live(slot)!=NULL;}
 
@@ -104,10 +107,11 @@ static unsigned receive_capacity(const struct netlink_socket *s) {
     return NETLINK_REPLY_QUEUE*reply_allocation(s);
 }
 static int open_netlink(unsigned slot,uint32_t owner_pid,unsigned protocol) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
-        return -EBADF;
-    if(sockets[slot].ep.owned)return -EBUSY;
-    sockets[slot]=(struct netlink_socket){.protocol=(uint8_t)protocol,
+    void *memory=NULL;
+    int rc=nas_nl_socket_alloc(slot,&ops,sizeof(struct netlink_socket),&memory);
+    if(rc)return rc;
+    struct netlink_socket *s=(struct netlink_socket *)memory;
+    *s=(struct netlink_socket){.protocol=(uint8_t)protocol,
         .ep={.owned=true,.owner_pid=owner_pid,
         .send_quota=NAS_NETLINK_ROUTE_MAX_DATAGRAM,
         .receive_quota=protocol==NETLINK_SOCK_DIAG_LINUX ?
@@ -147,8 +151,9 @@ int nas_netlink_route_get_rcvbuf(unsigned slot,uint32_t *bytes) {
 
 static bool port_used(uint32_t pid,unsigned protocol) {
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].ep.owned && sockets[i].ep.bound &&
-           sockets[i].protocol==protocol && sockets[i].ep.port_id==pid)return true;
+        { struct netlink_socket *s=socket_at(i);
+          if(s && s->ep.owned && s->ep.bound &&
+             s->protocol==protocol && s->ep.port_id==pid)return true; }
     return false;
 }
 static int allocate_port(struct netlink_socket *s,uint32_t requested) {
@@ -612,8 +617,7 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     return s?nas_nl_poll(&s->ep,events,can_enqueue(s,1),s->overrun):PORT_POLLERR;
 }
 static void release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)
-        sockets[slot]=(struct netlink_socket){0};
+    nas_nl_socket_release(slot,&ops);
 }
 static const struct nas_file_ops ops={
     .read_plan=read_plan,.read=read_bytes,

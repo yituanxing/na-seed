@@ -23,10 +23,10 @@ case "$profile" in
         set -- -fno-builtin -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-m86-txn.c kernel/mm/vm.c kernel/mm/anon_regions.c kernel/mm/heap.c ;;
     netlink-filter)
         output=build/netlink-filter/test-netlink-filter
-        set -- -DNAS_ENABLE_LWIP=1 -I kernel scripts/test-netlink-filter.c kernel/fs/netlink_filter.c kernel/lib/string.c ;;
+        set -- -DNAS_ENABLE_LWIP=1 -I kernel scripts/test-netlink-filter.c kernel/fs/netlink_filter.c kernel/mm/heap.c kernel/lib/string.c ;;
     netlink-generic)
         output=build/netlink-generic/test-netlink-generic
-        set -- -DNAS_ENABLE_LWIP=1 -I kernel scripts/test-netlink-generic.c kernel/fs/netlink_generic.c kernel/lib/string.c ;;
+        set -- -DNAS_ENABLE_LWIP=1 -I kernel scripts/test-netlink-generic.c kernel/fs/netlink_generic.c kernel/mm/heap.c kernel/lib/string.c ;;
     path-request-host)
         output=build/path-request-host/test
         set -- -fno-builtin -ffunction-sections -fdata-sections -I kernel -I scripts/m89-test-include scripts/test-path-request-host.c kernel/fs/namespace_syscall.c kernel/mm/heap.c -Wl,--gc-sections ;;

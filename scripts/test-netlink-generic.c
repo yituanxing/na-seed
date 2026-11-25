@@ -167,6 +167,8 @@ int main(void) {
     task.fds=&files.table;
     nas_open_files[20].refcount=1;
     nas_open_files[21].refcount=1;
+    nas_open_files[20].ops=nas_netlink_generic_ops();
+    nas_open_files[21].ops=nas_netlink_generic_ops();
     assert(nas_netlink_generic_open(20,100)==0);
     assert(nas_netlink_generic_open(21,100)==0);
     assert(nas_netlink_generic_protocol(20)==NETLINK_GENERIC);

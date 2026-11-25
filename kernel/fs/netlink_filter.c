@@ -85,7 +85,10 @@ struct nf_socket {
     struct nas_nl_endpoint ep;
     struct nf_reply replies[NF_REPLY_LIMIT];
 };
-static struct nf_socket sockets[NAS_OPEN_FILE_LIMIT];
+static const struct nas_file_ops ops;
+static struct nf_socket *socket_at(unsigned slot) {
+    return (struct nf_socket *)nas_nl_private(slot,&ops);
+}
 /* nfnetlink batches never span skb/sendmsg. NaSeed currently executes one
  * non-preemptible syscall in its kernel at a time, so this scratch storage
  * is reused per call; storing an entire 4-KiB staging snapshot per possible
@@ -108,14 +111,16 @@ static bool valid_family(uint8_t family) {
            family==NFPROTO_BRIDGE || family==NFPROTO_NETDEV;
 }
 static struct nf_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && nas_nl_live(slot,&sockets[slot].ep)
-           ? &sockets[slot]:NULL;
+    struct nf_socket *s=socket_at(slot);
+    return s && nas_nl_live(slot,&s->ep) ? s:NULL;
 }
 bool nas_netlink_filter_is_slot(unsigned slot) {return live(slot)!=NULL;}
 int nas_netlink_filter_open(unsigned slot,uint32_t owner_pid) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return -EBADF;
-    if(sockets[slot].ep.owned)return -EBUSY;
-    sockets[slot]=(struct nf_socket){.ep={.owned=true,.owner_pid=owner_pid,
+    void *memory=NULL;
+    int rc=nas_nl_socket_alloc(slot,&ops,sizeof(struct nf_socket),&memory);
+    if(rc)return rc;
+    struct nf_socket *s=(struct nf_socket *)memory;
+    *s=(struct nf_socket){.ep={.owned=true,.owner_pid=owner_pid,
         .send_quota=NAS_NETLINK_FILTER_MAX_DATAGRAM,
         .receive_quota=NF_REPLY_LIMIT*NF_REPLY_BYTES}};
     return 0;
@@ -126,8 +131,8 @@ int nas_netlink_filter_protocol(unsigned slot) {
 static bool port_used(uint32_t pid,unsigned protocol) {
     (void)protocol;
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].ep.owned && sockets[i].ep.bound &&
-           sockets[i].ep.port_id==pid)return true;
+        { struct nf_socket *s=socket_at(i);
+          if(s && s->ep.owned && s->ep.bound && s->ep.port_id==pid)return true; }
     return false;
 }
 static int autobind(struct nf_socket *s,uint32_t requested) {
@@ -663,8 +668,7 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     return s?nas_nl_poll(&s->ep,events,room(s,1),false):PORT_POLLERR;
 }
 static void release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)
-        sockets[slot]=(struct nf_socket){0};
+    nas_nl_socket_release(slot,&ops);
 }
 static const struct nas_file_ops ops={
     .read_plan=read_plan,.read=read_bytes,

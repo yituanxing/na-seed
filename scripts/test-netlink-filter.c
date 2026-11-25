@@ -228,6 +228,8 @@ int main(void) {
     task.credentials.cap_permitted=NAS_CAP_NET_RAW|(UINT64_C(1)<<12);
     nas_open_files[10].refcount=1;
     nas_open_files[11].refcount=1;
+    nas_open_files[10].ops=nas_netlink_filter_ops();
+    nas_open_files[11].ops=nas_netlink_filter_ops();
     assert(nas_netlink_filter_open(10,100)==0);
     assert(nas_netlink_filter_open(11,100)==0);
     assert(nas_netlink_filter_protocol(10)==12);

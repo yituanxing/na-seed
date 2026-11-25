@@ -44,6 +44,8 @@ int main(void) {
     const unsigned slot=66,other=67;
     nas_open_files[slot].refcount=1;
     nas_open_files[other].refcount=1;
+    nas_open_files[slot].ops=ops;
+    nas_open_files[other].ops=ops;
     assert(nas_netlink_diag_open(slot,7777)==0);
     assert(nas_netlink_route_open(other,7777)==0);
     assert(nas_netlink_route_protocol(slot)==4);

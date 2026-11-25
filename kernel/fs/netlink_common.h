@@ -5,6 +5,7 @@
 #include "../errno.h"
 #include "../lib/string.h"
 #include "../lib/endian.h"
+#include "../mm/heap.h"
 
 /* Linux LP64 Netlink wire primitives. All supported ISAs are little-endian;
  * use byte accesses so unaligned attributes are safe. */
@@ -64,6 +65,32 @@ static inline unsigned nas_nl_copy_reply(uint8_t *dst,unsigned capacity,
 }
 /* Common socket accounting and bounded reply-ring policy. Protocols retain
  * their own port namespace, payload backing, multicast and error semantics. */
+/* Netlink protocols share a File-owned socket allocation. Each provider
+ * supplies its real FileOps identity, preventing unrelated private unions
+ * (e.g. eventfd counters) from being mistaken for a Netlink socket. */
+static inline void *nas_nl_private(unsigned slot,const struct nas_file_ops *ops) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || nas_open_files[slot].ops!=ops)return NULL;
+    return nas_open_files[slot].private.netlink;
+}
+static inline int nas_nl_socket_alloc(unsigned slot,const struct nas_file_ops *ops,
+                                      size_t bytes,void **out) {
+    if(!out)return -EINVAL;
+    *out=NULL;
+    if(!nas_file_slot_live(slot) || nas_open_files[slot].ops!=ops)return -EBADF;
+    if(nas_open_files[slot].private.netlink)return -EBUSY;
+    void *p=nas_heap_calloc(1,bytes);
+    if(!p)return -ENOMEM;
+    nas_open_files[slot].private.netlink=p;
+    *out=p;
+    return 0;
+}
+static inline void nas_nl_socket_release(unsigned slot,
+                                          const struct nas_file_ops *ops) {
+    void *p=nas_nl_private(slot,ops);
+    if(!p)return;
+    nas_open_files[slot].private.netlink=NULL;
+    (void)nas_heap_free(p);
+}
 struct nas_nl_endpoint {
     bool owned,bound;
     uint32_t owner_pid,port_id,send_quota,receive_quota;
