@@ -102,18 +102,6 @@ static uint32_t next_port_id=UINT32_C(0x50000000);
  * on genuine QEMU without dumping kernel or userspace memory. */
 static unsigned rejected_noent_traces;
 
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|
-           ((uint32_t)p[2]<<8)|p[3];
-}
-static void wb32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)(v>>24);p[1]=(uint8_t)(v>>16);
-    p[2]=(uint8_t)(v>>8);p[3]=(uint8_t)v;
-}
-static void wb64(uint8_t *p,uint64_t v) {
-    wb32(p,(uint32_t)(v>>32));
-    wb32(p+4,(uint32_t)v);
-}
 static bool valid_family(uint8_t family) {
     return family==NFPROTO_INET || family==NFPROTO_IPV4 ||
            family==NFPROTO_IPV6 || family==NFPROTO_ARP ||
@@ -211,7 +199,7 @@ static void gen_reply(struct nf_socket *s,uint32_t seq) {
     r->data[18]=(uint8_t)(global_generation>>8);
     r->data[19]=(uint8_t)global_generation;
     nas_nl_wr16(r->data+20,8);nas_nl_wr16(r->data+22,NFATTR_GEN_ID);
-    wb32(r->data+24,global_generation);
+    nas_put_be32(r->data+24,global_generation);
 }
 static void table_reply(struct nf_socket *s,uint32_t seq,
                         const struct nf_table *t,bool multi,uint16_t op) {
@@ -233,11 +221,11 @@ static void table_reply(struct nf_socket *s,uint32_t seq,
      * that order.  A stable nonzero handle belongs to each registered
      * table and is not invented separately when userspace reads it. */
     nas_nl_wr16(r->data+off,8);nas_nl_wr16(r->data+off+2,NFATTR_TABLE_USE);
-    wb32(r->data+off+4,0); /* zero chains, genuinely no references */
+    nas_put_be32(r->data+off+4,0); /* zero chains, genuinely no references */
     nas_nl_wr16(r->data+off+8,12);nas_nl_wr16(r->data+off+10,NFATTR_TABLE_HANDLE);
-    wb64(r->data+off+12,t->handle);
+    nas_put_be64(r->data+off+12,t->handle);
     nas_nl_wr16(r->data+off+20,8);nas_nl_wr16(r->data+off+22,NFATTR_TABLE_FLAGS);
-    wb32(r->data+off+24,0); /* zero flags: no table hooks configured */
+    nas_put_be32(r->data+off+24,0); /* zero flags: no table hooks configured */
 }
 static int locate(const struct nf_table *tables,unsigned count,
                   uint8_t family,const char *name) {
@@ -271,7 +259,7 @@ static int read_table_attrs(const uint8_t *data,unsigned size,
             if(length!=8)return -EINVAL;
             /* Dormant, owner and persistence all require semantics this
              * bounded model cannot yet provide; do not silently ignore. */
-            if(be32(data+off+4))return -EOPNOTSUPP;
+            if(nas_get_be32(data+off+4))return -EOPNOTSUPP;
         } else return -EOPNOTSUPP;
         off+=nas_nl_align4(length);
         if(off>size)return -EINVAL;
@@ -289,7 +277,7 @@ static int read_batch_genid(const uint8_t *data,unsigned size,
         if(length<4 || length>size-off)return -EINVAL;
         if(type!=NFATTR_BATCH_GENID || length!=8)return -EINVAL;
         if(*expected)return -EINVAL;
-        *expected=be32(data+off+4);
+        *expected=nas_get_be32(data+off+4);
         off+=nas_nl_align4(length);
         if(off>size)return -EINVAL;
     }
@@ -337,7 +325,7 @@ static int read_empty_dump_attrs(const uint8_t *data,unsigned size,
             /* NFTA_OBJ_TYPE is a network-order U32.  Unknown selectors
              * must not be silently treated as an empty successful dump. */
             if(seen_number || length!=8U)return -EINVAL;
-            if(be32(data+off+4)>10U)return -EOPNOTSUPP;
+            if(nas_get_be32(data+off+4)>10U)return -EOPNOTSUPP;
             seen_number=true;
         } else return -EOPNOTSUPP;
         off+=nas_nl_align4(length);

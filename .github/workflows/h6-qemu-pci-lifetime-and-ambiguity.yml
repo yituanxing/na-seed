@@ -22,6 +22,8 @@ on:
       - 'scripts/check-h4-*.sh'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'kernel/lib/endian.h'
+      - 'kernel/drivers/port/mmio.h'
   workflow_dispatch:
 
 permissions:

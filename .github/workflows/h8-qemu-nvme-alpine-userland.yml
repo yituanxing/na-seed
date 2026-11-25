@@ -29,6 +29,7 @@ on:
       - 'limine-h8-nvme.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'kernel/lib/endian.h'
   workflow_dispatch:
 
 permissions:

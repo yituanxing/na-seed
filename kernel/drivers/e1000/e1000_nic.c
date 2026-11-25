@@ -1,4 +1,6 @@
 #include "readonly.h"
+#include "../port/mmio.h"
+#include "../../lib/endian.h"
 #include "../../errno.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -62,25 +64,14 @@ static void copy_bytes(void *dst,const void *src,unsigned count) {
     const uint8_t *s=(const uint8_t *)src;
     for(unsigned i=0;i<count;i++)d[i]=s[i];
 }
-static uint16_t get16(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0]|((uint16_t)p[1]<<8));
-}
-static void put16(uint8_t *p,uint16_t v) {
-    p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);
-}
-static void put64(uint8_t *p,uint64_t v) {
-    for(unsigned i=0;i<8U;i++)p[i]=(uint8_t)(v>>(8U*i));
-}
 static int reg_read(struct nas_e1000_session *s,uint32_t off,uint32_t *v) {
     if(!s || !s->io || !s->io->read32 || !v ||
-       (off&3U) || off>s->io->mmio_bytes ||
-       s->io->mmio_bytes-off<4U)return -EINVAL;
+       !nas_mmio_u32_valid(s->io->mmio_bytes,off))return -EINVAL;
     return s->io->read32(s->io->context,off,v);
 }
 static int reg_write(struct nas_e1000_session *s,uint32_t off,uint32_t v) {
     if(!s || !s->io || !s->io->write32 ||
-       (off&3U) || off>s->io->mmio_bytes ||
-       s->io->mmio_bytes-off<4U)return -EINVAL;
+       !nas_mmio_u32_valid(s->io->mmio_bytes,off))return -EINVAL;
     return s->io->write32(s->io->context,off,v);
 }
 static int pair_write(struct nas_e1000_session *s,uint32_t low,uint64_t v) {
@@ -242,7 +233,7 @@ int nas_e1000_open(const struct nas_e1000_io *io,
     }
     for(unsigned i=0;i<NAS_E1000_RX_DESCRIPTORS;i++) {
         uint8_t *d=rx_descriptor(s,i);
-        put64(d,rx_page(s,i)->bus_address+rx_page_offset(i));
+        nas_put_le64(d,rx_page(s,i)->bus_address+rx_page_offset(i));
     }
     rc=nas_dma_lease_sync(&s->lease,&s->rx_ring,0,
                           E1000_RX_RING_BYTES,NAS_DMA_TO_DEVICE);
@@ -312,8 +303,8 @@ int nas_e1000_transmit(void *backend,const uint8_t *frame,uint32_t bytes) {
     clear_bytes(s->tx_page.cpu,wire_bytes);
     copy_bytes(s->tx_page.cpu,frame,bytes);
     clear_bytes(d,16U);
-    put64(d,s->tx_page.bus_address);
-    put16(d+8U,(uint16_t)wire_bytes);
+    nas_put_le64(d,s->tx_page.bus_address);
+    nas_put_le16(d+8U,(uint16_t)wire_bytes);
     d[11]=(uint8_t)(TXD_EOP|TXD_IFCS|TXD_RS);
     rc=nas_dma_lease_sync(&s->lease,&s->tx_page,0U,wire_bytes,
                           NAS_DMA_TO_DEVICE);
@@ -345,7 +336,7 @@ int nas_e1000_poll(void *backend,uint32_t budget,
                               NAS_DMA_FROM_DEVICE);
         if(rc)goto poison;
         if(!(d[12]&RXD_DD))break;
-        const uint16_t length=get16(d+8U);
+        const uint16_t length=nas_get_le16(d+8U);
         const bool good=(d[12]&RXD_EOP) && !d[13] &&
                          length>=14U && length<=NAS_E1000_FRAME_MAX;
         if(good) {

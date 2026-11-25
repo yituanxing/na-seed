@@ -90,9 +90,6 @@ struct netlink_socket {
 static struct netlink_socket sockets[NAS_OPEN_FILE_LIMIT];
 static uint32_t next_port_id=UINT32_C(0x40000000);
 
-static void put64(uint8_t *p,uint64_t v) {
-    nas_nl_wr32(p,(uint32_t)v);nas_nl_wr32(p+4,(uint32_t)(v>>32));
-}
 static struct netlink_socket *live(unsigned slot) {
     return slot<NAS_OPEN_FILE_LIMIT && nas_nl_live(slot,&sockets[slot].ep)
            ? &sockets[slot]:NULL;
@@ -273,7 +270,7 @@ static void enqueue_link(struct netlink_socket *s,uint32_t seq,
         0,stats->tx_errors,stats->rx_dropped,0
     };
     for(unsigned i=0;i<8;i++) {
-        put64(r->bytes+stats64_off+4U+i*8U,fields[i]);
+        nas_put_le64(r->bytes+stats64_off+4U+i*8U,fields[i]);
         nas_nl_wr32(r->bytes+stats32_off+4U+i*4U,(uint32_t)fields[i]);
     }
 }

@@ -1,6 +1,8 @@
 #ifndef NASEED_NVME_CONTROLLER_INTERNAL_H
 #define NASEED_NVME_CONTROLLER_INTERNAL_H
 #include "identify.h"
+#include "../port/mmio.h"
+#include "../../lib/endian.h"
 #include "../../errno.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -20,15 +22,13 @@
 
 static inline int nas_nvme_mmio_read(const struct nas_nvme_io *io, uint32_t offset,
                      uint32_t *value) {
-    if (!io || !io->read32 || !value || (offset & 3U) || offset > io->mmio_bytes ||
-        io->mmio_bytes - offset < 4U) return -EINVAL;
+    if (!io || !io->read32 || !value || !nas_mmio_u32_valid(io->mmio_bytes,offset)) return -EINVAL;
     return io->read32(io->context, offset, value);
 }
 
 static inline int nas_nvme_mmio_write(const struct nas_nvme_io *io, uint32_t offset,
                       uint32_t value) {
-    if (!io || !io->write32 || (offset & 3U) || offset > io->mmio_bytes ||
-        io->mmio_bytes - offset < 4U) return -EINVAL;
+    if (!io || !io->write32 || !nas_mmio_u32_valid(io->mmio_bytes,offset)) return -EINVAL;
     return io->write32(io->context, offset, value);
 }
 
@@ -51,15 +51,5 @@ static inline int nas_nvme_write_dma_address(const struct nas_nvme_io *io,
     return rc;
 }
 
-static inline uint32_t nas_nvme_from_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-        ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-static inline void nas_nvme_to_le32(uint8_t *p, uint32_t value) {
-    p[0] = (uint8_t)value;
-    p[1] = (uint8_t)(value >> 8);
-    p[2] = (uint8_t)(value >> 16);
-    p[3] = (uint8_t)(value >> 24);
-}
 
 #endif

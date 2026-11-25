@@ -31,6 +31,7 @@ on:
       - 'limine-h9-ahci.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'kernel/lib/endian.h'
   workflow_dispatch:
 
 permissions:

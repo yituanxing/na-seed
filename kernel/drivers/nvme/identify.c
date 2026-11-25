@@ -19,9 +19,6 @@ static void copy_identify_string(char *out, size_t dst_size,
     out[n] = '\0';
 }
 
-static uint16_t from_le16(const uint8_t *p) {
-    return (uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8);
-}
 int nas_nvme_identify_controller(const struct nas_nvme_io *io,
                                   const struct nas_dma_provider *dma,
                                   struct nas_nvme_identity *out) {
@@ -83,10 +80,10 @@ int nas_nvme_identify_controller(const struct nas_nvme_io *io,
     if (rc) goto quiesce;
 
     uint8_t *s = (uint8_t *)sq.cpu;
-    nas_nvme_to_le32(s, NVME_ADMIN_IDENTIFY | (1U << 16)); /* CID=1 */
-    nas_nvme_to_le32(s + 24U, (uint32_t)identify.bus_address); /* PRP1 */
-    nas_nvme_to_le32(s + 28U, (uint32_t)(identify.bus_address >> 32));
-    nas_nvme_to_le32(s + 40U, NVME_IDENTIFY_CNS_CONTROLLER); /* CDW10.CNS */
+    nas_put_le32(s, NVME_ADMIN_IDENTIFY | (1U << 16)); /* CID=1 */
+    nas_put_le32(s + 24U, (uint32_t)identify.bus_address); /* PRP1 */
+    nas_put_le32(s + 28U, (uint32_t)(identify.bus_address >> 32));
+    nas_put_le32(s + 40U, NVME_IDENTIFY_CNS_CONTROLLER); /* CDW10.CNS */
     rc = nas_dma_sync(dma, &sq, 0U, 64U, NAS_DMA_TO_DEVICE);
     if (rc) goto quiesce;
     rc = nas_dma_sync(dma, &cq, 0U, 16U, NAS_DMA_FROM_DEVICE);
@@ -99,9 +96,9 @@ int nas_nvme_identify_controller(const struct nas_nvme_io *io,
         rc = nas_dma_sync(dma, &cq, 0U, 16U, NAS_DMA_FROM_DEVICE);
         if (rc) break;
         const uint8_t *c = (const uint8_t *)cq.cpu;
-        const uint32_t dw3 = nas_nvme_from_le32(c + 12U);
+        const uint32_t dw3 = nas_get_le32(c + 12U);
         if (!(dw3 & UINT32_C(0x10000))) continue; /* CQ phase starts at 1 */
-        const uint32_t dw2 = nas_nvme_from_le32(c + 8U);
+        const uint32_t dw2 = nas_get_le32(c + 8U);
         if ((dw3 & UINT32_C(0xffff)) != 1U ||
             (dw2 >> 16) != 0U || (dw3 >> 17) != 0U) {
             rc = -EIO;
@@ -118,8 +115,8 @@ int nas_nvme_identify_controller(const struct nas_nvme_io *io,
                       NAS_DMA_FROM_DEVICE);
     if (rc) goto quiesce;
     const uint8_t *id = (const uint8_t *)identify.cpu;
-    out->vendor_id = from_le16(id);
-    out->controller_nn = nas_nvme_from_le32(id + 516U);
+    out->vendor_id = nas_get_le16(id);
+    out->controller_nn = nas_get_le32(id + 516U);
     out->version = version;
     copy_identify_string(out->serial, sizeof(out->serial), id + 4U, 20U);
     copy_identify_string(out->model, sizeof(out->model), id + 24U, 40U);

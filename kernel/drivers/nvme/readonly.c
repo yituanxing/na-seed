@@ -22,9 +22,6 @@ static void copy_bytes(void *destination, const void *source, uint32_t count) {
     const uint8_t *s=source;
     for(uint32_t i=0;i<count;i++)d[i]=s[i];
 }
-static uint64_t le64(const uint8_t *p) {
-    return (uint64_t)nas_nvme_from_le32(p) | ((uint64_t)nas_nvme_from_le32(p+4U)<<32);
-}
 static uint32_t db_off(const struct nas_nvme_ro_session *s,
                        const struct nas_nvme_ro_queue *q,bool cq) {
     uint32_t register_index=(uint32_t)q->qid*2U+(cq?1U:0U);
@@ -41,13 +38,13 @@ static int queue_submit(struct nas_nvme_ro_session *s,
     if(!q->cid_next)q->cid_next=1U;
     uint8_t *cmd=(uint8_t *)q->sq.cpu+(uint32_t)q->sq_tail*64U;
     zero_bytes(cmd,64U);
-    nas_nvme_to_le32(cmd,(uint32_t)opcode|((uint32_t)cid<<16));
-    nas_nvme_to_le32(cmd+4U,nsid);
-    nas_nvme_to_le32(cmd+24U,(uint32_t)prp);
-    nas_nvme_to_le32(cmd+28U,(uint32_t)(prp>>32));
-    nas_nvme_to_le32(cmd+40U,cdw10);
-    nas_nvme_to_le32(cmd+44U,cdw11);
-    nas_nvme_to_le32(cmd+48U,cdw12);
+    nas_put_le32(cmd,(uint32_t)opcode|((uint32_t)cid<<16));
+    nas_put_le32(cmd+4U,nsid);
+    nas_put_le32(cmd+24U,(uint32_t)prp);
+    nas_put_le32(cmd+28U,(uint32_t)(prp>>32));
+    nas_put_le32(cmd+40U,cdw10);
+    nas_put_le32(cmd+44U,cdw11);
+    nas_put_le32(cmd+48U,cdw12);
     int rc=nas_dma_lease_sync(&s->lease,&q->sq,
                               (uint32_t)q->sq_tail*64U,64U,
                               NAS_DMA_TO_DEVICE);
@@ -61,9 +58,9 @@ static int queue_submit(struct nas_nvme_ro_session *s,
                               NAS_DMA_FROM_DEVICE);
         if(rc)return rc;
         const uint8_t *c=(const uint8_t *)q->cq.cpu+byte_off;
-        uint32_t dw3=nas_nvme_from_le32(c+12U);
+        uint32_t dw3=nas_get_le32(c+12U);
         if(((dw3>>16)&1U)!=q->cq_phase)continue;
-        uint32_t dw2=nas_nvme_from_le32(c+8U);
+        uint32_t dw2=nas_get_le32(c+8U);
         if((dw3&0xffffU)!=cid || (dw2>>16)!=q->qid || (dw3>>17)!=0U)
             return -EIO;
         q->cq_head=(uint8_t)((q->cq_head+1U)%NAS_NVME_RO_QUEUE_DEPTH);
@@ -180,8 +177,8 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
                           NAS_DMA_FROM_DEVICE);
     if(rc)goto failed;
     const uint8_t *ns=s->bounce.cpu;
-    s->sectors=le64(ns);
-    const uint64_t capacity=le64(ns+8U);
+    s->sectors=nas_get_le64(ns);
+    const uint64_t capacity=nas_get_le64(ns+8U);
     uint8_t flbas=(uint8_t)(ns[26U]&0xfU);
     uint8_t nlbaf=ns[25U];
     if(!s->sectors || !capacity || capacity>s->sectors ||

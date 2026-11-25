@@ -8,6 +8,7 @@
  * input core/evdev own capabilities, state, readers and Linux UAPI framing.
  */
 #include "virtio_input.h"
+#include "../../lib/endian.h"
 #include "core.h"
 #include "../core/bus.h"
 #ifdef NAS_ENABLE_VIRTIO_INPUT
@@ -105,13 +106,6 @@ static bool is_pointer(const struct virtinput_slot *v) {
 }
 #endif
 
-static uint16_t load16(const uint8_t *v) {
-    return (uint16_t)((uint16_t)v[0] | (uint16_t)v[1] << 8);
-}
-static uint32_t load32(const uint8_t *v) {
-    return (uint32_t)v[0] | (uint32_t)v[1] << 8 |
-           (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
-}
 
 /* Linux virtinput_cfg_select(): write BOTH selectors, then read the size.
  * No guest-visible data is invented when the device rejects a selector. */
@@ -173,10 +167,10 @@ static int describe_input(struct virtinput_slot *v) {
                    devids,sizeof(devids),&n);
     if (rc) return rc;
     if (n==sizeof(devids)) {
-        v->input.id.bustype=load16(devids);
-        v->input.id.vendor=load16(devids+2);
-        v->input.id.product=load16(devids+4);
-        v->input.id.version=load16(devids+6);
+        v->input.id.bustype=nas_get_le16(devids);
+        v->input.id.vendor=nas_get_le16(devids+2);
+        v->input.id.product=nas_get_le16(devids+4);
+        v->input.id.version=nas_get_le16(devids+6);
     } else if(n) return -EIO;
     else v->input.id.bustype=0x06U; /* Linux BUS_VIRTUAL */
 
@@ -205,11 +199,11 @@ static int describe_input(struct virtinput_slot *v) {
         if (rc) return rc;
         if (n!=sizeof(abs)) return -EIO;
         nas_input_set_absinfo(&v->input,(uint16_t)axis,
-                             (int32_t)load32(abs),
-                             (int32_t)load32(abs+4),
-                             (int32_t)load32(abs+8),
-                             (int32_t)load32(abs+12),
-                             (int32_t)load32(abs+16));
+                             (int32_t)nas_get_le32(abs),
+                             (int32_t)nas_get_le32(abs+4),
+                             (int32_t)nas_get_le32(abs+8),
+                             (int32_t)nas_get_le32(abs+12),
+                             (int32_t)nas_get_le32(abs+16));
     }
     return 0;
 }
@@ -442,8 +436,8 @@ int nas_virtio_input_poll(unsigned budget) {
             if (rc) {poison(v);break;}
             const uint8_t *event=(const uint8_t *)v->event_dma.cpu+
                                   slot*VIRTINPUT_EVENT_BYTES;
-            nas_input_event(&v->input,load16(event),load16(event+2),
-                            (int32_t)load32(event+4));
+            nas_input_event(&v->input,nas_get_le16(event),nas_get_le16(event+2),
+                            (int32_t)nas_get_le32(event+4));
 #ifdef NAS_ENABLE_VIRTIO_INPUT
             ++v->delivered_events;
 #endif

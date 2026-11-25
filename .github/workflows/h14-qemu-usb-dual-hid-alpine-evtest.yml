@@ -41,6 +41,7 @@ on:
       - 'Makefile'
       - 'scripts/acceptance/check-qemu-usb-negative.sh'
       - 'scripts/acceptance/check-qemu-usb-hid.sh'
+      - 'kernel/lib/endian.h'
   workflow_dispatch:
 
 permissions:

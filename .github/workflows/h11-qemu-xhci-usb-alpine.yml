@@ -33,6 +33,7 @@ on:
       - 'limine-h11-usb.conf'
       - 'scripts/run.sh'
       - 'Makefile'
+      - 'kernel/lib/endian.h'
   workflow_dispatch:
 
 permissions:

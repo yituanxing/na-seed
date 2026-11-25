@@ -19,6 +19,7 @@ on:
       - 'scripts/test-pci-scan.c'
       - 'tests/h0-acpi-host.c'
       - 'Makefile'
+      - 'kernel/lib/endian.h'
   workflow_dispatch:
 
 permissions:

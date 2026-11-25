@@ -37,6 +37,8 @@ on:
       - 'scripts/run.sh'
       - 'Makefile'
       - 'scripts/acceptance/check-qemu-usb-negative.sh'
+      - 'kernel/lib/endian.h'
+      - 'kernel/drivers/port/mmio.h'
   pull_request:
     branches:
       - feat/na-hw-h0-pci-20261110
@@ -51,6 +53,8 @@ on:
       - 'scripts/check-architecture-boundaries.py'
       - 'tests/h15-usb-serial-class-host.c'
       - '.github/workflows/h15-qemu-usb-serial-alpine-busybox.yml'
+      - 'kernel/lib/endian.h'
+      - 'kernel/drivers/port/mmio.h'
   workflow_dispatch:
 
 permissions:

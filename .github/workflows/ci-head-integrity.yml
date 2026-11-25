@@ -19,6 +19,7 @@ on:
       - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
       - 'scripts/check-ci-alpine-deps.py'
       - 'kernel/fs/**'
+      - 'kernel/lib/endian.h'
       - 'ports/lwip/socket_port.c'
       - 'scripts/check-file-readiness.sh'
       - 'kernel/arch/**'
