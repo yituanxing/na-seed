@@ -578,6 +578,44 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     if(owned.dentry)end_mounted_lookup(&request,&owned);
     return (uint64_t)(int64_t)rc;
 }
+/* newfstatat and statx share one pathname, mount-inode and bootstrap
+ * fallback policy. ABI layout and AT_EMPTY_PATH semantics stay syscall-local.
+ * Capture metadata while the Path is pinned; then release its owner. */
+static int stat_path_snapshot(uint64_t dirfd,uint64_t pathname,
+                              bool follow_final,struct nas_linux_stat *out) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(rc)return rc;
+    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                             request.root.dentry?&request.root:NULL,
+                             request.pathname,follow_final,&path);
+    if(!rc)rc=nas_vfs_path_node(&path,&node);
+    if(!rc) {
+        rc=fill_mounted_stat(&node,out);
+        end_mounted_lookup(&request,&path);
+        return rc;
+    }
+    if(rc!=-ENOENT) {
+        end_mounted_lookup(&request,&path);
+        return rc;
+    }
+    /* Stale or unlinked dirfd never falls back to a string lookup.
+     * Only explicitly accepted boot device/module endpoints qualify. */
+    char legacy_path[256];
+    bool allowed=nas_fs_bootstrap_candidate(&request,legacy_path);
+    bool missing=allowed &&
+        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
+    end_mounted_lookup(&request,&path);
+    if(!missing)return -ENOENT;
+    if(nas_dac_nonroot())return -EACCES;
+    struct nas_fs_bootstrap_info info;
+    rc=nas_fs_bootstrap_describe(legacy_path,&info);
+    if(rc)return rc;
+    fill_bootstrap_stat(&info,out);
+    return 0;
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -606,41 +644,12 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
         return fd<0 ? (uint64_t)-EBADF :
                       sys_fstat_boot((uint64_t)fd,statbuf);
     }
-    struct nas_fs_path_request request;
-    struct nas_vfs_path path_ref={0};
-    struct nas_fs_node node={0};
-    int err=nas_fs_user_path_begin(dirfd,pathname,&request);
-    if(err)return (uint64_t)(int64_t)err;
-    err=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
-                              request.root.dentry?&request.root:NULL,
-                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
-                              &path_ref);
-    if(!err)err=nas_vfs_path_node(&path_ref,&node);
-    if(!err) {
-        uint64_t result=write_mounted_stat(&node,statbuf);
-        end_mounted_lookup(&request,&path_ref);
-        return result;
-    }
-    if(err!=-ENOENT) {
-        end_mounted_lookup(&request,&path_ref);
-        return (uint64_t)(int64_t)err;
-    }
-    /* Only the SAME explicit bootstrap endpoints allowed by openat may
-     * use a printed-path fallback. In particular, ENOENT under a stale
-     * renamed/unlinked dirfd must not attempt a second legacy lookup. */
-    char path[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,path);
-    bool genuinely_missing=allowed &&
-        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-    end_mounted_lookup(&request,&path_ref);
-    if(!genuinely_missing)return (uint64_t)-ENOENT;
-    if(nas_dac_nonroot())return (uint64_t)-EACCES;
-    /* stat is a metadata operation. It must not consume a descriptor,
-     * initialize a driver, or fail EMFILE simply because FDs are full. */
-    struct nas_fs_bootstrap_info bootstrap;
-    int described=nas_fs_bootstrap_describe(path,&bootstrap);
-    return described ? (uint64_t)(int64_t)described :
-                       write_bootstrap_stat(&bootstrap,statbuf);
+    struct nas_linux_stat st;
+    int rc=stat_path_snapshot(dirfd,pathname,
+                     !(flags&AT_SYMLINK_NOFOLLOW),&st);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return nas_user_write_bytes(statbuf,(const uint8_t *)&st,sizeof(st)) ?
+           0:(uint64_t)-EFAULT;
 }
 
 /* Linux statx(2) first 0xa0 bytes plus reserved tail. A real metadata
@@ -728,36 +737,10 @@ static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
         }
         return (uint64_t)-EOPNOTSUPP;
     }
-    struct nas_fs_path_request request;
-    struct nas_vfs_path path={0};
-    struct nas_fs_node node={0};
-    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
-    if(rc)return (uint64_t)(int64_t)rc;
-    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
-                              request.root.dentry?&request.root:NULL,
-                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
-                              &path);
-    if(!rc)rc=nas_vfs_path_node(&path,&node);
-    if(!rc) {
-        uint64_t result=write_mounted_statx(&node,statbuf);
-        end_mounted_lookup(&request,&path);
-        return result;
-    }
-    if(rc!=-ENOENT) {
-        end_mounted_lookup(&request,&path);
-        return (uint64_t)(int64_t)rc;
-    }
-    char bootstrap_path[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,bootstrap_path);
-    bool missing=allowed &&
-        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-    end_mounted_lookup(&request,&path);
-    if(!missing)return (uint64_t)-ENOENT;
-    if(nas_dac_nonroot())return (uint64_t)-EACCES;
-    struct nas_fs_bootstrap_info info;
-    int described=nas_fs_bootstrap_describe(bootstrap_path,&info);
-    return described ? (uint64_t)(int64_t)described :
-                       write_bootstrap_statx(&info,statbuf);
+    struct nas_linux_stat st;
+    int rc=stat_path_snapshot(dirfd,pathname,
+                     !(flags&AT_SYMLINK_NOFOLLOW),&st);
+    return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,statbuf);
 }
 
 /* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].
