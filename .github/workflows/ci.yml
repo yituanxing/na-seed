@@ -9,7 +9,6 @@ on:
       - 'docs/**'
       - 'README.md'
       - '.github/workflows/prune-historical-branches.yml'
-      - 'scripts/prune-merged-branches.sh'
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -67,6 +66,12 @@ jobs:
         run: cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-random.c kernel/random.c -o /tmp/naseed-random-test && /tmp/naseed-random-test
       - name: M64 real wait-owner reset and per-thread isolation regression
         run: cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -I kernel scripts/test-task-wait-owner.c kernel/task/wait.c -o /tmp/naseed-task-wait && /tmp/naseed-task-wait
+      - name: Preserve independent M141 SysV shared-memory, semaphores and message-queue regression
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -I kernel \
+            kernel/ipc/sysv.c tests/m141-ipc-host.c \
+            -o /tmp/naseed-m141-ipc-host-test
+          /tmp/naseed-m141-ipc-host-test
       - name: M63 real tmpfs inode-dentry and hardlink lifetime regression
         run: cc -std=c11 -Wall -Wextra -Werror -I kernel scripts/test-tmp-namespace.c kernel/tmpfs.c kernel/fs/tmp_namespace.c -o /tmp/naseed-tmp-namespace && /tmp/naseed-tmp-namespace
       - name: M108 indexed tmpfs namespace large-directory and inode-recycle regression

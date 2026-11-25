@@ -55,7 +55,7 @@ jobs:
             sh -n scripts/host-configure-alpine-fixtures.sh
           fi
           python3 scripts/check-prebuilt-profile-catalog.py
-          python3 "scripts/check-$PROFILE-inventory.py"
+          python3 scripts/check-signed-elf-batch-inventory.py "$PROFILE"
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-architecture-boundaries.py
       - name: Install native QEMU and signed Alpine APK staging prerequisites
