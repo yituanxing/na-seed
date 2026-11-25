@@ -94,8 +94,9 @@ jobs:
 
       - name: Check shared USB fixture and negative-observer shell entry points
         run: sh scripts/acceptance/check-shared-usb-host.sh
-      - name: Run three original local host-only acceptance cohorts
+      - name: Run four original local host-only acceptance cohorts
         run: |
+          sh scripts/acceptance/run-local-alpine-cohort.sh m235 --host-only
           sh scripts/acceptance/run-local-alpine-cohort.sh m236 --host-only
           sh scripts/acceptance/run-local-alpine-cohort.sh m237 --host-only
           sh scripts/acceptance/run-local-alpine-cohort.sh m238 --host-only

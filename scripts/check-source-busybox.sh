@@ -38,10 +38,14 @@ done
 # Both 17-case and source-profile runners must consume the same manifest
 # interface; no forked VM/ELF/syscall policy or private test binaries.
 for f in scripts/probe-x86-busybox-parity.sh \
-         scripts/probe-riscv64-busybox-matrix.sh \
-         scripts/probe-aarch64-busybox-matrix.sh; do
+         scripts/probe-port-busybox-matrix.sh; do
     grep -Fq 'BUSYBOX_PARITY_MANIFEST' "$f"
     grep -Fq 'BUSYBOX_PARITY_BINARY' "$f"
     grep -Fq 'entry; do' "$f"
+done
+grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh aarch64' scripts/probe-aarch64-busybox-matrix.sh
+grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh riscv64' scripts/probe-riscv64-busybox-matrix.sh
+for f in scripts/probe-riscv64-busybox-matrix.sh scripts/probe-aarch64-busybox-matrix.sh scripts/probe-port-busybox-matrix.sh; do
+    sh -n "$f"
 done
 echo '[PASS] controlled-source BusyBox config, eighteen-case manifest and shared QEMU runners'

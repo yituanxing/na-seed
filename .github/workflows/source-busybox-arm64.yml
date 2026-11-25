@@ -21,6 +21,7 @@ on:
       - 'kernel/arch/pt_directory.h'
       - 'kernel/fs/**'
       - 'ports/**'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - '.github/workflows/source-busybox-arm64.yml'
   push:

@@ -25,21 +25,19 @@ done < "$manifest"
 # Validate entries/uniqueness/existence above and exact target links below;
 # never duplicate a numeric TU count that must be edited on each addition.
 test "$count" -gt 0
-for script in scripts/build-riscv64-full.sh scripts/build-aarch64-full.sh; do
-    grep -Fq 'scripts/full-kernel-core.sources' "$script" || {
-        echo "[PORT SOURCES] $script bypasses canonical manifest" >&2
-        exit 1
-    }
-done
-# Signal-frame native
-# providers are architecture units, not duplicated copies of shared policy.
+script=scripts/build-native-full.sh
+grep -Fq 'scripts/full-kernel-core.sources' "$script" || {
+    echo "[PORT SOURCES] $script bypasses canonical manifest" >&2; exit 1;
+}
+# Verify both public build entry points reach the same owner with the right ISA.
 for arch in riscv64 aarch64; do
-    script="scripts/build-$arch-full.sh"
+    grep -Fxq "exec sh scripts/build-native-full.sh $arch" "scripts/build-$arch-full.sh" || {
+        echo "[PORT SOURCES] $arch bypasses native builder" >&2; exit 1;
+    }
     provider="kernel/arch/$arch/signal_frame.c"
     test -f "$provider" || { echo "[PORT SOURCES] missing $provider" >&2; exit 1; }
     grep -Fq "$provider" "$script" || {
-        echo "[PORT SOURCES] $script omits native signal frame provider" >&2
-        exit 1
+        echo "[PORT SOURCES] $script omits native signal frame provider" >&2; exit 1;
     }
 done
 grep -Fq '$(OUT)/arch_signal_frame.o' Makefile || {

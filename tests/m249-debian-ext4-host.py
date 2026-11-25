@@ -114,13 +114,15 @@ class AuthenticatedSourceContract(unittest.TestCase):
         """Root-run mkfs must not strand the real block image as root-only."""
         probe = (FILE.parent / "m249-probe-debian-ext4.sh").read_text()
         prepare = 'sudo python3 scripts/m249-debian-ext4-disk.py prepare'
-        handoff = 'sudo chown "$(id -u):$(id -g)" "$disk"'
+        handoff = "nas_debian_chown_disk"
+        helper = (FILE.parent / "acceptance/debian-ext4.sh").read_text()
+        self.assertIn('sudo chown "$(id -u):$(id -g)" "$disk"', helper)
         qemu = 'sh "$runner"'
         self.assertIn(prepare, probe)
         self.assertIn(handoff, probe)
         self.assertLess(probe.index(prepare), probe.index(handoff))
         self.assertLess(probe.index(handoff), probe.index(qemu))
-        self.assertIn('test -r "$disk" && test -w "$disk"', probe)
+        self.assertIn('test -r "$disk" && test -w "$disk"', helper)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ on:
       - naseed-app-batch2
       - feat/m255-original-debian-init-20261110
     paths:
+      - 'scripts/acceptance/debian-ext4.sh'
       - '.github/workflows/m255-debian-init-service.yml'
       - '.github/workflows/m252-debian-text-tools-ext4.yml'
       - 'scripts/m255-*'

@@ -9,6 +9,7 @@ on:
     # workflow_call, avoiding a second redundant QEMU boot per ISA.
     branches: [na-alpine-direct-use]
     paths:
+      - 'scripts/acceptance/debian-ext4.sh'
       - '.github/workflows/m252-debian-text-tools-ext4.yml'
       - 'scripts/m252-*'
       - 'scripts/m251-*'
@@ -27,6 +28,7 @@ on:
       - 'scripts/probe-x86-busybox-parity.sh'
       - 'scripts/native-source-qemu.sh'
       - 'scripts/run.sh'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'kernel/boot_image.c'

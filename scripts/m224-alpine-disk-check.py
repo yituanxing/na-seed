@@ -6,7 +6,6 @@ per-ISA ELF, public HTTPS and fsck checks. M224 adds exact signed-census ELF
 hashes and actual Ncat source-byte persistence, not a guest UART-only PASS.
 """
 
-import csv
 import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 import json
@@ -153,36 +152,10 @@ def physical_outputs(partition: Path, m191, first_dir: Path,
 
 
 def signed_inventory_sha(port: str, partition: Path, m191, root: Path) -> None:
-    """Bind every physical native ELF SHA to exact official signed APK census."""
-    table = root / f'build/external/m224-candidate-inventory/{port}/candidates.tsv'
-    if table.is_symlink():
-        raise ValueError('[M224 SHA FAIL] symlinked original signed inventory')
-    with table.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.reader(stream, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M224 SHA FAIL] missing original signed inventory header')
-    expected = {(record[0], record[1]) for record in
-                (line.split('\t') for line in
-                 (root / 'scripts/m224-candidate-elfs.tsv').read_text().splitlines()[1:])
-                if len(record) == 4}
-    if len(expected) != 3:
-        raise ValueError('[M224 SHA FAIL] invalid expected original signed candidate set')
-    seen = set()
-    shas = set()
-    for row in rows[1:]:
-        if len(row) != 4:
-            raise ValueError('[M224 SHA FAIL] invalid signed inventory row')
-        package, path, status, fingerprint = row
-        pair = (package, path)
-        if pair not in expected or pair in seen or status != 'NATIVE_ELF' or \
-                not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
-            raise ValueError('[M224 SHA FAIL] malformed original signed candidate census')
-        if hashlib.sha256(m191.debugfs_cat(partition, '/' + path)).hexdigest() != fingerprint:
-            raise ValueError('[M224 SHA FAIL] physical ELF differs from original signed APK ' + path)
-        seen.add(pair)
-        shas.add(fingerprint)
-    if seen != expected or len(shas) != 3:
-        raise ValueError('[M224 SHA FAIL] missing/duplicate signed original ELF')
+    expected = owner.signed_manifest_pairs(root / 'scripts/m224-candidate-elfs.tsv', 3)
+    census = root / f'build/external/m224-candidate-inventory/{port}/candidates.tsv'
+    owner.verify_signed_census(census, expected, 3,
+        lambda path: m191.debugfs_cat(partition, path), label='M224')
 
 
 def verify(port: str, signed_root: Path, disk: Path,

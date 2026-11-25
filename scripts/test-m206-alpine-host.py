@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 import io
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -402,11 +403,56 @@ def physical_disk_oracle_contract(entries: list[tuple[str, str, str, str]]) -> N
         verify.__globals__["load"] = original_load
 
 
+def signed_census_contract():
+    """Exercise all seven consumers with their exact real manifest paths."""
+    gate = runpy.run_path(str(DISK))
+    profiles = {223: 3, 224: 3, 225: 2, 226: 1, 236: 7, 237: 15, 238: 15}
+    with tempfile.TemporaryDirectory(prefix="signed-census-") as temp:
+        table = Path(temp) / "candidates.tsv"
+        for profile, count in profiles.items():
+            expected = gate["signed_manifest_pairs"](
+                ROOT / f"scripts/m{profile}-candidate-elfs.tsv", count)
+            binary = {"/" + path: b"synthetic-ELF:" + path.encode()
+                      for _, path in expected}
+            header = "package\telf_path\tstatus\tsha256\n"
+            records = [f"{owner}\t{path}\tNATIVE_ELF\t" +
+                       hashlib.sha256(binary["/" + path]).hexdigest() + "\n"
+                       for owner, path in sorted(expected)]
+            def verify():
+                return gate["verify_signed_census"](
+                    table, expected, count, binary.__getitem__, label=f"M{profile}")
+            good = header + "".join(records)
+            table.write_text(good)
+            assert len(verify()) == count
+            for bad in (good + records[0], header + "".join(records[1:]),
+                        good.replace("NATIVE_ELF", "BUSYBOX_ALIAS", 1),
+                        "foreign" + good, good.replace(records[0],
+                                                       "wrong" + records[0], 1)):
+                table.write_text(bad)
+                try:
+                    verify()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"M{profile} accepted invalid census")
+            table.write_text(good)
+            path = next(iter(binary))
+            binary[path] += b"changed"
+            try:
+                verify()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"M{profile} accepted modified disk bytes")
+    print("[SIGNED CENSUS HOST PASS] 7 real profile manifests, exact count and rejection cases")
+
+
 def main() -> None:
     entries = manifest_contract()
     guest_contract(entries)
     reporting_contract(entries)
     physical_disk_oracle_contract(entries)
+    signed_census_contract()
     print("[M206 HOST CONTRACT PASS] 20 new nonrepeating original command paths, "
           "20 semantic guest cases, fd9 input isolation, signed APK owner manifests, "
           "strict genuine first/reopen records, negative reporting and physical "

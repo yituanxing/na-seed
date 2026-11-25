@@ -8,11 +8,9 @@ reads actual first and reopened functional bytes from the same partition.
 """
 from __future__ import annotations
 
-import csv
 import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 import json
-import re
 from pathlib import Path
 import struct
 import zlib
@@ -35,39 +33,10 @@ spec.loader.exec_module(owner)
 
 
 def verify_signed_inventory(port: str, partition: Path, m191, home: Path = HOME) -> dict[str, str]:
-    """No APK DB claim counts unless the real ext4 ELF matches its signed APK."""
-    inventory = home / f'build/external/m236-candidate-inventory/{port}/candidates.tsv'
-    if inventory.is_symlink():
-        raise ValueError('[M236 SIGNED SHA FAIL] symlinked signed APK census')
-    with inventory.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.reader(stream, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M236 SIGNED SHA FAIL] missing original APK inventory header')
-    expected = {(r[0], r[1]) for r in csv.reader(
-        (ln for ln in MANIFEST.read_text().splitlines()[1:]
-         if ln.strip() and not ln.startswith('#')), delimiter='\t')}
-    if len(expected) != NATIVE_COUNT:
-        raise ValueError('[M236 SIGNED SHA FAIL] invalid original ELF manifest size')
-    matched: set[tuple[str, str]] = set()
-    signed_hashes: set[str] = set()
-    verified_sha: dict[str, str] = {}
-    for row in rows[1:]:
-        if len(row) != 4:
-            raise ValueError('[M236 SIGNED SHA FAIL] invalid signed APK census row')
-        pkg, path, status, sha = row
-        key = (pkg, path)
-        if (status != 'NATIVE_ELF' or key not in expected or key in matched or
-                not re.fullmatch(r'[0-9a-f]{64}', sha)):
-            raise ValueError('[M236 SIGNED SHA FAIL] missing/duplicate/invalid signed ELF ' + path)
-        actual = m191.debugfs_cat(partition, '/' + path)
-        if hashlib.sha256(actual).hexdigest() != sha:
-            raise ValueError('[M236 SIGNED SHA FAIL] physical ext4 differs from signed APK ' + path)
-        matched.add(key)
-        signed_hashes.add(sha)
-        verified_sha[path] = sha
-    if matched != expected or len(signed_hashes) != NATIVE_COUNT:
-        raise ValueError('[M236 SIGNED SHA FAIL] not seven distinct authentic native ELF hashes')
-    return verified_sha
+    expected = owner.signed_manifest_pairs(MANIFEST, NATIVE_COUNT)
+    census = home / f'build/external/m236-candidate-inventory/{port}/candidates.tsv'
+    return owner.verify_signed_census(census, expected, NATIVE_COUNT,
+               lambda path: m191.debugfs_cat(partition, path), label='M236')
 
 
 def verify_semantics(partition: Path, m191) -> None:

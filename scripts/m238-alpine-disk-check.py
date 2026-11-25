@@ -2,7 +2,6 @@
 """M238 strict signed-APK SHA and actual first/reopen physical ext4 software oracle."""
 from __future__ import annotations
 
-import csv
 import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 import json
@@ -26,38 +25,10 @@ spec.loader.exec_module(owner)
 
 
 def signed_sha(port: str, partition: Path, m191, home: Path = ROOT) -> dict[str, str]:
-    """Match all 15 distinct physical ELF bytes against signed APK census."""
+    expected = owner.signed_manifest_pairs(MANIFEST, COUNT)
     census = home / f'build/external/m238-candidate-inventory/{port}/candidates.tsv'
-    if census.is_symlink():
-        raise ValueError('[M238 SIGNED FAIL] signed APK census symlink')
-    with census.open(newline='', encoding='utf-8') as fp:
-        rows = list(csv.reader(fp, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M238 SIGNED FAIL] invalid signed APK census')
-    expected = {(row[0], row[1]) for row in csv.reader(
-        (line for line in MANIFEST.read_text().splitlines()[1:]
-         if line.strip() and not line.startswith('#')), delimiter='\t')}
-    if len(expected) != COUNT:
-        raise ValueError('[M238 SIGNED FAIL] wrong native ELF count')
-    seen: set[tuple[str, str]] = set()
-    unique: set[str] = set()
-    fingerprints: dict[str, str] = {}
-    for row in rows[1:]:
-        if len(row) != 4:
-            raise ValueError('[M238 SIGNED FAIL] malformed census row')
-        package, elf, status, sha = row
-        if ((package, elf) not in expected or (package, elf) in seen or
-                status != 'NATIVE_ELF' or not re.fullmatch('[0-9a-f]{64}', sha)):
-            raise ValueError('[M238 SIGNED FAIL] duplicate or nonnative original ELF')
-        actual = m191.debugfs_cat(partition, '/' + elf)
-        if hashlib.sha256(actual).hexdigest() != sha:
-            raise ValueError('[M238 SIGNED FAIL] physical ELF differs from signed APK: ' + elf)
-        seen.add((package, elf))
-        unique.add(sha)
-        fingerprints[elf] = sha
-    if seen != expected or len(unique) != COUNT:
-        raise ValueError('[M238 SIGNED FAIL] 15 unique original signed APK ELFs unproven')
-    return fingerprints
+    return owner.verify_signed_census(census, expected, COUNT,
+               lambda path: m191.debugfs_cat(partition, path), label='M238')
 
 
 def require_real_function_cfg(dot: bytes) -> None:

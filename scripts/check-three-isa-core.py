@@ -58,9 +58,8 @@ assert "ports/lwip/socket_port.c" in make and "ports/lwip/netconn_bridge.c" in m
 # The scheduler always reaps bus removals, including a loopback-only kernel.
 # A VirtIO-conditional copy of the bus object makes that build fail to link.
 assert "kernel/drivers/core/bus.c" not in make.split("VIRTIO_X86_SRCS :=",1)[1].split("LWIP_X86_SRCS :=",1)[0]
-for port in ("aarch64", "riscv64"):
-    assert "kernel/drivers/core/bus.c" not in (root/f"scripts/build-{port}-full.sh").read_text(), \
-        f"{port} duplicates common bus object behind VirtIO option"
+assert "kernel/drivers/core/bus.c" not in (root/"scripts/build-native-full.sh").read_text(), \
+    "native builder duplicates common bus object behind VirtIO option"
 for retired in ("kernel/net/ipv4_loopback.c", "kernel/net/ipv4_loopback.h",
                 "kernel/net/ipv4_endpoint.h", "kernel/net/test_ipv4_loopback.c"):
     assert not (root/retired).exists(), f"retired TCP/IP backend returned: {retired}"
@@ -110,12 +109,11 @@ for probe in ("scripts/probe-lwip-virtio-wire-smoke.sh",
     assert all(x in body for x in ("NAS_VIRTIO_NET_SECOND_USER=1",
                                 "devices=2", "10.0.2.", "10.0.3.",
                                 "eth0 eth1")), f"multi-NIC wire gate missing: {probe}"
-for port in ("aarch64","riscv64"):
-    script=(root/f"scripts/build-{port}-full.sh").read_text()
-    assert "-DNAS_ENABLE_LWIP=1" in script
-    assert 'lwip_src="ports/lwip/libc_port.c' in script
-    assert "grep -v '^kernel/net/ipv4_loopback.c$'" not in script
-    assert "NAS_ENABLE_LWIP:-1" in script, f"native {port} still has a default legacy stack"
+script=(root/"scripts/build-native-full.sh").read_text()
+assert "-DNAS_ENABLE_LWIP=1" in script
+assert 'lwip_src="ports/lwip/libc_port.c' in script
+assert "grep -v '^kernel/net/ipv4_loopback.c$'" not in script
+assert "NAS_ENABLE_LWIP:-1" in script, "native builder has a default legacy stack"
 for path in ("kernel/fs/socket_syscall.c", "kernel/syscall/dispatch.c",
              "kernel/fs/syscall.c", "kernel/task/blocked_completion.c",
              "kernel/task/wait.c", "kernel/init/main.c", "kernel/fs/netlink_route.c"):
@@ -123,11 +121,12 @@ for path in ("kernel/fs/socket_syscall.c", "kernel/syscall/dispatch.c",
     assert "#ifdef NAS_ENABLE_LWIP" not in source
     assert "#ifndef NAS_ENABLE_LWIP" not in source
     assert "nas_ipv4_socket_" not in source, f"parallel IPv4 backend in {path}"
-for port in ("aarch64","riscv64"):
-    script=(root/f"scripts/build-{port}-full.sh").read_text()
-    if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:
-        raise SystemExit(f"native {port} bypassed shared kernel TU manifest")
-    if "kernel/arch/" not in script:
+if 'scripts/full-kernel-core.sources' not in script or 'for f in $common $arch' not in script:
+    raise SystemExit("native builder bypassed shared kernel TU manifest")
+for port in ("aarch64", "riscv64"):
+    wrapper=(root/f"scripts/build-{port}-full.sh").read_text()
+    assert f"exec sh scripts/build-native-full.sh {port}" in wrapper.splitlines()
+    if f"kernel/arch/{port}/cpu.c" not in script:
         raise SystemExit(f"native {port} missing actual CPU/MMU providers")
 # Block layer/ramdisk must be linked on all ISAs and remain kernel only.
 for source in ("kernel/block/device.c", "kernel/block/ramdisk.c"):
@@ -446,7 +445,7 @@ for needle in ("$(OUT)/arch_kernel_switch.o", "$(OUT)/task_kernel_context.o"):
     if needle not in linked.group(1).split() or needle not in actual_link_names:
         raise SystemExit(f"x86 kernel fails to LINK continuation {needle}")
 for arch in ("riscv64","aarch64"):
-    script=(root/f"scripts/build-{arch}-full.sh").read_text()
+    script=(root/"scripts/build-native-full.sh").read_text()
     for needle in (f"kernel/arch/{arch}/kernel_switch.S",'"$out/kernel_switch.o"'):
         if needle not in script: raise SystemExit(f"{arch} kernel omits continuation {needle}")
 if "nas_wait_queue_wake(&wait_test_queue" not in (root/"kernel/task/kernel_context.c").read_text():

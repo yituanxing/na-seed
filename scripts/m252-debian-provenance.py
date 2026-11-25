@@ -96,12 +96,43 @@ def package_summary(record: dict) -> dict:
             "size": int(record["Size"]), "pool": record["Filename"]}
 
 
+def stage_dependency_closure(port, root, base_path, apt, stage, info, pending,
+                             inherited, libraries, inspect, check):
+    """One signed-package DSO closure; profile owns its SONAME allowlist."""
+    triplet, _, interpreter = m248.PORTS[port]
+    while pending:
+        soname = pending.pop(0)
+        if soname in ("libc.so.6", Path(interpreter).name):
+            continue
+        check(soname in libraries, f"unreviewed original Debian SONAME: {soname}")
+        relative = f"usr/lib/{triplet}/{soname}"
+        if relative in inherited:
+            check((root / relative).is_file() and
+                  m245.sha256_file(root / relative) == inherited[relative]["sha256"],
+                  f"inherited original signed DSO changed: {soname}")
+            info["reused_libraries"][relative] = inherited[relative]["sha256"]
+            continue
+        if relative in info["libraries"]:
+            continue
+        package = libraries[soname]
+        if package not in info["dependency_packages"]:
+            record = package_record(apt, port, package)
+            fetch_and_extract(record, base_path, stage / package)
+            info["dependency_packages"][package] = package_summary(record)
+        signed = m251.locate_original_library(stage / package, triplet, soname)
+        props = inspect(signed, port, executable=False)
+        digest = m251.copy_signed_bytes(signed, root / relative)
+        info["libraries"][relative] = {"source_package": package,
+                                        "sha256": digest, **props}
+        info["elf_sha256"][relative] = digest
+        pending.extend(props["dt_needed"])
+
+
 def prepare(port: str, root: Path, base_path: Path,
             m251_path: Path, extra_path: Path) -> dict:
     root, base_path, m251_path, extra_path = (p.resolve() for p in
                                                (root, base_path, m251_path, extra_path))
     _, apt, base, inherited = source_context(port, root, base_path, m251_path)
-    triplet, _, interpreter = m248.PORTS[port]
     info = {
         "schema": SCHEMA,
         "status": "HOST_PREPARED_ONLY_NOT_NATIVE_QEMU_PASS",
@@ -130,34 +161,9 @@ def prepare(port: str, root: Path, base_path: Path,
             info["elf_sha256"][relative] = digest
             pending.extend(props["dt_needed"])
 
-        while pending:
-            soname = pending.pop(0)
-            if soname in ("libc.so.6", Path(interpreter).name):
-                continue
-            require(soname in LIBRARY_PACKAGES,
-                    f"unreviewed original Debian SONAME: {soname}")
-            relative = f"usr/lib/{triplet}/{soname}"
-            if relative in inherited["libraries"]:
-                require((root / relative).is_file() and
-                        m245.sha256_file(root / relative) ==
-                        inherited["libraries"][relative]["sha256"],
-                        f"inherited original signed DSO changed: {soname}")
-                info["reused_libraries"][relative] = inherited["libraries"][relative]["sha256"]
-                continue
-            if relative in info["libraries"]:
-                continue
-            package = LIBRARY_PACKAGES[soname]
-            if package not in info["dependency_packages"]:
-                record = package_record(apt, port, package)
-                fetch_and_extract(record, base_path, stage / package)
-                info["dependency_packages"][package] = package_summary(record)
-            signed = m251.locate_original_library(stage / package, triplet, soname)
-            props = elf_properties(signed, port, executable=False)
-            digest = m251.copy_signed_bytes(signed, root / relative)
-            info["libraries"][relative] = {"source_package": package,
-                                            "sha256": digest, **props}
-            info["elf_sha256"][relative] = digest
-            pending.extend(props["dt_needed"])
+        stage_dependency_closure(port, root, base_path, apt, stage, info, pending,
+                                 inherited["libraries"], LIBRARY_PACKAGES,
+                                 elf_properties, require)
     verify_root(port, root, base_path, m251_path, info)
     extra_path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(info, indent=2, sort_keys=True) + "\n"

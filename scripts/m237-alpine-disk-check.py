@@ -27,38 +27,10 @@ spec.loader.exec_module(owner)
 
 
 def signed_sha(port: str, partition: Path, m191, home: Path = ROOT) -> dict[str, str]:
-    """Every ext4 executable matches the official signed-host APK census SHA."""
+    expected = owner.signed_manifest_pairs(MANIFEST, NATIVE_COUNT)
     census = home / f'build/external/m237-candidate-inventory/{port}/candidates.tsv'
-    if census.is_symlink():
-        raise ValueError('[M237 SIGNED FAIL] symlinked official signed APK inventory')
-    with census.open(newline='', encoding='utf-8') as fp:
-        rows = list(csv.reader(fp, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M237 SIGNED FAIL] missing official original APK census')
-    expected = {(row[0], row[1]) for row in csv.reader(
-        (line for line in MANIFEST.read_text().splitlines()[1:]
-         if line.strip() and not line.startswith('#')), delimiter='\t')}
-    if len(expected) != NATIVE_COUNT:
-        raise ValueError('[M237 SIGNED FAIL] signed original manifest count wrong')
-    seen: set[tuple[str, str]] = set()
-    unique: set[str] = set()
-    fingerprints: dict[str, str] = {}
-    for row in rows[1:]:
-        if len(row) != 4:
-            raise ValueError('[M237 SIGNED FAIL] malformed census row')
-        pkg, elf, status, sha = row
-        if ((pkg, elf) not in expected or (pkg, elf) in seen or
-                status != 'NATIVE_ELF' or not re.fullmatch('[0-9a-f]{64}', sha)):
-            raise ValueError('[M237 SIGNED FAIL] duplicate/non-original signed ELF')
-        actual = m191.debugfs_cat(partition, '/' + elf)
-        if hashlib.sha256(actual).hexdigest() != sha:
-            raise ValueError('[M237 SIGNED FAIL] signed APK SHA differs from physical ELF: ' + elf)
-        seen.add((pkg, elf))
-        unique.add(sha)
-        fingerprints[elf] = sha
-    if seen != expected or len(unique) != NATIVE_COUNT:
-        raise ValueError('[M237 SIGNED FAIL] 15 distinct signed native ELFs unproven')
-    return fingerprints
+    return owner.verify_signed_census(census, expected, NATIVE_COUNT,
+               lambda path: m191.debugfs_cat(partition, path), label='M237')
 
 
 def verify_geos_binary(phase: str, distance: bytes, intersects_true: bytes,

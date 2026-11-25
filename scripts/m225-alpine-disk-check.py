@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """M225 exact native signed APK SHA + two-boot actual ext4 FTP witnesses."""
-import csv
-import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-import re
 import sys
 import tempfile
 
@@ -34,27 +31,10 @@ def stage(isa: str, signed_root: Path) -> None:
 
 
 def signed_exact_sha(isa: str, partition: Path, m191) -> None:
-    inventory = ROOT / f'build/external/m225-candidate-inventory/{isa}/candidates.tsv'
-    if inventory.is_symlink():
-        raise ValueError('[M225 SIGNED FAIL] symlinked signed source inventory')
-    with inventory.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.reader(stream, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M225 SIGNED FAIL] missing exact signed APK SHA table')
     expected = {('lftp', 'usr/bin/lftp'), ('rclone', 'usr/bin/rclone')}
-    seen = set()
-    shas = set()
-    for row in rows[1:]:
-        if (len(row) != 4 or (row[0], row[1]) not in expected or
-                (row[0], row[1]) in seen or row[2] != 'NATIVE_ELF' or
-                not re.fullmatch('[0-9a-f]{64}', row[3])):
-            raise ValueError('[M225 SIGNED FAIL] malformed/foreign original ELF census')
-        if hashlib.sha256(m191.debugfs_cat(partition, '/' + row[1])).hexdigest() != row[3]:
-            raise ValueError('[M225 SIGNED FAIL] physical ext4 ELF SHA differs from signed APK')
-        seen.add((row[0], row[1]))
-        shas.add(row[3])
-    if seen != expected or len(shas) != 2:
-        raise ValueError('[M225 SIGNED FAIL] missing/duplicate original APK native SHA')
+    census = ROOT / f'build/external/m225-candidate-inventory/{isa}/candidates.tsv'
+    owner.verify_signed_census(census, expected, 2,
+        lambda path: m191.debugfs_cat(partition, path), label='M225')
 
 
 def verify(isa: str, signed_root: Path, disk: Path, first: Path, reopen: Path):

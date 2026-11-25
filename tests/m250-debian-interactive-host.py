@@ -113,14 +113,18 @@ class RealSerialContract(unittest.TestCase):
     def test_rootfs_on_disk_precedes_qemu_and_after_fsck(self):
         probe = (BASE / "scripts/m250-probe-debian-interactive.sh").read_text()
         prepare = 'sudo python3 scripts/m250-debian-ext4-disk.py prepare'
-        ownership = 'sudo chown "$(id -u):$(id -g)" "$disk"'
+        ownership = "nas_debian_chown_disk"
+        helper = (BASE / "scripts/acceptance/debian-ext4.sh").read_text()
+        self.assertIn('sudo chown "$(id -u):$(id -g)" "$disk"', helper)
         runner = 'python3 scripts/m250-debian-uart.py'
         after = 'sudo python3 scripts/m250-debian-ext4-disk.py after'
         self.assertLess(probe.index(prepare), probe.index(ownership))
         self.assertLess(probe.index(ownership), probe.index(runner))
         self.assertLess(probe.index(runner), probe.index(after))
-        self.assertIn('export NAS_QEMU_SERIAL_FIFO="$fifo"', probe)
-        self.assertIn('cpio -it --quiet < "$rescue/rootfs.cpio"', probe)
+        self.assertIn("nas_debian_uart_env m250", probe)
+        self.assertIn('export NAS_QEMU_SERIAL_FIFO="$fifo"', helper)
+        self.assertIn("nas_debian_stage_rescue", probe)
+        self.assertIn('cpio -it --quiet < "$rescue/rootfs.cpio"', helper)
 
 
 if __name__ == "__main__":

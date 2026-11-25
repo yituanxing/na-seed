@@ -20,7 +20,10 @@ for arch in amd64 riscv64 arm64; do
 done
 grep -Fq 'scripts/fetch-busybox-fixture.sh amd64' scripts/fetch-debian.sh
 grep -Fq 'scripts/fetch-busybox-fixture.sh riscv64' scripts/fetch-debian-riscv64.sh
-grep -Fq 'scripts/fetch-busybox-fixture.sh arm64' scripts/probe-aarch64-busybox-matrix.sh
+grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh aarch64' scripts/probe-aarch64-busybox-matrix.sh
+grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh riscv64' scripts/probe-riscv64-busybox-matrix.sh
+grep -Fq 'scripts/fetch-busybox-fixture.sh arm64' scripts/probe-port-busybox-matrix.sh
+grep -Fq 'scripts/fetch-debian-riscv64.sh' scripts/probe-port-busybox-matrix.sh
 test "$(grep -vc '^#' scripts/busybox-parity-cases.tsv)" -eq 17
 awk -F '\t' '
     /^[^#]/ {
@@ -29,7 +32,8 @@ awk -F '\t' '
         if (used[$1]++) exit 1
     }
 ' scripts/busybox-parity-cases.tsv
-grep -Fq 'scripts/busybox-parity-cases.tsv' scripts/probe-riscv64-busybox-matrix.sh
+grep -Fq 'scripts/busybox-parity-cases.tsv' scripts/probe-port-busybox-matrix.sh
+sh -n scripts/probe-port-busybox-matrix.sh
 sh -n scripts/stage-busybox-rootfs.sh
 sh -n scripts/probe-riscv64-busybox-matrix.sh
 sh -n scripts/probe-x86-busybox-parity.sh

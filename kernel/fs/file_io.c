@@ -116,7 +116,8 @@ static int mmap_pin_node(const struct nas_fs_node *node,bool write_allowed,
     *out=mapped;
     return 0;
 }
-int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
+static int mmap_pin_file(uint64_t fd,bool shared,bool writable,
+                         struct nas_mapped_file **out) {
     if(!out)return -EINVAL;
     *out=NULL;
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
@@ -142,30 +143,17 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
      * Linux mmap(2) reports ENODEV for unsupported filesystem mappings,
      * allowing original callers such as libdeflate-gzip to fall back to
      * read().  ENOSYS incorrectly claims that mmap itself is absent. */
-    if(!node->filesystem->acquire_shared_page)return -ENODEV;
+    if(shared && !node->filesystem->acquire_shared_page)return -ENODEV;
     if(writable && !nas_vfs_can_write(node))return -EACCES;
     return mmap_pin_node(node,access==2U,out);
 }
-/* Every private lazy file mapping pins the ORIGINAL inode, never a pathname
- * or an open FD. Even a writable ext4 inode needs only read_at to provide a
- * private fault-time copy; no shared physical page provider is required. */
+int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
+    return mmap_pin_file(fd,true,writable,out);
+}
+/* Private mappings pin the original inode and need only read_at, not a
+ * coherent shared-page provider. */
 int nas_fs_mmap_pin_private(uint64_t fd,struct nas_mapped_file **out) {
-    if(!out)return -EINVAL;
-    *out=NULL;
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
-        return -EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
-        return -EBADF;
-    const struct nas_open_file *opened=&nas_open_files[slot];
-    if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
-    const unsigned access=(unsigned)(opened->status_flags&3ULL);
-    if(access==1U || access==3U)return -EACCES;
-    if(!opened->vnode_pinned)return -ENODEV;
-    const struct nas_fs_node *node=&opened->vnode;
-    if(node->is_dir || (node->mode&0170000U)!=0100000U ||
-       !node->filesystem || !node->filesystem->read_at)return -ENODEV;
-    return mmap_pin_node(node,access==2U,out);
+    return mmap_pin_file(fd,false,false,out);
 }
 int64_t nas_fs_mmap_read_private(struct nas_mapped_file *file,
                                     uint64_t offset,uint8_t *dst,uint64_t len) {

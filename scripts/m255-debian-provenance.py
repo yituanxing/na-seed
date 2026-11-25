@@ -74,7 +74,6 @@ def prepare(port: str, root: Path, base: Path, m251_path: Path,
         Path.resolve, (root, base, m251_path, m252_path, extra_path))
     apt, signed_base, m251_info, m252_info = source_context(
         port, root, base, m251_path, m252_path)
-    triplet, _, interpreter = m248.PORTS[port]
     record = m252.package_record(apt, port, PACKAGE)
     info = {
         "schema": SCHEMA,
@@ -100,32 +99,8 @@ def prepare(port: str, root: Path, base: Path, m251_path: Path,
         info["elf_sha256"][PROGRAM] = digest
         pending = list(props["dt_needed"])
         inherited = {**m251_info["libraries"], **m252_info["libraries"]}
-        while pending:
-            soname = pending.pop(0)
-            if soname in ("libc.so.6", Path(interpreter).name):
-                continue
-            require(soname in LIBRARY_PACKAGES,
-                    "unknown dependency; review signed package first: " + soname)
-            relative = f"usr/lib/{triplet}/{soname}"
-            if relative in inherited:
-                require(m245.sha256_file(root / relative) == inherited[relative]["sha256"],
-                        f"inherited signed library bytes modified: {relative}")
-                info["reused_libraries"][relative] = inherited[relative]["sha256"]
-                continue
-            if relative in info["libraries"]:
-                continue
-            library_package = LIBRARY_PACKAGES[soname]
-            if library_package not in info["dependency_packages"]:
-                dep = m252.package_record(apt, port, library_package)
-                m252.fetch_and_extract(dep, base, stage / library_package)
-                info["dependency_packages"][library_package] = m252.package_summary(dep)
-            signed = m251.locate_original_library(stage / library_package, triplet, soname)
-            lib_props = init_elf(signed, port, executable=False)
-            digest = m251.copy_signed_bytes(signed, root / relative)
-            info["libraries"][relative] = {
-                "source_package": library_package, "sha256": digest, **lib_props}
-            info["elf_sha256"][relative] = digest
-            pending.extend(lib_props["dt_needed"])
+        m252.stage_dependency_closure(port, root, base, apt, stage, info, pending,
+                                      inherited, LIBRARY_PACKAGES, init_elf, require)
     verify_root(port, root, base, m251_path, m252_path, info)
     rendered = json.dumps(info, indent=2, sort_keys=True) + "\n"
     if extra_path.exists():

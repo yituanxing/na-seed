@@ -48,6 +48,23 @@ void nas_fs_poll_snapshot_release(struct nas_poll_snapshot *snap) {
             nas_fs_drop_kernel_description(snap->watches[i].slot);
     (void)nas_heap_free(snap);
 }
+/* Both Linux ABIs snapshot the same live open description. Only their
+ * handling of an invalid fd differs: POLLNVAL versus EBADF. */
+static int import_watch(struct nas_poll_watch *w,unsigned fd,bool pin) {
+    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
+        return -EBADF;
+    unsigned slot=TASK.fds->entries[fd].slot;
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
+       nas_open_files[slot].lease_token)return -EBADF;
+    w->slot=(uint8_t)slot;
+    w->kind=TASK.fds->entries[fd].kind;
+    w->valid=true;
+    if(pin) {
+        if(!nas_fd_hold_description(slot))return -ENFILE;
+        w->pinned=true;
+    }
+    return 0;
+}
 static int poll_import(struct nas_poll_snapshot *snap,uint64_t address,
                        uint64_t nfds,bool pin) {
     *snap=(struct nas_poll_snapshot){0};
@@ -63,21 +80,9 @@ static int poll_import(struct nas_poll_snapshot *snap,uint64_t address,
         w->events=(uint16_t)(word>>32);
         int32_t fd=(int32_t)(uint32_t)word;
         if(fd<0)continue;
-        if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) {
-            w->bad_fd=true;continue;
-        }
-        unsigned slot=TASK.fds->entries[fd].slot;
-        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
-           nas_open_files[slot].lease_token) {
-            w->bad_fd=true;continue;
-        }
-        w->slot=(uint8_t)slot;
-        w->kind=TASK.fds->entries[fd].kind;
-        w->valid=true;
-        if(pin) {
-            if(!nas_fd_hold_description(slot))return -ENFILE;
-            w->pinned=true;
-        }
+        int rc=import_watch(w,(unsigned)fd,pin);
+        if(rc==-EBADF)w->bad_fd=true;
+        else if(rc)return rc;
     }
     return 0;
 }
@@ -103,17 +108,8 @@ static int select_import(struct nas_poll_snapshot *snap,uint64_t nfds,
         if(snap->writeset&bit)w->events|=4U;
         if(snap->exceptset&bit)w->events|=2U;
         if(!w->events)continue;
-        if(TASK.fds->entries[fd].kind==FD_CLOSED)return -EBADF;
-        unsigned slot=TASK.fds->entries[fd].slot;
-        if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
-           nas_open_files[slot].lease_token)return -EBADF;
-        w->slot=(uint8_t)slot;
-        w->kind=TASK.fds->entries[fd].kind;
-        w->valid=true;
-        if(pin) {
-            if(!nas_fd_hold_description(slot))return -ENFILE;
-            w->pinned=true;
-        }
+        int rc=import_watch(w,fd,pin);
+        if(rc)return rc;
     }
     return 0;
 }

@@ -9,6 +9,7 @@ on:
       - 'scripts/check-full-kernel-sources.sh'
       - 'scripts/check-linux-stat.c'
       - 'scripts/test-fcntl-abi.c'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/probe-port-full.sh'
       - 'scripts/probe-aarch64-full.sh'

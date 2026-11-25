@@ -19,6 +19,7 @@ on:
       - 'scripts/m253-verify-multiuser-disk.py'
       - 'scripts/test-m253-alpine-multiuser-static.py'
       - 'Makefile'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/probe-alpine-profile.sh'

@@ -10,6 +10,7 @@ on:
       - feat/m254-255-alpine-debian-20261110
       - feat/m253-alpine-nonroot-dac
     paths:
+      - 'scripts/acceptance/debian-ext4.sh'
       - '.github/workflows/m254-debian-shell-lifecycle.yml'
       - '.github/workflows/m252-debian-text-tools-ext4.yml'
       - 'scripts/m254-*'
@@ -26,6 +27,7 @@ on:
       - 'scripts/probe-riscv64-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/run.sh'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'kernel/boot_image.c'

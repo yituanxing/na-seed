@@ -13,6 +13,7 @@ on:
       - 'scripts/m242-verify-reboot-disk.py'
       - 'scripts/test-m242-alpine-reboot-uart.py'
       - 'scripts/run.sh'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'kernel/init/main.c'

@@ -40,6 +40,8 @@ on:
       - 'Makefile'
       - 'scripts/acceptance/check-qemu-usb-negative.sh'
       - 'scripts/acceptance/check-qemu-usb-hid.sh'
+      - 'scripts/acceptance/qmp-hid-evtest.py'
+      - 'scripts/m161-qmp-verify.py'
       - 'kernel/lib/endian.h'
   workflow_dispatch:
 
@@ -73,7 +75,7 @@ jobs:
           sh -n scripts/acceptance/check-qemu-usb-hid.sh
           sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/run.sh
-          python3 -m py_compile scripts/h12-qmp-evtest.py
+          python3 -m py_compile scripts/acceptance/qmp-hid-evtest.py
           make hw-h12-host-check
       - name: Build isolated H12 xHCI HID kernel, H8-original signed Alpine plus signed evtest NVMe root, UEFI ISO
         timeout-minutes: 50

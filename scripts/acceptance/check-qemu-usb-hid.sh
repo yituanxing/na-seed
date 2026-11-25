@@ -4,13 +4,13 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 profile=$1
 case "$profile" in
-    h12) oracle_script=scripts/h12-qmp-evtest.py; positive_flag=NAS_QEMU_H12_USB_KBD_POSITIVE;
+    h12) positive_flag=NAS_QEMU_H12_USB_KBD_POSITIVE;
         fatal='^\[(H12 HID FAIL|H12 XHCI FAIL|H12 USB FAIL|FAIL|FAULT|EXEC REJECT|ELF REJECT)'; oracle_fail='[H12 QMP REAL USB HID FAIL]';
         oracle_pass='[H12 QMP REAL USB HID EVTEST PASS]'; oracle_error='[H12 QEMU FAIL] independent QMP physical A key and original evtest oracle rejected run' ;;
-    h13) oracle_script=scripts/h13-qmp-evtest.py; positive_flag=NAS_QEMU_H13_USB_MOUSE_USERLAND;
+    h13) positive_flag=NAS_QEMU_H13_USB_MOUSE_USERLAND;
         fatal='^\[(H13 MOUSE FAIL|H13 XHCI FAIL|FAIL|FAULT|EXEC REJECT|ELF REJECT)'; oracle_fail='[H13 QMP REAL USB MOUSE FAIL]';
         oracle_pass='[H13 QMP REAL USB MOUSE EVTEST PASS]'; oracle_error='[H13 QEMU FAIL] independent QMP physical USB mouse and original evtest oracle rejected run' ;;
-    h14) oracle_script=scripts/h14-qmp-dual-evtest.py; positive_flag=NAS_QEMU_H14_DUAL_HID_USERLAND;
+    h14) positive_flag=NAS_QEMU_H14_DUAL_HID_USERLAND;
         fatal='^\[(H14 DUAL FAIL|H14 XHCI FAIL|FAIL|FAULT|EXEC REJECT|ELF REJECT)'; oracle_fail='[H14 QMP REAL DUAL USB EVTEST FAIL]';
         oracle_pass='[H14 QMP REAL DUAL USB EVTEST PASS]'; oracle_error='[H14 QEMU FAIL] independent QMP dual USB keyboard+mouse original Alpine evtest oracle rejected run' ;;
     *) exit 2 ;;
@@ -45,7 +45,7 @@ qemu_pid=''
 oracle_pid=''
 watchdog_pid=''
 trap 'for child in "$watchdog_pid" "$oracle_pid" "$qemu_pid"; do if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null || :; fi; done' EXIT
-python3 "$oracle_script" --serial "$serial_log" \
+python3 scripts/acceptance/qmp-hid-evtest.py "$profile" --serial "$serial_log" \
     --qmp "$qmp_sock" --timeout 270 > "$oracle_log" 2>&1 &
 oracle_pid=$!
 rc=0

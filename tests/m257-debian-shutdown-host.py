@@ -207,7 +207,10 @@ class M257TrueNativePoweroffGate(unittest.TestCase):
         self.assertIn('command!=NAS_LINUX_REBOOT_POWER_OFF', policy)
         self.assertIn('nas_init_debian_power_request(&TASK,command)', dispatch)
         self.assertIn('if code:', runner)
-        self.assertIn('if proc is not None and proc.poll() is None:', runner)
+        self.assertIn('complete=None, exited=exited', runner)
+        owner = (ROOT / 'scripts/m255-debian-uart.py').read_text()
+        self.assertIn('if proc is not None and proc.poll() is None:', owner)
+        self.assertIn('return exited(code, seen)', owner)
         self.assertNotIn('os.killpg(proc.pid, signal.SIGTERM)\n                    return', runner)
 
 

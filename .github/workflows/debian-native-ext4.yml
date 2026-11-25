@@ -3,6 +3,7 @@ on:
   push:
     branches: [na-alpine-direct-use]
     paths:
+      - 'scripts/acceptance/debian-ext4.sh'
       - '.github/workflows/debian-native-ext4.yml'
       - 'docs/m249-*'
       - 'kernel/arch/linux_stat_abi.h'
@@ -16,6 +17,7 @@ on:
       - 'kernel/syscall/ops.h'
       - 'kernel/task/**'
       - 'ports/lwext4/**'
+      - 'scripts/build-native-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/build-riscv64-full.sh'
       - 'scripts/m193-*'

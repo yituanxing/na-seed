@@ -9,10 +9,7 @@ durable ext4 shutdown, so this script never prints full OS PASS.
 import importlib.util
 import os
 from pathlib import Path
-import signal
-import subprocess
 import sys
-import time
 
 
 HERE = Path(__file__).resolve().parent
@@ -60,65 +57,30 @@ def run(port: str, runner: str, serial: Path, runner_log: Path,
         fifo: Path, deadline: int) -> dict:
     if port not in ("amd64", "riscv64", "arm64"):
         raise ValueError("unreviewed native ISA")
-    fifo.parent.mkdir(parents=True, exist_ok=True)
-    if fifo.exists():
-        raise RuntimeError("stale UART FIFO: " + str(fifo))
-    if serial.exists():
-        serial.unlink()
-    os.mkfifo(fifo, 0o600)
-    hold = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-    runner_log.parent.mkdir(parents=True, exist_ok=True)
-    proc = None
-    seen = bytearray()
-    offset = 0
-    start = time.monotonic()
-    try:
-        with runner_log.open("wb") as log:
-            proc = subprocess.Popen(["sh", runner], stdout=log,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
-            while time.monotonic() - start < deadline:
-                if serial.is_file():
-                    with serial.open("rb") as source:
-                        source.seek(offset)
-                        chunk = source.read()
-                        seen.extend(chunk)
-                        offset += len(chunk)
-                if (b"[FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen or
-                        b"[M256 INITCTL FAIL]" in seen):
-                    raise RuntimeError("real guest reported kernel/initctl failure")
-                if RUN_MARKERS[-1] in seen and SIGNED_EXEC in seen:
-                    result = inspect(bytes(seen))
-                    print(f"[M256 ORIGINAL DEBIAN SYSVINIT FIFO/TELINIT NATIVE QEMU "
-                          f"DIAGNOSTIC VERIFIED] {port}: real initctl switched to "
-                          f"runlevel 3; first PID {result['first_pid']}, "
-                          f"respawn PID {result['respawn_pid']}; "
-                          "poweroff/durable ext4 NOT YET PASS", flush=True)
-                    return result
-                if proc.poll() is not None:
-                    raise RuntimeError(f"guest exited before original initctl runlevel 3: "
-                                       f"rc={proc.returncode}")
-                time.sleep(.10)
-            raise TimeoutError(f"signed initctl runlevel3 not observed in {deadline}s")
-    except Exception:
-        print("[M256 INITCTL DIAGNOSTIC FAIL] real UART tail:\n" +
-              bytes(seen).decode(errors="replace")[-16000:], file=sys.stderr)
-        raise
-    finally:
-        if proc is not None and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-        os.close(hold)
-        fifo.unlink()
-        if seen:
-            serial.with_name(serial.name.removesuffix(".serial.log") + ".clean.log").write_bytes(
-                bytes(seen).replace(b"\r", b""))
+
+    def fatal(seen):
+        if (b"[FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen or
+                b"[M256 INITCTL FAIL]" in seen):
+            raise RuntimeError("real guest reported kernel/initctl failure")
+
+    def complete(seen):
+        if RUN_MARKERS[-1] in seen and SIGNED_EXEC in seen:
+            result = inspect(bytes(seen))
+            print(f"[M256 ORIGINAL DEBIAN SYSVINIT FIFO/TELINIT NATIVE QEMU "
+                  f"DIAGNOSTIC VERIFIED] {port}: real initctl switched to "
+                  f"runlevel 3; first PID {result['first_pid']}, "
+                  f"respawn PID {result['respawn_pid']}; "
+                  "poweroff/durable ext4 NOT YET PASS", flush=True)
+            return result
+
+    def exited(code, _seen):
+        raise RuntimeError(f"guest exited before original initctl runlevel 3: rc={code}")
+
+    return m255.run_lifecycle(port, runner, serial, runner_log, fifo, deadline,
+                              strict_stale=False, stale_error="stale UART FIFO: " + str(fifo),
+                              fatal=fatal, complete=complete, exited=exited,
+                              timeout_error=f"signed initctl runlevel3 not observed in {deadline}s",
+                              failure_banner="[M256 INITCTL DIAGNOSTIC FAIL]", tail_limit=16000)
 
 
 def main() -> None:

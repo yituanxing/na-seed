@@ -41,6 +41,8 @@ on:
       - 'Makefile'
       - 'scripts/acceptance/check-qemu-usb-negative.sh'
       - 'scripts/acceptance/check-qemu-usb-hid.sh'
+      - 'scripts/acceptance/qmp-hid-evtest.py'
+      - 'scripts/m161-qmp-verify.py'
       - 'kernel/lib/endian.h'
   workflow_dispatch:
 
@@ -83,7 +85,7 @@ jobs:
           sh -n scripts/acceptance/check-qemu-usb-negative.sh
           sh -n scripts/check-host-fixture.sh
           sh -n scripts/run.sh
-          python3 -m py_compile scripts/h14-qmp-dual-evtest.py
+          python3 -m py_compile scripts/acceptance/qmp-hid-evtest.py
           make hw-h14-host-check
       - name: Build isolated H14 xHCI dual-root HID kernel, H8-original signed Alpine plus signed evtest NVMe root, UEFI ISO
         timeout-minutes: 50

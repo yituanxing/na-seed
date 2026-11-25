@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed signed original HTTP ELF plus host-random physical ext4 oracle."""
 from importlib.util import module_from_spec, spec_from_file_location
-import csv
-import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -81,33 +79,10 @@ def physical_http_outputs(partition: Path, m191, first_dir: Path,
 
 
 def signed_inventory_sha(port: str, partition: Path, m191, home: Path) -> None:
-    """The ext4 bytes must match exact signed/ISA-pinned host APK census SHA."""
-    table = home / f'build/external/m223-candidate-inventory/{port}/candidates.tsv'
-    if table.is_symlink():
-        raise ValueError('[M223 SHA FAIL] symlinked original signed inventory')
-    with table.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.reader(stream, delimiter='\t'))
-    if not rows or rows[0] != ['package', 'elf_path', 'status', 'sha256']:
-        raise ValueError('[M223 SHA FAIL] missing signed original candidate SHA header')
-    manifest = home / 'scripts/m223-candidate-elfs.tsv'
-    expected = {(line.split('\t')[0], line.split('\t')[1])
-                for line in manifest.read_text().splitlines()[1:] if line.strip()}
-    actual = set()
-    hashes = set()
-    for record in rows[1:]:
-        if len(record) != 4:
-            raise ValueError('[M223 SHA FAIL] invalid signed inventory row')
-        package, path, status, sha = record
-        if status != 'NATIVE_ELF' or not re.fullmatch('[0-9a-f]{64}', sha) or \
-                (package, path) not in expected or (package, path) in actual:
-            raise ValueError('[M223 SHA FAIL] mismatched signed original ELF census')
-        binary = m191.debugfs_cat(partition, '/' + path)
-        if hashlib.sha256(binary).hexdigest() != sha:
-            raise ValueError('[M223 SHA FAIL] physical ext4 ELF differs from original signed APK ' + path)
-        actual.add((package, path))
-        hashes.add(sha)
-    if actual != expected or len(hashes) != 3:
-        raise ValueError('[M223 SHA FAIL] incomplete/duplicate original signed ELF inventory')
+    expected = owner.signed_manifest_pairs(home / 'scripts/m223-candidate-elfs.tsv', 3)
+    census = home / f'build/external/m223-candidate-inventory/{port}/candidates.tsv'
+    owner.verify_signed_census(census, expected, 3,
+        lambda path: m191.debugfs_cat(partition, path), label='M223')
 
 
 def verify(port: str, signed_root: Path, disk: Path,

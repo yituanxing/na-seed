@@ -10,10 +10,7 @@ Offline physical ext4 fsck and nonce readback run as a separate postflight.
 import importlib.util
 import os
 from pathlib import Path
-import signal
-import subprocess
 import sys
-import time
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("m255_m257", HERE / "m255-debian-uart.py")
@@ -82,68 +79,32 @@ def run(port: str, runner: str, serial: Path, runner_log: Path,
         fifo: Path, deadline: int) -> dict:
     if port not in ("amd64", "arm64", "riscv64"):
         raise ValueError("M257 unreviewed native ISA")
-    fifo.parent.mkdir(parents=True, exist_ok=True)
-    if fifo.exists() or serial.exists():
-        raise RuntimeError("stale M257 UART stream; no replay as native evidence")
-    os.mkfifo(fifo, 0o600)
-    hold = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-    runner_log.parent.mkdir(parents=True, exist_ok=True)
-    proc = None
-    seen = bytearray()
-    offset = 0
-    try:
-        with runner_log.open("wb") as log:
-            proc = subprocess.Popen(["sh", runner], stdout=log,
-                                    stderr=subprocess.STDOUT,
-                                    start_new_session=True)
-            end = time.monotonic() + deadline
-            while time.monotonic() < end:
-                if serial.is_file():
-                    with serial.open("rb") as source:
-                        source.seek(offset)
-                        chunk = source.read()
-                    seen.extend(chunk)
-                    offset += len(chunk)
-                if (b"[FAIL]" in seen or b"[M257 INITCTL FAIL]" in seen or
-                        b"[M257 SHUTDOWN FAIL]" in seen or
-                        b"[M257 HALT FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen):
-                    raise RuntimeError("real guest reported initctl/shutdown failure")
-                code = proc.poll()
-                if code is not None:
-                    if code:
-                        raise RuntimeError(f"QEMU native wrapper failed or timed out (rc={code})")
-                    result = inspect(bytes(seen), port)
-                    print(f"[M257 ORIGINAL DEBIAN SYSVINIT NATURAL QEMU POWER_OFF VERIFIED] "
-                          f"{port}: signed telinit 0 -> original halt -> "
-                          f"real PID1 quiesce -> clean ext4 umount -> autonomous exit; "
-                          f"first PID {result['first_pid']}, "
-                          f"respawn PID {result['respawn_pid']}; "
-                          "physical disk postflight STILL REQUIRED", flush=True)
-                    return result
-                time.sleep(.10)
-            raise TimeoutError(f"M257 natural guest shutdown not observed in {deadline}s")
-    except Exception:
-        print("[M257 ORIGINAL DEBIAN SHUTDOWN FAIL] real UART tail:\n" +
-              bytes(seen).decode(errors="replace")[-13000:], file=sys.stderr)
-        raise
-    finally:
-        # Cleanup happens only after a failure, never to turn a UART marker
-        # into a fake natural poweroff. A success requires proc.poll()==0.
-        if proc is not None and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-        os.close(hold)
-        fifo.unlink()
-        if seen:
-            serial.with_name(serial.name.removesuffix(".serial.log") + ".clean.log").write_bytes(
-                bytes(seen).replace(b"\r", b""))
+
+    def fatal(seen):
+        if (b"[FAIL]" in seen or b"[M257 INITCTL FAIL]" in seen or
+                b"[M257 SHUTDOWN FAIL]" in seen or
+                b"[M257 HALT FAIL]" in seen or b"[M256 MOUNT FAIL]" in seen):
+            raise RuntimeError("real guest reported initctl/shutdown failure")
+
+    def exited(code, seen):
+        if code:
+            raise RuntimeError(f"QEMU native wrapper failed or timed out (rc={code})")
+        result = inspect(bytes(seen), port)
+        print(f"[M257 ORIGINAL DEBIAN SYSVINIT NATURAL QEMU POWER_OFF VERIFIED] "
+              f"{port}: signed telinit 0 -> original halt -> "
+              f"real PID1 quiesce -> clean ext4 umount -> autonomous exit; "
+              f"first PID {result['first_pid']}, "
+              f"respawn PID {result['respawn_pid']}; "
+              "physical disk postflight STILL REQUIRED", flush=True)
+        return result
+
+    # No completion on a UART marker. Only a natural exit with code zero
+    # reaches the shutdown oracle above; the host cleanup is failure-only.
+    return m255.run_lifecycle(port, runner, serial, runner_log, fifo, deadline,
+                              strict_stale=True, stale_error="stale M257 UART stream; no replay as native evidence",
+                              fatal=fatal, complete=None, exited=exited,
+                              timeout_error=f"M257 natural guest shutdown not observed in {deadline}s",
+                              failure_banner="[M257 ORIGINAL DEBIAN SHUTDOWN FAIL]", tail_limit=13000)
 
 
 def main() -> None:

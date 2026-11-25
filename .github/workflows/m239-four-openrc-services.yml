@@ -7,7 +7,7 @@ on:
       - '.github/workflows/m239-four-openrc-services.yml'
       - 'tests/m239-alpine-multiservice-workload.sh'
       - 'scripts/m239-*'
-      - 'scripts/ci-m239-toolchain.sh'
+      - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
       - 'scripts/qemu-hostfwd-extra.sh'
       - 'scripts/acceptance/**'
       - 'scripts/test-qemu-extra-hostfwd.py'
@@ -67,7 +67,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
       - name: Prepare real native QEMU and official signed Alpine package tools
         timeout-minutes: 20
-        run: sh scripts/ci-m239-toolchain.sh amd64
+        run: PATH=/usr/sbin:/sbin:$PATH sh scripts/ci-install-signed-alpine-qemu-deps.sh amd64 --cohort-tools '[M239 INFRA FAIL] Docker needed for authentic Alpine signed APK media'
       - name: Restore previously verified multi-ISA Limine seed from CI cache
         id: limine-cache
         uses: actions/cache/restore@v4
@@ -218,7 +218,7 @@ jobs:
           python3 scripts/check-architecture-boundaries.py
       - name: Prepare real native QEMU and official signed Alpine package tools
         timeout-minutes: 20
-        run: sh scripts/ci-m239-toolchain.sh '${{ matrix.port }}'
+        run: PATH=/usr/sbin:/sbin:$PATH sh scripts/ci-install-signed-alpine-qemu-deps.sh '${{ matrix.port }}' --cohort-tools '[M239 INFRA FAIL] Docker needed for authentic Alpine signed APK media'
       - name: Two real QEMU boots, simultaneous HTTP DNS MQTT cache and three host protocols
         timeout-minutes: 95
         env:

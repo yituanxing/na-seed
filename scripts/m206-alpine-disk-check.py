@@ -38,13 +38,12 @@ def load(name: str, alias: str):
     return module
 
 
-def manifest(path: Path = CANDIDATES, expected_count: int = 20) -> tuple[list[str], list[str]]:
+def manifest_rows(path: Path, expected_count: int) -> list[tuple[str, str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         records = csv.reader(stream, delimiter="\t")
         if next(records, None) != HEADER:
             raise ValueError("[M206 HOST FAIL] incorrect exact candidate header")
-        package_names: list[str] = []
-        binary_paths: list[str] = []
+        pairs: list[tuple[str, str]] = []
         for line in records:
             if not line or line[0].startswith("#"):
                 continue
@@ -58,11 +57,55 @@ def manifest(path: Path = CANDIDATES, expected_count: int = 20) -> tuple[list[st
                     ".." in posix.parts or posix.is_absolute() or
                     posix.as_posix() != elf or any(c.isspace() for c in elf)):
                 raise ValueError("[M206 HOST FAIL] malformed candidate path")
-            package_names.append(package)
-            binary_paths.append("/" + elf)
-    if len(binary_paths) != expected_count or len(set(binary_paths)) != expected_count:
+            pairs.append((package, elf))
+    if len(pairs) != expected_count or len({elf for _, elf in pairs}) != expected_count:
         raise ValueError(f"[M206 HOST FAIL] expected {expected_count} distinct original ELF paths")
-    return sorted(set(package_names)), binary_paths
+    return pairs
+
+
+def manifest(path: Path = CANDIDATES, expected_count: int = 20) -> tuple[list[str], list[str]]:
+    pairs = manifest_rows(path, expected_count)
+    return sorted({package for package, _ in pairs}), ["/" + elf for _, elf in pairs]
+
+
+def verify_signed_census(inventory: Path, expected: set[tuple[str, str]],
+                         count: int, read, *, label: str) -> dict[str, str]:
+    """Match exact signed APK census against independently read ext4 bytes.
+
+    Callers retain their own manifest, native ISA, staging and functional
+    evidence policies. No row, path, package or digest may be counted twice.
+    """
+    fail = f"[{label} SIGNED SHA FAIL] "
+    if inventory.is_symlink():
+        raise ValueError(fail + "symlinked signed APK census")
+    with inventory.open(newline="", encoding="utf-8") as stream:
+        rows = csv.reader(stream, delimiter="\t")
+        if next(rows, None) != ["package", "elf_path", "status", "sha256"]:
+            raise ValueError(fail + "invalid signed APK census header")
+        if len(expected) != count or len({path for _, path in expected}) != count:
+            raise ValueError(fail + "invalid distinct expected native ELF count")
+        seen = set()
+        fingerprints: dict[str, str] = {}
+        for row in rows:
+            if len(row) != 4:
+                raise ValueError(fail + "malformed census row")
+            package, path, status, sha = row
+            key = (package, path)
+            if (key not in expected or key in seen or status != "NATIVE_ELF" or
+                    not re.fullmatch(r"[0-9a-f]{64}", sha)):
+                raise ValueError(fail + "duplicate, foreign or invalid native ELF: " + path)
+            if hashlib.sha256(read("/" + path)).hexdigest() != sha:
+                raise ValueError(fail + "physical ext4 differs from signed APK: " + path)
+            seen.add(key)
+            fingerprints[path] = sha
+    if seen != expected or len(set(fingerprints.values())) != count:
+        raise ValueError(fail + "missing/duplicate original native SHA")
+    return fingerprints
+
+
+def signed_manifest_pairs(path: Path, count: int) -> set[tuple[str, str]]:
+    """Use the same strict candidate path/row contract as the disk oracle."""
+    return set(manifest_rows(path, count))
 
 
 def packages_in_world(path: Path = PACKAGES) -> list[str]:

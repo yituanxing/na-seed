@@ -448,38 +448,30 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
     # the M206 module contributes only new original-program semantic probes.
     sudo install -m 0644 tests/m205-software-workload.sh \
         "$overlay/root/m205-software-workload.sh"
+    # The cohort's source pair must be installed before either is checked.
+    stage_cohort_pair() {
+        sudo install -m 0644 "$1" "$2"
+        sudo install -m 0644 "$3" "$4"
+        if [ "$#" = 5 ]; then sudo test -s "$5"; fi
+        sudo test -s "$2"
+        sudo test -s "$4"
+    }
     if [ "$m238" = 1 ]; then
         cohort=m238
-        sudo install -m 0644 tests/m238-software-workload.sh \
-            "$overlay/root/m238-software-workload.sh"
-        sudo install -m 0644 scripts/m238-candidate-elfs.tsv \
-            "$overlay/root/m238-cohort.tsv"
-        sudo test -s "$overlay/root/m238-software-workload.sh"
-        sudo test -s "$overlay/root/m238-cohort.tsv"
+        stage_cohort_pair tests/m238-software-workload.sh "$overlay/root/m238-software-workload.sh" \
+            scripts/m238-candidate-elfs.tsv "$overlay/root/m238-cohort.tsv"
     elif [ "$m237" = 1 ]; then
         cohort=m237
-        sudo install -m 0644 tests/m237-software-workload.sh \
-            "$overlay/root/m237-software-workload.sh"
-        sudo install -m 0644 scripts/m237-candidate-elfs.tsv \
-            "$overlay/root/m237-cohort.tsv"
-        sudo test -s "$overlay/root/m237-software-workload.sh"
-        sudo test -s "$overlay/root/m237-cohort.tsv"
+        stage_cohort_pair tests/m237-software-workload.sh "$overlay/root/m237-software-workload.sh" \
+            scripts/m237-candidate-elfs.tsv "$overlay/root/m237-cohort.tsv"
     elif [ "$m236" = 1 ]; then
         cohort=m236
-        sudo install -m 0644 tests/m236-software-workload.sh \
-            "$overlay/root/m236-software-workload.sh"
-        sudo install -m 0644 scripts/m236-candidate-elfs.tsv \
-            "$overlay/root/m236-cohort.tsv"
-        sudo test -s "$overlay/root/m236-software-workload.sh"
-        sudo test -s "$overlay/root/m236-cohort.tsv"
+        stage_cohort_pair tests/m236-software-workload.sh "$overlay/root/m236-software-workload.sh" \
+            scripts/m236-candidate-elfs.tsv "$overlay/root/m236-cohort.tsv"
     elif [ "$m235" = 1 ]; then
     cohort=m235
-    sudo install -m 0644 tests/m235-software-workload.sh \
-        "$overlay/root/m235-software-workload.sh"
-    sudo install -m 0644 scripts/m235-candidate-elfs.tsv \
-        "$overlay/root/m235-cohort.tsv"
-    sudo test -s "$overlay/root/m235-software-workload.sh"
-    sudo test -s "$overlay/root/m235-cohort.tsv"
+    stage_cohort_pair tests/m235-software-workload.sh "$overlay/root/m235-software-workload.sh" \
+        scripts/m235-candidate-elfs.tsv "$overlay/root/m235-cohort.tsv"
     elif [ "$m226" = 1 ]; then
     cohort=m226
     sudo install -m 0644 tests/m226-restic-workload.sh \
@@ -506,34 +498,22 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
     sudo python3 scripts/m225-alpine-disk-check.py stage "$port" "$overlay"
     elif [ "$m224" = 1 ]; then
     cohort=m224
-    sudo install -m 0644 tests/m224-tcp-workload.sh \
-        "$overlay/root/m224-tcp-workload.sh"
-    sudo install -m 0644 scripts/m224-candidate-elfs.tsv \
-        "$overlay/root/m224-cohort.tsv"
-    sudo test -s "$overlay/root/m224-tcp-workload.sh"
-    sudo test -s "$overlay/root/m224-cohort.tsv"
+    stage_cohort_pair tests/m224-tcp-workload.sh "$overlay/root/m224-tcp-workload.sh" \
+        scripts/m224-candidate-elfs.tsv "$overlay/root/m224-cohort.tsv"
     # Signed original native candidates must not appear in the stage,
     # apart from a precisely verified genuine BusyBox alias (if observed).
     sudo python3 scripts/m224-alpine-disk-check.py stage "$port" "$overlay"
     elif [ "$m223" = 1 ]; then
     cohort=m223
-    sudo install -m 0644 tests/m223-http-workload.sh \
-        "$overlay/root/m223-http-workload.sh"
-    sudo install -m 0644 scripts/m223-candidate-elfs.tsv \
-        "$overlay/root/m223-cohort.tsv"
-    sudo test -s "$overlay/root/m223-http-workload.sh"
-    sudo test -s "$overlay/root/m223-cohort.tsv"
+    stage_cohort_pair tests/m223-http-workload.sh "$overlay/root/m223-http-workload.sh" \
+        scripts/m223-candidate-elfs.tsv "$overlay/root/m223-cohort.tsv"
     # Check only the observed signed stage, not an imagined BusyBox alias.
     # Any preinstalled native ELF or arbitrary symlink is a hard failure.
     sudo python3 scripts/m223-alpine-disk-check.py stage "$port" "$overlay"
     elif [ "$m222" = 1 ]; then
     cohort=m222
-    sudo install -m 0644 tests/m222-ssh-workload.sh \
-        "$overlay/root/m222-ssh-workload.sh"
-    sudo install -m 0644 scripts/m222-candidate-elfs.tsv \
-        "$overlay/root/m222-cohort.tsv"
-    sudo test -s "$overlay/root/m222-ssh-workload.sh"
-    sudo test -s "$overlay/root/m222-cohort.tsv"
+    stage_cohort_pair tests/m222-ssh-workload.sh "$overlay/root/m222-ssh-workload.sh" \
+        scripts/m222-candidate-elfs.tsv "$overlay/root/m222-cohort.tsv"
     m222_prepare_host first "$overlay"
     m222_prepare_host reopen "$overlay"
     cmp -s "$PWD/$work/m222-host-first/client_id_ed25519.pub" \
@@ -548,49 +528,29 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
     }
     elif [ "$m221" = 1 ]; then
     cohort=m221
-    sudo install -m 0644 tests/m221-dns-update-workload.sh \
-        "$overlay/root/m221-dns-update-workload.sh"
-    sudo install -m 0644 scripts/m221-candidate-elfs.tsv \
-        "$overlay/root/m221-cohort.tsv"
-    sudo test -s "$overlay/root/m205-software-workload.sh"
-    sudo test -s "$overlay/root/m221-dns-update-workload.sh"
-    sudo test -s "$overlay/root/m221-cohort.tsv"
+    stage_cohort_pair tests/m221-dns-update-workload.sh "$overlay/root/m221-dns-update-workload.sh" \
+        scripts/m221-candidate-elfs.tsv "$overlay/root/m221-cohort.tsv" \
+        "$overlay/root/m205-software-workload.sh"
     elif [ "$m220" = 1 ]; then
     cohort=m220
-    sudo install -m 0644 tests/m220-nping-workload.sh \
-        "$overlay/root/m220-nping-workload.sh"
-    sudo install -m 0644 scripts/m220-candidate-elfs.tsv \
-        "$overlay/root/m220-cohort.tsv"
-    sudo test -s "$overlay/root/m205-software-workload.sh"
-    sudo test -s "$overlay/root/m220-nping-workload.sh"
-    sudo test -s "$overlay/root/m220-cohort.tsv"
+    stage_cohort_pair tests/m220-nping-workload.sh "$overlay/root/m220-nping-workload.sh" \
+        scripts/m220-candidate-elfs.tsv "$overlay/root/m220-cohort.tsv" \
+        "$overlay/root/m205-software-workload.sh"
     elif [ "$m219" = 1 ]; then
     cohort=m219
-    sudo install -m 0644 tests/m219-utmpdump-workload.sh \
-        "$overlay/root/m219-utmpdump-workload.sh"
-    sudo install -m 0644 scripts/m219-candidate-elfs.tsv \
-        "$overlay/root/m219-cohort.tsv"
-    sudo test -s "$overlay/root/m205-software-workload.sh"
-    sudo test -s "$overlay/root/m219-utmpdump-workload.sh"
-    sudo test -s "$overlay/root/m219-cohort.tsv"
+    stage_cohort_pair tests/m219-utmpdump-workload.sh "$overlay/root/m219-utmpdump-workload.sh" \
+        scripts/m219-candidate-elfs.tsv "$overlay/root/m219-cohort.tsv" \
+        "$overlay/root/m205-software-workload.sh"
     elif [ "$m218" = 1 ]; then
     cohort=m218
-    sudo install -m 0644 tests/m218-ifstat-workload.sh \
-        "$overlay/root/m218-ifstat-workload.sh"
-    sudo install -m 0644 scripts/m218-candidate-elfs.tsv \
-        "$overlay/root/m218-cohort.tsv"
-    sudo test -s "$overlay/root/m205-software-workload.sh"
-    sudo test -s "$overlay/root/m218-ifstat-workload.sh"
-    sudo test -s "$overlay/root/m218-cohort.tsv"
+    stage_cohort_pair tests/m218-ifstat-workload.sh "$overlay/root/m218-ifstat-workload.sh" \
+        scripts/m218-candidate-elfs.tsv "$overlay/root/m218-cohort.tsv" \
+        "$overlay/root/m205-software-workload.sh"
     elif [ "$m215" = 1 ]; then
     cohort=m215
-    sudo install -m 0644 tests/m213-software-workload.sh \
-        "$overlay/root/m213-software-workload.sh"
-    sudo install -m 0644 scripts/m215-candidate-elfs.tsv \
-        "$overlay/root/m215-cohort.tsv"
-    sudo test -s "$overlay/root/m205-software-workload.sh"
-    sudo test -s "$overlay/root/m213-software-workload.sh"
-    sudo test -s "$overlay/root/m215-cohort.tsv"
+    stage_cohort_pair tests/m213-software-workload.sh "$overlay/root/m213-software-workload.sh" \
+        scripts/m215-candidate-elfs.tsv "$overlay/root/m215-cohort.tsv" \
+        "$overlay/root/m205-software-workload.sh"
     elif [ "$m205" = 1 ]; then
     cohort=m205
     sudo install -m 0644 scripts/m205-alpine-cohort.tsv \
@@ -808,79 +768,34 @@ export BUSYBOX_PARITY_BINARY="$busybox"
 export BUSYBOX_PARITY_CASE=m197-batch BUSYBOX_PARITY_EXPECTED_COUNT=1
 export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
 export NAS_ACCEPTANCE_QEMU_RAM=1536M
-export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020}
-if [ "$m204" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_PUBLIC_QEMU_TIMEOUT:-2400}
-fi
-if [ "$m205" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m235" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M235_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m236" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M236_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m237" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M237_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m238" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M238_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m206" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_PUBLIC_QEMU_TIMEOUT:-4500}
-fi
-if [ "$m215" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m218" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m219" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m220" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m221" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m222" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m223" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m224" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_PUBLIC_QEMU_TIMEOUT:-2500}
-fi
-if [ "$m225" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M225_PUBLIC_QEMU_TIMEOUT:-3200}
-fi
-if [ "$m226" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M226_PUBLIC_QEMU_TIMEOUT:-3900}
-fi
-if [ "$m227" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_PUBLIC_QEMU_TIMEOUT:-1800}
-fi
-if [ "$m228" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_PUBLIC_QEMU_TIMEOUT:-2650}
-fi
-if [ "$m229" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_PUBLIC_QEMU_TIMEOUT:-2650}
-fi
-if [ "$m230" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=$ssh_first_qemu_timeout
-fi
-if [ "$m231" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_PUBLIC_QEMU_TIMEOUT:-2750}
-fi
-if [ "$m232" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_PUBLIC_QEMU_TIMEOUT:-2750}
-fi
-if [ "$m233" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M233_PUBLIC_QEMU_TIMEOUT:-2750}
-fi
+# Profile resolution is exclusive; M239 uses the M233 DNS budget, M240 the SSH budget.
+case "$nas_acceptance_profile" in
+    m204) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_PUBLIC_QEMU_TIMEOUT:-2400} ;;
+    m205) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m235) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M235_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m236) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M236_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m237) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M237_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m238) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M238_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m206) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_PUBLIC_QEMU_TIMEOUT:-4500} ;;
+    m215) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m218) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m219) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m220) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m221) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m222) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m223) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m224) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_PUBLIC_QEMU_TIMEOUT:-2500} ;;
+    m225) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M225_PUBLIC_QEMU_TIMEOUT:-3200} ;;
+    m226) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M226_PUBLIC_QEMU_TIMEOUT:-3900} ;;
+    m227) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_PUBLIC_QEMU_TIMEOUT:-1800} ;;
+    m228) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_PUBLIC_QEMU_TIMEOUT:-2650} ;;
+    m229) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_PUBLIC_QEMU_TIMEOUT:-2650} ;;
+    m230|m240) export NAS_APP_BATCH_QEMU_TIMEOUT=$ssh_first_qemu_timeout ;;
+    m231) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_PUBLIC_QEMU_TIMEOUT:-2750} ;;
+    m232) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_PUBLIC_QEMU_TIMEOUT:-2750} ;;
+    m233|m239) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M233_PUBLIC_QEMU_TIMEOUT:-2750} ;;
+    *) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_PUBLIC_QEMU_TIMEOUT:-1020} ;;
+esac
 if [ "$m198" = 1 ]; then
     export NAS_QEMU_INPUT_OPTIN=1 NAS_QEMU_VIRTIO_GPU=1 NAS_QEMU_RAMFB=0
     export NAS_ACCEPTANCE_QEMU_RAM=2048M
@@ -1788,97 +1703,27 @@ if [ "$m233" = 1 ]; then
         exit 1
     }
 fi
-if [ "$m205" = 1 ]; then
-    grep -Fq 'M205_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M205 FAIL] first new-ELF inventory did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m206" = 1 ]; then
-    grep -Fq 'M206_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M206 FAIL] first new-ELF inventory did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m235" = 1 ]; then
-    grep -Fq 'M235_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M235 FAIL] first 12-ELF batch incomplete' >&2
-        exit 1
-    }
-fi
-if [ "$m236" = 1 ]; then
-    grep -Fq 'M236_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M236 FAIL] first seven-ELF batch incomplete' >&2
-        exit 1
-    }
-fi
-if [ "$m237" = 1 ]; then
-    grep -Fq 'M237_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M237 FAIL] first 15-ELF batch incomplete' >&2
-        exit 1
-    }
-fi
-if [ "$m238" = 1 ]; then
-    grep -Fq 'M238_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M238 FAIL] first 15-ELF batch incomplete' >&2
-        exit 1
-    }
-fi
-if [ "$m215" = 1 ]; then
-    grep -Fq 'M215_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M215 FAIL] first five-ELF pilot ledger did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m218" = 1 ]; then
-    grep -Fq 'M218_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M218 FAIL] first original ifstat ledger did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m219" = 1 ]; then
-    grep -Fq 'M219_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M219 FAIL] first original utmpdump ledger did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m220" = 1 ]; then
-    grep -Fq 'M220_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M220 FAIL] first original Nping ledger did not complete' >&2
-        exit 1
-    }
-fi
-if [ "$m221" = 1 ]; then
-    grep -Fq 'M221_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M221 FAIL] first original nsupdate+host ledger incomplete' >&2
-        exit 1
-    }
-fi
-if [ "$m222" = 1 ]; then
-    grep -Fq 'M222_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M222 FAIL] first original SSH/SCP/SFTP ledger incomplete' >&2; exit 1;
-    }
-fi
-if [ "$m223" = 1 ]; then
-    grep -Fq 'M223_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M223 FAIL] first original HTTP client/server ledger incomplete' >&2; exit 1;
-    }
-fi
-if [ "$m224" = 1 ]; then
-    grep -Fq 'M224_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M224 FAIL] first original TCP client ledger incomplete' >&2; exit 1;
-    }
-fi
-if [ "$m225" = 1 ]; then
-    grep -Fq 'M225_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M225 FAIL] first original FTP upload/download ledger incomplete' >&2; exit 1;
-    }
-fi
-if [ "$m226" = 1 ]; then
-    grep -Fq 'M226_FIRST_DISCOVERY_COMPLETE' "$serial" || {
-        echo '[M226 FAIL] first native signed restic real REST repository incomplete' >&2; exit 1;
-    }
-fi
+require_first_discovery() {
+    grep -Fq "$1" "$serial" || { echo "$2" >&2; exit 1; }
+}
+case "$nas_acceptance_profile" in
+    m205) require_first_discovery 'M205_FIRST_DISCOVERY_COMPLETE' '[M205 FAIL] first new-ELF inventory did not complete' ;;
+    m206) require_first_discovery 'M206_FIRST_DISCOVERY_COMPLETE' '[M206 FAIL] first new-ELF inventory did not complete' ;;
+    m235) require_first_discovery 'M235_FIRST_DISCOVERY_COMPLETE' '[M235 FAIL] first 12-ELF batch incomplete' ;;
+    m236) require_first_discovery 'M236_FIRST_DISCOVERY_COMPLETE' '[M236 FAIL] first seven-ELF batch incomplete' ;;
+    m237) require_first_discovery 'M237_FIRST_DISCOVERY_COMPLETE' '[M237 FAIL] first 15-ELF batch incomplete' ;;
+    m238) require_first_discovery 'M238_FIRST_DISCOVERY_COMPLETE' '[M238 FAIL] first 15-ELF batch incomplete' ;;
+    m215) require_first_discovery 'M215_FIRST_DISCOVERY_COMPLETE' '[M215 FAIL] first five-ELF pilot ledger did not complete' ;;
+    m218) require_first_discovery 'M218_FIRST_DISCOVERY_COMPLETE' '[M218 FAIL] first original ifstat ledger did not complete' ;;
+    m219) require_first_discovery 'M219_FIRST_DISCOVERY_COMPLETE' '[M219 FAIL] first original utmpdump ledger did not complete' ;;
+    m220) require_first_discovery 'M220_FIRST_DISCOVERY_COMPLETE' '[M220 FAIL] first original Nping ledger did not complete' ;;
+    m221) require_first_discovery 'M221_FIRST_DISCOVERY_COMPLETE' '[M221 FAIL] first original nsupdate+host ledger incomplete' ;;
+    m222) require_first_discovery 'M222_FIRST_DISCOVERY_COMPLETE' '[M222 FAIL] first original SSH/SCP/SFTP ledger incomplete' ;;
+    m223) require_first_discovery 'M223_FIRST_DISCOVERY_COMPLETE' '[M223 FAIL] first original HTTP client/server ledger incomplete' ;;
+    m224) require_first_discovery 'M224_FIRST_DISCOVERY_COMPLETE' '[M224 FAIL] first original TCP client ledger incomplete' ;;
+    m225) require_first_discovery 'M225_FIRST_DISCOVERY_COMPLETE' '[M225 FAIL] first original FTP upload/download ledger incomplete' ;;
+    m226) require_first_discovery 'M226_FIRST_DISCOVERY_COMPLETE' '[M226 FAIL] first native signed restic real REST repository incomplete' ;;
+esac
 echo "[M197 ALPINE PUBLIC SOFTWARE LIVE PASS] $port official signed "\
      'Bash Lua SQLite Git from public HTTPS, live DHCP resolver, ' \
      'independent PCAP and four real applications on ext4'
@@ -2406,160 +2251,75 @@ if [ "$m226" = 1 ]; then
     }
     m226_start_host reopen
 fi
-if [ "$m198" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv
-else
-    if [ "$m226" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m226-alpine-reopen-cases.tsv
-    elif [ "$m225" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m225-alpine-reopen-cases.tsv
-    elif [ "$m224" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m224-alpine-reopen-cases.tsv
-    elif [ "$m223" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m223-alpine-reopen-cases.tsv
-    elif [ "$m222" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m222-alpine-reopen-cases.tsv
-    elif [ "$m221" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m221-alpine-reopen-cases.tsv
-    elif [ "$m220" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m220-alpine-reopen-cases.tsv
-    elif [ "$m219" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m219-alpine-reopen-cases.tsv
-    elif [ "$m218" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m218-alpine-reopen-cases.tsv
-    elif [ "$m215" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m215-alpine-reopen-cases.tsv
-    elif [ "$m238" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m238-alpine-reopen-cases.tsv
-    elif [ "$m237" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m237-alpine-reopen-cases.tsv
-    elif [ "$m236" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m236-alpine-reopen-cases.tsv
-    elif [ "$m235" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m235-alpine-reopen-cases.tsv
-    elif [ "$m206" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m206-alpine-reopen-cases.tsv
-    elif [ "$m205" = 1 ]; then
-        export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv
-    elif [ "$m204" = 1 ]; then
+case "$nas_acceptance_profile" in
+    m198) export BUSYBOX_PARITY_MANIFEST=scripts/m198-alpine-reopen-cases.tsv ;;
+    m226) export BUSYBOX_PARITY_MANIFEST=scripts/m226-alpine-reopen-cases.tsv ;;
+    m225) export BUSYBOX_PARITY_MANIFEST=scripts/m225-alpine-reopen-cases.tsv ;;
+    m224) export BUSYBOX_PARITY_MANIFEST=scripts/m224-alpine-reopen-cases.tsv ;;
+    m223) export BUSYBOX_PARITY_MANIFEST=scripts/m223-alpine-reopen-cases.tsv ;;
+    m222) export BUSYBOX_PARITY_MANIFEST=scripts/m222-alpine-reopen-cases.tsv ;;
+    m221) export BUSYBOX_PARITY_MANIFEST=scripts/m221-alpine-reopen-cases.tsv ;;
+    m220) export BUSYBOX_PARITY_MANIFEST=scripts/m220-alpine-reopen-cases.tsv ;;
+    m219) export BUSYBOX_PARITY_MANIFEST=scripts/m219-alpine-reopen-cases.tsv ;;
+    m218) export BUSYBOX_PARITY_MANIFEST=scripts/m218-alpine-reopen-cases.tsv ;;
+    m215) export BUSYBOX_PARITY_MANIFEST=scripts/m215-alpine-reopen-cases.tsv ;;
+    m238) export BUSYBOX_PARITY_MANIFEST=scripts/m238-alpine-reopen-cases.tsv ;;
+    m237) export BUSYBOX_PARITY_MANIFEST=scripts/m237-alpine-reopen-cases.tsv ;;
+    m236) export BUSYBOX_PARITY_MANIFEST=scripts/m236-alpine-reopen-cases.tsv ;;
+    m235) export BUSYBOX_PARITY_MANIFEST=scripts/m235-alpine-reopen-cases.tsv ;;
+    m206) export BUSYBOX_PARITY_MANIFEST=scripts/m206-alpine-reopen-cases.tsv ;;
+    m205) export BUSYBOX_PARITY_MANIFEST=scripts/m205-alpine-reopen-cases.tsv ;;
+    m204)
         if [ "$replay" = 1 ]; then
             export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-replay-cases.tsv
         else
             export BUSYBOX_PARITY_MANIFEST=scripts/m204-alpine-reopen-cases.tsv
-        fi
-    else
-        export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv
-    fi
-fi
-export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_REOPEN_SECONDS:-240}
-if [ "$m204" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_REOPEN_SECONDS:-540}
-fi
-if [ "$m205" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_REOPEN_SECONDS:-900}
-fi
-if [ "$m235" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M235_REOPEN_SECONDS:-1200}
-fi
-if [ "$m236" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M236_REOPEN_SECONDS:-1200}
-fi
-if [ "$m237" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M237_REOPEN_SECONDS:-1200}
-fi
-if [ "$m238" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M238_REOPEN_SECONDS:-1200}
-fi
-if [ "$m206" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_REOPEN_SECONDS:-900}
-fi
-if [ "$m215" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_REOPEN_SECONDS:-600}
-fi
-if [ "$m218" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_REOPEN_SECONDS:-600}
-fi
-if [ "$m219" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_REOPEN_SECONDS:-600}
-fi
-if [ "$m220" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_REOPEN_SECONDS:-600}
-fi
-if [ "$m221" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_REOPEN_SECONDS:-700}
-fi
-if [ "$m222" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_REOPEN_SECONDS:-900}
-fi
-if [ "$m223" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_REOPEN_SECONDS:-900}
-fi
-if [ "$m224" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_REOPEN_SECONDS:-900}
-fi
-if [ "$m225" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M225_REOPEN_SECONDS:-1100}
-fi
-if [ "$m226" = 1 ]; then
-    export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M226_REOPEN_SECONDS:-1500}
-fi
-if [ "$m224" = 1 ]; then
-    # Both native QEMU runners reuse the m197-batch serial basename. The
-    # first guest UART is already retained in $work; discard only the old
-    # runner-generated copies so a failed second boot cannot upload a stale
-    # first-boot log under a reopen name.
-    rm -f "$PWD/$logs/m197-batch.serial.log" "$PWD/$logs/m197-batch.clean.log"
-fi
-if [ "$m225" = 1 ]; then
-    # M225's second native QEMU uses the same runner basename; never upload
-    # stale first-boot UART when the independent reopen crashes or times out.
-    rm -f "$PWD/$logs/m197-batch.serial.log" "$PWD/$logs/m197-batch.clean.log"
-fi
-if [ "$m226" = 1 ]; then
-    # No stale first-boot UART copies may masquerade as second native QEMU.
-    rm -f "$PWD/$logs/m197-batch.serial.log" "$PWD/$logs/m197-batch.clean.log"
-fi
-m224_retain_reopen_serial() {
-    [ "$m224" = 1 ] || return 0
-    # The existing M224 workflow uploads build/acceptance/**/m197-batch*.log.
-    # Preserve BOTH the untouched UART and the normalized strict-report input
-    # on success or failure without changing the original validation path.
-    evidence="$PWD/build/acceptance/m224-reopen-$port"
+        fi ;;
+    *) export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-reopen-cases.tsv ;;
+esac
+case "$nas_acceptance_profile" in
+    m204) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M204_REOPEN_SECONDS:-540} ;;
+    m205) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M205_REOPEN_SECONDS:-900} ;;
+    m235) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M235_REOPEN_SECONDS:-1200} ;;
+    m236) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M236_REOPEN_SECONDS:-1200} ;;
+    m237) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M237_REOPEN_SECONDS:-1200} ;;
+    m238) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M238_REOPEN_SECONDS:-1200} ;;
+    m206) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M206_REOPEN_SECONDS:-900} ;;
+    m215) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M215_REOPEN_SECONDS:-600} ;;
+    m218) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M218_REOPEN_SECONDS:-600} ;;
+    m219) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M219_REOPEN_SECONDS:-600} ;;
+    m220) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M220_REOPEN_SECONDS:-600} ;;
+    m221) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M221_REOPEN_SECONDS:-700} ;;
+    m222) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M222_REOPEN_SECONDS:-900} ;;
+    m223) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M223_REOPEN_SECONDS:-900} ;;
+    m224) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M224_REOPEN_SECONDS:-900} ;;
+    m225) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M225_REOPEN_SECONDS:-1100} ;;
+    m226) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M226_REOPEN_SECONDS:-1500} ;;
+    *) export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M197_REOPEN_SECONDS:-240} ;;
+esac
+# The first boot is already retained. Never publish its UART as reopen proof.
+case "$nas_acceptance_profile" in
+    m224|m225|m226) rm -f "$PWD/$logs/m197-batch.serial.log" "$PWD/$logs/m197-batch.clean.log" ;;
+esac
+retain_reopen_serial() {
+    case "$nas_acceptance_profile" in
+        m224|m225|m226) ;;
+        *) return 0 ;;
+    esac
+    evidence="$PWD/build/acceptance/$nas_acceptance_profile-reopen-$port"
     mkdir -p "$evidence"
-    [ ! -s "$PWD/$logs/m197-batch.serial.log" ] ||
-        cp "$PWD/$logs/m197-batch.serial.log" "$evidence/m197-batch.serial.log"
-    [ ! -s "$PWD/$logs/m197-batch.clean.log" ] ||
-        cp "$PWD/$logs/m197-batch.clean.log" "$evidence/m197-batch.clean.log"
-}
-m225_retain_reopen_serial() {
-    [ "$m225" = 1 ] || return 0
-    evidence="$PWD/build/acceptance/m225-reopen-$port"
-    mkdir -p "$evidence"
-    [ ! -s "$PWD/$logs/m197-batch.serial.log" ] ||
-        cp "$PWD/$logs/m197-batch.serial.log" "$evidence/m197-batch.serial.log"
-    [ ! -s "$PWD/$logs/m197-batch.clean.log" ] ||
-        cp "$PWD/$logs/m197-batch.clean.log" "$evidence/m197-batch.clean.log"
-}
-m226_retain_reopen_serial() {
-    [ "$m226" = 1 ] || return 0
-    evidence="$PWD/build/acceptance/m226-reopen-$port"
-    mkdir -p "$evidence"
-    [ ! -s "$PWD/$logs/m197-batch.serial.log" ] ||
-        cp "$PWD/$logs/m197-batch.serial.log" "$evidence/m197-batch.serial.log"
-    [ ! -s "$PWD/$logs/m197-batch.clean.log" ] ||
-        cp "$PWD/$logs/m197-batch.clean.log" "$evidence/m197-batch.clean.log"
+    for uart_log in m197-batch.serial.log m197-batch.clean.log; do
+        [ ! -s "$PWD/$logs/$uart_log" ] ||
+            cp "$PWD/$logs/$uart_log" "$evidence/$uart_log"
+    done
 }
 if ! sh "$runner" > "$PWD/$work/m197-reopen-runner.log" 2>&1; then
-    m224_retain_reopen_serial
-    m225_retain_reopen_serial
-    m226_retain_reopen_serial
+    retain_reopen_serial
     echo "[M197 ALPINE REOPEN FAIL] $port second native QEMU" >&2
     tail -120 "$PWD/$work/m197-reopen-runner.log" >&2
     exit 1
 fi
-m224_retain_reopen_serial
-m225_retain_reopen_serial
-m226_retain_reopen_serial
+retain_reopen_serial
 if [ "$m220" = 1 ]; then
     m220_stop_host
     python3 scripts/m220-nping-wire-check.py reopen \
@@ -2703,146 +2463,42 @@ if [ "$m206" = 1 ]; then
         *) echo '[M206 FAIL] invalid strict mode' >&2; exit 2 ;;
     esac
 fi
-if [ "$m235" = 1 ]; then
-    grep -Fq 'M235_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M235 FAIL] second native QEMU omitted the 12 original ELF reopens' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m235 \
-        scripts/m235-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m235-compat-report.json" --require-all
-fi
-if [ "$m236" = 1 ]; then
-    grep -Fq 'M236_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M236 FAIL] second native QEMU omitted seven original ELF reopens' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m236 \
-        scripts/m236-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m236-compat-report.json" --require-all
-fi
-if [ "$m237" = 1 ]; then
-    grep -Fq 'M237_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M237 FAIL] second native QEMU omitted fifteen original ELF reopens' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m237 \
-        scripts/m237-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m237-compat-report.json" --require-all
-fi
-if [ "$m238" = 1 ]; then
-    grep -Fq 'M238_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M238 FAIL] second native QEMU omitted fifteen original ELF reopens' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m238 \
-        scripts/m238-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m238-compat-report.json" --require-all
-fi
-if [ "$m215" = 1 ]; then
-    grep -Fq 'M215_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M215 FAIL] second QEMU did not re-execute five original ELFs' >&2
-        exit 1
-    }
-    # This strict pilot covers only five executable M213 probes. A blocked
-    # sixth case or false-positive timeouts cannot be accepted as PASS.
-    python3 scripts/alpine-compat-report.py m215 \
-        scripts/m215-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m215-compat-report.json" --require-all
-fi
-if [ "$m218" = 1 ]; then
-    grep -Fq 'M218_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M218 FAIL] second QEMU did not rerun original ifstat' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m218 \
-        scripts/m218-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m218-compat-report.json" --require-all
-fi
-if [ "$m219" = 1 ]; then
-    grep -Fq 'M219_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M219 FAIL] second QEMU did not rerun original utmpdump' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m219 \
-        scripts/m219-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m219-compat-report.json" --require-all
-fi
-if [ "$m220" = 1 ]; then
-    grep -Fq 'M220_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M220 FAIL] second QEMU did not rerun original Nping' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m220 \
-        scripts/m220-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m220-compat-report.json" --require-all
-fi
-if [ "$m221" = 1 ]; then
-    grep -Fq 'M221_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M221 FAIL] second QEMU did not rerun signed nsupdate and host' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m221 \
-        scripts/m221-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m221-compat-report.json" --require-all
-fi
-if [ "$m222" = 1 ]; then
-    grep -Fq 'M222_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M222 FAIL] second original SSH/SCP/SFTP ledger incomplete' >&2; exit 1;
-    }
-    python3 scripts/alpine-compat-report.py m222 \
-        scripts/m222-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m222-compat-report.json" --require-all
-fi
-if [ "$m223" = 1 ]; then
-    grep -Fq 'M223_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M223 FAIL] second original HTTP client/server ledger incomplete' >&2; exit 1;
-    }
-    python3 scripts/alpine-compat-report.py m223 \
-        scripts/m223-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m223-compat-report.json" --require-all
-fi
-if [ "$m224" = 1 ]; then
-    grep -Fq 'M224_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M224 FAIL] second original TCP nmap/iperf3/ncat ledger incomplete' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m224 \
-        scripts/m224-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m224-compat-report.json" --require-all
-fi
-if [ "$m225" = 1 ]; then
-    grep -Fq 'M225_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M225 FAIL] second original signed lftp/rclone ledger incomplete' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m225 \
-        scripts/m225-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m225-compat-report.json" --require-all
-fi
-if [ "$m226" = 1 ]; then
-    grep -Fq 'M226_REOPEN_DISCOVERY_COMPLETE' "$reopen" || {
-        echo '[M226 FAIL] second native original restic remote repository incomplete' >&2
-        exit 1
-    }
-    python3 scripts/alpine-compat-report.py m226 \
-        scripts/m226-candidate-elfs.tsv \
-        "$PWD/$work/m197-live.serial.log" "$reopen" \
-        "$PWD/$work/m226-compat-report.json" --require-all
-fi
+# The strict pilots require both the real reopen marker and complete ledger.
+strict_reopen_report() {
+    grep -Fq "$1" "$reopen" || { echo "$2" >&2; exit 1; }
+    shift 2
+    python3 "$1" "$2" "$3" "$PWD/$work/m197-live.serial.log" "$reopen" "$4" --require-all
+}
+case "$nas_acceptance_profile" in
+    m235) strict_reopen_report 'M235_REOPEN_DISCOVERY_COMPLETE' '[M235 FAIL] second native QEMU omitted the 12 original ELF reopens' \
+        scripts/alpine-compat-report.py m235 scripts/m235-candidate-elfs.tsv "$PWD/$work/m235-compat-report.json" ;;
+    m236) strict_reopen_report 'M236_REOPEN_DISCOVERY_COMPLETE' '[M236 FAIL] second native QEMU omitted seven original ELF reopens' \
+        scripts/alpine-compat-report.py m236 scripts/m236-candidate-elfs.tsv "$PWD/$work/m236-compat-report.json" ;;
+    m237) strict_reopen_report 'M237_REOPEN_DISCOVERY_COMPLETE' '[M237 FAIL] second native QEMU omitted fifteen original ELF reopens' \
+        scripts/alpine-compat-report.py m237 scripts/m237-candidate-elfs.tsv "$PWD/$work/m237-compat-report.json" ;;
+    m238) strict_reopen_report 'M238_REOPEN_DISCOVERY_COMPLETE' '[M238 FAIL] second native QEMU omitted fifteen original ELF reopens' \
+        scripts/alpine-compat-report.py m238 scripts/m238-candidate-elfs.tsv "$PWD/$work/m238-compat-report.json" ;;
+    m215) strict_reopen_report 'M215_REOPEN_DISCOVERY_COMPLETE' '[M215 FAIL] second QEMU did not re-execute five original ELFs' \
+        scripts/alpine-compat-report.py m215 scripts/m215-candidate-elfs.tsv "$PWD/$work/m215-compat-report.json" ;;
+    m218) strict_reopen_report 'M218_REOPEN_DISCOVERY_COMPLETE' '[M218 FAIL] second QEMU did not rerun original ifstat' \
+        scripts/alpine-compat-report.py m218 scripts/m218-candidate-elfs.tsv "$PWD/$work/m218-compat-report.json" ;;
+    m219) strict_reopen_report 'M219_REOPEN_DISCOVERY_COMPLETE' '[M219 FAIL] second QEMU did not rerun original utmpdump' \
+        scripts/alpine-compat-report.py m219 scripts/m219-candidate-elfs.tsv "$PWD/$work/m219-compat-report.json" ;;
+    m220) strict_reopen_report 'M220_REOPEN_DISCOVERY_COMPLETE' '[M220 FAIL] second QEMU did not rerun original Nping' \
+        scripts/alpine-compat-report.py m220 scripts/m220-candidate-elfs.tsv "$PWD/$work/m220-compat-report.json" ;;
+    m221) strict_reopen_report 'M221_REOPEN_DISCOVERY_COMPLETE' '[M221 FAIL] second QEMU did not rerun signed nsupdate and host' \
+        scripts/alpine-compat-report.py m221 scripts/m221-candidate-elfs.tsv "$PWD/$work/m221-compat-report.json" ;;
+    m222) strict_reopen_report 'M222_REOPEN_DISCOVERY_COMPLETE' '[M222 FAIL] second original SSH/SCP/SFTP ledger incomplete' \
+        scripts/alpine-compat-report.py m222 scripts/m222-candidate-elfs.tsv "$PWD/$work/m222-compat-report.json" ;;
+    m223) strict_reopen_report 'M223_REOPEN_DISCOVERY_COMPLETE' '[M223 FAIL] second original HTTP client/server ledger incomplete' \
+        scripts/alpine-compat-report.py m223 scripts/m223-candidate-elfs.tsv "$PWD/$work/m223-compat-report.json" ;;
+    m224) strict_reopen_report 'M224_REOPEN_DISCOVERY_COMPLETE' '[M224 FAIL] second original TCP nmap/iperf3/ncat ledger incomplete' \
+        scripts/alpine-compat-report.py m224 scripts/m224-candidate-elfs.tsv "$PWD/$work/m224-compat-report.json" ;;
+    m225) strict_reopen_report 'M225_REOPEN_DISCOVERY_COMPLETE' '[M225 FAIL] second original signed lftp/rclone ledger incomplete' \
+        scripts/alpine-compat-report.py m225 scripts/m225-candidate-elfs.tsv "$PWD/$work/m225-compat-report.json" ;;
+    m226) strict_reopen_report 'M226_REOPEN_DISCOVERY_COMPLETE' '[M226 FAIL] second native original restic remote repository incomplete' \
+        scripts/alpine-compat-report.py m226 scripts/m226-candidate-elfs.tsv "$PWD/$work/m226-compat-report.json" ;;
+esac
 if [ "$m198" = 1 ]; then
     grep -Fxq 'M198_GUI_REOPEN_PASS' "$reopen" || {
         echo '[M198 REOPEN FAIL] native editor did not persist' >&2; exit 1;

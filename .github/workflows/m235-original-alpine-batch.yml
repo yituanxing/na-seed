@@ -8,7 +8,9 @@ on:
       - 'scripts/m235-*'
       - 'scripts/alpine-first-uart.py'
       - 'scripts/alpine-compat-report.py'
-      - 'scripts/run-m235-ci.sh'
+      - 'scripts/m206-alpine-disk-check.py'
+      - 'scripts/acceptance/run-local-alpine-cohort.sh'
+      - 'scripts/ci-install-signed-alpine-qemu-deps.sh'
       - 'rootfs/alpine/packages-m235-candidates.txt'
       - 'tests/m235-software-workload.sh'
   workflow_dispatch:
@@ -36,7 +38,7 @@ jobs:
           NAS_M235_PUBLIC_SECONDS: '4400'
           NAS_M235_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M235_REOPEN_SECONDS: '1200'
-        run: sh scripts/run-m235-ci.sh amd64
+        run: sh scripts/acceptance/run-local-alpine-cohort.sh m235 --native amd64
       - name: Preserve real APK and first/reopen xh TCP+physical ext4 evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -78,7 +80,7 @@ jobs:
           NAS_M235_PUBLIC_SECONDS: '4400'
           NAS_M235_PUBLIC_QEMU_TIMEOUT: '4500'
           NAS_M235_REOPEN_SECONDS: '1200'
-        run: sh scripts/run-m235-ci.sh ${{ matrix.port }}
+        run: sh scripts/acceptance/run-local-alpine-cohort.sh m235 --native ${{ matrix.port }}
       - name: Preserve real APK and two-boot xh TCP+physical ext4 evidence
         if: always()
         uses: actions/upload-artifact@v4

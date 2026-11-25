@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """M226 physical ext4 + exact official signed APK SHA, restored remote bytes."""
-import csv
-import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-import re
 import sys
 import tempfile
 
@@ -33,18 +30,10 @@ def stage(isa, root):
 
 
 def signed_exact_sha(isa, partition, m191):
-    table = ROOT / f'build/external/m226-candidate-inventory/{isa}/candidates.tsv'
-    if table.is_symlink():
-        raise ValueError('[M226 SIGNED FAIL] inventory symlink')
-    with table.open(newline='', encoding='utf-8') as stream:
-        rows = list(csv.reader(stream, delimiter='\t'))
-    if (len(rows) != 2 or rows[0] != ['package', 'elf_path', 'status', 'sha256'] or
-            rows[1][0:3] != ['restic', 'usr/bin/restic'] + ['NATIVE_ELF'] or
-            len(rows[1]) != 4 or not re.fullmatch(r'[0-9a-f]{64}', rows[1][3])):
-        raise ValueError('[M226 SIGNED FAIL] no exact signed restic inventory identity')
-    actual = m191.debugfs_cat(partition, BINARY)
-    if hashlib.sha256(actual).hexdigest() != rows[1][3]:
-        raise ValueError('[M226 SIGNED FAIL] guest physical ELF not byte-identical with official APK')
+    expected = {('restic', 'usr/bin/restic')}
+    census = ROOT / f'build/external/m226-candidate-inventory/{isa}/candidates.tsv'
+    owner.verify_signed_census(census, expected, 1,
+        lambda path: m191.debugfs_cat(partition, path), label='M226')
 
 
 def verify(isa, root, disk, first, reopen):

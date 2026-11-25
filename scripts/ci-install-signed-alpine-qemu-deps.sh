@@ -10,10 +10,22 @@ case "${1-}" in
   --arm64-efi-fallback) arm64_efi_fallback=true; shift ;;
   --arm64-efi-legacy) arm64_efi_legacy=true; shift ;;
 esac
+cohort=false
+cohort_docker_error=
 cross=none
 case "${1-}" in
   --cross-c) cross=c; shift ;;
   --cross-cxx) cross=cxx; shift ;;
+  --cohort-tools)
+    # M235–M239 require the full signed-media/physical ext4 toolchain.
+    # Retain the existing libc archive gate and firmware alternatives.
+    cohort=true; arm64_efi_fallback=true; cross=cohort; shift
+    [ "$#" -le 1 ] || exit 2
+    cohort_docker_error=${1-}
+    set -- --explicit-tools 'cmake:cmake' 'g++:g++' 'clang:clang' 'ld.lld:lld' \
+      'readelf:binutils' 'cpio:cpio' 'mke2fs:e2fsprogs' 'debugfs:e2fsprogs' \
+      'e2fsck:e2fsprogs' 'xorriso:xorriso' 'mformat:mtools' 'sgdisk:gdisk' \
+      'curl:curl' 'python3:python3' 'openssl:openssl' ;;
 esac
 case "$port" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac
 sh scripts/ci-ubuntu-mirror.sh
@@ -37,10 +49,10 @@ case "$port" in
   riscv64)
     if [ "$cross" != none ]; then
       command -v riscv64-linux-gnu-gcc >/dev/null || missing="$missing gcc-riscv64-linux-gnu"
-      if [ "$cross" = cxx ]; then
+      if [ "$cross" != c ]; then
         command -v riscv64-linux-gnu-g++ >/dev/null || missing="$missing g++-riscv64-linux-gnu"
       fi
-      test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h && \
+      { "$cohort" || test -f /usr/riscv64-linux-gnu/include/bits/wordsize.h; } && \
         test -f /usr/riscv64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-riscv64-cross"
     fi
     command -v qemu-system-riscv64 >/dev/null || missing="$missing qemu-system-misc"
@@ -49,10 +61,10 @@ case "$port" in
   arm64)
     if [ "$cross" != none ]; then
       command -v aarch64-linux-gnu-gcc >/dev/null || missing="$missing gcc-aarch64-linux-gnu"
-      if [ "$cross" = cxx ]; then
+      if [ "$cross" != c ]; then
         command -v aarch64-linux-gnu-g++ >/dev/null || missing="$missing g++-aarch64-linux-gnu"
       fi
-      test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h && \
+      { "$cohort" || test -f /usr/aarch64-linux-gnu/include/bits/wordsize.h; } && \
         test -f /usr/aarch64-linux-gnu/lib/libc.a || missing="$missing libc6-dev-arm64-cross"
     fi
     command -v qemu-system-aarch64 >/dev/null || missing="$missing qemu-system-arm"
@@ -70,4 +82,12 @@ if [ -n "$missing" ]; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 \
     -o Acquire::http::Timeout=30 install -y --no-install-recommends $missing
 fi
-command -v docker
+if "$cohort"; then
+  if [ -n "$cohort_docker_error" ]; then
+    command -v docker >/dev/null || { echo "$cohort_docker_error" >&2; exit 2; }
+  else
+    command -v docker >/dev/null
+  fi
+else
+  command -v docker
+fi
