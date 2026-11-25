@@ -20,9 +20,9 @@ jobs:
       - name: Validate guest test scripts and shared ISA architecture contract
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m58-prebuilt.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
-          sh -n scripts/stage-m59-prebuilt.sh scripts/probe-m59-worktree.sh tests/m59-*.sh
-          sh -n scripts/stage-m60-prebuilt.sh scripts/probe-m60-terminals.sh tests/m60-*.sh
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
+          sh -n scripts/stage-alpine-basic.sh scripts/probe-m59-worktree.sh tests/m59-*.sh
+          sh -n scripts/stage-alpine-basic.sh scripts/probe-m60-terminals.sh tests/m60-*.sh
           bash -n tests/m58-bash-suite.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py

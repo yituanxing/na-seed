@@ -69,8 +69,13 @@ def catalog_probes() -> list[Path]:
             assert 'BUSYBOX_PARITY_MANIFEST="scripts/$profile-batch-cases.tsv"' in path.read_text()
         else:
             dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
-            stage = (f'sh scripts/stage-{milestone}-prebuilt.sh "$port"' if dedicated.exists()
-                     else f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}')
+            basic = ROOT / "scripts/stage-alpine-basic.sh"
+            if dedicated.exists():
+                stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
+            elif f"    {profile}) ;;" in basic.read_text():
+                stage = f'sh scripts/stage-alpine-basic.sh "$port" {profile}'
+            else:
+                stage = f'sh scripts/stage-alpine-signed-batch.sh "$port" {milestone}'
             if milestone == "m174":
                 # The actual GUI/devfs stage extends the signed APK rootfs.
                 # Both edges are mandatory; do not replace it with bare APKs.

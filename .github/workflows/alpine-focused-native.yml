@@ -267,7 +267,7 @@ jobs:
             m70) guest=tests/m70-vmfd-run.sh ;;
             *) exit 2 ;;
           esac
-          for file in "scripts/stage-$PROFILE-prebuilt.sh" "${{ steps.profile.outputs.probe }}" "$guest"; do
+          for file in scripts/stage-alpine-basic.sh "${{ steps.profile.outputs.probe }}" "$guest"; do
             sh -n "$file"
           done
           python3 scripts/check-three-isa-core.py
@@ -279,7 +279,7 @@ jobs:
         if: inputs.profile == 'm79'
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-m79-prebuilt.sh scripts/probe-m79-workflow.sh tests/m79-workflow-run.sh
+          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-m79-workflow.sh tests/m79-workflow-run.sh
           bash -n tests/m79-workflow.bash
           python3 -m py_compile tests/m79-validate.py
           python3 scripts/check-three-isa-core.py

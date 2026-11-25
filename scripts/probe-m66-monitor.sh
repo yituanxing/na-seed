@@ -3,7 +3,7 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m66-prebuilt.sh "$port"
+sh scripts/stage-alpine-basic.sh "$port" m66-monitor
 work="build/external/m66-monitor/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

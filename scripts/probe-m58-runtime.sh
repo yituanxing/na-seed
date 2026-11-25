@@ -5,7 +5,7 @@ set -eu
 [ "$#" -eq 1 ] || { echo 'usage: probe-m58-runtime.sh amd64|riscv64|arm64' >&2; exit 2; }
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m58-prebuilt.sh "$port"
+sh scripts/stage-alpine-basic.sh "$port" m58-runtime
 work="build/external/m58-runtime/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

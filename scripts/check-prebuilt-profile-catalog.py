@@ -55,7 +55,11 @@ def noncomment_lines(path: Path) -> list[str]:
 def validate_manifests(profile: str, packages: Path, elfs: Path, copies: Path) -> None:
     package_lines = noncomment_lines(packages)
     elf_lines = noncomment_lines(elfs)
-    copy_lines = noncomment_lines(copies)
+    if copies.is_relative_to(ROOT / "tests"):
+        relative = copies.relative_to(ROOT).as_posix()
+        copy_lines = [f"{relative}\t{relative}"]
+    else:
+        copy_lines = noncomment_lines(copies)
     if not package_lines or not elf_lines or not copy_lines:
         fail(f"{profile}: package, ELF and copy manifests must all be nonempty")
     for line in package_lines:
@@ -104,7 +108,7 @@ def load_catalog(path: Path) -> dict[str, tuple[str, str, str, str]]:
             fail(f"{path}:{lineno}: unknown signed Alpine repositories {repositories!r}")
         packages = within_repo(packages_raw, "rootfs/alpine", profile)
         elfs = within_repo(elfs_raw, "scripts", profile)
-        copies = within_repo(copies_raw, "scripts", profile)
+        copies = within_repo(copies_raw, "tests" if copies_raw.startswith("tests/") else "scripts", profile)
         validate_manifests(profile, packages, elfs, copies)
         result[profile] = (packages_raw, elfs_raw, copies_raw, repositories)
     if not result:
@@ -126,6 +130,11 @@ def validate_wrappers(profiles: set[str]) -> int:
         if not milestone or not profile.startswith(milestone.group(1) + "-"):
             fail(f"{path.name}: profile {profile} does not match milestone")
         wrappers[profile] = path.name
+    basic = ROOT / "scripts/stage-alpine-basic.sh"
+    for profile in re.findall(r"^    (m\d+-[a-z0-9-]+)\) ;;$", basic.read_text(), re.M):
+        if profile in wrappers:
+            fail(f"{profile}: duplicate basic stage owner")
+        wrappers[profile] = basic.name
     # Shared staging owns the profiles whose dedicated wrappers were retired.
     shared = ROOT / "scripts/stage-alpine-signed-batch.sh"
     for names in re.findall(r"^    (m\d+(?:\|m\d+)*)\) count=\d+; mode=[\w-]+ ;;$", shared.read_text(), re.M):

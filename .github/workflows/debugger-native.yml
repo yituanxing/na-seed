@@ -37,8 +37,11 @@ jobs:
             m72-strace|m73-strace|m74-strace|m75-gdb|m76-gdb) ;;
             *) exit 2 ;;
           esac
-          milestone=${PROFILE%%-*}
-          for script in "scripts/stage-$milestone-prebuilt.sh" "scripts/probe-$PROFILE.sh" "tests/$PROFILE-run.sh"; do
+          case "$PROFILE" in
+            m76-gdb) stage=scripts/stage-m76-prebuilt.sh ;;
+            *) stage=scripts/stage-alpine-basic.sh ;;
+          esac
+          for script in "$stage" "scripts/probe-$PROFILE.sh" "tests/$PROFILE-run.sh"; do
             sh -n "$script"
           done
           if [ "$PROFILE" = m76-gdb ]; then

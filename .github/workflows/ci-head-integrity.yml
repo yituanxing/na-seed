@@ -11,6 +11,8 @@ on:
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/probe-alpine-signed-batch.sh'
       - 'scripts/stage-alpine-signed-batch.sh'
+      - 'scripts/stage-alpine-basic.sh'
+      - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/prebuilt-profile-catalog.tsv'
       - 'scripts/*-rootfs-copies.tsv'
       - 'rootfs/alpine/packages-*.txt'

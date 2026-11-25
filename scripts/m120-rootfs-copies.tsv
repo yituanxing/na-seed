@@ -1,2 +1,0 @@
-# Host-owned driver only; PPM/PGM/raw pixels are generated on the Linux host.
-tests/m120-batch-run.sh	tests/m120-batch-run.sh

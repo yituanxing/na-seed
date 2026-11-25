@@ -42,11 +42,19 @@ for manifest in "$package_file" "$elf_file" "$copies_file"; do
 done
 case "$package_file" in rootfs/alpine/packages-*.txt) ;; *) exit 2 ;; esac
 case "$elf_file" in scripts/m*-original-elfs.txt) ;; *) exit 2 ;; esac
-case "$copies_file" in scripts/m*-rootfs-copies.tsv) ;; *) exit 2 ;; esac
+case "$copies_file" in scripts/m*-rootfs-copies.tsv|tests/*) ;; *) exit 2 ;; esac
 case "$repositories" in main|main+community) ;; *) exit 2 ;; esac
 if [ "$#" -eq 5 ]; then
+    legacy_copies=$copies_file
+    case "$copies_file" in
+        tests/*)
+            case "$profile" in
+                m156-https) legacy_copies=scripts/m156-https-rootfs-copies.tsv ;;
+                *) legacy_copies="scripts/${profile%%-*}-rootfs-copies.tsv" ;;
+            esac ;;
+    esac
     if [ "$3" != "$package_file" ] || [ "$4" != "$elf_file" ] ||
-       [ "$5" != "$copies_file" ]; then
+       { [ "$5" != "$copies_file" ] && [ "$5" != "$legacy_copies" ]; }; then
         echo "[ALPINE OVERLAY FAIL] legacy manifests disagree with $profile catalog" >&2
         exit 2
     fi
@@ -57,9 +65,13 @@ case "$port" in
     arm64) arch=aarch64; machine='AArch64' ;;
     *) exit 2 ;;
 esac
-for manifest in "$package_file" "$elf_file" "$copies_file"; do
+for manifest in "$package_file" "$elf_file"; do
     test -s "$manifest" || exit 1
 done
+case "$copies_file" in
+    tests/*) test -f "$copies_file" || exit 1 ;;
+    *) test -s "$copies_file" || exit 1 ;;
+esac
 
 NAS_ALPINE_PROFILE=runtime sh rootfs/alpine/build.sh "$port"
 base="build/external/m39-packages/$port"
@@ -134,14 +146,20 @@ while IFS= read -r program; do
     }
 done < "$elf_file"
 
-tab="$(printf '\t')"
-while IFS="$tab" read -r source destination; do
-    case "$source" in ''|'#'*) continue ;; esac
-    case "$destination" in tests/*) ;; *) exit 2 ;; esac
-    case "$destination" in *../*|*/../*|*' '*) exit 2 ;; esac
-    test -f "$source" || exit 1
-    cp "$source" "$root/$destination"
-done < "$copies_file"
+copy_fixture() {
+    case "$2" in tests/*) ;; *) exit 2 ;; esac
+    case "$2" in *../*|*/../*|*' '*) exit 2 ;; esac
+    test -f "$1" || exit 1
+    cp "$1" "$root/$2"
+}
+case "$copies_file" in
+    tests/*) copy_fixture "$copies_file" "$copies_file" ;;
+    *)
+        while IFS="$tab" read -r source destination; do
+            case "$source" in ''|'#'*) continue ;; esac
+            copy_fixture "$source" "$destination"
+        done < "$copies_file" ;;
+esac
 
 (
     cd "$root"
