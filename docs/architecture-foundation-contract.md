@@ -238,7 +238,7 @@ before passing its stable name to the unmodified lwext4 adapter. Clean
 unmount releases upstream ext4 and VFS before detaching the partition,
 which then releases the parent hardware device.
 
-`scripts/probe-vfs-gpt-busybox-x86.sh` uses real `sgdisk` to generate
+`sh scripts/probe-vfs-gpt-busybox.sh amd64` uses real `sgdisk` to generate
 a 64MiB GPT physical disk, places the original ext4 filesystem image
 inside its first 40MiB partition at LBA 2048, and boots the unchanged
 original Debian BusyBox workload twice through genuine x86-64 QEMU

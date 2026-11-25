@@ -22,11 +22,8 @@ if [ -n "${BUSYBOX_PARITY_BINARY:-}" ]; then
     cp "$BUSYBOX_PARITY_BINARY" "$work/input-busybox"
     binary="$work/input-busybox"
 else
-    if [ "$arch" = riscv64 ]; then
-        sh scripts/fetch-debian-riscv64.sh
-    else
-        sh scripts/fetch-busybox-fixture.sh arm64 "$dir/busybox"
-    fi
+    # Both native ports fetch from the same pinned package/SHA manifest.
+    sh scripts/fetch-busybox-fixture.sh "$arch" "$dir/busybox"
     work="$dir/matrix"
     mkdir -p "$work"
     binary="$dir/busybox"

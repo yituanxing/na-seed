@@ -3,7 +3,7 @@
 # task/ELF/FS/syscall core as the original x86 BusyBox regression.
 set -eu
 test -s build/port-riscv64/full/kernel.elf || sh scripts/build-riscv64-full.sh
-sh scripts/fetch-debian-riscv64.sh
+sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox
 dir=build/port-riscv64/full
 archive=build/deps/limine-binary.tar.gz
 if [ ! -s "$archive" ]; then

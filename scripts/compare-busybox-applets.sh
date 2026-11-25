@@ -10,7 +10,7 @@ command -v qemu-riscv64 >/dev/null 2>&1 || {
     exit 2
 }
 test -s build/port-riscv64/full/busybox ||
-    sh scripts/fetch-debian-riscv64.sh
+    sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox
 x86=build/port-riscv64/full/compared-amd64/busybox
 sh scripts/fetch-busybox-fixture.sh amd64 "$x86"
 rv=build/port-riscv64/full/busybox

@@ -19,11 +19,11 @@ for arch in amd64 riscv64 arm64; do
     } END { if (found != 1) exit 1 }' "$manifest"
 done
 grep -Fq 'scripts/fetch-busybox-fixture.sh amd64' scripts/fetch-debian.sh
-grep -Fq 'scripts/fetch-busybox-fixture.sh riscv64' scripts/fetch-debian-riscv64.sh
+grep -Fq 'sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox' scripts/probe-riscv64-busybox.sh
 grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh aarch64' scripts/probe-aarch64-busybox-matrix.sh
 grep -Fxq 'exec sh scripts/probe-port-busybox-matrix.sh riscv64' scripts/probe-riscv64-busybox-matrix.sh
-grep -Fq 'scripts/fetch-busybox-fixture.sh arm64' scripts/probe-port-busybox-matrix.sh
-grep -Fq 'scripts/fetch-debian-riscv64.sh' scripts/probe-port-busybox-matrix.sh
+grep -Fq 'sh scripts/fetch-busybox-fixture.sh "$arch" "$dir/busybox"' scripts/probe-port-busybox-matrix.sh
+grep -Fq 'sh scripts/fetch-busybox-fixture.sh riscv64 build/port-riscv64/full/busybox' scripts/compare-busybox-applets.sh
 test "$(grep -vc '^#' scripts/busybox-parity-cases.tsv)" -eq 17
 awk -F '\t' '
     /^[^#]/ {
@@ -40,6 +40,5 @@ sh -n scripts/probe-x86-busybox-parity.sh
 sh -n scripts/probe-aarch64-busybox-matrix.sh
 grep -Fq 'scripts/busybox-parity-cases.tsv' scripts/probe-x86-busybox-parity.sh
 sh -n scripts/fetch-busybox-fixture.sh
-sh -n scripts/fetch-debian-riscv64.sh
 sh -n scripts/fetch-debian.sh
 echo '[PASS] three ISAs use the same pinned Debian static BusyBox source/package'

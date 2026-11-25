@@ -12,7 +12,7 @@ on:
       - 'scripts/build-native-full.sh'
       - 'scripts/build-aarch64-full.sh'
       - 'scripts/probe-port-full.sh'
-      - 'scripts/probe-aarch64-full.sh'
+      - 'scripts/probe-port-full.sh'
       - 'scripts/probe-port-busybox-matrix.sh'
       - 'scripts/probe-aarch64-busybox-matrix.sh'
       - 'scripts/fetch-alpine-native.sh'
@@ -71,7 +71,7 @@ jobs:
           sh scripts/check-alpine-native-fixtures.sh
           python3 scripts/check-native-qemu-target.py
       - name: Build and boot THE shared Task/ELF/FS/syscall kernel on real ARM64
-        run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-aarch64-full.sh
+        run: NASEED_ARM_FULL_TIMEOUT=25 sh scripts/probe-port-full.sh aarch64
       - name: M31 real CLOCK_REALTIME — native Debian date inside ARM64 kernel
         run: sh scripts/probe-m31-date.sh arm64
       - name: ARM64 — native Debian BusyBox canonical 17-case parity matrix

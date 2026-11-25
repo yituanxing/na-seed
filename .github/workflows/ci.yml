@@ -365,7 +365,7 @@ jobs:
       - name: Compile the entire shared kernel source set for RV64
         run: make ARCH=riscv64 build/deps/limine.h && ARCH=riscv64 sh scripts/check-shared-kernel-build.sh
       - name: Compile and boot RV64 full shared kernel (real ELF + common syscall)
-        run: sh scripts/probe-riscv64-full.sh
+        run: sh scripts/probe-port-full.sh riscv64
       - name: Compare actual amd64/RV64 BusyBox applet configuration
         run: sh scripts/compare-busybox-applets.sh
       - name: Execute official RV64 Debian static BusyBox via full shared kernel
@@ -413,7 +413,7 @@ jobs:
       - name: Compile and QEMU-boot genuine AArch64 M0 kernel
         run: sh scripts/probe-aarch64-m0.sh
       - name: Boot complete shared Task/ELF/FS/syscall kernel in real AArch64 EL0
-        run: sh scripts/probe-aarch64-full.sh
+        run: sh scripts/probe-port-full.sh aarch64
       - name: Attach aarch64 boot diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
