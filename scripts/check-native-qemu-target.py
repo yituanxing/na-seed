@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guard the single native-QEMU runner shared by historical program probes.
 
-Each original workload keeps its own guest assertions and previous entrypoint.
+Each original workload keeps its own guest assertions and profile identity.
 The M50 source-workload roster remains owned by native-alpine-matrix.tsv;
 this checker must not establish a competing list of those programs.
 This host-only check is intentionally separate from real QEMU acceptance.
@@ -14,7 +14,9 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = "scripts/native-qemu-target.sh"
-DEEP_ONLY = ("m56-native-busybox", "m57-native-sqlite")
+SHARED = "scripts/probe-alpine-workload.sh"
+DEEP_ONLY = ("m56", "m57")
+SHARED_BASIC = {"m58", "m59", "m60", "m65", "m66", "m67", "m69", "m70", "m72", "m73", "m74", "m75", "m79"}
 EXPECTED = {
     "amd64": ("scripts/probe-x86-busybox-parity.sh", "build/busybox-source-parity-x86"),
     "riscv64": ("scripts/probe-riscv64-busybox-matrix.sh", "build/port-riscv64/full/matrix-source"),
@@ -55,7 +57,12 @@ def catalog_probes() -> list[Path]:
         milestone = profile.split("-", 1)[0]
         assert milestone not in found, f"{catalog}: duplicate milestone {milestone}"
         matches = sorted((ROOT / "scripts").glob(f"probe-{milestone}-*.sh"))
-        if 109 <= int(milestone[1:]) <= 140 or milestone in {"m146", "m148", "m150", "m151", "m153", "m154", "m155", "m157", "m158", "m159", "m163", "m165"}:
+        if milestone in SHARED_BASIC:
+            assert not matches, f"{milestone}: duplicate dedicated native probe"
+            path = ROOT / SHARED
+            stage = 'sh scripts/stage-alpine-basic.sh "$port" "$profile"'
+            assert re.search(rf"^    {milestone}\)\n        kind=basic; profile={profile};", path.read_text(), re.M)
+        elif 109 <= int(milestone[1:]) <= 140 or milestone in {"m146", "m148", "m150", "m151", "m153", "m154", "m155", "m157", "m158", "m159", "m163", "m165"}:
             assert not matches, f"{milestone}: duplicate dedicated native probe"
             path = ROOT / "scripts/probe-alpine-signed-batch.sh"
             stage = 'sh scripts/stage-alpine-signed-batch.sh "$port" "$profile"'
@@ -119,9 +126,13 @@ def probes() -> list[Path]:
         fields = line.split("\t")
         assert len(fields) == 3, f"{canonical}: malformed roster row {line!r}"
         original.append(ROOT / fields[2])
-    return (original +
-            [ROOT / f"scripts/probe-{name}.sh" for name in DEEP_ONLY] +
-            catalog_probes())
+    shared = (ROOT / SHARED).read_text()
+    for name in DEEP_ONLY:
+        assert re.search(rf"^    {name}\)\n", shared, re.M), name
+    for line in canonical.read_text().splitlines():
+        if line and not line.startswith("#") and line.split("\t")[2] == SHARED:
+            assert re.search(rf"^    {line.split(chr(9))[0]}\)\n", shared, re.M), line
+    return list(dict.fromkeys(original + [ROOT / SHARED] + catalog_probes()))
 
 
 def early_probes() -> list[Path]:
@@ -284,12 +295,16 @@ def main() -> None:
             invalid, result.returncode, result.stdout
         )
     paths = probes()
-    assert len(paths) >= 33 and len(set(paths)) == len(paths), (
+    assert len(paths) >= 20 and len(set(paths)) == len(paths), (
         "lost or duplicated M38-M79 canonical probe"
     )
     for path in paths:
         source = path.read_text()
         validate_probe(path, source)
+    shared = (ROOT / SHARED).read_text()
+    expected_shared = SHARED_BASIC | set(DEEP_ONLY) | {line.split("\t")[0] for line in (ROOT / "scripts/native-alpine-matrix.tsv").read_text().splitlines() if line and not line.startswith("#") and line.split("\t")[2] == SHARED}
+    assert set(re.findall(r"^    (m[0-9]+)\)\n", shared, re.M)) == expected_shared
+    mutation_guard(ROOT / SHARED, shared)
     early = early_probes()
     for path in early:
         validate_early_probe(path, path.read_text())
@@ -297,7 +312,7 @@ def main() -> None:
     mutation_early_guard(early[0], early[0].read_text())
     mutation_shared_executor_guard()
     print(f"[NATIVE QEMU TARGET PASS] 3 target mappings, "
-          f"{len(paths) + len(early)} original workloads "
+          f"{len(paths) + len(early)} distinct runner implementations "
           "(including 7 historical CI probes), stale-implementation mutation guards")
 
 

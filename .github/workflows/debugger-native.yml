@@ -38,10 +38,10 @@ jobs:
             *) exit 2 ;;
           esac
           case "$PROFILE" in
-            m76-gdb) stage=scripts/stage-m76-prebuilt.sh ;;
-            *) stage=scripts/stage-alpine-basic.sh ;;
+            m76-gdb) stage=scripts/stage-m76-prebuilt.sh; probe=scripts/probe-m76-gdb.sh ;;
+            *) stage=scripts/stage-alpine-basic.sh; probe=scripts/probe-alpine-workload.sh ;;
           esac
-          for script in "$stage" "scripts/probe-$PROFILE.sh" "tests/$PROFILE-run.sh"; do
+          for script in "$stage" "$probe" "tests/$PROFILE-run.sh"; do
             sh -n "$script"
           done
           if [ "$PROFILE" = m76-gdb ]; then
@@ -76,7 +76,11 @@ jobs:
         timeout-minutes: 24
         env:
           PORT: ${{ matrix.port }}
-        run: sh "scripts/probe-$PROFILE.sh" "$PORT"
+        run: |
+          case "$PROFILE" in
+            m76-gdb) sh scripts/probe-m76-gdb.sh "$PORT" ;;
+            *) sh scripts/probe-alpine-workload.sh "${PROFILE%%-*}" "$PORT" ;;
+          esac
       - name: Retain actual QEMU and APK failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
@@ -88,21 +92,21 @@ jobs:
             build/busybox-source-parity-x86/m72-strace.clean.log
             build/busybox-source-parity-x86/m73-follow.clean.log
             build/busybox-source-parity-x86/m74-attach.clean.log
-            build/busybox-source-parity-x86/m75-attach.clean.log
+            build/busybox-source-parity-x86/m75-debug.clean.log
             build/busybox-source-parity-x86/m76-source.clean.log
             build/busybox-source-parity-x86/m77-attach.clean.log
             build/busybox-source-parity-x86/m78-step.clean.log
             build/port-riscv64/full/matrix-source/m72-strace.clean.log
             build/port-riscv64/full/matrix-source/m73-follow.clean.log
             build/port-riscv64/full/matrix-source/m74-attach.clean.log
-            build/port-riscv64/full/matrix-source/m75-attach.clean.log
+            build/port-riscv64/full/matrix-source/m75-debug.clean.log
             build/port-riscv64/full/matrix-source/m76-source.clean.log
             build/port-riscv64/full/matrix-source/m77-attach.clean.log
             build/port-riscv64/full/matrix-source/m78-step.clean.log
             build/port-aarch64/full/matrix-source/m72-strace.clean.log
             build/port-aarch64/full/matrix-source/m73-follow.clean.log
             build/port-aarch64/full/matrix-source/m74-attach.clean.log
-            build/port-aarch64/full/matrix-source/m75-attach.clean.log
+            build/port-aarch64/full/matrix-source/m75-debug.clean.log
             build/port-aarch64/full/matrix-source/m76-source.clean.log
             build/port-aarch64/full/matrix-source/m77-attach.clean.log
             build/port-aarch64/full/matrix-source/m78-step.clean.log

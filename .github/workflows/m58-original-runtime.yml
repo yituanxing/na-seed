@@ -20,9 +20,9 @@ jobs:
       - name: Validate guest test scripts and shared ISA architecture contract
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-m58-runtime.sh tests/m58-runtime-run.sh
-          sh -n scripts/stage-alpine-basic.sh scripts/probe-m59-worktree.sh tests/m59-*.sh
-          sh -n scripts/stage-alpine-basic.sh scripts/probe-m60-terminals.sh tests/m60-*.sh
+          for file in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-alpine-workload.sh tests/m58-runtime-run.sh; do sh -n "$file"; done
+          for file in scripts/stage-alpine-basic.sh scripts/probe-alpine-workload.sh tests/m59-*.sh; do sh -n "$file"; done
+          for file in scripts/stage-alpine-basic.sh scripts/probe-alpine-workload.sh tests/m60-*.sh; do sh -n "$file"; done
           bash -n tests/m58-bash-suite.sh
           python3 scripts/check-three-isa-core.py
           python3 scripts/check-prebuilt-profile-catalog.py
@@ -37,9 +37,9 @@ jobs:
         run: |
           # Current frontier first: avoid two unrelated QEMU boots when M60 fails.
           # A successful M60 run still gates on BOTH preserved M58 and M59 suites.
-          sh scripts/probe-m60-terminals.sh ${{ matrix.port }}
-          sh scripts/probe-m58-runtime.sh ${{ matrix.port }}
-          sh scripts/probe-m59-worktree.sh ${{ matrix.port }}
+          sh scripts/probe-alpine-workload.sh m60 ${{ matrix.port }}
+          sh scripts/probe-alpine-workload.sh m58 ${{ matrix.port }}
+          sh scripts/probe-alpine-workload.sh m59 ${{ matrix.port }}
       - name: Preserve full guest evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4

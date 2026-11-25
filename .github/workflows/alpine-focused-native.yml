@@ -33,7 +33,7 @@ jobs:
           set -eu
           case "$PROFILE" in
             m38)
-              probe=scripts/probe-m38-native-gcc.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m38-native-alpine-gcc
               bootfs=1
               evidence="build/external/m38-gcc/$PORT/apk-install.log
@@ -43,7 +43,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m38-gcc.clean.log
               build/port-aarch64/full/matrix-source/m38-gcc.clean.log" ;;
             m39)
-              probe=scripts/probe-m39-packages.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m39-packages
               bootfs=1
               evidence="build/external/m39-packages/$PORT/apk-install.log
@@ -53,7 +53,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m39-packages.clean.log
               build/port-aarch64/full/matrix-source/m39-packages.clean.log" ;;
             m40)
-              probe=scripts/probe-m40-archives.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m40-archives
               bootfs=1
               evidence="build/external/m40-archives/$PORT/apk-install.log
@@ -63,7 +63,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m40-archives.clean.log
               build/port-aarch64/full/matrix-source/m40-archives.clean.log" ;;
             m41)
-              probe=scripts/probe-m41-unix.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m41-unix
               bootfs=1
               evidence="build/external/m41-unix/$PORT/apk-install.log
@@ -73,7 +73,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m41-unix.clean.log
               build/port-aarch64/full/matrix-source/m41-unix.clean.log" ;;
             m42)
-              probe=scripts/probe-m42-pthread.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m42-pthread
               bootfs=1
               evidence="build/external/m42-pthread/$PORT/apk-install.log
@@ -83,7 +83,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m42-pthread.clean.log
               build/port-aarch64/full/matrix-source/m42-pthread.clean.log" ;;
             m43)
-              probe=scripts/probe-m43-zstd.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m43-zstd
               bootfs=1
               evidence="build/external/m43-zstd/$PORT/apk-install.log
@@ -103,7 +103,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m44-group.clean.log
               build/port-aarch64/full/matrix-source/m44-group.clean.log" ;;
             m45)
-              probe=scripts/probe-m45-robust.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m45-robust
               bootfs=1
               evidence="build/external/m45-robust/$PORT/apk-install.log
@@ -113,7 +113,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m45-robust.clean.log
               build/port-aarch64/full/matrix-source/m45-robust.clean.log" ;;
             m46)
-              probe=scripts/probe-m46-exec.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m46-exec
               bootfs=1
               evidence="build/external/m46-exec/$PORT/apk-install.log
@@ -123,7 +123,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m46-exec.clean.log
               build/port-aarch64/full/matrix-source/m46-exec.clean.log" ;;
             m47)
-              probe=scripts/probe-m47-tgkill.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m47-tgkill
               bootfs=1
               evidence="build/external/m47-tgkill/$PORT/apk-install.log
@@ -133,7 +133,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m47-tgkill.clean.log
               build/port-aarch64/full/matrix-source/m47-tgkill.clean.log" ;;
             m48)
-              probe=scripts/probe-m48-parallel.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m48-native-parallel
               bootfs=1
               evidence="build/external/m48-parallel/$PORT/apk-install.log
@@ -143,7 +143,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m48-parallel.clean.log
               build/port-aarch64/full/matrix-source/m48-parallel.clean.log" ;;
             m49)
-              probe=scripts/probe-m49-capacity.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m49-native-capacity
               bootfs=1
               evidence="build/external/m49-capacity/$PORT/apk-install.log
@@ -153,7 +153,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m49-capacity.clean.log
               build/port-aarch64/full/matrix-source/m49-capacity.clean.log" ;;
             m51)
-              probe=scripts/probe-m51-git.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m51-git
               bootfs=0
               evidence="build/external/m51-git/$PORT/apk-install.log
@@ -162,7 +162,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m51-git.clean.log
               build/port-aarch64/full/matrix-source/m51-git.clean.log" ;;
             m52)
-              probe=scripts/probe-m52-python.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m52-python
               bootfs=0
               evidence="build/external/m52-python/$PORT/apk-install.log
@@ -181,7 +181,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m53-vim.clean.log
               build/port-aarch64/full/matrix-source/m53-vim.clean.log" ;;
             m54)
-              probe=scripts/probe-m54-dev.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m54-dev
               bootfs=0
               evidence="build/external/m54-dev/$PORT/apk-install.log
@@ -190,7 +190,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m54-dev.clean.log
               build/port-aarch64/full/matrix-source/m54-dev.clean.log" ;;
             m65)
-              probe=scripts/probe-m65-procfs.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m65-procps
               bootfs=0
               evidence="build/external/m65-observe/$PORT/apk-install.log
@@ -199,7 +199,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m65-procfs.clean.log
               build/port-aarch64/full/matrix-source/m65-procfs.clean.log" ;;
             m66)
-              probe=scripts/probe-m66-monitor.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m66-procps
               bootfs=0
               evidence="build/external/m66-monitor/$PORT/apk-install.log
@@ -208,7 +208,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m66-monitor.clean.log
               build/port-aarch64/full/matrix-source/m66-monitor.clean.log" ;;
             m67)
-              probe=scripts/probe-m67-control.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m67-control
               bootfs=0
               evidence="build/external/m67-control/$PORT/apk-install.log
@@ -217,7 +217,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m67-control.clean.log
               build/port-aarch64/full/matrix-source/m67-control.clean.log" ;;
             m69)
-              probe=scripts/probe-m69-inspect.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m69-inspect
               bootfs=0
               evidence="build/external/m69-inspect/$PORT/apk-install.log
@@ -226,7 +226,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m69-inspect.clean.log
               build/port-aarch64/full/matrix-source/m69-inspect.clean.log" ;;
             m70)
-              probe=scripts/probe-m70-vmfd.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m70-vmfd
               bootfs=0
               evidence="build/external/m70-vmfd/$PORT/apk-install.log
@@ -235,7 +235,7 @@ jobs:
               build/port-riscv64/full/matrix-source/m70-vmfd.clean.log
               build/port-aarch64/full/matrix-source/m70-vmfd.clean.log" ;;
             m79)
-              probe=scripts/probe-m79-workflow.sh
+              probe=scripts/probe-alpine-workload.sh
               artifact=m79-workflow
               bootfs=0
               evidence="build/external/m39-packages/$PORT/apk-install.log
@@ -279,7 +279,7 @@ jobs:
         if: inputs.profile == 'm79'
         run: |
           set -eu
-          sh -n scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-m79-workflow.sh tests/m79-workflow-run.sh
+          for file in scripts/stage-alpine-prebuilt-overlay.sh scripts/stage-alpine-basic.sh scripts/probe-alpine-workload.sh tests/m79-workflow-run.sh; do sh -n "$file"; done
           bash -n tests/m79-workflow.bash
           python3 -m py_compile tests/m79-validate.py
           python3 scripts/check-three-isa-core.py
@@ -334,7 +334,12 @@ jobs:
         run: sh scripts/check-host-fixture.sh bootfs-scale
       - name: Execute original native workload
         timeout-minutes: ${{ fromJSON('{"m38":24,"m39":12,"m40":12,"m41":12,"m42":12,"m43":12,"m44":12,"m45":12,"m46":12,"m47":12,"m48":24,"m49":24,"m51":28,"m52":28,"m53":36,"m54":47,"m65":24,"m66":24,"m67":24,"m69":24,"m70":24,"m79":24}')[inputs.profile] }}
-        run: sh "${{ steps.profile.outputs.probe }}" "$PORT"
+        run: |
+          if [ "${{ steps.profile.outputs.probe }}" = scripts/probe-alpine-workload.sh ]; then
+            sh scripts/probe-alpine-workload.sh "$PROFILE" "$PORT"
+          else
+            sh "${{ steps.profile.outputs.probe }}" "$PORT"
+          fi
       - name: Preserve A014 genuine guest ownership-race serial evidence
         if: always() && inputs.profile == 'm42'
         uses: actions/upload-artifact@v4

@@ -34,14 +34,19 @@ while IFS="$tab" read -r name group probe; do
             continue ;;
         esac
     fi
-    case "$probe" in scripts/probe-m[34][0-9]-*.sh|scripts/probe-m5[1-5]-*.sh) ;; *)
+    case "$probe" in scripts/probe-alpine-workload.sh|scripts/probe-m[34][0-9]-*.sh|scripts/probe-m5[1-5]-*.sh) ;; *)
         echo "[M50 FAIL] noncanonical acceptance: $probe" >&2
         exit 1 ;;
     esac
     test -s "$probe"
     count=$((count + 1))
     echo "[M50 START] $port / $suite / $name / $probe"
-    if ! sh "$probe" "$port"; then
+    if [ "$probe" = scripts/probe-alpine-workload.sh ]; then
+        set -- "$name" "$port"
+    else
+        set -- "$port"
+    fi
+    if ! sh "$probe" "$@"; then
         echo "[M50 FAIL] $port / $suite / $name; kernel/ELF evidence retained" >&2
         exit 1
     fi

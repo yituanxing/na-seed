@@ -37,7 +37,7 @@ for milestone, suite, path in rows:
         raise SystemExit(f"duplicate milestone: {milestone}")
     if milestone not in expected or expected[milestone] != suite:
         raise SystemExit(f"unexpected milestone or suite: {milestone}/{suite}")
-    if not re.fullmatch(r"scripts/probe-m(?:3[89]|4[0-9]|5[1-5])-[a-z0-9-]+\.sh", path):
+    if path != "scripts/probe-alpine-workload.sh" and not re.fullmatch(r"scripts/probe-m(?:3[89]|4[0-9]|5[1-5])-[a-z0-9-]+\.sh", path):
         raise SystemExit(f"invalid original probe: {path}")
     if not (root / path).is_file():
         raise SystemExit(f"missing original probe: {path}")
@@ -60,14 +60,16 @@ for port in ("amd64", "riscv64", "arm64"):
         raise SystemExit(f"new CI does not select port: {port}")
 if "sh scripts/probe-alpine-batch.sh" not in w:
     raise SystemExit("new CI does not run shared batch entrypoint")
-for path in seen.values():
-    # Per-suite old workflow is manually addressable; it must not double-run
-    # as an automatic PR workflow on rootfs/kernel changes.
-    suffix = Path(path).name
-    matching = list((root / ".github/workflows").glob("m*.yml"))
-    if not any(suffix in wf.read_text() and "workflow_dispatch:" in wf.read_text()
-               and "pull_request:" not in wf.read_text() for wf in matching):
-        raise SystemExit(f"old standalone manual diagnostic unavailable: {path}")
+focused = (root / ".github/workflows/alpine-focused-native.yml").read_text()
+if "workflow_dispatch:" not in focused or "pull_request:" in focused:
+    raise SystemExit("focused manual diagnostic workflow unavailable")
+for milestone, path in seen.items():
+    if milestone == "m55":
+        matching = list((root / ".github/workflows").glob("m55-*.yml"))
+        if not any(Path(path).name in wf.read_text() and "workflow_dispatch:" in wf.read_text() and "pull_request:" not in wf.read_text() for wf in matching):
+            raise SystemExit(f"old standalone manual diagnostic unavailable: {path}")
+    elif not re.search(rf"^\s+{milestone}\)\n\s+probe={re.escape(path)}$", focused, re.M):
+        raise SystemExit(f"focused manual diagnostic unavailable: {milestone}/{path}")
 # Guard the two-track contract: no historical probe removed; none of the
 # costly guest builds silently run on the normal, fast PR path.
 batch = (root / "scripts/probe-alpine-batch.sh").read_text()

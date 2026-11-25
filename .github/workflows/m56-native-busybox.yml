@@ -21,7 +21,7 @@ jobs:
           sh scripts/ci-install-signed-alpine-qemu-deps.sh ${{ matrix.port }} --explicit-tools clang:clang ld.lld:lld readelf:binutils cpio:cpio xorriso:xorriso mformat:mtools sgdisk:gdisk qemu-riscv64:qemu-user
       - name: Genuine guest GNU Make + GCC + Kconfig + BusyBox binary execution
         timeout-minutes: 70
-        run: sh scripts/probe-m56-native-busybox.sh ${{ matrix.port }}
+        run: sh scripts/probe-alpine-workload.sh m56 ${{ matrix.port }}
       - name: Preserve native Kbuild phase durations and successful original guest serial
         if: always()
         uses: actions/upload-artifact@v4

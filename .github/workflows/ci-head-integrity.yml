@@ -7,6 +7,10 @@ on:
       - 'scripts/check-three-isa-core.py'
       - 'scripts/check-prebuilt-profile-catalog.py'
       - 'scripts/check-native-qemu-target.py'
+      - 'scripts/probe-alpine-workload.sh'
+      - 'scripts/native-alpine-matrix.tsv'
+      - 'scripts/check-native-alpine-matrix.py'
+      - 'scripts/probe-alpine-batch.sh'
       - 'scripts/host-configure-alpine-fixtures.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/probe-alpine-signed-batch.sh'
@@ -60,7 +64,8 @@ jobs:
       - name: Validate canonical signed APK profile manifests
         run: |
           python3 scripts/check-prebuilt-profile-catalog.py
-          python3 scripts/check-native-qemu-target.py
+          python3 scripts/check-native-alpine-matrix.py
+          sh -n scripts/probe-alpine-workload.sh
 
       - name: Check shared Alpine dependency installer without apt or network
         run: python3 scripts/check-ci-alpine-deps.py
