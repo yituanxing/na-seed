@@ -71,7 +71,7 @@ jobs:
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m166-qmp-verify.py
               ;;
             m167)
-              for script in scripts/check-m167-desktop.sh scripts/probe-native-desktop.sh scripts/stage-alpine-display.sh scripts/host-configure-alpine-fixtures.sh; do
+              for script in scripts/check-m168-desktop.sh scripts/probe-native-desktop.sh scripts/stage-alpine-display.sh scripts/host-configure-alpine-fixtures.sh; do
                 sh -n "$script"
               done
               python3 -m py_compile scripts/m161-qmp-verify.py scripts/m167-qmp-verify.py
@@ -103,17 +103,24 @@ jobs:
             sh scripts/check-block-foundation.sh
           else
             sh scripts/check-m167-fb-pwrite.sh
-            sh scripts/check-m167-desktop.sh
+            # The M169 host selftest proves the full M167 compositor as well
+            # as M168/M169 client/FD negatives; do not compile it repeatedly.
+            # M170 and M171 preserve independent checks and inherit the
+            # strictly earlier host oracles exactly once.
             case "$PROFILE" in
-              m168|m170|m171) sh scripts/check-m168-desktop.sh ;;
-            esac
-            case "$PROFILE" in
-              m170|m171) sh scripts/check-m170-desktop.sh ;;
+              m167|m168)
+                sh scripts/check-m168-desktop.sh ;;
+              m170)
+                sh scripts/check-m170-desktop.sh ;;
+              m171)
+                if [ "$PORT" = amd64 ]; then
+                  sh scripts/check-m171-desktop.sh
+                else
+                  sh scripts/check-m170-desktop.sh
+                fi ;;
+              *) exit 2 ;;
             esac
             if [ "$PROFILE" = m171 ]; then
-              if [ "$PORT" = amd64 ]; then
-                sh scripts/check-m171-desktop.sh
-              fi
               test "$(git -C third_party/lvgl rev-parse HEAD)" = c016f72d4c125098287be5e83c0f1abed4706ee5
             fi
             sh scripts/test-m105-pty-isig.sh

@@ -68,6 +68,8 @@ jobs:
 
       - name: Run merged M236-M238 native ELF provenance and independent semantic oracles
         run: python3 scripts/test-m236-m238-alpine-host.py
+      - name: Verify the sole M167-M170 desktop host evidence chain
+        run: sh scripts/check-m170-desktop.sh
       - name: Verify consolidated peripheral profile syntax and strict host contracts
         run: |
           bash -n scripts/acceptance/h0-h6-pci-nvme.sh

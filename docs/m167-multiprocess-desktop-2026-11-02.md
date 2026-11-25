@@ -42,10 +42,12 @@ pretending that this unimplemented general case already works.
 - `scripts/check-m167-fb-pwrite.sh` exercises the real FileOps/firmware
   framebuffer provider, offset policy, 1 KiB chunking, usercopy behavior,
   shared-description cursor independence, and `ESPIPE` for other devices.
-- `scripts/check-m167-desktop.sh` compiles three separate static native
-  desktop ELFs and executes the production compositor's host self-test:
-  real fork/Unix `SCM_RIGHTS`/memfd surface, overlap, focus, hit-testing,
-  bounded tablet scaling and live shared-surface repaint.
+- `scripts/check-m168-desktop.sh` is the single retained host-gate
+  owner, replacing the redundant M167-only checker. It compiles four
+  independent static native desktop ELFs and requires the original
+  M167 fork/Unix `SCM_RIGHTS`/memfd surface, overlap, focus, hit-testing,
+  bounded tablet scaling and shared repaint proof, plus the later
+  M168/M169 client and invalid-FD negative proofs.
 - `scripts/test-m105-pty-isig.sh` now also checks that real PTY output
   already queued when the last slave closes is delivered as
   `POLLIN|POLLHUP`, then only HUP after draining. The terminal establishes
