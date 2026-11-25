@@ -987,7 +987,7 @@ static uint64_t sys_netlink_sendmsg(uint64_t fd,uint64_t user_message,
      * as writev: no separate netlink-only copy loop or overflow policy. */
     unsigned slot=TASK.fds->entries[fd].slot;
     struct nas_fs_io_vectors vectors={0};
-    int rc=nas_fs_io_vectors_import(slot,msg.iov,msg.iovlen,true,&vectors);
+    int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,&vectors);
     if(rc)return (uint64_t)(int64_t)rc;
     if(vectors.total>NAS_NETLINK_MAX_DATAGRAM) {
         nas_fs_io_vectors_release(&vectors);

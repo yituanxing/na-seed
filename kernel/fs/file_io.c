@@ -473,7 +473,8 @@ static void io_request_release(struct nas_io_request *req) {
     req->vectors=0;
 }
 static int io_request_import_slot(unsigned slot,uint64_t user_iov,uint64_t count,
-                                  bool writing,struct nas_io_request *req) {
+                                  bool writing,bool require_scalar_ops,
+                                  struct nas_io_request *req) {
     *req=(struct nas_io_request){0};
     /* Linux looks up and checks the File before importing user iovecs,
      * including an empty iovec array. This also prevents zero-byte writev
@@ -485,7 +486,8 @@ static int io_request_import_slot(unsigned slot,uint64_t user_iov,uint64_t count
        (writing ? (flags&3ULL)==0 : (flags&3ULL)==1))
         return -EBADF;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    if(!ops || (writing ? !ops->write : !ops->read))return -EBADF;
+    if(!ops || (require_scalar_ops &&
+       (writing ? !ops->write : !ops->read)))return -EBADF;
     if(count>NAS_IOV_MAX)return -EINVAL;
     if(count && (user_iov>=USER_LIMIT ||
                  count>(USER_LIMIT-user_iov)/16ULL))return -EFAULT;
@@ -533,7 +535,7 @@ static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
                              bool writing,struct nas_io_request *req) {
     unsigned slot;
     int rc=io_resolve_fd(fd,&slot);
-    return rc ? rc : io_request_import_slot(slot,user_iov,count,writing,req);
+    return rc ? rc : io_request_import_slot(slot,user_iov,count,writing,true,req);
 }
 /* Advance a cursor across empty iovecs and return its next user slice.
  * Callers hold a private cursor while preflighting to avoid changing the
@@ -632,7 +634,17 @@ int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
     if(!out)return -EINVAL;
     *out=(struct nas_fs_io_vectors){0};
     struct nas_io_request req={0};
-    int rc=io_request_import_slot(slot,user_iov,count,writing,&req);
+    int rc=io_request_import_slot(slot,user_iov,count,writing,true,&req);
+    if(rc)return rc;
+    *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
+    return 0;
+}
+int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
+                                      uint64_t count,struct nas_fs_io_vectors *out) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_fs_io_vectors){0};
+    struct nas_io_request req={0};
+    int rc=io_request_import_slot(slot,user_iov,count,true,false,&req);
     if(rc)return rc;
     *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
     return 0;
@@ -875,7 +887,7 @@ void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
     current.request.slot=slot;
     current.request.ops=ops;
     if(op==NAS_SC_readv || op==NAS_SC_writev) {
-        rc=io_request_import_slot(slot,address,length,op==NAS_SC_writev,
+        rc=io_request_import_slot(slot,address,length,op==NAS_SC_writev,true,
                                   &current.request);
         if(rc) {
             attempt->result=(uint64_t)(int64_t)rc;

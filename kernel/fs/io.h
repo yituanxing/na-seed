@@ -18,6 +18,10 @@ struct nas_fs_io_vectors {
 };
 int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
                              bool writing,struct nas_fs_io_vectors *out);
+/* Datagram socket syscall adapters validate write access but own their
+ * protocol send operation independently of the scalar FileOps.write hook. */
+int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
+                                      uint64_t count,struct nas_fs_io_vectors *out);
 uint64_t nas_fs_io_vectors_accessible_prefix(
     const struct nas_fs_io_vectors *vectors,uint64_t requested,bool writing);
 bool nas_fs_io_vectors_copyin(const struct nas_fs_io_vectors *vectors,
