@@ -149,7 +149,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
       - name: Run two real Alpine PID1 QEMUs with independent host protocol oracle
-        timeout-minutes: 85
+        timeout-minutes: ${{ matrix.profile == 'm230' && 100 || 85 }}
         run: |
           set -eu
           case "$PROFILE" in

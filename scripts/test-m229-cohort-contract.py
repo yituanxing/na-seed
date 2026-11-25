@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COHORT = ((ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
           + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text())
 UART = (ROOT / 'scripts/m229-alpine-uart.py').read_text()
-WORKFLOW = (ROOT / '.github/workflows/m229-valkey-host-ingress.yml').read_text()
+WORKFLOW = (ROOT / '.github/workflows/alpine-host-services-native.yml').read_text()
 
 
 def require(condition: bool, context: str) -> None:
@@ -51,16 +51,19 @@ def check() -> None:
             'owner.FIRST_COMMANDS[:-2]' in UART and
             'owner.REBOOT_COMMANDS[:1]' in UART,
             'signed public packages and original PID1/OpenRC lifecycle reused')
-    require('m229-valkey-host-ingress.yml' in WORKFLOW and
-            "NAS_M229_VALKEY_HOST: '1'" in WORKFLOW,
+    require('alpine-host-services-native.yml' in WORKFLOW and
+            'm229)' in WORKFLOW and 'export NAS_M229_VALKEY_HOST=1' in WORKFLOW,
             'M229 real QEMU must be isolated opt-in on first amd64 pilot')
     for path in ('tests/m229-alpine-valkey-workload.sh',
                  'scripts/m229-*.py', 'scripts/test-m229-*.py'):
         require("- '" + path + "'" in WORKFLOW,
                 'M229-only source repairs must automatically retrigger amd64 pilot')
-    require('retention-days: 1' in WORKFLOW and
-            'm229-auth files' in WORKFLOW,
-            'single-use AUTH token appears in physical PCAP; retention bounded')
+    m229_artifact = WORKFLOW.split('      - name: Preserve exact M229', 1)[1].split(
+        '      - name: Preserve exact M230', 1)[0]
+    require('retention-days: 1' in m229_artifact and
+            'm229-auth-token' not in m229_artifact and
+            'id_ed25519' not in m229_artifact,
+            'single-use AUTH token may enter PCAP; 1-day retention and no raw secrets')
     print('[M229 COHORT STATIC PASS] signed Valkey/OpenRC, two real PID1, '
           'strong one-run AUTH, isolated single-NIC hostfwd, exact ext4/PCAP; '
           'NOT native QEMU acceptance')

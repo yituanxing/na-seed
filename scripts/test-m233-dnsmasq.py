@@ -112,7 +112,7 @@ def oracle_checks() -> None:
 def contract_checks() -> None:
     guest = (ROOT / 'tests/m233-alpine-dnsmasq-workload.sh').read_text()
     cohort = (ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
-    workflow = (ROOT / '.github/workflows/m233-dnsmasq-host-dns.yml').read_text()
+    workflow = (ROOT / '.github/workflows/alpine-host-services-native.yml').read_text()
     for literal in ('dnsmasq dnsmasq-openrc', 'rc-update add dnsmasq default',
                     'rc-service dnsmasq start', 'rc-service dnsmasq status',
                     'M233_FIRST_HOST_DNS_READY', 'M233_REOPEN_HOST_DNS_READY',

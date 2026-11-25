@@ -45,7 +45,7 @@ def contract(probe, workflow, guest):
         'm232-memcached-final-oracle.json',
     )
     required_workflow = (
-        'NAS_M232_MEMCACHED_HOST:',
+        'export NAS_M232_MEMCACHED_HOST=1',
         'scripts/test-m232-memcached.py',
         'm232-first-host-cache.json',
         'm232-reopen-host-cache.json',
@@ -123,7 +123,7 @@ def main():
     root = Path(__file__).resolve().parent.parent
     probe = ((root/'scripts/probe-m197-alpine-software-cohort.sh').read_text()
              + '\n' + (root/'scripts/acceptance/profile.sh').read_text())
-    workflow = (root/'.github/workflows/m232-memcached-host-cache.yml').read_text()
+    workflow = (root/'.github/workflows/alpine-host-services-native.yml').read_text()
     guest = (root/'tests/m232-alpine-memcached-workload.sh').read_text()
     contract(probe, workflow, guest)
     reject(lambda: contract(probe.replace('m232_start_host reopen "$serial"', '# NOOP'),

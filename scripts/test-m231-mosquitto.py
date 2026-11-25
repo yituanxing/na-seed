@@ -39,7 +39,7 @@ def contract(probe, workflow, guest):
         'm231-mosquitto-final-oracle.json',
     )
     required_workflow = (
-        'NAS_M231_MOSQUITTO_HOST:',
+        'export NAS_M231_MOSQUITTO_HOST=1',
         'scripts/test-m231-mosquitto.py',
         'm231-first-host-mqtt.json',
         'm231-reopen-host-mqtt.json',
@@ -143,7 +143,7 @@ def check():
     root = Path(__file__).resolve().parent.parent
     probe = ((root / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
              + '\n' + (root / 'scripts/acceptance/profile.sh').read_text())
-    workflow = (root / '.github/workflows/m231-mosquitto-host-mqtt.yml').read_text()
+    workflow = (root / '.github/workflows/alpine-host-services-native.yml').read_text()
     guest = (root / 'tests/m231-alpine-mosquitto-workload.sh').read_text()
     contract(probe, workflow, guest)
     reject(lambda: contract(probe.replace('m231_start_host reopen "$serial"',

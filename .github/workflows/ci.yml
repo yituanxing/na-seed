@@ -37,6 +37,14 @@ jobs:
         run: python3 scripts/check-ci-checkout-head.py
       - name: Verify full original ELF marker profiles, fail-closed negatives and synthetic QEMU rejection
         run: python3 scripts/acceptance/test-batch-markers.py
+      - name: Verify consolidated M228-M233 service contract gates and independent protocol oracles
+        run: |
+          python3 scripts/test-m228-hostfwd-contract.py
+          python3 scripts/test-m229-cohort-contract.py
+          python3 scripts/test-m230-cohort-contract.py
+          python3 scripts/test-m231-mosquitto.py
+          python3 scripts/test-m232-memcached.py
+          python3 scripts/test-m233-dnsmasq.py
       - name: Install dependencies
         run: |
           sh scripts/ci-ubuntu-mirror.sh

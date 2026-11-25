@@ -56,9 +56,9 @@ def gate(source: str, workflow: str) -> None:
     assert '"$overlay/root/.ssh/id_ed25519"' not in source
 
     workflow_tokens = (
-        "NAS_M230_DROPBEAR_HOST: '1'",
-        "NAS_M230_HOST_PORT: '12222'",
-        'timeout-minutes: 100',
+        'export NAS_M230_DROPBEAR_HOST=1',
+        'export NAS_M230_HOST_PORT=12222',
+        "matrix.profile == 'm230' && 100 || 85",
         "options: [amd64, riscv64, arm64, all]",
         "github.event_name == 'push' && '[\"amd64\",\"riscv64\",\"arm64\"]'",
         'scripts/test-m230-dropbear-guest-contract.py',
@@ -85,7 +85,7 @@ def gate(source: str, workflow: str) -> None:
 def negative() -> None:
     script = ((ROOT / 'scripts/probe-m197-alpine-software-cohort.sh').read_text()
               + '\n' + (ROOT / 'scripts/acceptance/profile.sh').read_text())
-    workflow = (ROOT / '.github/workflows/m230-dropbear-host-ssh.yml').read_text()
+    workflow = (ROOT / '.github/workflows/alpine-host-services-native.yml').read_text()
     gate(script, workflow)
     broken = [
         (script.replace('NAS_VIRTIO_NET_GUESTFWD_PORT=15446',
