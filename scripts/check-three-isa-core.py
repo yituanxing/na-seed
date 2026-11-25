@@ -557,8 +557,11 @@ process_src=(root/"kernel/task/process.c").read_text()
 wait_src=(root/"kernel/task/wait.c").read_text()
 fd_src=(root/"kernel/fs/syscall.c").read_text()
 socket_src=(root/"kernel/fs/unix_socket.c").read_text()
-if "wait4_child_selected(child,nas_current_task,desired)" not in process_src or \
-   "wait4_child_selected(child,waiter,desired)" not in process_src or \
+if "wait_find(nas_current_task,false,0,desired,options)" not in process_src or \
+   "wait_find(waiter,false,0,desired,options)" not in process_src or \
+   "wait_find(nas_current_task,true,idtype,id,options)" not in process_src or \
+   "wait_find(waiter,true,idtype,id,options)" not in process_src or \
+   "wait_child_selected(child,waiter,waitid,idtype,id)" not in process_src or \
    "nas_process_wait_owner(child,waiter)" not in process_src or \
    "nas_process_wait4_ready(task,task->wait.blocked_args[0]," not in wait_src or \
    "nas_task_process_pid(waiter)" not in process_src:
