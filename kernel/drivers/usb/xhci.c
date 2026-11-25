@@ -864,21 +864,36 @@ static int release_pages(struct nas_dma_lease *lease,
     return 0;
 }
 
+/* Controller lifetime is independent of the USB class using the ports. */
+static bool controller_available(const struct nas_xhci_io *io,
+                                 const struct nas_dma_provider *dma,
+                                 const struct nas_xhci_ro_session *s) {
+    return io && dma && s && io->read32 && io->write32 &&
+           io->mmio_bytes>=0x1000U && !s->io && !s->lease.held;
+}
+static int controller_start(const struct nas_xhci_io *io,
+                            const struct nas_dma_provider *dma,
+                            struct nas_xhci_ro_session *s) {
+    s->io=io;
+    s->dma=dma;
+    s->debug_stage=NAS_XHCI_STAGE_DMA;
+    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(rc)return rc;
+    if(s->dual_mode) {
+        rc=acquire_pages(&s->dual_extra_lease,dma,s->dual_extra_pages,
+                         NAS_XHCI_DUAL_EXTRA_PAGES);
+        if(rc)return rc;
+    }
+    rc=run_controller(s);
+    return rc ? rc : setup_context(s);
+}
+
 int nas_xhci_ro_open(const struct nas_xhci_io *io,
                      const struct nas_dma_provider *dma,
                      struct nas_xhci_ro_session *s) {
-    if (!io || !dma || !s || !io->read32 || !io->write32 ||
-        io->mmio_bytes < 0x1000U || s->io || s->lease.held)
-        return -EINVAL;
-    s->io = io;
-    s->dma = dma;
-    s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(!controller_available(io,dma,s))return -EINVAL;
+    int rc=controller_start(io,dma,s);
     if(rc)return rc;
-    rc = run_controller(s);
-    if (rc) return rc;
-    rc = setup_context(s);
-    if (rc) return rc;
     rc = read_usb_descriptors(s);
     if (rc) return rc;
     rc = configure_bulk_endpoints(s);
@@ -892,23 +907,14 @@ static int hid_open_mode(const struct nas_xhci_io *io,
                          const struct nas_dma_provider *dma,
                          struct nas_xhci_ro_session *s,
                          uint8_t protocol, uint8_t report_bytes) {
-    if (!io || !dma || !s || !io->read32 || !io->write32 ||
-        io->mmio_bytes < 0x1000U || s->io || s->lease.held ||
-        (protocol != 1U && protocol != 2U) ||
-        (report_bytes != 8U && report_bytes != 4U))
-        return -EINVAL;
-    s->io = io;
-    s->dma = dma;
-    s->hid_mode = true;
-    s->hid_protocol = protocol;
-    s->hid_report_bytes = report_bytes;
-    s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(!controller_available(io,dma,s) ||
+       (protocol != 1U && protocol != 2U) ||
+       (report_bytes != 8U && report_bytes != 4U))return -EINVAL;
+    s->hid_mode=true;
+    s->hid_protocol=protocol;
+    s->hid_report_bytes=report_bytes;
+    int rc=controller_start(io,dma,s);
     if(rc)return rc;
-    rc = run_controller(s);
-    if (rc) return rc;
-    rc = setup_context(s);
-    if (rc) return rc;
     rc = read_hid_boot_descriptors(s);
     if (rc) return rc;
     rc = configure_hid_interrupt_endpoint(s);
@@ -995,25 +1001,14 @@ int nas_xhci_hid_mouse_poll(struct nas_xhci_ro_session *s, uint8_t report[4]) {
 int nas_xhci_dual_hid_open(const struct nas_xhci_io *io,
                             const struct nas_dma_provider *dma,
                             struct nas_xhci_ro_session *s) {
-    if (!io || !dma || !s || !io->read32 || !io->write32 ||
-        io->mmio_bytes < 0x1000U || s->io || s->lease.held ||
-        s->dual_extra_lease.held || s->dual_mode)
-        return -EINVAL;
-    s->io=io;
-    s->dma=dma;
+    if(!controller_available(io,dma,s) || s->dual_extra_lease.held ||
+       s->dual_mode)return -EINVAL;
     s->hid_mode=true;
     s->dual_mode=true;
     s->dual_missing_protocol=1U;
     dual_clear_active(s,1U,8U);
-    s->debug_stage=NAS_XHCI_STAGE_DMA;
-    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    int rc=controller_start(io,dma,s);
     if(rc)return rc;
-    rc=acquire_pages(&s->dual_extra_lease,dma,s->dual_extra_pages,NAS_XHCI_DUAL_EXTRA_PAGES);
-    if(rc)return rc;
-    rc=run_controller(s);
-    if (rc) return rc;
-    rc=setup_context(s);
-    if (rc) return rc;
     rc=read_hid_boot_descriptors(s);
     if (rc) return rc;
     rc=configure_hid_interrupt_endpoint(s);
@@ -1143,35 +1138,42 @@ int nas_xhci_dual_hid_poll_mouse(struct nas_xhci_ro_session *s,
                                  uint8_t report[4]) {
     return dual_hid_poll(s,1U,report,4U);
 }
-int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *s) {
-    if (!s || !s->io || !s->dma || !s->dual_mode || s->io_active)
+/* Halt the controller before releasing any DMA lease. Class-specific
+ * close wrappers only validate the session kind; they do not own DMA. */
+static int controller_close(struct nas_xhci_ro_session *s,bool dual) {
+    if(!s || !s->io || !s->dma || s->io_active || s->dual_mode!=dual)
         return -EINVAL;
-    /* HCHalted FIRST: on failure not even a supplementary lease is
-     * disarmed, freed or made safe for external BAR unmapping.
-     */
-    if (s->may_dma || s->lease.may_dma ||
-        s->dual_extra_lease.may_dma) {
+    if(s->may_dma || s->lease.may_dma || (dual && s->dual_extra_lease.may_dma)) {
         int rc=quiesce(s);
-        if (rc) return rc;
-        if (s->lease.may_dma) {
+        if(rc)return rc;
+        if(s->lease.may_dma) {
             rc=nas_dma_lease_disarm_after_quiesce(&s->lease);
-            if (rc) return rc;
+            if(rc)return rc;
         }
-        if (s->dual_extra_lease.may_dma) {
+        if(dual && s->dual_extra_lease.may_dma) {
             rc=nas_dma_lease_disarm_after_quiesce(&s->dual_extra_lease);
-            if (rc) return rc;
+            if(rc)return rc;
         }
         s->may_dma=false;
     }
-    int rc=release_pages(&s->dual_extra_lease,s->dual_extra_pages,NAS_XHCI_DUAL_EXTRA_PAGES);
-    if(rc)return rc;
+    int rc;
+    if(dual) {
+        rc=release_pages(&s->dual_extra_lease,s->dual_extra_pages,NAS_XHCI_DUAL_EXTRA_PAGES);
+        if(rc)return rc;
+    }
     rc=release_pages(&s->lease,s->pages,NAS_XHCI_RO_DMA_PAGES);
     if(rc)return rc;
-    if (s->dual_extra_lease.provider &&
-        nas_dma_lease_end(&s->dual_extra_lease)) return -EIO;
-    if (s->lease.provider && nas_dma_lease_end(&s->lease)) return -EIO;
+    if(dual && s->dual_extra_lease.provider && nas_dma_lease_end(&s->dual_extra_lease))
+        return -EIO;
+    if(s->lease.provider) {
+        rc=nas_dma_lease_end(&s->lease);
+        if(rc)return dual ? -EIO : rc;
+    }
     zero_bytes(s,sizeof(*s));
     return 0;
+}
+int nas_xhci_dual_hid_close(struct nas_xhci_ro_session *s) {
+    return controller_close(s,true);
 }
 
 static int bulk_transfer(struct nas_xhci_ro_session *s, bool in,
@@ -1220,22 +1222,7 @@ int nas_xhci_ro_bulk_in(struct nas_xhci_ro_session *s,
     return bulk_transfer(s, true, dst, bytes);
 }
 int nas_xhci_ro_close(struct nas_xhci_ro_session *s) {
-    if (!s || !s->io || !s->dma || s->io_active || s->dual_mode)
-        return -EINVAL;
-    if (s->may_dma) {
-        /* Failure must NOT release any DMA or allow BAR unmap. */
-        int rc = quiesce(s);
-        if (rc) return rc;
-        rc = nas_dma_lease_disarm_after_quiesce(&s->lease);
-        if (rc) return rc;
-        s->may_dma = false;
-    }
-    int rc=release_pages(&s->lease,s->pages,NAS_XHCI_RO_DMA_PAGES);
-    if(rc)return rc;
-    rc=nas_dma_lease_end(&s->lease);
-    if (rc) return rc;
-    zero_bytes(s, sizeof(*s));
-    return 0;
+    return controller_close(s,false);
 }
 
 int nas_xhci_hid_close(struct nas_xhci_ro_session *s) {
@@ -1424,19 +1411,10 @@ static int ftdi_receive_event(struct nas_xhci_ro_session *s,
 int nas_xhci_ftdi_open(const struct nas_xhci_io *io,
                        const struct nas_dma_provider *dma,
                        struct nas_xhci_ro_session *s) {
-    if (!io || !dma || !s || !io->read32 || !io->write32 ||
-        io->mmio_bytes < 0x1000U || s->io || s->lease.held)
-        return -EINVAL;
-    s->io = io;
-    s->dma = dma;
-    s->ftdi_mode = true;
-    s->debug_stage = NAS_XHCI_STAGE_DMA;
-    int rc=acquire_pages(&s->lease,dma,s->pages,NAS_XHCI_RO_DMA_PAGES);
+    if(!controller_available(io,dma,s))return -EINVAL;
+    s->ftdi_mode=true;
+    int rc=controller_start(io,dma,s);
     if(rc)return rc;
-    rc = run_controller(s);
-    if (rc) return rc;
-    rc = setup_context(s);
-    if (rc) return rc;
     rc = ftdi_descriptors(s);
     if (rc) return rc;
     rc = configure_bulk_endpoints(s);
