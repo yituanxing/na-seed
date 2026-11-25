@@ -983,27 +983,25 @@ static uint64_t sys_netlink_sendmsg(uint64_t fd,uint64_t user_message,
     if((!msg.name && msg.namelen) ||
        (msg.name && msg.namelen<NAS_NETLINK_SOCKADDR_SIZE))
         return (uint64_t)-EINVAL;
-    uint8_t packet[NAS_NETLINK_MAX_DATAGRAM];
-    uint8_t name[NAS_NETLINK_SOCKADDR_SIZE];
-    uint64_t length=0;
-    for(unsigned i=0;i<msg.iovlen;i++) {
-        struct nas_iovec iov;
-        if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov) ||
-           !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov),
-                                (uint8_t *)&iov,sizeof(iov)))
-            return (uint64_t)-EFAULT;
-        if(iov.length>NAS_NETLINK_MAX_DATAGRAM-length)
-            return (uint64_t)-EMSGSIZE;
-        if(iov.length && !nas_user_read_bytes(iov.base,packet+length,
-                                              iov.length))
-            return (uint64_t)-EFAULT;
-        length+=iov.length;
+    /* Datagrams use the same File-owned LP64 vector validation and gather
+     * as writev: no separate netlink-only copy loop or overflow policy. */
+    unsigned slot=TASK.fds->entries[fd].slot;
+    struct nas_fs_io_vectors vectors={0};
+    int rc=nas_fs_io_vectors_import(slot,msg.iov,msg.iovlen,true,&vectors);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(vectors.total>NAS_NETLINK_MAX_DATAGRAM) {
+        nas_fs_io_vectors_release(&vectors);
+        return (uint64_t)-EMSGSIZE;
     }
+    uint8_t packet[NAS_NETLINK_MAX_DATAGRAM],name[NAS_NETLINK_SOCKADDR_SIZE];
+    bool copied=nas_fs_io_vectors_copyin(&vectors,packet,vectors.total);
+    unsigned length=(unsigned)vectors.total;
+    nas_fs_io_vectors_release(&vectors);
+    if(!copied)return (uint64_t)-EFAULT;
     if(msg.name && !nas_user_read_bytes(msg.name,name,sizeof(name)))
         return (uint64_t)-EFAULT;
-    return (uint64_t)nas_netlink_core_sendto(TASK.fds->entries[fd].slot,
-          packet,(unsigned)length,msg.name?name:NULL,
-          msg.name?sizeof(name):0);
+    return (uint64_t)nas_netlink_core_sendto(slot,packet,length,
+          msg.name?name:NULL,msg.name?sizeof(name):0);
 }
 /* The same immutable, kernel-owned import serves synchronous socket syscalls
  * and a Task continuation after an asynchronous Netlink event. Foreign user
