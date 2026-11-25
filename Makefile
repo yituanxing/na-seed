@@ -831,7 +831,7 @@ $(ISO): $(KERNEL) $(OUT)/user-hello $(BINARY_EFI) limine.conf
 	 --efi-boot-part --efi-boot-image \
 	 -o $(ISO) $(OUT)/iso
 
-.PHONY: all iso kernel native smoke run clean
+.PHONY: all iso kernel native smoke run clean check-host
 ifeq ($(ARCH),x86_64)
 all: iso
 iso: $(ISO)
@@ -847,6 +847,11 @@ native:
 	sh scripts/build-native-full.sh "$(ARCH)"
 smoke: iso
 	sh tests/boot-smoke.sh $(ISO)
+# Host-only contract checks compile production objects with strict diagnostics.
+check-host:
+	mkdir -p $(OUT)/test
+	cc -std=c11 -O2 -Wall -Wextra -Werror kernel/drivers/display/fbdev.c tests/display-contract.c -o $(OUT)/test/display-contract
+	$(OUT)/test/display-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:

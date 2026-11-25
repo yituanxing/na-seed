@@ -51,10 +51,6 @@ bool nas_space_map_access(struct nas_user_space *space,uint64_t va,
                           unsigned access) {
     return space_map_access(space,va,access);
 }
-bool nas_space_map_elf_access(struct nas_user_space *space,uint64_t va,
-                              unsigned access) {
-    return space_map_access(space,va,access);
-}
 bool nas_space_map_page(struct nas_user_space *space,
                         uint64_t va, bool writable) {
     if (!space || !page_aligned(va)) return false;

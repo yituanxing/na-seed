@@ -21,3 +21,10 @@ This reset replaces the historical test forest. It does not delete the kernel an
 ## Retired parallel M0 kernel
 
 The obsolete `NASEED_PORT_M0` RISC-V/AArch64 miniature boot/test stack, its standalone ELF loader and page-table smoke tests have been removed. All three targets now build the shared kernel and native user-space sample through the same maintained build route. Removing the old internal tests does not prove complete ABI or device correctness; the build and x86 UEFI boot matrix is the current safety gate.
+
+## Targeted host regression
+
+Run `make check-host` to compile the real framebuffer/display implementation
+and check mode ABI, boot handoff, device takeover, byte-range bounds, VMA
+owner pins, and detach/rebind. This restores focused coverage lost when the
+historical host-only framebuffer test was deleted. It does not emulate a GPU.

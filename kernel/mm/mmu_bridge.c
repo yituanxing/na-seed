@@ -97,7 +97,7 @@ bool nas_mmu_map_prot_page(uint64_t va, uint64_t prot) {
 bool nas_mmu_map_elf_page(uint64_t va,unsigned flags) {
     if (!(flags&4U) || (flags&~7U))return false;
     struct nas_user_space s=current();
-    return nas_space_map_elf_access(&s,va,NAS_UP_READ|
+    return nas_space_map_access(&s,va,NAS_UP_READ|
            ((flags&2U)?NAS_UP_WRITE:0)|((flags&1U)?NAS_UP_EXEC:0));
 }
 bool nas_mmu_sync_user_exec(uint64_t va,uint64_t len) {
