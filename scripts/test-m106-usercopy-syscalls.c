@@ -1296,6 +1296,28 @@ int main(void) {
     assert(guest_task.fds->entries[a].cloexec && guest_task.fds->entries[b].cloexec);
     assert(live_fds()==4 && live_files()==4);
 
+    /* Linux statx(AT_EMPTY_PATH) must describe the same anonymous File
+     * as fstat: not just mounted files, but also pipe and UNIX socket. */
+    const uint64_t empty_name=TEST_BASE+1000;
+    const uint64_t old_stat=TEST_BASE+2*TEST_PAGE+1024;
+    const uint64_t new_statx=TEST_BASE+2*TEST_PAGE+1280;
+    *user_ptr(empty_name)=0;
+    const unsigned live_desc[]={rd,a};
+    for(unsigned i=0;i<sizeof(live_desc)/sizeof(live_desc[0]);i++) {
+        assert(sys_fstat_boot(live_desc[i],old_stat)==0);
+        assert(sys_statx_boot(live_desc[i],empty_name,0x1000ULL,
+                              0x7ffULL,new_statx)==0);
+        struct nas_linux_stat file_stat;
+        struct nas_linux_statx sx;
+        assert(nas_user_read_bytes(old_stat,(uint8_t *)&file_stat,sizeof(file_stat)));
+        assert(nas_user_read_bytes(new_statx,(uint8_t *)&sx,sizeof(sx)));
+        assert(sx.ino==file_stat.ino && sx.mode==(uint16_t)file_stat.mode);
+        assert(sx.nlink==file_stat.nlink && sx.size==(uint64_t)file_stat.size);
+    }
+    assert(sys_statx_boot(NAS_FD_LIMIT,empty_name,0x1000ULL,
+                          0x7ffULL,new_statx)==(uint64_t)-EBADF);
+    puts("[M106 STATX FD PARITY PASS] anonymous pipe/socket statx(AT_EMPTY_PATH) and fstat share File identity");
+
     /* accept4 must leave the pending peer owned by the listener when either
      * of its userspace outputs is RX. It may be published only after both
      * socklen and sockaddr have been made writable. */

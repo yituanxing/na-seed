@@ -46,14 +46,6 @@ static void fill_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
     st->size=(int64_t)info->size;
     st->blocks=(int64_t)((info->size+511U)/512U);
 }
-static uint64_t write_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
-                                     uint64_t address) {
-    struct nas_linux_stat st;
-    fill_bootstrap_stat(info,&st);
-    return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st)) ?
-           0:(uint64_t)-EFAULT;
-}
-
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
 static int fill_mounted_stat(const struct nas_fs_node *node,
@@ -137,15 +129,17 @@ static uint64_t sys_statfs_boot(uint64_t pathname,uint64_t address) {
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
-static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
+/* One File-owned metadata snapshot for fstat and statx(AT_EMPTY_PATH).
+ * The Linux wire encoder is syscall-specific, the identity is not. */
+static int stat_fd_snapshot(uint64_t fd,struct nas_linux_stat *out) {
     if (fd >= NAS_FD_LIMIT || !TASK.fds->entries[fd].kind)
-        return (uint64_t)-EBADF;
+        return -EBADF;
     /* Any opened VFS inode, regardless of bootfs/tmpfs/procfs/ext4
      * branding, has exactly one owner and one stat encoder. fstat(fd)
      * and fstatat(path) report the same mount identity and timestamps. */
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(opened->vnode_pinned)
-        return write_mounted_stat(&opened->vnode,address);
+        return fill_mounted_stat(&opened->vnode,out);
     if(opened->boot_identity.valid) {
         const struct nas_fs_bootstrap_info identity={
             .dev=opened->boot_identity.dev,
@@ -154,7 +148,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
             .mode=opened->boot_identity.mode,
             .size=opened->boot_identity.size
         };
-        return write_bootstrap_stat(&identity,address);
+        { fill_bootstrap_stat(&identity,out); return 0; }
     }
     const uint8_t kind=TASK.fds->entries[fd].kind;
     struct nas_linux_stat st={0};
@@ -165,19 +159,19 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
     } else if(kind==FD_BOOTFS) {
         const struct limine_file *file=opened->boot_file;
-        if (!file) return (uint64_t)-EBADF;
+        if (!file) return -EBADF;
         const struct nas_fs_bootstrap_info module={
             .dev=1,.ino=nas_fs_bootstrap_module_ino(file),
             .mode=0100555U,.size=file->size
         };
-        return write_bootstrap_stat(&module,address);
+        { fill_bootstrap_stat(&module,out); return 0; }
     } else if(kind==FD_FRAMEBUFFER) {
         /* Relative openat("fb0") under /dev has the same device identity:
          * fstat must not depend on the optional origin-path spelling. */
         struct nas_fs_bootstrap_info info;
         if(nas_fs_bootstrap_describe("/dev/fb0",&info))
-            return (uint64_t)-ENODEV;
-        return write_bootstrap_stat(&info,address);
+            return -ENODEV;
+        { fill_bootstrap_stat(&info,out); return 0; }
     } else if(kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE) {
         unsigned number=nas_pty_number(TASK.fds->entries[fd].slot);
         const struct nas_fs_bootstrap_info pty={
@@ -187,7 +181,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
                   ((136U<<8)|(uint64_t)number),
             .mode=0020620U
         };
-        return write_bootstrap_stat(&pty,address);
+        { fill_bootstrap_stat(&pty,out); return 0; }
     } else {
         const char *path=opened->origin_path;
         if(!path[0]) {
@@ -198,17 +192,24 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         struct nas_fs_bootstrap_info info;
         if(!nas_fs_bootstrap_describe(path,&info) &&
            info.fd_kind!=FD_BOOTFS)
-            return write_bootstrap_stat(&info,address);
+            { fill_bootstrap_stat(&info,out); return 0; }
         /* The original bootstrap UART is not a named VFS inode. Keep its
          * console identity stable across dup and across separate FDs. */
         const struct nas_fs_bootstrap_info console={
             .dev=2,.ino=101,.rdev=(5U<<8)|1U,.mode=0020666U
         };
-        return write_bootstrap_stat(&console,address);
+        { fill_bootstrap_stat(&console,out); return 0; }
     }
-    if (!nas_user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
-        return (uint64_t)-EFAULT;
+    *out=st;
     return 0;
+}
+/* fstat and statx share the same File identity but not their ABI structs. */
+static uint64_t sys_fstat_boot(uint64_t fd,uint64_t address) {
+    struct nas_linux_stat st;
+    int rc=stat_fd_snapshot(fd,&st);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st))
+           ? 0:(uint64_t)-EFAULT;
 }
 /* In a volatile tmpfs there is no asynchronous durable writeback.
  * fsync/fdatasync return success only for actual open RAM inodes. */
@@ -688,12 +689,6 @@ static uint64_t write_mounted_statx(const struct nas_fs_node *node,
     int rc=fill_mounted_stat(node,&st);
     return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,destination);
 }
-static uint64_t write_bootstrap_statx(const struct nas_fs_bootstrap_info *info,
-                                      uint64_t destination) {
-    struct nas_linux_stat st;
-    fill_bootstrap_stat(info,&st);
-    return write_linux_statx(&st,destination);
-}
 /* statx extends fstatat with a uniform 256-byte ABI and a separate mask.
  * The root/dirfd lookup and symlink policy are the existing VFS path API.
  * AT_STATX_SYNC_FORCE/DONT_SYNC are coherent no-ops: NaSeed has no delayed
@@ -722,20 +717,10 @@ static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
             return rc ? (uint64_t)(int64_t)rc :
                         write_mounted_statx(&cwd,statbuf);
         }
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=
-            &nas_open_files[TASK.fds->entries[fd].slot];
-        if(opened->vnode_pinned)return write_mounted_statx(&opened->vnode,statbuf);
-        if(opened->boot_identity.valid) {
-            const struct nas_fs_bootstrap_info info={
-                .dev=opened->boot_identity.dev,.ino=opened->boot_identity.ino,
-                .rdev=opened->boot_identity.rdev,.mode=opened->boot_identity.mode,
-                .size=opened->boot_identity.size
-            };
-            return write_bootstrap_statx(&info,statbuf);
-        }
-        return (uint64_t)-EOPNOTSUPP;
+        if(fd<0)return (uint64_t)-EBADF;
+        struct nas_linux_stat st;
+        int rc=stat_fd_snapshot((uint64_t)fd,&st);
+        return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,statbuf);
     }
     struct nas_linux_stat st;
     int rc=stat_path_snapshot(dirfd,pathname,
