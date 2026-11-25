@@ -203,9 +203,19 @@ for wrapper, delegate in (("nas_vfs_create(", "nas_vfs_create_child("),
         raise SystemExit(f"VFS namespace Path-first bridge missing: {wrapper}")
 metadata_src=(root/"kernel/fs/metadata_syscall.c").read_text()
 open_src=(root/"kernel/fs/syscall.c").read_text()
-if ("nas_fs_bootstrap_candidate(&request,path)" not in metadata_src or
-        "nas_fs_bootstrap_candidate(request,candidate)" not in open_src):
-    raise SystemExit("stat/open bootstrap path bypasses the shared endpoint whitelist")
+# One canonical admission point must guard ALL three syscall adapters.
+# Looking for an old local candidate buffer would incorrectly reject the
+# real consolidation, and could also pass while the nofollow gate is absent.
+required_admission=(
+    "int nas_fs_bootstrap_if_absent(",
+    "nas_fs_bootstrap_candidate(request,candidate)",
+    "nas_fs_bootstrap_nofollow_probe(request,path)",
+    "nas_fs_bootstrap_describe(literal,out)",
+)
+if (any(marker not in open_src for marker in required_admission) or
+        open_src.count("nas_fs_bootstrap_if_absent(request,path,&bootstrap)") < 2 or
+        metadata_src.count("nas_fs_bootstrap_if_absent(") < 2):
+    raise SystemExit("stat/open/access must share whitelisted nofollow bootstrap admission")
 for source in ("kernel/fs/vfs_providers.c", "ports/littlefs/vfs_port.c",
                "ports/lwext4/guest_vfs.c"):
     if "nas_vfs_join_child(" not in (root/source).read_text():
