@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/ci-install-x86-deps.sh'
       - 'kernel/platform/x86_qemu_hw_contract.h'
       - 'kernel/platform/x86_h11_bar.h'
       - '.github/workflows/h4-qemu-nvme-readonly.yml'
@@ -38,20 +39,7 @@ jobs:
           submodules: true
       - name: Prepare freestanding tools and QEMU NVMe
         run: |
-          missing=''
-          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
-                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
-            bin=${spec%%:*}; pkg=${spec#*:}
-            command -v "$bin" >/dev/null || missing="$missing $pkg"
-          done
-          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
-             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
-            missing="$missing ovmf"
-          fi
-          if [ -n "$missing" ]; then
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
-          fi
+          sh scripts/ci-install-x86-deps.sh base
       - name: H0–H4 host regression and isolated kernel build
         run: |
           make hw-h4-host-check

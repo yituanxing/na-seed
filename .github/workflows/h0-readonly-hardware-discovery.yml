@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/ci-install-x86-deps.sh'
       - '.github/workflows/h0-readonly-hardware-discovery.yml'
       - 'kernel/kernel.c'
       - 'kernel/drivers/core/pci_scan.*'
@@ -57,17 +58,7 @@ jobs:
           grep -q ' nas_x86_h0_pci_inventory$' build/h0-hardware/h0-symbols.txt
       - name: Prepare UEFI ISO and virtual firmware test tools
         run: |
-          missing=''
-          command -v xorriso >/dev/null || missing="$missing xorriso"
-          command -v qemu-system-x86_64 >/dev/null || missing="$missing qemu-system-x86"
-          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
-             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
-            missing="$missing ovmf"
-          fi
-          if [ -n "$missing" ]; then
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
-          fi
+          sh scripts/ci-install-x86-deps.sh iso
       - name: Boot isolated H0 UEFI image in QEMU without any writable disk
         timeout-minutes: 5
         run: |

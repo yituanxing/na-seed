@@ -6,6 +6,7 @@ on:
       - feat/na-hw-h0-pci-20261110
       - 'refactor/naseed-cleanup-*'
     paths:
+      - 'scripts/ci-install-x86-deps.sh'
       - '.github/workflows/h2-readonly-pci-resource-inventory.yml'
       - 'kernel/platform/x86_h1_ecam.*'
       - 'kernel/platform/x86_pci_config.h'
@@ -35,20 +36,7 @@ jobs:
           submodules: true
       - name: Prepare freestanding build and QEMU NVMe tools
         run: |
-          missing=''
-          for spec in 'clang:clang' 'ld.lld:lld' 'cc:gcc' \
-                      'xorriso:xorriso' 'qemu-system-x86_64:qemu-system-x86'; do
-            bin=${spec%%:*}; pkg=${spec#*:}
-            command -v "$bin" >/dev/null || missing="$missing $pkg"
-          done
-          if [ ! -s /usr/share/OVMF/OVMF_CODE_4M.fd ] &&
-             [ ! -s /usr/share/OVMF/OVMF_CODE.fd ]; then
-            missing="$missing ovmf"
-          fi
-          if [ -n "$missing" ]; then
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
-          fi
+          sh scripts/ci-install-x86-deps.sh base
       - name: H0/H1/H2 safe firmware, ECAM, PCI BAR and capabilities fixtures
         run: make hw-h2-host-check
       - name: Build full isolated H2 kernel and verify discovery code
