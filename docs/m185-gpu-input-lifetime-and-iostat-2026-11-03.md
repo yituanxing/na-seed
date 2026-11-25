@@ -43,7 +43,7 @@ Required host gates:
 - `sh scripts/check-m166-input-port.sh`
 - `sh scripts/check-m175-irq-core.sh`
 - `sh scripts/check-m178-blk-irq.sh`
-- `sh scripts/check-m185-software-functions.sh`
+- `sh scripts/check-software-functions.sh m185`
 - `python3 scripts/check-three-isa-core.py`
 
 ## Genuine Alpine functional addition

@@ -25,7 +25,6 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 CANDIDATES = ROOT / "scripts/m206-candidate-elfs.tsv"
-COHORT = ROOT / "scripts/m206-alpine-cohort.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m206-candidates.txt"
 REOPEN = ROOT / "scripts/m206-alpine-reopen-cases.tsv"
 GUEST = ROOT / "tests/m206-software-workload.sh"
@@ -41,10 +40,11 @@ def records(path: Path) -> list[str]:
 
 def manifest_contract() -> list[tuple[str, str, str, str]]:
     candidate_lines = CANDIDATES.read_text().splitlines()
-    cohort_lines = COHORT.read_text().splitlines()
     header = "package\telf_path\tfamily\tprobe"
-    assert candidate_lines[0] == cohort_lines[0] == header
-    assert records(CANDIDATES) == records(COHORT), "signed census != guest cohort"
+    assert candidate_lines[0] == header
+    driver = (ROOT / "scripts/probe-m197-alpine-software-cohort.sh").read_text()
+    assert re.search(r'install -m 0644 scripts/m206-candidate-elfs.tsv\s+\\\s+"\$overlay/root/m206-cohort.tsv"', driver)
+    assert driver.count('scripts/m206-candidate-elfs.tsv') >= 3
     entries = [tuple(line.split("\t")) for line in candidate_lines[1:]
                if line.strip() and not line.startswith("#")]
     assert len(entries) == 20, "M206 requires 20 accountable original programs"
@@ -95,7 +95,7 @@ def guest_contract(entries: list[tuple[str, str, str, str]]) -> None:
     owner = runpy.run_path(str(ROOT / "scripts/test-m205-alpine-host.py"))
     loop_test = owner["check_guest_manifest_loop"]
     for fields in ("pkg path family check", "package elf family case_id"):
-        loop_test(dispatch, DISPATCH, COHORT, 20, fields)
+        loop_test(dispatch, DISPATCH, CANDIDATES, 20, fields)
     script = GUEST.read_text()
     assert "--exercise" in script
     for _, path, _, probe in entries:
@@ -169,7 +169,7 @@ def reporting_contract(entries: list[tuple[str, str, str, str]]) -> None:
         first, reopen, report = (base / "first", base / "reopen", base / "report.json")
 
         def call(*, strict: bool = True) -> tuple[int, dict | None, str]:
-            args = [sys.executable, str(REPORTER), "m206", str(COHORT), str(first),
+            args = [sys.executable, str(REPORTER), "m206", str(CANDIDATES), str(first),
                     str(reopen), str(report)]
             if strict:
                 args.append("--require-all")

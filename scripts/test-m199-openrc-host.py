@@ -137,7 +137,7 @@ def check() -> None:
     # Unlike M198's second CPIO one-shot reopen, M199 uses the signed
     # Alpine /sbin/init on BOTH native-QEMU boots. The runlevel entry is
     # created by rc-update on boot one, then used without boot-two staging.
-    manifest = read('scripts/m199-alpine-boot-cases.tsv')
+    manifest = read('scripts/m197-alpine-cases.tsv')
     cases = [line.split('\t') for line in manifest.splitlines()
              if line.strip() and not line.lstrip().startswith('#')]
     assert len(cases) == 1 and len(cases[0]) == 6
@@ -149,7 +149,8 @@ def check() -> None:
     assert 'NAS_M199_ORIGINAL_OPENRC_DESKTOP:-0' in driver
     assert re.search(r'if \[ "\$m199" = 1 \]; then[\s\S]{0,260}?\n\s*m198=1', driver)
     assert 'scripts/stage-m199-alpine-openrc.sh "$port" "$overlay"' in driver
-    assert driver.count('BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv') >= 2
+    assert re.search(r'if \[ "\$m199" = 1 \] \|\|[^;]*; then\n    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv', driver)
+    assert re.search(r'm199-reboot-serial-input.fifo"\n    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv', driver)
     assert 'scripts/m199-alpine-uart.py first "$runner" "$serial"' in driver
     assert 'scripts/m199-alpine-uart.py reboot "$runner" "$serial"' in driver
     assert 'scripts/m199-qmp-alpine-openrc.py --mode first' in driver

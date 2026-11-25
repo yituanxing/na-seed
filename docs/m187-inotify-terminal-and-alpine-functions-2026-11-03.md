@@ -65,7 +65,7 @@ M174 and runs after M186's task-level `pidstat` oracle. It performs:
 
 Five unique `M187_SOFTWARE_*_FUNCTION_PASS` markers are asserted exactly
 once by the existing guest probe. The host check
-`scripts/check-m187-software-functions.sh` guards the old signed manifest,
+`scripts/check-software-functions.sh m187` guards the old signed manifest,
 the old functional test chain, the single-CPIO staging seam and the new
 guest markers. The additional util-linux guest entry gate has its own
 `M187_SOFTWARE_26_NEW_SIGNED_ELF_ENTRY_ONLY_PASS` marker. Neither substitutes

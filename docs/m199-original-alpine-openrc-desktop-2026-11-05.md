@@ -43,7 +43,7 @@ No custom init, no CPIO desktop stub, no new GUI stack or duplicate driver.
 M198's persistence checker starts a CPIO BusyBox one-shot command with Alpine
 ELFs from ext4. That proves data can be reopened but **not** that original
 Alpine PID1 and OpenRC came up again. M199 explicitly sets
-`scripts/m199-alpine-boot-cases.tsv` to original `/sbin/init` for both QEMUs.
+`scripts/m197-alpine-cases.tsv` to original `/sbin/init` for both QEMUs.
 
 ## Strict acceptance matrix
 

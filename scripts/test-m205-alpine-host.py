@@ -18,7 +18,6 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 MODULE = ROOT / "scripts/m205-compat-report.py"
 CANDIDATES = ROOT / "scripts/m205-candidate-elfs.tsv"
-COHORT = ROOT / "scripts/m205-alpine-cohort.tsv"
 PACKAGES = ROOT / "rootfs/alpine/packages-m205-candidates.txt"
 GUEST = ROOT / "tests/m205-software-workload.sh"
 M204_GUEST = ROOT / "tests/m204-software-workload.sh"
@@ -62,7 +61,7 @@ def check_guest_manifest_isolation() -> None:
     manifest, and a native utility could consume a later row. Both first-boot
     APK pre-scan and each first/reopen software loop must read only fd9.
     """
-    contracts = ((GUEST, COHORT, 20,
+    contracts = ((GUEST, CANDIDATES, 20,
                   ("pkg path family check", "package elf family case_id")),
                  (M204_GUEST, M204_COHORT, 12,
                   ("category package test_id",)))
@@ -201,7 +200,9 @@ def main() -> None:
     cases = manifest_cases(CANDIDATES)
     # The signed-host census, guest installer and strict report must point to
     # EXACTLY the same twenty original ELF paths and sixteen package owners.
-    assert manifest_cases(COHORT) == cases
+    driver = (ROOT / "scripts/probe-m197-alpine-software-cohort.sh").read_text()
+    assert re.search(r'install -m 0644 scripts/m205-candidate-elfs.tsv\s+\\\s+"\$overlay/root/m205-cohort.tsv"', driver)
+    assert driver.count('scripts/m205-candidate-elfs.tsv') >= 3
     package_lines = [line.strip() for line in PACKAGES.read_text().splitlines()
                      if line.strip() and not line.lstrip().startswith("#")]
     assert len(package_lines) == len(set(package_lines))

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Host-only, immutable upstream source preparation: the signed Alpine APK
-# installer remains exclusively in stage-m83-prebuilt.sh.
+# installer remains exclusively in stage-alpine-source-toolchain.sh.
 set -eu
 [ "$#" -eq 1 ] || { echo 'usage: stage-m83-source-build.sh amd64|riscv64|arm64' >&2; exit 2; }
 case "$1" in amd64|riscv64|arm64) ;; *) exit 2 ;; esac

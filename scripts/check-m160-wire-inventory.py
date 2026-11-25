@@ -54,7 +54,7 @@ assert "runpy.run_path('scripts/m156-https-wire-server.py')" in server
 assert 'scripts/host-configure-m156-https.sh' in fixture
 assert 'host-m160-image.png' in fixture and 'm160-image.sha256' in fixture
 assert '[ "$magic" = P6 ]' in guest, 'RGB PNG must decode to native raw PPM'
-assert 'sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m160-batch' in (
-    ROOT / 'scripts/stage-m160-prebuilt.sh').read_text()
+assert 'sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$profile"' in (
+    ROOT / 'scripts/stage-alpine-display.sh').read_text()
 print('[M160 STATIC PASS] 6 previously signed ELFs, 0 new identities; '
       'TLS SAN checks, host-only PNG, 2 real GET paths, 5 unique markers')

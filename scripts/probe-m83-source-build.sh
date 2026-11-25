@@ -8,7 +8,7 @@ port=$1
 . scripts/native-qemu-target.sh
 . scripts/native-source-qemu.sh
 sh scripts/stage-m83-source-build.sh "$port"
-sh scripts/stage-m83-prebuilt.sh "$port"
+sh scripts/stage-alpine-source-toolchain.sh "$port" m83-source
 work="build/external/m83-source/$port"
 nas_source_guest_env "$work/rootfs" 1536M
 disk="$work/m83-physical-ext4.img"

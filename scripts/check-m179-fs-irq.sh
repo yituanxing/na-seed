@@ -36,7 +36,6 @@ done
 sh scripts/check-m178-blk-irq.sh
 sh scripts/check-host-fixture.sh m187-inotify
 sh scripts/check-m187-vt100.sh
-sh scripts/check-m186-software-functions.sh
 sh scripts/check-software-batch-manifest.sh m187
-sh scripts/check-m187-software-functions.sh
+sh scripts/check-software-functions.sh m187
 echo '[M179 HOST FS IRQ PASS] physical ext4/MBR host persistence oracle, real kernel worker path, owned BlockRequest + M178/M177/M176/M175/M174 preservation'

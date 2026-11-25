@@ -553,7 +553,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
         "$overlay/root/m205-software-workload.sh"
     elif [ "$m205" = 1 ]; then
     cohort=m205
-    sudo install -m 0644 scripts/m205-alpine-cohort.tsv \
+    sudo install -m 0644 scripts/m205-candidate-elfs.tsv \
         "$overlay/root/m205-cohort.tsv"
     # M205's genuine llvm21-symbolizer needs a real, debug-info-bearing
     # target-ISA ELF. Build it on the host, just as our earlier M141 toolchain
@@ -592,7 +592,7 @@ if [ "$m205" = 1 ] || [ "$m206" = 1 ] || [ "$m215" = 1 ] || [ "$m218" = 1 ] || [
     cohort=m206
     sudo install -m 0644 tests/m206-software-workload.sh \
         "$overlay/root/m206-software-workload.sh"
-    sudo install -m 0644 scripts/m206-alpine-cohort.tsv \
+    sudo install -m 0644 scripts/m206-candidate-elfs.tsv \
         "$overlay/root/m206-cohort.tsv"
     sudo test -s "$overlay/root/m205-software-workload.sh"
     sudo test -s "$overlay/root/m206-software-workload.sh"
@@ -1271,29 +1271,12 @@ if [ "$m233" = 1 ]; then
     }
 fi
 
-if [ "$m199" = 1 ]; then
-    # This is the SAME original /sbin/init manifest on BOTH boots; M198's
-    # independent second QEMU previously used a CPIO BusyBox entry instead.
-    export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
-fi
-if [ "$m227" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
-fi
-if [ "$m228" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
-fi
-if [ "$m229" = 1 ]; then
-    # Exact same original Alpine /sbin/init as M228, never a synthetic entry.
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
-fi
-if [ "$m230" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
-fi
-if [ "$m231" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
-fi
-if [ "$m232" = 1 ] || [ "$m233" = 1 ]; then
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+# All these cohorts enter the untouched Alpine PID1 on both physical boots.
+# Retain explicit per-reopen assignments to avoid inherited one-shot manifests.
+if [ "$m199" = 1 ] || [ "$m227" = 1 ] || [ "$m228" = 1 ] ||
+   [ "$m229" = 1 ] || [ "$m230" = 1 ] || [ "$m231" = 1 ] ||
+   [ "$m232" = 1 ] || [ "$m233" = 1 ]; then
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
 fi
 
 if [ "$replay" = 0 ]; then
@@ -1752,7 +1735,7 @@ if [ "$m199" = 1 ]; then
     unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
     export NAS_QEMU_QMP_SOCKET="$PWD/$work/m199-reboot-desktop.qmp"
     export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m199-reboot-serial-input.fifo"
-    export BUSYBOX_PARITY_MANIFEST=scripts/m199-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M199_REBOOT_SECONDS:-500}
     export NAS_M199_QMP_FAIL_FILE="$PWD/$work/m199-qmp-reboot.failed"
     export NAS_M199_QMP_PASS_FILE="$PWD/$work/m199-qmp-reboot.pass"
@@ -1803,7 +1786,7 @@ if [ "$m232" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M232 FAIL] stale second independent real NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M232_REOPEN_QEMU_TIMEOUT:-1100}
     m232_start_host reopen "$serial"
     if python3 scripts/m232-alpine-uart.py reopen "$runner" "$serial" \
@@ -1856,7 +1839,7 @@ if [ "$m233" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M233 FAIL] stale second original NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M233_REOPEN_QEMU_TIMEOUT:-1100}
     m233_start_host reopen "$serial"
     if python3 scripts/m233-alpine-uart.py reopen "$runner" "$serial" \
@@ -1932,7 +1915,7 @@ if [ "$m231" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M231 FAIL] stale second real NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M231_REOPEN_QEMU_TIMEOUT:-1100}
     m231_start_host reopen "$serial"
     if python3 scripts/m231-alpine-uart.py reopen "$runner" "$serial" \
@@ -1986,7 +1969,7 @@ if [ "$m230" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M230 FAIL] stale independent second NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=$ssh_reopen_qemu_timeout
     m230_start_host reopen "$serial"
     if python3 "$ssh_uart" reopen "$runner" "$serial" \
@@ -2050,7 +2033,7 @@ if [ "$m229" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M229 FAIL] stale second independent NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M229_REOPEN_QEMU_TIMEOUT:-1100}
     m229_start_host reopen "$serial"
     if python3 scripts/m229-alpine-uart.py reopen "$runner" "$serial" \
@@ -2112,7 +2095,7 @@ if [ "$m228" = 1 ]; then
     test ! -e "$NAS_VIRTIO_NET_PCAP" || {
         echo '[M228 FAIL] stale second independent NIC PCAP' >&2; exit 1;
     }
-    export BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M228_REOPEN_QEMU_TIMEOUT:-1050}
     m228_start_host reopen "$serial"
     if python3 scripts/m228-alpine-uart.py reopen "$runner" "$serial" \
@@ -2172,7 +2155,7 @@ if [ "$m227" = 1 ]; then
     echo "[M227 REOPEN UART START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     unset NAS_QEMU_SERIAL_FIFO NAS_VIRTIO_NET_PCAP NAS_QEMU_QMP_SOCKET
     export NAS_QEMU_SERIAL_FIFO="$PWD/$work/m227-reopen-input.fifo"
-    export BUSYBOX_PARITY_MANIFEST=scripts/m227-alpine-boot-cases.tsv
+    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv
     export NAS_APP_BATCH_QEMU_TIMEOUT=${NAS_M227_REOPEN_QEMU_TIMEOUT:-650}
     python3 scripts/m227-alpine-uart.py reopen "$runner" "$serial" \
         "$PWD/$work/m227-reopen-runner.log" "$NAS_QEMU_SERIAL_FIFO"
@@ -2436,11 +2419,11 @@ if [ "$m205" = 1 ]; then
     }
     case "${NAS_M205_REQUIRE_ALL:-0}" in
         0) python3 scripts/m205-compat-report.py \
-               scripts/m205-alpine-cohort.tsv \
+               scripts/m205-candidate-elfs.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m205-compat-report.json" ;;
         1) python3 scripts/m205-compat-report.py \
-               scripts/m205-alpine-cohort.tsv \
+               scripts/m205-candidate-elfs.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m205-compat-report.json" --require-all ;;
         *) echo '[M205 FAIL] invalid strict mode' >&2; exit 2 ;;
@@ -2453,11 +2436,11 @@ if [ "$m206" = 1 ]; then
     }
     case "${NAS_M206_REQUIRE_ALL:-0}" in
         0) python3 scripts/alpine-compat-report.py m206 \
-               scripts/m206-alpine-cohort.tsv \
+               scripts/m206-candidate-elfs.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m206-compat-report.json" ;;
         1) python3 scripts/alpine-compat-report.py m206 \
-               scripts/m206-alpine-cohort.tsv \
+               scripts/m206-candidate-elfs.tsv \
                "$PWD/$work/m197-live.serial.log" "$reopen" \
                "$PWD/$work/m206-compat-report.json" --require-all ;;
         *) echo '[M206 FAIL] invalid strict mode' >&2; exit 2 ;;

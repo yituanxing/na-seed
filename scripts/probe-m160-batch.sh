@@ -26,7 +26,7 @@ BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m160)
 export BUSYBOX_PARITY_MANIFEST
 unset NAS_SYSCALL_TRACE
 
-sh scripts/stage-m160-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m160-batch
 work="build/external/m160-batch/$port"
 root="$work/rootfs"
 test -s "$work/rootfs.cpio"

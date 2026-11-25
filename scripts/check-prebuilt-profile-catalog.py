@@ -170,6 +170,33 @@ def validate_wrappers(profiles: set[str]) -> int:
         if len(probes) != 1:
             fail(f"{profile}: expected exactly one canonical network probe")
         wrappers[profile] = network.name
+    display = ROOT / "scripts/stage-alpine-display.sh"
+    source = display.read_text()
+    names = {"m156-https", *(f"m{n}-batch" for n in (160, 161, 162, 164, 166, 167, 168))}
+    if source.count('sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$profile"') != 1:
+        fail("display stage must call canonical signed overlay exactly once")
+    if set(re.findall(r"\bm\d+-(?:https|batch)\b", source)) != names:
+        fail("display staging profile set changed")
+    for profile in names:
+        if profile in wrappers:
+            fail(f"{profile}: duplicate display stage owner")
+        milestone = profile.split("-")[0]
+        probe = (ROOT / "scripts/probe-native-desktop.sh" if milestone in {"m166", "m167", "m168"}
+                 else ROOT / f"scripts/probe-{milestone}-{'https-wire-smoke' if milestone == 'm156' else 'batch'}.sh")
+        if f'sh scripts/stage-alpine-display.sh "$port" {profile}' not in probe.read_text():
+            fail(f"{profile}: native probe bypasses display stage")
+        wrappers[profile] = display.name
+    toolchain = ROOT / "scripts/stage-alpine-source-toolchain.sh"
+    source = toolchain.read_text()
+    if source.count('sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$profile"') != 1:
+        fail("source toolchain must call canonical signed overlay exactly once")
+    for profile in ("m83-source", "m84-source"):
+        if profile in wrappers or f"    {profile})" not in source:
+            fail(f"{profile}: missing or duplicate source toolchain stage")
+        probe = ROOT / f"scripts/probe-{profile}-build.sh"
+        if probe.read_text().count(f'sh scripts/stage-alpine-source-toolchain.sh "$port" {profile}') != 1:
+            fail(f"{profile}: probe bypasses source toolchain stage")
+        wrappers[profile] = toolchain.name
     if profiles != wrappers.keys():
         fail(f"catalog/wrapper mismatch: missing={sorted(wrappers.keys() - profiles)}, "
              f"orphan={sorted(profiles - wrappers.keys())}")

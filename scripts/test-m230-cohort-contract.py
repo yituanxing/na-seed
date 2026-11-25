@@ -24,7 +24,7 @@ def gate(source: str, workflow: str) -> None:
         '"$m230_client_dir/id_ed25519.pub"',
         'NAS_VIRTIO_NET_HOSTFWD_PORT=${NAS_M230_HOST_PORT:-12222}',
         'NAS_VIRTIO_NET_GUESTFWD_PORT=15446',
-        'BUSYBOX_PARITY_MANIFEST=scripts/m228-alpine-boot-cases.tsv',
+        'BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv',
         'm230_start_host first "$serial"',
         'm230_start_host reopen "$serial"',
         'ssh_uart=scripts/m230-alpine-uart.py',

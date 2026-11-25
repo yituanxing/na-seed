@@ -13,7 +13,7 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=700
 export BUSYBOX_PARITY_EXPECTED_COUNT=1
 BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m164)
 export BUSYBOX_PARITY_MANIFEST
-sh scripts/stage-m164-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m164-batch
 work="build/external/m164-batch/$port"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"
 export NAS_ACCEPTANCE_CPIO="$work/rootfs.cpio"

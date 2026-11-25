@@ -69,16 +69,20 @@ def catalog_probes() -> list[Path]:
         elif milestone in {"m166", "m167", "m168"}:
             assert not matches, f"{milestone}: duplicate dedicated desktop probe"
             path = ROOT / "scripts/probe-native-desktop.sh"
-            stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
+            stage = f'sh scripts/stage-alpine-display.sh "$port" {profile}'
             assert f'{milestone}) {stage}; work="build/external/{milestone}-batch/$port" ;;' in path.read_text()
             if milestone == "m168":
-                assert 'm170) sh scripts/stage-m168-prebuilt.sh "$port"; work="build/external/m168-batch/$port" ;;' in path.read_text()
+                assert 'm170) sh scripts/stage-alpine-display.sh "$port" m168-batch; work="build/external/m168-batch/$port" ;;' in path.read_text()
             assert 'BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh "$profile")' in path.read_text()
         else:
             dedicated = ROOT / f"scripts/stage-{milestone}-prebuilt.sh"
             basic = ROOT / "scripts/stage-alpine-basic.sh"
             if dedicated.exists():
                 stage = f'sh scripts/stage-{milestone}-prebuilt.sh "$port"'
+            elif re.search(rf"\b{profile}\b", (ROOT / "scripts/stage-alpine-display.sh").read_text()):
+                stage = f'sh scripts/stage-alpine-display.sh "$port" {profile}'
+            elif profile in {"m83-source", "m84-source"}:
+                stage = f'sh scripts/stage-alpine-source-toolchain.sh "$port" {profile}'
             elif f"    {profile}) ;;" in basic.read_text():
                 stage = f'sh scripts/stage-alpine-basic.sh "$port" {profile}'
             elif re.search(rf"^    {milestone}\) expected=\d+; output=", (ROOT / "scripts/stage-alpine-network.sh").read_text(), re.M):
@@ -112,7 +116,9 @@ def catalog_probes() -> list[Path]:
     # No orphan consumer may call a cataloged stage wrapper from another
     # probe. This also rejects a second probe added under a different name.
     for path in (ROOT / "scripts").glob("probe-m*.sh"):
-        stages = re.findall(r"sh scripts/stage-(m[0-9]+)-prebuilt\.sh", path.read_text())
+        source = path.read_text()
+        stages = re.findall(r"sh scripts/stage-(m[0-9]+)-prebuilt\.sh", source)
+        stages += re.findall(r'sh scripts/stage-alpine-(?:display|source-toolchain)\.sh "\$port" (m\d+)-', source)
         for milestone in stages:
             assert found.get(milestone) == path, (
                 f"{path}: orphaned or duplicate {milestone} staging consumer"

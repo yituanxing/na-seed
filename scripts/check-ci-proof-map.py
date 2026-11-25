@@ -29,22 +29,22 @@ EXTRA_HOST_CHECKS = {
     "M105 boot argv": "check-m105-boot-argv.sh",
 }
 HOST_TARGET = {
-    91: "check-m91-kcontext.sh",
-    92: "check-m92-wait-queue.sh",
-    93: "check-m93-futex-queues.sh",
-    94: "check-m94-run-state.sh",
-    95: "check-m95-kthread.sh",
-    96: "check-m96-k-sync.sh",
-    97: "check-m97-k-timeouts.sh",
-    98: "check-m98-sched-core.sh",  # M99 is tested inside this host fixture.
-    100: "check-m100-signal-failure.sh",
-    101: "check-m101-cow.sh",
-    102: "check-m102-tty-cow.sh",
-    103: "check-m103-thread-tid-lifecycle.sh",
+    91: "check-kernel-targets.sh m91",
+    92: "check-kernel-targets.sh m92",
+    93: "check-kernel-targets.sh m93",
+    94: "check-kernel-targets.sh m94",
+    95: "check-kernel-targets.sh m95",
+    96: "check-kernel-targets.sh m96",
+    97: "check-kernel-targets.sh m97",
+    98: "check-kernel-targets.sh m98",  # M99 is tested inside this host fixture.
+    100: "check-kernel-targets.sh m100",
+    101: "check-kernel-targets.sh m101",
+    102: "check-kernel-targets.sh m102",
+    103: "check-kernel-targets.sh m103",
 }
 MILESTONE_STEP = re.compile(
     r"^      - name: (?P<name>[^\n]+)\n"
-    r"        run: sh scripts/(?P<script>check-m\d+[^\s]+\.sh)\s*$",
+    r"        run: sh scripts/(?P<script>check-m\d+[^\s]+\.sh|check-kernel-targets\.sh m\d+)\s*$",
     re.MULTILINE,
 )
 
@@ -123,7 +123,7 @@ def check(root: Path, ci_text: str | None = None) -> list[str]:
     # No other M88-M103/M105 host step may masquerade as independent coverage.
     for step in steps:
         script = step.group("script")
-        number_match = re.match(r"check-m(\d+)", script)
+        number_match = re.match(r"(?:check-m|check-kernel-targets\.sh m)(\d+)", script)
         if number_match and (88 <= int(number_match.group(1)) <= 103 or
                              int(number_match.group(1)) == 105):
             if script not in expected.values() and script not in EXTRA_HOST_CHECKS.values():
@@ -133,11 +133,39 @@ def check(root: Path, ci_text: str | None = None) -> list[str]:
             errors.append("M99: no independent native IRQ saved-frame test exists")
 
     for number, script in expected.items():
-        path = root / "scripts" / script
+        path = root / "scripts" / script.split()[0]
         if not path.is_file():
             errors.append(f"M{number}: missing checker {path}")
             continue
         body = path.read_text(encoding="utf-8")
+        if number in HOST_TARGET:
+            # The two explicit profile branches are the actual proof owners.
+            # Inspect the selected host and target code rather than accepting
+            # markers from an unrelated profile in the shared dispatcher.
+            host = re.search(rf"(?ms)^    m{number}\)\n(.*?) ;;$", body)
+            target = re.search(rf"(?ms)^        m{number}\)\n(.*?) ;;$", body)
+            if not host or not target:
+                errors.append(f"M{number}: missing host or target profile")
+                continue
+            if not re.search(r"(?m)^\s*host_cc\s", host[1]):
+                errors.append(f"M{number}: host fixture compile disappeared")
+            if not re.search(r"(?m)^\s*build/[^\s]+/(?:host|check|test)(?:\s|$)", host[1]):
+                errors.append(f"M{number}: host fixture execution disappeared")
+            if not re.search(r"(?m)^\s*compile_target\s", target[1]):
+                errors.append(f"M{number}: target compilation disappeared")
+            if f"[M{number} TARGET PASS]" not in target[1]:
+                errors.append(f"M{number}: target result marker missing")
+            shared_markers = ("cc -std=c11 -O2 -Wall -Wextra -Werror",
+                              "clang $flags", "--target=riscv64", "--target=aarch64",
+                              "archs='riscv64 aarch64'", "for arch in $archs; do")
+            if number == 103:
+                shared_markers += ("archs='x86_64 riscv64 aarch64'", "--target=x86_64", "NAS_M103_HOST_ONLY")
+            for marker in shared_markers:
+                if marker not in body:
+                    errors.append(f"M{number}: shared target compile missing {marker!r}")
+            if re.search(r"qemu-system-|qemu-efi|scripts/(?:probe-|run\.sh)", body):
+                errors.append(f"M{number}: run mode changed; reclassify proof type")
+            continue
         commands = "\n".join(line for line in body.splitlines()
                              if line.strip() and not line.lstrip().startswith("#"))
         if number == 105:
@@ -154,19 +182,8 @@ def check(root: Path, ci_text: str | None = None) -> list[str]:
                 errors.append(f"M{number}: host fixture execution disappeared")
         if re.search(r"qemu-system-|qemu-efi|scripts/(?:probe-|run\.sh)", commands):
             errors.append(f"M{number}: run mode changed; reclassify its proof type")
-        if number in HOST_ONLY:
-            if re.search(r"(?m)^\s*clang\s|for arch in", commands):
-                errors.append(f"M{number}: target compile added; reclassify proof type")
-        else:
-            markers = ["clang $flags", "--target=riscv64", "--target=aarch64"]
-            if number == 103:
-                markers += ["for arch in x86_64 riscv64 aarch64; do",
-                            "--target=x86_64", "NAS_M103_HOST_ONLY"]
-            else:
-                markers.append("for arch in riscv64 aarch64; do")
-            for marker in markers:
-                if marker not in commands:
-                    errors.append(f"M{number}: target compilation missing {marker!r}")
+        if re.search(r"(?m)^\s*clang\s|for arch in", commands):
+            errors.append(f"M{number}: target compile added; reclassify proof type")
 
     # The host-only escape hatch is legitimate for local diagnosis, but CI
     # cannot opt into it while claiming three compiled targets.
@@ -291,10 +308,10 @@ def self_test() -> list[str]:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     cases = {
         "duplicate M99": workflow.replace(
-            "        run: sh scripts/check-m98-sched-core.sh",
-            "        run: sh scripts/check-m98-sched-core.sh\n"
+            "        run: sh scripts/check-kernel-targets.sh m98",
+            "        run: sh scripts/check-kernel-targets.sh m98\n"
             "      - name: '[NATIVE QEMU] M99 false separate IRQ parity'\n"
-            "        run: sh scripts/check-m98-sched-core.sh",
+            "        run: sh scripts/check-kernel-targets.sh m98",
             1,
         ),
         "fake native QEMU": workflow.replace(
@@ -304,8 +321,8 @@ def self_test() -> list[str]:
             "'[HOST + TARGET-COMPILE] M103", "'[HOST] M103", 1
         ),
         "M103 target opt-out": workflow.replace(
-            "run: sh scripts/check-m103-thread-tid-lifecycle.sh",
-            "run: NAS_M103_HOST_ONLY=1 sh scripts/check-m103-thread-tid-lifecycle.sh",
+            "run: sh scripts/check-kernel-targets.sh m103",
+            "run: NAS_M103_HOST_ONLY=1 sh scripts/check-kernel-targets.sh m103",
             1,
         ),
         "M105 false native claim": workflow.replace(

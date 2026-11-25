@@ -1,0 +1,4 @@
+# Original signed Alpine GDB and distro runtime dependencies.
+musl
+busybox
+gdb

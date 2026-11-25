@@ -39,7 +39,7 @@ export BUSYBOX_PARITY_MANIFEST=scripts/m156-https-cases.tsv
 # This is a catalog-backed profile of the SAME M143 signed Alpine curl/wget
 # packages, not a claim of new ELF identities. The shared overlay is the only
 # CPIO writer; its profile-local host hook creates ephemeral TLS keys/CA.
-sh scripts/stage-m156-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m156-https
 root="build/external/m156-https/$port"
 test -s "$root/rootfs/usr/bin/curl"
 test -s "$root/rootfs/usr/bin/wget"

@@ -22,7 +22,7 @@ guest = (root / 'tests/m162-batch-run.sh').read_text()
 host = (root / 'scripts/host-configure-m162-batch.sh').read_text()
 probe = (root / 'scripts/probe-m162-batch.sh').read_text()
 server = (root / 'scripts/m160-image-wire-server.py').read_text()
-stage = (root / 'scripts/stage-m162-prebuilt.sh').read_text()
+stage = (root / 'scripts/stage-alpine-display.sh').read_text()
 qmp = (root / 'scripts/m161-qmp-verify.py').read_text()
 for marker in markers:
     assert f'echo {marker}' in guest, marker
@@ -42,6 +42,6 @@ assert '"M162_FRAME_VISIBLE"' in qmp
 assert 'NAS_QEMU_RAMFB=1' in probe and 'NAS_VIRTIO_NET_USER=1' in probe
 assert 'scripts/m161-original-elfs.txt' in (
     root / 'scripts/prebuilt-profile-catalog.tsv').read_text()
-assert 'sh scripts/stage-alpine-prebuilt-overlay.sh "$port" m162-batch' in stage
+assert 'sh scripts/stage-alpine-prebuilt-overlay.sh "$port" "$profile"' in stage
 print('[M162 STATIC PASS] seven existing signed ELFs, host-only PNG + X.509, '
       'real NIC plus QMP screen, no new ELF identities or unsafe mmap')

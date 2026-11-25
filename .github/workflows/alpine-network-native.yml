@@ -1,0 +1,82 @@
+name: NaSeed native signed networking cohorts
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Original signed protocol cohort
+        required: true
+        type: choice
+        options: [m147, m149, m152]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    name: ${{ inputs.profile }} original signed network / ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [amd64, riscv64, arm64]
+    env:
+      PROFILE: ${{ inputs.profile }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+      - name: Verify original ELF inventory, fixtures and protocol oracle
+        id: profile
+        run: |
+          set -eu
+          case "$PROFILE" in
+            m147) count=29; extra='' ;;
+            m149) count=35; extra='host-m149-http.log' ;;
+            m152) count=35; extra='host-m152-protocols.log' ;;
+            *) exit 2 ;;
+          esac
+          echo "artifact=$PROFILE-original-network-${count}elf-$PORT-qemu" >> "$GITHUB_OUTPUT"
+          work="build/external/$PROFILE-batch/$PORT"
+          {
+            echo 'evidence<<EOF'
+            printf '%s\n' "$work/apk-install.log" "$work/requested-packages.txt" "$work/*.sha256" "$work/$PROFILE-virtio-wire.pcap"
+            [ -z "$extra" ] || printf '%s\n' "$work/$extra"
+            for logs in build/busybox-source-parity-x86 build/port-riscv64/full/matrix-source build/port-aarch64/full/matrix-source; do
+              printf '%s\n' "$logs/$PROFILE-batch.clean.log" "$logs/$PROFILE-batch.serial.log"
+            done
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+          case "$PROFILE" in
+            m147) sh -n scripts/native-qemu-target.sh; sh -n scripts/probe-riscv64-busybox-matrix.sh; sh -n scripts/probe-aarch64-busybox-matrix.sh ;;
+            m149) python3 -m py_compile scripts/m149-http-oracle.py ;;
+            m152) python3 -m py_compile scripts/m152-host-oracle.py; python3 tests/m152-host-oracle-selftest.py ;;
+            *) exit 2 ;;
+          esac
+          for f in scripts/stage-alpine-network.sh "scripts/probe-$PROFILE-network-cohort.sh" scripts/host-configure-alpine-fixtures.sh "tests/$PROFILE-network-run.sh"; do sh -n "$f"; done
+          python3 scripts/check-prebuilt-profile-catalog.py
+          manifest="scripts/$PROFILE-original-elfs.txt"
+          test "$(sh scripts/acceptance/check-elf-history.sh "$PROFILE" "$manifest" --count --distinct)" -eq "$count"
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' "scripts/$PROFILE-network-cases.tsv")" -eq 1
+          test "$(awk -F '\t' '$1 !~ /^#/ && NF {n++} END {print n+0}' "scripts/$PROFILE-rootfs-copies.tsv")" -eq 2
+          grep -Fxq "$(printf 'scripts/%s-original-elfs.txt\ttests/%s-original-elfs.txt' "$PROFILE" "$PROFILE")" "scripts/$PROFILE-rootfs-copies.tsv"
+          grep -q "^$PROFILE-batch[[:space:]]" scripts/prebuilt-profile-catalog.tsv
+      - name: Install signed APK staging, native QEMU and firmware prerequisites
+        timeout-minutes: 12
+        run: sh scripts/ci-install-signed-alpine-qemu-deps.sh "$PORT" --arm64-efi-fallback
+      - name: Native upstream lwIP and SocketPort targeted host tests
+        timeout-minutes: 10
+        run: sh scripts/check-lwip-foundation.sh
+      - name: Genuine native QEMU protocol and signed ELF acceptance
+        timeout-minutes: 48
+        run: sh "scripts/probe-$PROFILE-network-cohort.sh" "$PORT"
+      - name: Preserve exact signed ELF identities, serial logs and wire proof
+        if: always() && steps.profile.outputs.evidence != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact }}
+          path: ${{ steps.profile.outputs.evidence }}
+          if-no-files-found: ignore

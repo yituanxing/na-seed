@@ -12,10 +12,10 @@ export NAS_APP_BATCH_QEMU_TIMEOUT=700 BUSYBOX_PARITY_EXPECTED_COUNT=1
 BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh "$profile")
 export BUSYBOX_PARITY_MANIFEST
 case "$profile" in
-    m166) sh scripts/stage-m166-prebuilt.sh "$port"; work="build/external/m166-batch/$port" ;;
-    m167) sh scripts/stage-m167-prebuilt.sh "$port"; work="build/external/m167-batch/$port" ;;
-    m168) sh scripts/stage-m168-prebuilt.sh "$port"; work="build/external/m168-batch/$port" ;;
-    m170) sh scripts/stage-m168-prebuilt.sh "$port"; work="build/external/m168-batch/$port" ;;
+    m166) sh scripts/stage-alpine-display.sh "$port" m166-batch; work="build/external/m166-batch/$port" ;;
+    m167) sh scripts/stage-alpine-display.sh "$port" m167-batch; work="build/external/m167-batch/$port" ;;
+    m168) sh scripts/stage-alpine-display.sh "$port" m168-batch; work="build/external/m168-batch/$port" ;;
+    m170) sh scripts/stage-alpine-display.sh "$port" m168-batch; work="build/external/m168-batch/$port" ;;
     m171) sh scripts/stage-m171-lvgl.sh "$port"; work="build/external/m168-batch/$port" ;;
     m173) sh scripts/stage-m173-dynamic-client.sh "$port"; work="build/external/m168-batch/$port" ;;
     *) exit 2 ;;

@@ -74,31 +74,31 @@ jobs:
       # target-ISA objects, but do not boot a native guest. System-QEMU Linux
       # ELF acceptance lives in the separate native jobs/workflows below.
       - name: '[HOST + TARGET-COMPILE] M102 TTY/COW fork and ash buffer permissions'
-        run: sh scripts/check-m102-tty-cow.sh
+        run: sh scripts/check-kernel-targets.sh m102
       - name: '[HOST + TARGET-COMPILE] M101 COW fault and ptrace isolation'
-        run: sh scripts/check-m101-cow.sh
+        run: sh scripts/check-kernel-targets.sh m101
       - name: '[HOST] NAS-A005 cross-MM shared file invalidate, dirty epoch and frame refcounts'
         run: sh scripts/check-a005-cross-mm.sh
       - name: '[HOST + TARGET-COMPILE] M100 failed user signal-frame isolation'
-        run: sh scripts/check-m100-signal-failure.sh
+        run: sh scripts/check-kernel-targets.sh m100
       # One actual host fixture covers both M98 policy and M99 ring-scan
       # cases. It does NOT prove native IRQ frame save/restore on three ISAs.
       - name: '[HOST + TARGET-COMPILE] M98/M99 scheduler policy and ring fairness'
-        run: sh scripts/check-m98-sched-core.sh
+        run: sh scripts/check-kernel-targets.sh m98
       - name: '[HOST + TARGET-COMPILE] M97 timed waits and scheduler service'
-        run: sh scripts/check-m97-k-timeouts.sh
+        run: sh scripts/check-kernel-targets.sh m97
       - name: '[HOST + TARGET-COMPILE] M96 semaphore and bounded mailbox'
-        run: sh scripts/check-m96-k-sync.sh
+        run: sh scripts/check-kernel-targets.sh m96
       - name: '[HOST + TARGET-COMPILE] M95 worker C frames and event wake'
-        run: sh scripts/check-m95-kthread.sh
+        run: sh scripts/check-kernel-targets.sh m95
       - name: '[HOST + TARGET-COMPILE] M94 wake-ready and blocked completion'
-        run: sh scripts/check-m94-run-state.sh
+        run: sh scripts/check-kernel-targets.sh m94
       - name: '[HOST + TARGET-COMPILE] M93 futex wake/requeue/cancel'
-        run: sh scripts/check-m93-futex-queues.sh
+        run: sh scripts/check-kernel-targets.sh m93
       - name: '[HOST + TARGET-COMPILE] M92 wait queues and cancellation'
-        run: sh scripts/check-m92-wait-queue.sh
+        run: sh scripts/check-kernel-targets.sh m92
       - name: '[HOST + TARGET-COMPILE] M91 kernel C continuations and assembly'
-        run: sh scripts/check-m91-kcontext.sh
+        run: sh scripts/check-kernel-targets.sh m91
       - name: '[HOST] M90 multi-fd wait registration and readiness'
         run: sh scripts/check-m90-io-wait.sh
       - name: '[HOST] M89 open-file-description readiness'
@@ -112,7 +112,7 @@ jobs:
       - name: '[HOST + x86 OBJECT] x86 early NXE capability and EFER bootstrap contract'
         run: sh scripts/check-x86-nxe-bootstrap.sh
       - name: '[HOST + TARGET-COMPILE] M103 Linux clone TID and robust futex lifecycle'
-        run: sh scripts/check-m103-thread-tid-lifecycle.sh
+        run: sh scripts/check-kernel-targets.sh m103
       - name: '[HOST] M105 ELF PT_LOAD overlap and COW fault model'
         run: sh scripts/check-m105-elf-permissions.sh
       - name: '[HOST] M105 PTY ISIG Linux oracle and production ldisc model'

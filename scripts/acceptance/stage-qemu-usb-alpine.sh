@@ -67,7 +67,7 @@ else
         exit 1
     }
     sh scripts/stage-h8-alpine-nvme.sh
-    sh scripts/stage-m166-prebuilt.sh amd64
+    sh scripts/stage-alpine-display.sh amd64 m166-batch
     for guest_path in bin/busybox lib/ld-musl-x86_64.so.1 \
                       usr/bin/lua5.4 usr/bin/jq usr/bin/sqlite3; do
         test -s "$h8_root/$guest_path" && test -s "$signed_root/$guest_path" &&

@@ -4,7 +4,7 @@ set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
 . scripts/native-qemu-target.sh
-sh scripts/stage-m161-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m161-batch
 work="build/external/m161-batch/$port"
 mkdir -p "$work"
 export BUSYBOX_PARITY_BINARY="$work/rootfs/bin/busybox"

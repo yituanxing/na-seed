@@ -2,13 +2,14 @@
 # Hash the staged original files, preserving path order and sha256sum output.
 # APK signature/machine validation belongs to the existing overlay importer.
 set -eu
-[ "$#" -eq 6 ] || exit 2
+[ "$#" -eq 6 ] || [ "$#" -eq 7 ] || exit 2
 root=$1
 manifest=$2
 output=$3
 expected=$4
 mode=$5
 prefix=$6
+machine=${7-}
 # Keep historical output pathname (guest path versus resolved file) and
 # each caller's original validation policy explicit.
 case "$mode" in
@@ -45,6 +46,9 @@ while IFS= read -r elf; do
                     [ "$(od -An -tx1 -N4 "$resolved" | tr -d ' \n')" = 7f454c46 ] || exit 1 ;;
             esac ;;
     esac
+    if [ -n "$machine" ]; then
+        readelf -h "$target" | grep -Fq "$machine" || exit 1
+    fi
     sha256sum "$target"
     count=$((count+1))
 done < "$manifest" > "$output"

@@ -30,7 +30,7 @@ on:
       - 'ports/lwext4/**'
       - 'scripts/h15-*'
       - 'scripts/check-h15-*.sh'
-      - 'scripts/stage-m166-prebuilt.sh'
+      - 'scripts/stage-alpine-display.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
       - 'scripts/build-lwext4-guest.sh'
       - 'limine-h15-ftdi.conf'

@@ -1,0 +1,2 @@
+# Signed Alpine 3.23 Netpbm package; each cohort retains its own ELF inventory.
+netpbm

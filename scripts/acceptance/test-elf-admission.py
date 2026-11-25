@@ -356,6 +356,85 @@ with tempfile.TemporaryDirectory() as d:
             manifest.write_text("\n".join(rows) + "\n")
     run(network, "amd64", "m999", cwd=cwd, status=2)
     run(network, "unknown", "m143", cwd=cwd, status=2)
-migrated += len(profiles) + len(network_counts)
+# Check all eight logical display/TLS profiles after removing their wrappers.
+# ELF64 headers exercise readelf's target-machine check, not guest execution.
+import struct
+
+def elf_header(machine, tag):
+    return (b"\x7fELF\x02\x01\x01" + b"\0" * 9 +
+            struct.pack("<HHIQQQIHHHHHH", 2, machine, 1, 0, 0, 0, 0,
+                        64, 56, 0, 64, 0, 0) + tag.encode())
+
+display = scripts / "stage-alpine-display.sh"
+subprocess.run(["sh", "-n", str(display)], check=True)
+display_configs = {
+    "m156-https": ("", "tests/m156-https-ca.pem", ""),
+    "m160-batch": ("curl wget netpbm chafa", "tests/m160-image.sha256 tests/m156-https-ca.pem tests/m160-batch-run.sh", "m160-reused-elfs.txt"),
+    "m161-batch": ("fbgrab imagemagick", "tests/m161-stripes.ppm tests/m161-batch-run.sh", "pair"),
+    "m162-batch": ("curl wget netpbm chafa imagemagick fbgrab", "tests/m162-batch-run.sh tests/m162-wire-image.sha256 tests/m156-https-ca.pem", "m162-reused-elfs.txt"),
+    "m164-batch": ("fbgrab imagemagick", "tests/m164-input-display tests/m164-input-display.c", "pair"),
+    "m166-batch": ("evtest libevdev-tools fbgrab imagemagick", "tests/m166-input-display tests/m166-input-display.c", "m166-original-elfs.txt"),
+    "m167-batch": ("evtest libevdev-tools fbgrab imagemagick dialog links w3m", "tests/m167-desktop-fixture.ppm", "m167-original-elfs.txt"),
+    "m168-batch": ("lynx mc dialog links w3m imagemagick evtest libevdev-tools fbgrab", "tests/m167-desktop-fixture.ppm tests/m168-home.html", "m168-original-elfs.txt"),
+}
+with tempfile.TemporaryDirectory() as d:
+    cwd = Path(d)
+    (cwd / "scripts/acceptance").mkdir(parents=True)
+    for helper in (HASH, HISTORY):
+        shutil.copyfile(helper, cwd / "scripts/acceptance" / helper.name)
+    (cwd / "scripts/stage-alpine-prebuilt-overlay.sh").write_text("#!/bin/sh\nexit 0\n")
+    for source in list(scripts.glob("m[0-9]*-original-elfs.txt")) + list(scripts.glob("m[0-9]*-reused-elfs.txt")):
+        shutil.copyfile(source, cwd / "scripts" / source.name)
+    for profile, (packages, fixtures, manifest) in display_configs.items():
+        label = profile.split("-")[0]
+        rows = (["usr/bin/fbgrab", "usr/bin/magick"] if manifest == "pair" else
+                [x for x in (cwd / "scripts" / manifest).read_text().splitlines() if x and not x.startswith("#")]
+                if manifest else [])
+        for port, machine in (("amd64", 62), ("riscv64", 243), ("arm64", 183)):
+            work = cwd / "build/external" / profile / port
+            root = work / "rootfs"
+            (root / "lib/apk/db").mkdir(parents=True)
+            (root / "usr/bin").mkdir(parents=True)
+            (root / "lib/apk/db/installed").write_text("".join(f"P:{p}\n" for p in packages.split()))
+            (work / "rootfs.cpio").write_bytes(b"fixture")
+            for fixture in fixtures.split():
+                p = root / fixture
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"fixture")
+                p.chmod(0o755)
+            for fixture in ("host-ca.crt", "host-tls.crt", "host-ca.key", "host-tls.key", "host-m160-image.png", "host-m162-display.png"):
+                (work / fixture).write_bytes(b"host fixture")
+            for row in rows + ["usr/bin/naseed-" + app for app in ("desktop", "image", "terminal", "browser")]:
+                p = root / row
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(elf_header(machine, row))
+                p.chmod(0o755)
+            run(display, port, profile, cwd=cwd)
+            if rows:
+                suffix = "-signed-original-elfs.sha256" if label == "m161" else "-original-signed-elfs.sha256"
+                assert (work / (label + suffix)).read_text() == subprocess.check_output(
+                    ["sha256sum", *(str(root / row) for row in rows)], text=True)
+                first = root / rows[0]
+                original = first.read_bytes()
+                first.chmod(0o644)
+                run(display, port, profile, cwd=cwd, status=1)
+                first.chmod(0o755)
+                if label in {"m162", "m167", "m168"}:
+                    first.write_bytes(elf_header(62 if machine != 62 else 243, rows[0]))
+                    run(display, port, profile, cwd=cwd, status=1)
+                    first.write_bytes(original)
+            missing = root / fixtures.split()[0]
+            missing.unlink()
+            run(display, port, profile, cwd=cwd, status=1)
+            missing.write_bytes(b"fixture")
+            missing.chmod(0o755)
+            if label in {"m160", "m162"}:
+                leaked = root / "host-ca.key"
+                leaked.write_bytes(b"key must stay outside")
+                run(display, port, profile, cwd=cwd, status=1)
+                leaked.unlink()
+    run(display, "amd64", "m999-batch", cwd=cwd, status=2)
+    run(display, "unknown", "m156-https", cwd=cwd, status=2)
+migrated += len(profiles) + len(network_counts) + len(display_configs)
 assert migrated >= 52, migrated
 print(f"[ELF ADMISSION HOST PASS] {migrated} migrated profiles; exact path, count, hash and negative cases")

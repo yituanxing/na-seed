@@ -8,7 +8,7 @@ set -eu
 port=$1
 . scripts/native-qemu-target.sh
 . scripts/native-source-qemu.sh
-sh scripts/stage-m84-prebuilt.sh "$port"
+sh scripts/stage-alpine-source-toolchain.sh "$port" m84-source
 work="build/external/m84-source/$port"
 nas_source_guest_env "$work/rootfs" 2048M
 disk="$work/m84-physical-ext4.img"

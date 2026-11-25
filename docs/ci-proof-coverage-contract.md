@@ -19,17 +19,17 @@ They are intentionally given the narrower `[HOST + TARGET-COMPILE]` CI title.
 | Milestones | CI check scripts | Actual proof |
 | --- | --- | --- |
 | M88, M89, M90 | `check-m88-exceptions.sh`, `check-m89-poll.sh`, `check-m90-io-wait.sh` | Host fixture only |
-| M91–M97 | `check-m91-kcontext.sh` through `check-m97-k-timeouts.sh` | Host fixture plus RISC-V/AArch64 object/assembly compilation |
-| M98 **and M99** | **One** `check-m98-sched-core.sh` invocation; `test-m98-sched-core.c` has independent ring-cursor M99 assertions | Shared host scheduler policy and ring scan; target objects, **not** native IRQ frame parity |
-| M100–M102 | `check-m100-signal-failure.sh`, `check-m101-cow.sh`, `check-m102-tty-cow.sh` | Host fixture plus RISC-V/AArch64 object compilation |
-| M103 | `check-m103-thread-tid-lifecycle.sh` | Three **host** fixtures (clone/TID policy, Linux oracle, guest-source compiled as host), plus x86-64/RISC-V/AArch64 process and scheduler **object compilation**. No QEMU guest execution |
+| M91–M97 | `check-kernel-targets.sh m91` through `check-kernel-targets.sh m97` | Host fixture plus RISC-V/AArch64 object/assembly compilation |
+| M98 **and M99** | **One** `check-kernel-targets.sh m98` invocation; `test-m98-sched-core.c` has independent ring-cursor M99 assertions | Shared host scheduler policy and ring scan; target objects, **not** native IRQ frame parity |
+| M100–M102 | `check-kernel-targets.sh m100`, `check-kernel-targets.sh m101`, `check-kernel-targets.sh m102` | Host fixture plus RISC-V/AArch64 object compilation |
+| M103 | `check-kernel-targets.sh m103` | Three **host** fixtures (clone/TID policy, Linux oracle, guest-source compiled as host), plus x86-64/RISC-V/AArch64 process and scheduler **object compilation**. No QEMU guest execution |
 | M105 signal routing | `check-m105-signal-group.sh` | **Host-only** production `signal.c` Task/TGID routing and teardown fixture. Its green marker does not establish a real guest process or three-ISA signal delivery. |
 | M105 ELF/MM | `check-m105-elf-permissions.sh` | **Host-only** production ELF segment engine and MM/COW path compiled into two fixtures with a mock hardware page-table backend. No native guest execution. |
 | M105 PTY/ISIG | `test-m105-pty-isig.sh` | **Host-only** Linux PTY oracle plus NaSeed `pty.c`/`tty_ldisc.c` unit model. No NaSeed system-QEMU execution. |
 | M105 boot argv capacity | `check-m105-boot-argv.sh` | **Host-only** links the actual production `kernel/task/user_stack.c` parser, proves a quoted BusyBox `sh -c` argument longer than the old 256-byte limit, quote/backslash compatibility, exact 4096-byte capacity boundary, and malformed-input rejection. Does not boot a guest. |
 
 Before this correction, M99 and M98 appeared as two separate green CI steps
-although both invoked exactly `check-m98-sched-core.sh`. Removing the duplicate
+although both invoked exactly `check-kernel-targets.sh m98`. Removing the duplicate
 does **not** remove M99 ring-scan assertions: they remain in the shared host
 fixture. There is still **no** dedicated three-ISA system-QEMU verification of
 M99's user IRQ saved-frame commit/restore in this smoke check. A future gate

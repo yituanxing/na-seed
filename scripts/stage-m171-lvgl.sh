@@ -3,7 +3,7 @@
 set -eu
 [ "$#" -eq 1 ] || exit 2
 port=$1
-sh scripts/stage-m168-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m168-batch
 work="build/external/m168-batch/$port"
 root="$work/rootfs"
 sh scripts/host-configure-m171-lvgl.sh "$port" "$root"

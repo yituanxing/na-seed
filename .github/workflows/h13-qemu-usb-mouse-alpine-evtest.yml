@@ -31,7 +31,7 @@ on:
       - 'scripts/h13-*'
       - 'scripts/check-h13-*.sh'
       - 'tests/h13-*'
-      - 'scripts/stage-m166-prebuilt.sh'
+      - 'scripts/stage-alpine-display.sh'
       - 'scripts/stage-alpine-prebuilt-overlay.sh'
       - 'scripts/stage-h8-alpine-nvme.sh'
       - 'scripts/build-lwext4-guest.sh'

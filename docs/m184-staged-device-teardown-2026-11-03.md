@@ -50,7 +50,7 @@ marker is `M184_SOFTWARE_DBUS_UUID_FILE_FUNCTION_PASS`.
   net/blk with fault-injection and device bus contracts.
 - `sh scripts/check-m177-gpu.sh`: prior GPU, network, input, IRQ, VFS and
   block ownership behavior unchanged.
-- `sh scripts/check-m184-software-functions.sh`: signed-package manifest,
+- `sh scripts/check-software-functions.sh m184`: signed-package manifest,
   single-rootfs linkage and static guest-test coverage.
 - lwext4 host fixture: failed mount and final-close errors, followed by a
   genuine successful remount on a valid ext4 image.

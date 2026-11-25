@@ -21,7 +21,7 @@ export BUSYBOX_PARITY_EXPECTED_COUNT=1
 BUSYBOX_PARITY_MANIFEST=$(sh scripts/acceptance/batch-manifest.sh m162)
 export BUSYBOX_PARITY_MANIFEST
 unset NAS_SYSCALL_TRACE
-sh scripts/stage-m162-prebuilt.sh "$port"
+sh scripts/stage-alpine-display.sh "$port" m162-batch
 work="build/external/m162-batch/$port"
 root="$work/rootfs"
 export BUSYBOX_PARITY_BINARY="$root/bin/busybox"

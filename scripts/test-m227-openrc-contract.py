@@ -2,6 +2,7 @@
 """Host-only M227 boundaries: no fake PID1/service/network proof."""
 from pathlib import Path
 import ast
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,14 +22,15 @@ def check() -> None:
     require('. scripts/acceptance/profile.sh' in runner,
             'M197 must source the sole legacy cohort selector owner')
     native = runner + '\n' + read('scripts/acceptance/profile.sh')
-    manifest = read('scripts/m227-alpine-boot-cases.tsv')
+    manifest = read('scripts/m197-alpine-cases.tsv')
     uart = read('scripts/m227-alpine-uart.py')
     guest = read('tests/m227-alpine-openrc-workload.sh')
     host = read('scripts/m227-alpine-disk-check.py')
     require(manifest.count('m197-batch\tcpio\t \t-\t-\t/sbin/init') == 1,
             'each native QEMU must enter original /sbin/init')
     require('NAS_M227_INTEGRATED_OPENRC' in native and
-            native.count('m227-alpine-boot-cases.tsv') >= 2,
+            re.search(r'if \[ "\$m199" = 1 \] \|\| \[ "\$m227" = 1 \][^;]*; then\n    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv', native) is not None and
+            re.search(r'm227-reopen-input.fifo"\n    export BUSYBOX_PARITY_MANIFEST=scripts/m197-alpine-cases.tsv', native) is not None,
             'single M197 disk owner with same two original PID1 boots')
     require('scripts/m227-alpine-uart.py first' in native and
             'scripts/m227-alpine-uart.py reopen' in native,
