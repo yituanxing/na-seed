@@ -1396,25 +1396,51 @@ static int child_exists(const struct nas_vfs_path *parent,
     int rc=nas_vfs_path_lookup_child(parent,name,found);
     return rc;
 }
-int nas_vfs_create_child(const struct nas_vfs_path *parent,
-                         const char *leaf,uint64_t mode) {
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
+/* One admission for all new children: the already-resolved parent Dentry
+ * is the authority. Never fall back to an absolute path or create under a
+ * detached parent, even if a backend would otherwise accept the name. */
+static int child_creation_begin(const struct nas_vfs_path *parent,
+                                const char *name,struct nas_fs_node *owner) {
+    int rc=child_parent_node(parent,name,owner);
     if(rc)return rc;
     struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
+    rc=child_exists(parent,name,&existing);
     if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
     if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->create ?
-       owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
+    return nas_vfs_can_write(owner) ? 0 : -EROFS;
+}
+enum child_creation_kind { CHILD_REGULAR, CHILD_DIRECTORY, CHILD_SYMLINK };
+/* The three simple provider mutations share one owner-assignment/rollback
+ * transaction. mknod is intentionally separate: socket/FIFO publication
+ * reserves and pins a positive Dentry BEFORE a provider-side mutation. */
+static int create_simple_child(const struct nas_vfs_path *parent,
+                               const char *name,uint64_t mode,
+                               const char *target,enum child_creation_kind kind) {
+    struct nas_fs_node owner;
+    int rc=child_creation_begin(parent,name,&owner);
+    if(rc)return rc;
+    if(kind==CHILD_REGULAR)
+        rc=owner.filesystem->create ?
+           owner.filesystem->create(&owner,name,mode) : -EOPNOTSUPP;
+    else if(kind==CHILD_DIRECTORY)
+        rc=owner.filesystem->mkdir ?
+           owner.filesystem->mkdir(&owner,name,mode) : -EOPNOTSUPP;
+    else
+        rc=owner.filesystem->symlink ?
+           owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
     if(!rc) {
-        rc=assign_new_child_owner(&owner,leaf,false);
+        rc=assign_new_child_owner(&owner,name,kind==CHILD_DIRECTORY);
         if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,leaf,0)))rc=-EIO;
+                  owner.filesystem->unlink(&owner,name,
+                      kind==CHILD_DIRECTORY ? 0x200ULL:0)))rc=-EIO;
     }
-    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,false);
+    if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,
+                                  kind==CHILD_DIRECTORY);
     return rc;
+}
+int nas_vfs_create_child(const struct nas_vfs_path *parent,
+                         const char *leaf,uint64_t mode) {
+    return create_simple_child(parent,leaf,mode,NULL,CHILD_REGULAR);
 }
 int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode,
@@ -1427,13 +1453,8 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
     if(special_type!=0140000ULL && special_type!=0010000ULL)
         return -EOPNOTSUPP;
     struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
+    int rc=child_creation_begin(parent,leaf,&owner);
     if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
     if(!owner.filesystem->mknod)return -EOPNOTSUPP;
     /* Reserve every allocation and the parent reference before the backend
      * changes its namespace. There must be no fresh allocation after a
@@ -1489,23 +1510,7 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
 }
 int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode) {
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
-    if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->mkdir ?
-       owner.filesystem->mkdir(&owner,leaf,mode) : -EOPNOTSUPP;
-    if(!rc) {
-        rc=assign_new_child_owner(&owner,leaf,true);
-        if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,leaf,0x200ULL)))rc=-EIO;
-    }
-    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,true);
-    return rc;
+    return create_simple_child(parent,leaf,mode,NULL,CHILD_DIRECTORY);
 }
 int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
                          const char *leaf,uint64_t flags) {
@@ -1734,23 +1739,7 @@ int nas_vfs_link_path_child(const struct nas_vfs_path *source,
 int nas_vfs_symlink_child(const char *target,
                           const struct nas_vfs_path *parent,const char *name) {
     if(!target)return -EINVAL;
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,name,&owner);
-    if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,name,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->symlink ?
-       owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
-    if(!rc) {
-        rc=assign_new_child_owner(&owner,name,false);
-        if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,name,0)))rc=-EIO;
-    }
-    if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,false);
-    return rc;
+    return create_simple_child(parent,name,0,target,CHILD_SYMLINK);
 }
 static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
     unsigned length=entry->name_len;
