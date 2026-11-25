@@ -379,8 +379,7 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
         return (uint64_t)(int64_t)err;
     }
     /* Synthetic devices lack VFS dentries before devfs exists. Only this
-     * explicit compatibility endpoint still needs a printed fallback. */
-    char path[256]={0};
+     * explicit compatibility endpoint may use the shared bootstrap bridge. */
     if(err==-ENOENT) {
         /* Only a failed lookup reaches this explicit bootstrap whitelist;
          * it must reuse the SAME still-owned request/anchor. */
