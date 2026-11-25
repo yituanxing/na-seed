@@ -68,8 +68,10 @@ static struct nas_fs_context guest_fs;
 struct nas_task *nas_current_task = &guest_task;
 /* This FD/usercopy fixture has no mounted VFS file; A005 exercises real
  * VFS shared-mapping permissions and mtime in separate integration tests. */
+static bool m106_metadata_write_allowed;
 bool nas_vfs_can_write(const struct nas_fs_node *node) {
     (void)node;
+    if(m106_metadata_write_allowed)return true;
     assert(!"unexpected mapped VFS write in M106");
     return false;
 }
@@ -244,6 +246,17 @@ int nas_vfs_chown(const struct nas_fs_node *node,uint32_t uid,uint32_t gid) {
     m106_chown_calls++;m106_last_uid=uid;m106_last_gid=gid;
     return 0;
 }
+static unsigned m106_utimens_calls;
+static uint64_t m106_utimens_atime,m106_utimens_mtime;
+static uint64_t m106_utimens_ino;
+int nas_vfs_utimens(const struct nas_fs_node *node,uint64_t atime,
+                    uint64_t mtime,bool set_atime,bool set_mtime) {
+    assert(node && set_atime && set_mtime);
+    ++m106_utimens_calls;
+    m106_utimens_atime=atime;m106_utimens_mtime=mtime;
+    m106_utimens_ino=node->ino;
+    return 0;
+}
 uint64_t nas_vfs_node_device(const struct nas_fs_node *node) {
     (void)node;return 777;
 }
@@ -368,6 +381,10 @@ void nas_putchar(char ch){(void)ch;}
 void nas_arch_halt(void){assert(!"user syscall triggered kernel panic");abort();}
 #ifndef NAS_TEST_OVERRIDE_MONOTONIC
 uint64_t nas_arch_monotonic_ns(void){return 1000000000ULL;}
+bool nas_time_realtime_ns(uint64_t *out) {
+    if(!out)return false;
+    *out=1000000000ULL;return true;
+}
 #endif
 #ifndef NAS_TEST_REAL_TTY
 bool nas_tty_poll_readable(void){return false;}
@@ -847,6 +864,22 @@ static void test_bootstrap_metadata_and_vfs_priority(void) {
     assert(sys_chmod_path(fd,empty_metadata,0400,0x1000)==0);
     assert(sys_chown_path(fd,empty_metadata,31,47,0x1000)==0);
     nas_open_files[entry.slot].status_flags=saved_flags;
+    /* Real utimensat adapter shares the same owned inode selection as
+     * chmodat/chownat. Both Linux NULL pathname and AT_EMPTY_PATH are
+     * supported, without reopening a held File by its old spelling. */
+    unsigned old_utimens=m106_utimens_calls;
+    assert(sys_utimensat_file(fd,0,0,0)==0); /* NULL is an FD request */
+    assert(m106_utimens_calls==old_utimens+1 &&
+           m106_utimens_ino==bootstrap_real_inode.ino);
+    assert(m106_utimens_atime==1000000000ULL &&
+           m106_utimens_mtime==1000000000ULL);
+    assert(sys_utimensat_file((uint64_t)-100,0,0,0)==(uint64_t)-EBADF);
+    assert(sys_utimensat_file(fd,empty_metadata,0,0)==(uint64_t)-ENOENT);
+    m106_metadata_write_allowed=true;
+    assert(sys_utimensat_file(fd,empty_metadata,0,0x1000ULL)==0);
+    assert(sys_utimensat_file((uint64_t)-100,path,0,0)==0);
+    m106_metadata_write_allowed=false;
+    puts("[M106 UTIMENS TARGET PASS] NULL FD, O_PATH-compatible empty FD, named inode and readonly admission");
     bootstrap_vfs_dangling_link=true;
     previous_chmod=m106_chmod_calls;
     assert(sys_chmod_path((uint64_t)-100,path,0600,0x100)==

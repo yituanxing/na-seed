@@ -415,15 +415,19 @@ static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
  * borrowed O_PATH File, or the pinned cwd. DAC and link mutation remain VFS
  * policy. Successful name lookups alone require end_mounted_lookup(). */
 static int metadata_target_begin(uint64_t dirfd,uint64_t user_path,uint64_t flags,
+                                  bool null_as_fd,
                                   struct nas_fs_path_request *request,
                                   struct nas_vfs_path *path,
                                   struct nas_fs_node *node) {
     uint8_t first=0;
-    if(!user_path || !nas_user_read_bytes(user_path,&first,1))return -EFAULT;
+    if(!user_path && !null_as_fd)return -EFAULT;
+    if(user_path && !nas_user_read_bytes(user_path,&first,1))return -EFAULT;
     if(!first) {
-        if(!(flags&0x1000ULL))return -ENOENT; /* AT_EMPTY_PATH */
+        if(user_path && !(flags&0x1000ULL))return -ENOENT; /* AT_EMPTY_PATH */
         int64_t fd=nas_linux_signed_dirfd(dirfd);
         if(fd==-100) {
+            /* utimensat(fd,NULL) names an FD, not AT_FDCWD's directory. */
+            if(!user_path)return -EBADF;
             if(TASK.fs->cwd_pinned) {
                 *node=TASK.fs->cwd_node;
                 return 0;
@@ -448,7 +452,8 @@ static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=metadata_target_begin(dirfd,filename,flags,&request,&path,&node);
+    int rc=metadata_target_begin(dirfd,filename,flags,false,
+                                 &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
     /* Named symlink nofollow cannot silently mutate its referent. */
     rc=(path.dentry && node.is_symlink && (flags&0x100ULL)) ?
@@ -471,7 +476,8 @@ static uint64_t sys_chown_path(uint64_t dirfd,uint64_t pathname,
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=metadata_target_begin(dirfd,pathname,flags,&request,&path,&node);
+    int rc=metadata_target_begin(dirfd,pathname,flags,false,
+                                 &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
     rc=nas_vfs_chown(&node,(uint32_t)uid,(uint32_t)gid);
     if(path.dentry)end_mounted_lookup(&request,&path);
@@ -492,23 +498,15 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     struct nas_fs_node vnode={0};
     struct nas_fs_path_request request;
     struct nas_vfs_path owned={0};
-    if (!pathname) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        vnode=opened->vnode;
-    } else {
-        int err=nas_fs_user_lookup_begin(dirfd,pathname,
-                                         !(flags&AT_SYMLINK_NOFOLLOW),
-                                         &request,&owned,&vnode);
-        if (err) return (uint64_t)(int64_t)err;
-        if (!nas_vfs_can_write(&vnode)) {
-            end_mounted_lookup(&request,&owned);
-            return (uint64_t)-EROFS;
-        }
+    int err=metadata_target_begin(dirfd,pathname,flags,true,
+                                   &request,&owned,&vnode);
+    if(err)return (uint64_t)(int64_t)err;
+    /* A named path, including AT_EMPTY_PATH, must satisfy the same
+     * mount write policy before timespec usercopy or inode mutation.
+     * The legacy utimensat(fd,NULL) retains its original File rule. */
+    if(pathname && !nas_vfs_can_write(&vnode)) {
+        if(owned.dentry)end_mounted_lookup(&request,&owned);
+        return (uint64_t)-EROFS;
     }
     uint64_t now=0;
     if (!nas_time_realtime_ns(&now)) now=nas_arch_monotonic_ns();
