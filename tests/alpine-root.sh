@@ -55,6 +55,10 @@ sudo chroot "$root" /bin/busybox sh -ec '
     printf "[Default Applications]\ntext/plain=org.xfce.mousepad.desktop;\n" > /root/.config/mimeapps.list
     test -f /usr/share/applications/org.xfce.mousepad.desktop
 '
+# Verify the original XKB package's versioned alias before imaging it into
+# ext4; this comparison distinguishes packaging from guest VFS semantics.
+sudo chroot "$root" /bin/busybox sh -ec 'test -r /usr/share/xkeyboard-config-2/rules/evdev && head -c 1 /usr/share/xkeyboard-config-2/rules/evdev >/dev/null'
+echo 'PASS: original Alpine canonical XKB path readable in host chroot'
 # Use the ordinary Xorg configuration interface, not a patched X server.
 sudo tee "$root/root/xorg.conf" >/dev/null <<'XORG'
 Section "ServerFlags"
@@ -606,9 +610,18 @@ def verify_xorg_tools():
 # Weston is the original Alpine compositor using its X11/pixman backend.
 # Keep Xorg and its complete acceptance intact: a Wayland failure is separate.
 def verify_wayland():
-    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
+    # Read both unmodified Alpine XKB paths in the real guest. The host
+    # chroot check above must also pass, so ENODEV here is a guest VFS bug.
+    guest.sendline("for p in /usr/share/xkeyboard-config-2/rules/evdev /usr/share/X11/xkb/rules/evdev; do python3 -c 'import sys; p=sys.argv[1]; f=open(p,\"rb\"); print(\"XKB_READ_OK\",p,f.read(16))' \"$p\" || :; done; echo XKB_DIAG_END")
+    guest.expect(r'\r*\nXKB_DIAG_END\r*\n',timeout=60)
+    diag=guest.before
+    print('Guest XKB alias diagnostics:',diag)
+    xkb_alias_ok='XKB_READ_OK /usr/share/xkeyboard-config-2/rules/evdev' in diag
+    width,height,baseline=capture_scanout('wayland-before')
+    # Explicitly select the official legacy data path for an A/B diagnostic,
+    # not a hardcoded keyboard map or a patch to upstream Weston.
+    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
     try:
-        width,height,baseline=capture_scanout('wayland-before')
         guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1 && timeout 15 env WAYLAND_DISPLAY=wayland-1 wayland-info >/root/wayland-info.log 2>&1 && grep -q "wl_compositor" /root/wayland-info.log && grep -q "xdg_wm_base" /root/wayland-info.log; then echo WAYLAND_PROTOCOL_PASS; else echo WAYLAND_PROTOCOL_FAIL; fi')
         if guest.expect([r'\r*\nWAYLAND_PROTOCOL_PASS\r*\n',r'\r*\nWAYLAND_PROTOCOL_FAIL\r*\n'],timeout=115):
             raise RuntimeError('original Weston X11 backend did not provide a usable Wayland compositor and xdg_wm_base')
@@ -631,6 +644,7 @@ def verify_wayland():
         print(f'Wayland original shm client framebuffer_changed={delta}')
         assert delta>=500,'Wayland client did not change the real QEMU framebuffer'
         print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
+        assert xkb_alias_ok,'canonical xkeyboard-config alias is unreadable in NaSeed guest, even if explicit XKB_CONFIG_ROOT worked'
         return True
     finally:
         guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; wait "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; wait "$wlp" 2>/dev/null; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
