@@ -23,7 +23,7 @@ sudo chown 0:0 "$root"
 docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     cp -a /target/etc/apk/keys/. /etc/apk/keys/
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
-        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main add alpine-base openrc
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main add alpine-base openrc git sqlite lua5.4 python3 zstd build-base
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -36,6 +36,74 @@ sudo chroot "$root" /bin/busybox sh -ec '
     if ! grep -qx ttyS0 /etc/securetty 2>/dev/null; then echo ttyS0 >> /etc/securetty; fi
     echo "root:naseed-ci-only" | chpasswd
 '
+# One distribution workload, using unchanged signed packages. Each group
+# reports its result independently; a failed group never hides a later one.
+sudo tee "$root/root/acceptance.sh" >/dev/null <<'GUEST'
+#!/bin/sh
+set -u
+umask 022
+mkdir -p /root/acceptance-data || exit 1
+cd /root/acceptance-data || exit 1
+failures=0
+run() {
+    name=$1
+    shift
+    if "$@"; then
+        printf '[APP PASS] %s\n' "$name"
+    else
+        printf '[APP FAIL] %s\n' "$name"
+        failures=1
+    fi
+}
+archive() {
+    mkdir -p unpacked &&
+    printf '%s\n' 'NaSeed real software' > source.txt &&
+    tar -cf source.tar source.txt &&
+    zstd -q -f source.tar -o source.tar.zst &&
+    zstd -q -d -f source.tar.zst -o restored.tar &&
+    tar -xf restored.tar -C unpacked &&
+    cmp source.txt unpacked/source.txt
+}
+database() {
+    sqlite3 records.db 'CREATE TABLE records (value INTEGER); INSERT INTO records VALUES (19),(23);' &&
+    test "$(sqlite3 records.db 'SELECT sum(value) FROM records;')" = 42 &&
+    test "$(sqlite3 records.db 'PRAGMA integrity_check;')" = ok
+}
+lua_runtime() {
+    lua5.4 -e 'local t={19,23}; local f=assert(io.open("lua.txt","w")); assert(f:write(t[1]+t[2])); assert(f:close())' &&
+    test "$(cat lua.txt)" = 42
+}
+python_runtime() {
+    python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"'
+}
+git_repository() {
+    git init -q repo &&
+    git -C repo config user.name NaSeed &&
+    git -C repo config user.email naseed@example.invalid &&
+    printf 'persistent git\n' > repo/readme.txt &&
+    git -C repo add readme.txt &&
+    git -C repo commit -qm initial &&
+    git -C repo branch checkpoint &&
+    git -C repo gc &&
+    git -C repo fsck --full &&
+    test "$(git -C repo show checkpoint:readme.txt)" = 'persistent git'
+}
+native_build() {
+    mkdir -p project &&
+    printf '%s\n' '#include <stdio.h>' 'int main(void) { puts("42"); return 0; }' > project/main.c &&
+    printf 'all: app\napp: main.c\n\t$(CC) -O2 -o $@ $<\n' > project/Makefile &&
+    make -C project &&
+    test "$(project/app)" = 42
+}
+run archive-zstd archive
+run sqlite database
+run lua lua_runtime
+run python python_runtime
+run git git_repository
+run gcc-make native_build
+printf '[APP DONE status=%s]\n' "$failures"
+exit "$failures"
+GUEST
 # Rescue archive has only the exact original BusyBox/loader; no distro marker.
 mkdir -p "$work/rescue/bin" "$work/rescue/lib"
 sudo chroot "$root" /bin/busybox cat /bin/busybox > "$work/rescue/bin/busybox"
@@ -44,12 +112,12 @@ chmod 755 "$work/rescue/bin/busybox" "$work/rescue/lib/ld-musl-x86_64.so.1"
 (cd "$work/rescue" && find . -print | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0) > "$work/rescue.cpio"
 readelf -l "$work/rescue/bin/busybox" | grep -F '/lib/ld-musl-x86_64.so.1'
 sha256sum "$work/rescue/bin/busybox" "$work/rescue/lib/ld-musl-x86_64.so.1"
-# MBR partition starts at 2 MiB. Use the existing lwext4 feature contract.
+# MBR partition starts at 2 MiB; leave space for the signed toolchain.
 rm -f "$disk" "$work/partition.ext4"
-truncate -s 254M "$work/partition.ext4"
+truncate -s 1022M "$work/partition.ext4"
 sudo mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' -d "$root" "$work/partition.ext4"
-truncate -s 256M "$disk"
-printf 'label: dos\nunit: sectors\n\nstart=4096, size=520192, type=83\n' | sfdisk "$disk"
+truncate -s 1024M "$disk"
+printf 'label: dos\nunit: sectors\n\nstart=4096, size=2093056, type=83\n' | sfdisk "$disk"
 dd if="$work/partition.ext4" of="$disk" bs=1M seek=2 conv=notrunc status=none
 # Each case uses the same built kernel, disk and genuine rescue archive.
 make_iso() {
@@ -112,6 +180,9 @@ with open(f'{work}/init.log','w') as log:
                        'test "$(cat /etc/alpine-release)" = 3.23.7 && '
                        'echo CLI_READY')
         guest.expect(r'\r*\nCLI_READY\r*\n')
+        guest.sendline('/bin/busybox sh /root/acceptance.sh')
+        guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
+        guest.expect(r'# ')
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF)
         guest.close()
@@ -125,8 +196,16 @@ for marker in ('[M191 ROOT] physical Alpine ext4 registered at /',
                '[PASS] cmdline userspace exit 0'):
     assert marker in serial, marker
 assert '[FAIL]' not in serial
+for line in serial.splitlines():
+    if line.startswith(('[APP PASS]', '[APP FAIL]', '[APP DONE]','[APP DONE status=')):
+        print(line)
 print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
+# Check the independent application results only after shutdown and fsck.
+tr -d '\r' < "$work/init.log" | grep -Fxq '[APP DONE status=0]'
+for app in archive-zstd sqlite lua python git gcc-make; do
+    tr -d '\r' < "$work/init.log" | grep -Fxq "[APP PASS] $app"
+done
