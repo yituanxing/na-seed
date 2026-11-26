@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -199,7 +199,7 @@ args = ['-M','q35','-m','1024M','-cpu','qemu64','-display','none','-monitor','no
         '-device','virtio-mouse-pci,disable-legacy=on',
         '-qmp',f'unix:{work}/qmp.sock,server=on,wait=off',
         '-cdrom',f'{work}/init.iso']
-def screenshot():
+def capture_scanout(name):
     # Read the real QEMU scanout, not a guest-generated screenshot.
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(10)
@@ -207,7 +207,7 @@ def screenshot():
         with sock.makefile('rwb') as stream:
             json.loads(stream.readline())
             for command in ({'execute':'qmp_capabilities'},
-                            {'execute':'screendump','arguments':{'filename':f'{work}/xorg.ppm'}}):
+                            {'execute':'screendump','arguments':{'filename':f'{work}/{name}.ppm'}}):
                 stream.write(json.dumps(command).encode()+b'\n')
                 stream.flush()
                 while True:
@@ -215,14 +215,45 @@ def screenshot():
                     if 'event' in reply: continue
                     if 'error' in reply: raise RuntimeError(reply)
                     if 'return' in reply: break
-    magic, width, height, maximum, pixels = pathlib.Path(work,'xorg.ppm').read_bytes().split(None,4)
+    magic, width, height, maximum, pixels = pathlib.Path(work,f'{name}.ppm').read_bytes().split(None,4)
     assert magic==b'P6' and maximum==b'255', (magic,maximum)
     count=int(width)*int(height)
     assert len(pixels)==count*3
+    return int(width),int(height),pixels
+
+def screenshot():
+    width,height,pixels=capture_scanout('xorg')
+    count=width*height
     red=sum(pixels[i:i+3]==b'\xff\x00\x00' for i in range(0,len(pixels),3))
     print(f'Xorg QEMU scanout: {int(width)}x{int(height)}, red={red}/{count}')
     assert red>=count*0.9, 'Xorg root-window color not visible on real scanout'
+# Exercise independent original X11 clients and inspect the physical scanout.
+apps = [
+    ('xterm','NaSeed-XTerm',
+     "xterm -T NaSeed-XTerm -geometry 44x9+20+20 -bg white -fg black -fn fixed -e /bin/sh -c 'printf \"NaSeed X11 terminal\\nOriginal BusyBox shell\\nPTY and font rendering\\n\"; sleep 180'",
+     (30,30,250,120),b'\xff\xff\xff'),
+    ('xclock','NaSeed-XClock',
+     'xclock -title NaSeed-XClock -geometry 200x200+400+20 -bg yellow -fg black -hd black -hl black -update 1',
+     (410,30,590,210),b'\xff\xff\x00'),
+    ('xmessage','NaSeed-XMessage',
+     'xmessage -title NaSeed-XMessage -geometry 300x130+20+300 -bg cyan -fg black -buttons OK:0 "NaSeed native X11 message"',
+     (28,308,310,424),b'\x00\xff\xff'),
+]
+def verify_apps(mapped):
+    width,height,pixels=capture_scanout('x11-apps')
+    assert (width,height)==(800,600),(width,height)
+    passed=True
+    for name,_,_,(x0,y0,x1,y1),color in apps:
+        region=b''.join(pixels[(y*width+x0)*3:(y*width+x1)*3] for y in range(y0,y1))
+        colors=[region[i:i+3] for i in range(0,len(region),3)]
+        bg=colors.count(color)
+        ink=colors.count(b'\x00\x00\x00')
+        ok=mapped[name] and bg>=len(colors)//10 and ink>=30
+        print(f'X11 {name}: mapped={mapped[name]}, background={bg}/{len(colors)}, black={ink}, {"PASS" if ok else "FAIL"}')
+        passed=passed and ok
+    return passed
 xorg_ok=False
+apps_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -252,6 +283,20 @@ with open(f'{work}/init.log','w') as log:
                 xorg_ok=True
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'Xorg scanout failed: {error}')
+        if xorg_ok:
+            guest.sendline('export DISPLAY=:0; app_pids=""')
+            mapped={}
+            for name,title,command,_,_ in apps:
+                guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
+                guest.sendline(f'for i in $(seq 1 20); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
+                mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=120)==0
+            try:
+                time.sleep(1)
+                apps_ok=verify_apps(mapped)
+            except (OSError,ValueError,AssertionError,RuntimeError) as error:
+                print(f'X11 application scanout failed: {error}')
+            guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
+            guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
         if result!=0:
             guest.sendline('strace -e trace=socket,connect,getsockname,getpeername,getsockopt,setsockopt,fcntl,poll,ppoll,select,pselect6,read,readv,write,writev,recvmsg,sendmsg,recvfrom,sendto,shutdown,close -o /root/xclient.trace xdpyinfo -display :0 >/root/xclient.log 2>&1; tail -100 /root/xclient.trace; cat /root/xclient.log; echo XCLIENT_TRACE_END')
             guest.expect(r'\r*\nXCLIENT_TRACE_END\r*\n',timeout=60)
@@ -278,7 +323,7 @@ print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
-pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok else 'FAIL\n')
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
