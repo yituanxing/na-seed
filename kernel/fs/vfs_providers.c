@@ -672,6 +672,8 @@ enum {
     SYS_DEV, SYS_DEV_BLOCK, SYS_BLOCK, SYS_VIRTUAL, SYS_VIRTUAL_BLOCK,
     SYS_CLASS, SYS_CLASS_GRAPHICS, SYS_GRAPHICS_LINK,
     SYS_VIRTUAL_GRAPHICS, SYS_GRAPHICS_FB, SYS_GRAPHICS_DEV,
+    SYS_GRAPHICS_OWNER, SYS_CLASS_DISPLAY, SYS_DISPLAY_LINK,
+    SYS_VIRTUAL_DISPLAY, SYS_DISPLAY_OWNER, SYS_DISPLAY_SUBSYSTEM,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -683,55 +685,66 @@ enum {
 _Static_assert(NAS_MEMORY_BLOCK_BYTES==0x8000000ULL,
                "sysfs block_size_bytes must match physical block granularity");
 enum { SYS_MEMORY_DIR, SYS_MEMORY_STATE, SYS_MEMORY_REMOVABLE };
+enum sys_entry_type {SYS_FILE, SYS_DIR, SYS_LINK};
 struct sys_entry {
     unsigned parent;
     const char *name;
     const char *contents;
-    bool directory;
+    enum sys_entry_type type;
 };
 static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
-    [SYS_ROOT]={SYS_ROOT,"",0,true},
-    [SYS_DEVICES]={SYS_ROOT,"devices",0,true},
-    [SYS_SYSTEM]={SYS_DEVICES,"system",0,true},
-    [SYS_CPU]={SYS_SYSTEM,"cpu",0,true},
-    [SYS_CPU0]={SYS_CPU,"cpu0",0,true},
-    [SYS_TOPOLOGY]={SYS_CPU0,"topology",0,true},
-    [SYS_POSSIBLE]={SYS_CPU,"possible","0\n",false},
-    [SYS_PRESENT]={SYS_CPU,"present","0\n",false},
-    [SYS_ONLINE]={SYS_CPU,"online","0\n",false},
-    [SYS_OFFLINE]={SYS_CPU,"offline","\n",false},
-    [SYS_KERNEL_MAX]={SYS_CPU,"kernel_max","0\n",false},
-    [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",false},
-    [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",false},
-    [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",false},
-    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false},
-    [SYS_MEMORY]={SYS_SYSTEM,"memory",0,true},
-    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",false},
-    [SYS_DEV]={SYS_ROOT,"dev",0,true},
-    [SYS_DEV_BLOCK]={SYS_DEV,"block",0,true},
-    [SYS_BLOCK]={SYS_ROOT,"block",0,true},
-    [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,true},
-    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,true},
-    [SYS_CLASS]={SYS_ROOT,"class",0,true},
-    [SYS_CLASS_GRAPHICS]={SYS_CLASS,"graphics",0,true},
+    [SYS_ROOT]={SYS_ROOT,"",0,SYS_DIR},
+    [SYS_DEVICES]={SYS_ROOT,"devices",0,SYS_DIR},
+    [SYS_SYSTEM]={SYS_DEVICES,"system",0,SYS_DIR},
+    [SYS_CPU]={SYS_SYSTEM,"cpu",0,SYS_DIR},
+    [SYS_CPU0]={SYS_CPU,"cpu0",0,SYS_DIR},
+    [SYS_TOPOLOGY]={SYS_CPU0,"topology",0,SYS_DIR},
+    [SYS_POSSIBLE]={SYS_CPU,"possible","0\n",SYS_FILE},
+    [SYS_PRESENT]={SYS_CPU,"present","0\n",SYS_FILE},
+    [SYS_ONLINE]={SYS_CPU,"online","0\n",SYS_FILE},
+    [SYS_OFFLINE]={SYS_CPU,"offline","\n",SYS_FILE},
+    [SYS_KERNEL_MAX]={SYS_CPU,"kernel_max","0\n",SYS_FILE},
+    [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",SYS_FILE},
+    [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",SYS_FILE},
+    [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",SYS_FILE},
+    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",SYS_FILE},
+    [SYS_MEMORY]={SYS_SYSTEM,"memory",0,SYS_DIR},
+    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",SYS_FILE},
+    [SYS_DEV]={SYS_ROOT,"dev",0,SYS_DIR},
+    [SYS_DEV_BLOCK]={SYS_DEV,"block",0,SYS_DIR},
+    [SYS_BLOCK]={SYS_ROOT,"block",0,SYS_DIR},
+    [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,SYS_DIR},
+    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,SYS_DIR},
+    [SYS_CLASS]={SYS_ROOT,"class",0,SYS_DIR},
+    [SYS_CLASS_GRAPHICS]={SYS_CLASS,"graphics",0,SYS_DIR},
     [SYS_GRAPHICS_LINK]={SYS_CLASS_GRAPHICS,"fb0",
-                         "../../devices/virtual/graphics/fb0",false},
-    [SYS_VIRTUAL_GRAPHICS]={SYS_VIRTUAL,"graphics",0,true},
-    [SYS_GRAPHICS_FB]={SYS_VIRTUAL_GRAPHICS,"fb0",0,true},
-    [SYS_GRAPHICS_DEV]={SYS_GRAPHICS_FB,"dev","29:0\n",false}
+                         "../../devices/virtual/graphics/fb0",SYS_LINK},
+    [SYS_VIRTUAL_GRAPHICS]={SYS_VIRTUAL,"graphics",0,SYS_DIR},
+    [SYS_GRAPHICS_FB]={SYS_VIRTUAL_GRAPHICS,"fb0",0,SYS_DIR},
+    [SYS_GRAPHICS_DEV]={SYS_GRAPHICS_FB,"dev","29:0\n",SYS_FILE},
+    [SYS_GRAPHICS_OWNER]={SYS_GRAPHICS_FB,"device","../../display/scanout0",SYS_LINK},
+    [SYS_CLASS_DISPLAY]={SYS_CLASS,"display",0,SYS_DIR},
+    [SYS_DISPLAY_LINK]={SYS_CLASS_DISPLAY,"scanout0",
+                        "../../devices/virtual/display/scanout0",SYS_LINK},
+    [SYS_VIRTUAL_DISPLAY]={SYS_VIRTUAL,"display",0,SYS_DIR},
+    [SYS_DISPLAY_OWNER]={SYS_VIRTUAL_DISPLAY,"scanout0",0,SYS_DIR},
+    [SYS_DISPLAY_SUBSYSTEM]={SYS_DISPLAY_OWNER,"subsystem",
+                             "../../../../class/display",SYS_LINK}
 };
-/* Publish the logical scanout class, not a fabricated PCI device. The
- * display's hardware transport remains owned by its real driver. */
+/* The registered DisplayDevice is the owner of the fbdev endpoint,
+ * not a second PCI device. Represent its class and the fbdev consumer
+ * as separate sysfs objects with an actual owner and subsystem link.
+ * Physical transport discovery remains the real driver's responsibility. */
 static bool sys_entry_visible(unsigned id) {
-    if(id>=SYS_CLASS_GRAPHICS && id<=SYS_GRAPHICS_DEV)
+    if(id>=SYS_CLASS_GRAPHICS && id<=SYS_DISPLAY_SUBSYSTEM)
         return nas_display_primary()!=NULL;
     return true;
 }
 static bool sys_entry_link(unsigned id) {
-    return id==SYS_GRAPHICS_LINK;
+    return sys_entries[id].type==SYS_LINK;
 }
 static unsigned sys_entry_dtype(unsigned id) {
-    return sys_entry_link(id)?10U:sys_entries[id].directory?4U:8U;
+    return sys_entry_link(id)?10U:sys_entries[id].type==SYS_DIR?4U:8U;
 }
 /* Dynamic sysfs block identities are incarnations issued by the real block
  * class registry. No symlink, geometry or partition appears before its owner
@@ -919,12 +932,12 @@ static int sys_id(const struct nas_fs_node *node) {
 }
 static void sys_fill(unsigned id,struct nas_fs_node *out) {
     const struct sys_entry *entry=&sys_entries[id];
-    bool link=sys_entry_link(id);
+    bool link=sys_entry_link(id),dir=entry->type==SYS_DIR;
     *out=(struct nas_fs_node){.ino=SYS_INO_BASE+id,
-        .nlink=entry->directory?2:1,
-        .mode=entry->directory?0040555U:link?0120777U:0100444U,
+        .nlink=dir?2:1,
+        .mode=dir?0040555U:link?0120777U:0100444U,
         .size=entry->contents?strlen(entry->contents):0,
-        .is_dir=entry->directory,.is_symlink=link};
+        .is_dir=dir,.is_symlink=link};
 }
 static int sys_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -1133,7 +1146,7 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
         if(kind==SYS_MEMORY_DIR)return -EISDIR;
         content=kind==SYS_MEMORY_STATE?"online\n":"0\n";
     } else {
-        if(sys_entries[id].directory)return -EISDIR;
+        if(sys_entries[id].type==SYS_DIR)return -EISDIR;
         if(sys_entry_link((unsigned)id))return -EINVAL;
         content=sys_entries[id].contents;
     }
