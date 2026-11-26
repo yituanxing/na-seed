@@ -422,7 +422,7 @@ static void ext_shared_shrink(struct nas_lwext4_mount *ctx,uint32_t ino,
         uint64_t start=page->index*EXT_SHARED_PAGE_BYTES;
         if(page->ino==ino && start>=length) {
             *cursor=page->next;
-            if(!nas_frame_put(page->pa))nas_arch_halt();
+            if(!nas_frame_put(page->pa))__builtin_trap();
             (void)nas_heap_free(page);
             continue;
         }
@@ -440,7 +440,7 @@ static void ext_shared_drop_inode(struct nas_lwext4_mount *ctx,uint32_t ino) {
         struct nas_lwext4_shared_page *page=*cursor;
         if(page->ino==ino) {
             *cursor=page->next;
-            if(!nas_frame_put(page->pa))nas_arch_halt();
+            if(!nas_frame_put(page->pa))__builtin_trap();
             (void)nas_heap_free(page);
         } else cursor=&page->next;
     }
