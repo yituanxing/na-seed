@@ -709,6 +709,14 @@ def verify_wayland():
             guest.sendline('ls -la /run/user/0; test -S /run/user/0/wayland-1 && echo WAYLAND_SOCKET_STILL_PRESENT; test -r /root/wayland-info.log && { wc -c /root/wayland-info.log; tail -100 /root/wayland-info.log; }; echo WAYLAND_DIAG_END')
             guest.expect(r'\r*\nWAYLAND_DIAG_END\r*\n',timeout=40)
             print('Wayland protocol diagnostics:',guest.before)
+            # Trace the original distribution client (not a custom test
+            # protocol) to preserve the actual Linux socket/epoll failures.
+            guest.sendline('timeout 18 strace -f -s 96 -o /root/wayland-client.trace -e trace=socket,connect,accept4,fcntl,epoll_ctl,epoll_wait,epoll_pwait,poll,ppoll,sendmsg,recvmsg,sendto,recvfrom,read,write,close env WAYLAND_DISPLAY=wayland-1 WAYLAND_DEBUG=client wayland-info >/root/wayland-traced-info.log 2>&1; printf "WAYLAND_TRACE_STATUS=%s\\n" "$?"')
+            guest.expect(r'\r*\nWAYLAND_TRACE_STATUS=([0-9]+)\r*\n',timeout=45)
+            print('Original wayland-info syscall trace status:',guest.match.group(1))
+            guest.sendline('tail -75 /root/wayland-client.trace /root/wayland-traced-info.log 2>/dev/null; echo WAYLAND_TRACE_END')
+            guest.expect(r'\r*\nWAYLAND_TRACE_END\r*\n',timeout=40)
+            print('Original wayland-info syscall trace:',guest.before)
         print(f'Wayland X11 compositor socket={socket_ok} client_registry={protocol_ok}')
         time.sleep(0.7)
         w,h,compositor=capture_scanout('wayland-weston')
@@ -858,6 +866,9 @@ PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
+# Preserve original guest syscall evidence even when the Wayland gate fails.
+debugfs -R 'cat /root/wayland-client.trace' "$work/partition.ext4" > "$work/wayland-client.trace" 2>/dev/null || :
+debugfs -R 'cat /root/wayland-traced-info.log' "$work/partition.ext4" > "$work/wayland-traced-info.log" 2>/dev/null || :
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
 for app in archive-zstd sqlite lua python readonly-shared-mmap sysv-shm git gcc-make; do
