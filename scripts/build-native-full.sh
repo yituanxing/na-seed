@@ -120,6 +120,7 @@ for f in $common $arch $lwip_src $fdt_src; do
     case "$f" in ports/lwip/*|third_party/lwip/*)
         clang $flags -I ports/lwip/freestanding -c "$f" -o "$target" ;;
       third_party/tlsf/*) clang $flags -I ports/tlsf/freestanding -c "$f" -o "$target" ;;
+      third_party/chacha20/*|kernel/random.c) clang $flags -I ports/chacha20/freestanding -I third_party/chacha20 -c "$f" -o "$target" ;;
       third_party/flanterm/*) clang $flags -DFLANTERM_FB_DISABLE_BUMP_ALLOC -c "$f" -o "$target" ;;
       third_party/libfdt/*|kernel/platform/firmware_fdt.c) clang $flags -I ports/fdt/freestanding -I third_party/libfdt -Wno-unused-parameter -Wno-sign-compare -c "$f" -o "$target" ;;
       *) clang $flags -c "$f" -o "$target" ;;

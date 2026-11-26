@@ -2,6 +2,7 @@
 # for RV64 and AArch64; each target supplies only hardware/ABI providers.
 kernel/kernel.c
 kernel/random.c
+third_party/chacha20/crypto/chacha20/chacha.c
 kernel/init/main.c
 kernel/time/clock.c
 kernel/uts.c
