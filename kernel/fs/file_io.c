@@ -144,6 +144,10 @@ static int mmap_pin_file(uint64_t fd,bool shared,bool writable,
      * allowing original callers such as libdeflate-gzip to fall back to
      * read().  ENOSYS incorrectly claims that mmap itself is absent. */
     if(shared && !node->filesystem->acquire_shared_page)return -ENODEV;
+    /* Read-only shared files may have a coherent read cache without a
+     * writable dirty/writeback path. Reject unsupported writable MAP_SHARED
+     * at mmap time, rather than SIGBUS on the first userspace store. */
+    if(shared && writable && !node->filesystem->touch_shared)return -ENODEV;
     if(writable && !nas_vfs_can_write(node))return -EACCES;
     return mmap_pin_node(node,access==2U,out);
 }
@@ -175,6 +179,7 @@ void nas_fs_mmap_put(struct nas_mapped_file *file) {
 }
 bool nas_fs_mmap_writable(const struct nas_mapped_file *file) {
     return file && file->refs && file->write_allowed &&
+           file->node.filesystem && file->node.filesystem->touch_shared &&
            nas_vfs_can_write(&file->node);
 }
 int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t offset,
