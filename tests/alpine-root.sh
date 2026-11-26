@@ -108,7 +108,83 @@ try:
         drm.drmFreeVersion(ptr)
     dumb = ctypes.c_uint64(0xffffffffffffffff)
     assert drm.drmGetCap(fd, 1, ctypes.byref(dumb)) == 0
-    assert dumb.value == 0, "must not claim GEM dumb buffers before implementation"
+    assert dumb.value == 1, "GEM dumb-buffer capability must track real allocation"
+    # Call original libdrm, not a home-grown ioctl implementation.
+    drm.drmModeCreateDumbBuffer.argtypes = [
+        ctypes.c_int, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64)]
+    drm.drmModeCreateDumbBuffer.restype = ctypes.c_int
+    drm.drmModeMapDumbBuffer.argtypes = [
+        ctypes.c_int, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
+    drm.drmModeMapDumbBuffer.restype = ctypes.c_int
+    drm.drmModeDestroyDumbBuffer.argtypes = [ctypes.c_int, ctypes.c_uint32]
+    drm.drmModeDestroyDumbBuffer.restype = ctypes.c_int
+    import mmap
+    def new_dumb(target, w, h):
+        handle, pitch, size = (ctypes.c_uint32(), ctypes.c_uint32(),
+                               ctypes.c_uint64())
+        rc = drm.drmModeCreateDumbBuffer(
+            target, w, h, 32, 0, ctypes.byref(handle),
+            ctypes.byref(pitch), ctypes.byref(size))
+        assert rc == 0, (rc, w, h)
+        assert handle.value and pitch.value >= w * 4
+        assert size.value == pitch.value * h
+        offset = ctypes.c_uint64()
+        assert drm.drmModeMapDumbBuffer(target, handle.value,
+                                       ctypes.byref(offset)) == 0
+        assert offset.value > 0 and offset.value % 4096 == 0
+        return handle.value, size.value, offset.value
+    first, length, offset = new_dumb(fd, 80, 48)
+    second, length2, offset2 = new_dumb(fd, 32, 32)
+    assert second != first and offset2 != offset
+    other = os.open("/dev/dri/card0", os.O_RDWR | os.O_CLOEXEC)
+    try:
+        denied = ctypes.c_uint64()
+        assert drm.drmModeMapDumbBuffer(other, first,
+                                       ctypes.byref(denied)) != 0
+        try:
+            mmap.mmap(other, length, flags=mmap.MAP_SHARED,
+                      prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=offset)
+            raise AssertionError("DRM mmap cookie leaked across DRM Files")
+        except OSError:
+            pass
+    finally:
+        os.close(other)
+    dupfd = os.dup(fd)
+    assert drm.drmModeMapDumbBuffer(dupfd, first,
+                                   ctypes.byref(ctypes.c_uint64())) == 0
+    os.close(dupfd)
+    first_map = mmap.mmap(fd, length, flags=mmap.MAP_SHARED,
+                          prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=offset)
+    second_map = mmap.mmap(fd, length2, flags=mmap.MAP_SHARED,
+                           prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=offset2)
+    first_map[:8] = b"NaSeed01"
+    second_map[:8] = b"NaSeed02"
+    assert first_map[:8] == b"NaSeed01"
+    assert second_map[:8] == b"NaSeed02"
+    assert drm.drmModeDestroyDumbBuffer(fd, first) == 0
+    assert drm.drmModeMapDumbBuffer(fd, first,
+                                   ctypes.byref(ctypes.c_uint64())) != 0
+    # VMA keeps the original physical pages after GEM handle destruction.
+    first_map[8:16] = b"MapAlive"
+    assert first_map[:16] == b"NaSeed01MapAlive"
+    assert drm.drmModeDestroyDumbBuffer(fd, second) == 0
+    # Duplicate mappings and the child have independent VMA references.
+    pid = os.fork()
+    if pid == 0:
+        try:
+            assert first_map[:16] == b"NaSeed01MapAlive"
+            first_map[16:20] = b"fork"
+            os._exit(0)
+        except BaseException:
+            os._exit(17)
+    waited, status = os.waitpid(pid, 0)
+    assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+    assert first_map[16:20] == b"fork"
+    print("DRM_GEM_MMAP_PASS", flush=True)
+    first_map.close()
+    second_map.close()
     print("DRM_LIBDRM_PASS", flush=True)
 finally:
     os.close(fd)

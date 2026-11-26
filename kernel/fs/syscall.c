@@ -1285,7 +1285,8 @@ static const struct nas_file_ops ops_fbdev={
 /* DRM's nonblocking event/poll and GEM data plane arrive with KMS.
  * Do not advertise invented framebuffer semantics on a DRM descriptor. */
 static const struct nas_file_ops ops_drm={
-    .ioctl=nas_drm_chrdev_ioctl
+    .ioctl=nas_drm_chrdev_ioctl,
+    .release=nas_drm_chrdev_release
 };
 #endif
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.

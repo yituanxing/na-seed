@@ -340,7 +340,8 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if (!nas_vm_prot_supported(prot) || !nas_arch_user_nx_supported())
         return (uint64_t)-EOPNOTSUPP;
     struct nas_vm_device *device=NULL;
-    int probe=nas_fs_mmap_device_pin(fd,(prot&NAS_VM_WRITE)!=0,&device);
+    int probe=nas_fs_mmap_device_pin(fd,(prot&NAS_VM_WRITE)!=0,
+                                     offset,&device);
     if(probe<0)return (uint64_t)(int64_t)probe;
     if(probe>0)return vm_device_shared_mmap(hint,length,prot,flags,
                                            offset,device);

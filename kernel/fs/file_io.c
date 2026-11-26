@@ -12,6 +12,9 @@
 #include "../mm/heap.h"
 #include "../drivers/tty.h"
 #include "../drivers/display/display.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "drm_chrdev.h"
+#endif
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
@@ -44,7 +47,7 @@ uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
 
 /* Same open-file-description source for read(), exec and file mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */
-int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,uint64_t offset,
                            struct nas_vm_device **out) {
     if(!out)return -EINVAL;
     *out=NULL;
@@ -60,6 +63,19 @@ int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
         int rc=nas_packet_socket_mmap_pin(slot,out);
         return rc ? rc : 1;
     }
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    if(TASK.fds->entries[fd].kind==FD_DRM) {
+        const struct nas_open_file *opened=&nas_open_files[slot];
+        if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
+        const unsigned access=(unsigned)(opened->status_flags&3ULL);
+        if(access==1U || access==3U || (writable && access!=2U))
+            return -EACCES;
+        int rc=nas_drm_chrdev_mmap_pin(slot,offset,out);
+        return rc ? rc : 1;
+    }
+#else
+    (void)offset;
+#endif
     if(TASK.fds->entries[fd].kind!=FD_FRAMEBUFFER)return 0;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
