@@ -881,6 +881,8 @@ check-host:
 	$(OUT)/test/acpi-contract
 	clang -std=c11 -O2 -Wall -Wextra -DFLANTERM_FB_DISABLE_BUMP_ALLOC kernel/drivers/display/fbdev.c kernel/drivers/display/fbcon.c third_party/flanterm/src/flanterm.c third_party/flanterm/src/flanterm_backends/fb.c tests/fbcon-contract.c -o $(OUT)/test/fbcon-contract
 	$(OUT)/test/fbcon-contract
+	clang -std=gnu11 -O2 -Wall -Wextra -I third_party/dtc/libfdt kernel/platform/firmware_fdt.c third_party/dtc/libfdt/fdt.c third_party/dtc/libfdt/fdt_ro.c third_party/dtc/libfdt/fdt_check.c third_party/dtc/libfdt/fdt_sw.c tests/fdt-contract.c -o $(OUT)/test/fdt-contract
+	$(OUT)/test/fdt-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:

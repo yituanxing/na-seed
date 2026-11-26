@@ -13,3 +13,7 @@
 [submodule "third_party/flanterm"]
 	path = third_party/flanterm
 	url = https://github.com/mintsuki/flanterm.git
+
+[submodule "third_party/dtc"]
+	path = third_party/dtc
+	url = https://github.com/dgibson/dtc.git

@@ -10,6 +10,9 @@
 #include "random.h"
 #include "mm/user_space.h"
 #include "init/main.h"
+#if defined(__riscv) || defined(__aarch64__)
+#include "platform/firmware_fdt.h"
+#endif
 #ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
 #if !defined(__x86_64__)
 #error "H0 physical PC discovery currently supports only x86-64"
@@ -31,6 +34,16 @@
  */
 #define USED_REQUEST __attribute__((used, section(".limine_requests")))
 USED_REQUEST static volatile uint64_t base_revision[] = LIMINE_BASE_REVISION(6);
+#if defined(__riscv) || defined(__aarch64__)
+USED_REQUEST static volatile struct limine_dtb_request dtb_req = {
+    .id = LIMINE_DTB_REQUEST_ID, .revision = 0
+};
+#ifdef __riscv
+USED_REQUEST static volatile struct limine_riscv_bsp_hartid_request hart_req = {
+    .id = LIMINE_RISCV_BSP_HARTID_REQUEST_ID, .revision = 0
+};
+#endif
+#endif
 USED_REQUEST static volatile struct limine_hhdm_request hhdm_req = {
     .id = LIMINE_HHDM_REQUEST_ID, .revision = 0
 };
@@ -187,6 +200,34 @@ static bool grow_heap_from_frames(size_t minimum_bytes, void *context) {
     return false;
 }
 
+#if defined(__riscv) || defined(__aarch64__)
+static bool discover_boot_fdt(void) {
+    if (!dtb_req.response || !dtb_req.response->dtb_ptr) return false;
+    const void *blob = dtb_req.response->dtb_ptr;
+    uint64_t va = (uintptr_t)blob, offset = hhdm_req.response->offset;
+    if (va < offset) return false;
+    uint64_t pa = va - offset;
+    size_t extent = 0;
+    for (uint64_t i = 0; i < mmap_req.response->entry_count; ++i) {
+        const struct limine_memmap_entry *e = mmap_req.response->entries[i];
+        if (!e || (e->type != LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE &&
+                   e->type != LIMINE_MEMMAP_RESERVED_MAPPED &&
+                   e->type != LIMINE_MEMMAP_ACPI_RECLAIMABLE) ||
+            pa < e->base || pa - e->base >= e->length) continue;
+        uint64_t remaining = e->length - (pa - e->base);
+        extent = remaining > 16U * 1024U * 1024U ?
+                 16U * 1024U * 1024U : (size_t)remaining;
+        break;
+    }
+#ifdef __riscv
+    if (!hart_req.response) return false;
+    return nas_fdt_discover(blob, extent, true, hart_req.response->bsp_hartid);
+#else
+    return nas_fdt_discover(blob, extent, false, 0);
+#endif
+}
+#endif
+
 void kmain(void) {
     nas_serial_init();
     nas_print("[BOOT] NaSeed kernel entered\n");
@@ -201,6 +242,13 @@ void kmain(void) {
     nas_print(" modules=");
     nas_dec(module_req.response ? module_req.response->module_count : 0);
     nas_print("\n");
+#if defined(__riscv) || defined(__aarch64__)
+    if (!discover_boot_fdt()) {
+        nas_print("[FAIL] missing, invalid or unsupported native device tree\n");
+        nas_arch_halt();
+    }
+    nas_print("[FDT] native hardware resources discovered\n");
+#endif
     if (!nas_frames_init(mmap_req.response, hhdm_req.response->offset)) {
         nas_print("[FAIL] frame allocator init\n");
         nas_arch_halt();

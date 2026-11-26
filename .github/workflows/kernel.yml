@@ -30,6 +30,9 @@ jobs:
           for script in scripts/*.sh tests/*.sh; do sh -n "$script"; done
       - name: Build kernel
         run: make ARCH=${{ matrix.arch }} kernel
+      - name: Build native DT VirtIO variant
+        if: matrix.arch != 'x86_64'
+        run: make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_NET=1 kernel
       - name: Display host contract
         if: matrix.arch == 'x86_64'
         run: make check-host

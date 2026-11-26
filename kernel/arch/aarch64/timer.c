@@ -7,21 +7,11 @@
 #include "../arch.h"
 #include "../../time/counter.h"
 #include "context.h"
+#include "../../platform/firmware_fdt.h"
 
-/* QEMU 'virt' GICv2: distributor 0x08000000, CPU interface 0x08010000.
- * ARM Generic Virtual Timer is EL1-visible CNTV_*, signaled on PPI 27.
- * Register offsets are the GICv2 architectural MMIO interface, not an
- * invented NaSeed-specific interrupt protocol.
- */
-#define GICD_PHYS UINT64_C(0x08000000)
-#define GICC_PHYS UINT64_C(0x08010000)
+/* GICv2 register layout; physical resources are supplied by DT. */
 #define GICD_VIRT UINT64_C(0xffffffffe0001000)
 #define GICC_VIRT UINT64_C(0xffffffffe0002000)
-#define ARM_VTIMER_PPI 27U
-/* QEMU ARM virt exposes 32 MMIO transports on SPI 16..47.  GIC IAR
- * returns absolute INTIDs 48..79, not the SPI numbers from the FDT. */
-#define ARM_VIRTIO_IRQ_FIRST 48U
-#define ARM_VIRTIO_IRQ_COUNT 32U
 #define GICD_CTLR       0x000U
 #define GICD_TYPER      0x004U
 #define GICD_ISENABLER  0x100U
@@ -39,23 +29,23 @@ static volatile uint32_t *iface;
 static uint64_t period;
 static uint32_t armed_virtio_irqs;
 static bool virtio_irq_id(unsigned id) {
-    return id>=ARM_VIRTIO_IRQ_FIRST &&
-           id<ARM_VIRTIO_IRQ_FIRST+ARM_VIRTIO_IRQ_COUNT;
+    return id>=nas_fdt_hw.virtio_irq_first &&
+           id<nas_fdt_hw.virtio_irq_first+nas_fdt_hw.virtio_count;
 }
 /* ARM GIC routing is a platform operation, not a VirtIO class-driver
- * operation.  Own just the QEMU virt SPI range for the currently bound
- * devices, leaving PPI27 and every unrelated interrupt untouched. */
+ * operation.  Own just the DT-discovered SPI range for the currently bound
+ * devices, leaving the virtual timer and unrelated interrupts untouched. */
 int nas_arch_irq_route_enable(unsigned id) {
     if(!dist || !iface || !virtio_irq_id(id))return -EINVAL;
     if(id>=32U*((dist[GICD_TYPER/4]&31U)+1U))return -ENODEV;
-    unsigned bit=id-ARM_VIRTIO_IRQ_FIRST;
+    unsigned bit=id-nas_fdt_hw.virtio_irq_first;
     if(armed_virtio_irqs&(1U<<bit))return 0;
-    /* The QEMU virt FDT marks these SPIs edge-rising.  Target the one
-     * boot vCPU, with lower priority than the existing PPI27 timer. */
+    /* Use the DT trigger type; target the currently supported boot vCPU. */
     unsigned cfg_index=(GICD_ICFGR/4)+(id/16U);
     unsigned cfg_shift=2U*(id%16U);
     uint32_t cfg=dist[cfg_index];
-    cfg=(cfg&~(3U<<cfg_shift))|(2U<<cfg_shift);
+    cfg=(cfg&~(3U<<cfg_shift))|
+        (((nas_fdt_hw.virtio_edge_mask >> bit) & 1U) ? (2U<<cfg_shift) : 0U);
     dist[cfg_index]=cfg;
     volatile uint8_t *bytes=(volatile uint8_t *)(void *)dist;
     bytes[GICD_IPRIORITYR+id]=0xa0U;
@@ -70,7 +60,7 @@ void nas_arch_irq_route_disable(unsigned id) {
     if(!dist || !virtio_irq_id(id))return;
     dist[GICD_ICENABLER/4+id/32U]=1U<<(id%32U);
     __asm__ volatile("dsb sy" : : : "memory");
-    armed_virtio_irqs&=~(1U<<(id-ARM_VIRTIO_IRQ_FIRST));
+    armed_virtio_irqs&=~(1U<<(id-nas_fdt_hw.virtio_irq_first));
     /* A hot-unbound device must not inherit a stale edge on rebind. */
     dist[GICD_ICPENDR/4+id/32U]=1U<<(id%32U);
     __asm__ volatile("dsb sy; isb" : : : "memory");
@@ -96,8 +86,8 @@ static void rearm_timer(void) {
                      : : "r"(now+period) : "memory");
 }
 void nas_arm_timer_start(void) {
-    if (!nas_arm_map_io_page(GICD_PHYS,GICD_VIRT) ||
-        !nas_arm_map_io_page(GICC_PHYS,GICC_VIRT))
+    if (!nas_arm_map_io_page(nas_fdt_hw.gicd,GICD_VIRT) ||
+        !nas_arm_map_io_page(nas_fdt_hw.gicc,GICC_VIRT))
         nas_fail("ARM64 GICv2 device mapping failed");
     dist=(volatile uint32_t *)(uintptr_t)GICD_VIRT;
     iface=(volatile uint32_t *)(uintptr_t)GICC_VIRT;
@@ -105,11 +95,11 @@ void nas_arm_timer_start(void) {
     __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(frequency));
     if(!frequency || frequency<100) nas_fail("ARM64 CNTFRQ invalid");
     period=frequency/100; /* exact hardware-counter rate, no guesswork */
-    /* IRQ27: PPI, banked ENABLE[0] for the one QEMU vCPU. No SGIs or
+    /* Virtual timer PPI, banked ENABLE[0] for the one boot vCPU. No SGIs or
      * arbitrary device IRQs are accidentally enabled by this driver. */
     volatile uint8_t *priority=(volatile uint8_t *)(void *)dist;
-    priority[0x400+ARM_VTIMER_PPI]=0x80;
-    dist[0x100/4] = 1U<<ARM_VTIMER_PPI;
+    priority[0x400+nas_fdt_hw.timer_irq]=0x80;
+    dist[0x100/4] = 1U<<nas_fdt_hw.timer_irq;
     dist[GICD_CTLR/4] |= 1; /* group 0 distributor enable */
     iface[GICC_PMR/4]=0xff; /* priority mask */
     iface[0x00/4]=1;   /* group 0 CPU interface */
@@ -117,7 +107,7 @@ void nas_arm_timer_start(void) {
     __asm__ volatile("msr cntv_ctl_el0,%0\n isb"
                      : : "r"(1ULL) : "memory");
     extern void nas_print(const char *);
-    nas_print("[M28 ARM64] Generic Virtual Timer/GIC PPI27 active\n");
+    nas_print("[M28 ARM64] Generic Virtual Timer/GIC DT PPI active\n");
 }
 /* Handler runs with PSTATE.I=1; user context fully saved in trap.S.
  * IAR/EOIR must be paired even when the scheduler chooses another Task.
@@ -136,9 +126,9 @@ static uint32_t arm_irq_claim(void) {
     uint32_t iar=iface[GICC_IAR/4];
     unsigned id=iar&0x3ffU;
     if(id==1023U)return 0;
-    if(id!=ARM_VTIMER_PPI &&
+    if(id!=nas_fdt_hw.timer_irq &&
        (!virtio_irq_id(id) ||
-        !(armed_virtio_irqs&(1U<<(id-ARM_VIRTIO_IRQ_FIRST))))) {
+        !(armed_virtio_irqs&(1U<<(id-nas_fdt_hw.virtio_irq_first))))) {
         extern void nas_print(const char *);
         extern void nas_hex(uint64_t);
         nas_print("[ARM64 GIC] unowned IAR=");nas_hex(iar);nas_print("\n");
@@ -166,13 +156,13 @@ static void arm_device_complete_irq(uint32_t iar) {
 void nas_arm_idle_irq_c(void) {
     uint32_t iar=arm_irq_claim();
     if(!iar)return;
-    if((iar&0x3ffU)==ARM_VTIMER_PPI)arm_timer_complete_irq(iar);
+    if((iar&0x3ffU)==nas_fdt_hw.timer_irq)arm_timer_complete_irq(iar);
     else arm_device_complete_irq(iar);
 }
 void nas_arm_timer_irq_c(struct nas_arm_trap_frame *frame) {
     uint32_t iar=arm_irq_claim();
     if(!iar)return;
-    if((iar&0x3ffU)!=ARM_VTIMER_PPI) {
+    if((iar&0x3ffU)!=nas_fdt_hw.timer_irq) {
         /* No device-triggered timer tick, user-frame save, or scheduler
          * preemption.  The pending work is consumed on the next ordinary
          * dispatcher boundary; both IRQ paths remain IRQ-stack-only. */

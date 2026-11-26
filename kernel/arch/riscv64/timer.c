@@ -9,13 +9,9 @@
 #include "../../time/counter.h"
 #include "context.h"
 #include "sbi.h"
+#include "../../platform/firmware_fdt.h"
 
-/* QEMU virt/OpenSBI timebase is 10 MHz. The privileged time CSR alone
- * does not encode its frequency; this first hardware provider is
- * deliberately QEMU-virt-specific, not an invented portable Hz.
- * Configure the actual SBI v0.2 TIME extension (0x54494d45).
- */
-#define QEMU_VIRT_TIMEBASE_HZ UINT64_C(10000000)
+/* SBI TIME consumes ticks at the firmware-described timebase frequency. */
 #define RV_TIMER_HZ 100ULL
 #define SBI_TIME UINT64_C(0x54494d45)
 #define SBI_BASE 0x10ULL
@@ -23,12 +19,12 @@
 #define RV_SCAUSE_SUPERVISOR_TIMER (RV_SCAUSE_INTERRUPT | 5U)
 #define RV_SCAUSE_SUPERVISOR_EXTERNAL (RV_SCAUSE_INTERRUPT | 9U)
 #define RV_SIE_EXTERNAL (UINT64_C(1) << 9)
-#define RV_PLIC_FIRST_VIRTIO_SOURCE 1U
-#define RV_PLIC_LAST_VIRTIO_SOURCE 8U
-/* QEMU virt PLIC: all three views are independently mapped supervisor IO
- * pages.  The low-level page mapper must not be asked to map the intervening
- * 2 MiB sparse gap (PLIC is not kernel RAM/HHDM).  This one-hart target uses
- * hart 0's S-mode context (enable +0x2080, claim/complete +0x201004). */
+/* The currently supported enable bank has 32 sources. The PLIC driver
+ * owns the registers; only resources and source ranges come from DT. */
+static bool virtio_irq_id(unsigned id) {
+    return id && id < 32U && id >= nas_fdt_hw.virtio_irq_first &&
+           id - nas_fdt_hw.virtio_irq_first < nas_fdt_hw.virtio_count;
+}
 static volatile uint32_t *plic_priority;
 static volatile uint32_t *plic_enable;
 static volatile uint32_t *plic_context;
@@ -48,8 +44,7 @@ void nas_rv_plic_attach(volatile uint32_t *priority,
     __asm__ volatile("csrs sie,%0" : : "r"(RV_SIE_EXTERNAL) : "memory");
 }
 int nas_arch_irq_route_enable(unsigned hwirq) {
-    if (hwirq < RV_PLIC_FIRST_VIRTIO_SOURCE ||
-        hwirq > RV_PLIC_LAST_VIRTIO_SOURCE) return -EINVAL;
+    if (!virtio_irq_id(hwirq)) return -EINVAL;
     if (!plic_context) return -ENODEV;
     plic_priority[hwirq]=1U;
     __asm__ volatile("fence iorw,iorw" : : : "memory");
@@ -58,8 +53,7 @@ int nas_arch_irq_route_enable(unsigned hwirq) {
     return 0;
 }
 void nas_arch_irq_route_disable(unsigned hwirq) {
-    if (!plic_context || hwirq < RV_PLIC_FIRST_VIRTIO_SOURCE ||
-        hwirq > RV_PLIC_LAST_VIRTIO_SOURCE) return;
+    if (!plic_context || !virtio_irq_id(hwirq)) return;
     plic_enable[0] &= ~(1U << hwirq);
     __asm__ volatile("fence iorw,iorw" : : : "memory");
     plic_priority[hwirq]=0U;
@@ -74,8 +68,7 @@ void nas_rv_plic_external_irq(void) {
         uint32_t source=plic_context[1];
         if (!source) return;
         __asm__ volatile("fence iorw,iorw" : : : "memory");
-        if (source < RV_PLIC_FIRST_VIRTIO_SOURCE ||
-            source > RV_PLIC_LAST_VIRTIO_SOURCE)
+        if (!virtio_irq_id(source))
             nas_fail("RV64 unexpected PLIC external source");
         (void)nas_irq_dispatch(source);
         __asm__ volatile("fence iorw,iorw" : : : "memory");
@@ -85,20 +78,19 @@ void nas_rv_plic_external_irq(void) {
     /* A hard finite bound prevents a stuck level source from monopolizing
      * interrupt context; a later IRQ can claim the remaining work. */
 }
-/* QEMU virt hardware time CSR remains readable with supervisor IRQs masked.
- * The frequency is QEMU-virt-specific until FDT timebase-frequency exists. */
+/* Hardware time CSR remains readable with supervisor IRQs masked. */
 uint64_t nas_arch_monotonic_ns(void) {
     uint64_t ticks;
     __asm__ volatile("rdtime %0" : "=r"(ticks));
-    return nas_counter_ns(ticks,QEMU_VIRT_TIMEBASE_HZ);
+    return nas_counter_ns(ticks,nas_fdt_hw.timebase_hz);
 }
 uint64_t nas_arch_clock_resolution_ns(void) {
-    return 1000000000ULL / QEMU_VIRT_TIMEBASE_HZ;
+    return (1000000000ULL + nas_fdt_hw.timebase_hz - 1U) / nas_fdt_hw.timebase_hz;
 }
 static void arm_next_tick(void) {
     uint64_t now;
     __asm__ volatile("rdtime %0" : "=r"(now));
-    if(nas_rv_sbi_call(SBI_TIME,0,now+QEMU_VIRT_TIMEBASE_HZ/RV_TIMER_HZ).error)
+    if(nas_rv_sbi_call(SBI_TIME,0,now+nas_fdt_hw.timebase_hz/RV_TIMER_HZ).error)
         nas_fail("RV64 SBI TIME set_timer rejected");
 }
 void nas_rv_timer_start(void) {
