@@ -7,6 +7,7 @@
 #include "../errno.h"
 #include "../mm/frame.h"
 #include "../block/device.h"
+#include "../drivers/display/display.h"
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -669,6 +670,8 @@ enum {
     SYS_CORE_ID, SYS_PACKAGE_ID, SYS_THREAD_SIBLINGS, SYS_CORE_SIBLINGS,
     SYS_MEMORY, SYS_MEMORY_BLOCK_SIZE,
     SYS_DEV, SYS_DEV_BLOCK, SYS_BLOCK, SYS_VIRTUAL, SYS_VIRTUAL_BLOCK,
+    SYS_CLASS, SYS_CLASS_GRAPHICS, SYS_GRAPHICS_LINK,
+    SYS_VIRTUAL_GRAPHICS, SYS_GRAPHICS_FB, SYS_GRAPHICS_DEV,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -708,8 +711,28 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
     [SYS_DEV_BLOCK]={SYS_DEV,"block",0,true},
     [SYS_BLOCK]={SYS_ROOT,"block",0,true},
     [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,true},
-    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,true}
+    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,true},
+    [SYS_CLASS]={SYS_ROOT,"class",0,true},
+    [SYS_CLASS_GRAPHICS]={SYS_CLASS,"graphics",0,true},
+    [SYS_GRAPHICS_LINK]={SYS_CLASS_GRAPHICS,"fb0",
+                         "../../devices/virtual/graphics/fb0",false},
+    [SYS_VIRTUAL_GRAPHICS]={SYS_VIRTUAL,"graphics",0,true},
+    [SYS_GRAPHICS_FB]={SYS_VIRTUAL_GRAPHICS,"fb0",0,true},
+    [SYS_GRAPHICS_DEV]={SYS_GRAPHICS_FB,"dev","29:0\n",false}
 };
+/* Publish the logical scanout class, not a fabricated PCI device. The
+ * display's hardware transport remains owned by its real driver. */
+static bool sys_entry_visible(unsigned id) {
+    if(id>=SYS_CLASS_GRAPHICS && id<=SYS_GRAPHICS_DEV)
+        return nas_display_primary()!=NULL;
+    return true;
+}
+static bool sys_entry_link(unsigned id) {
+    return id==SYS_GRAPHICS_LINK;
+}
+static unsigned sys_entry_dtype(unsigned id) {
+    return sys_entry_link(id)?10U:sys_entries[id].directory?4U:8U;
+}
 /* Dynamic sysfs block identities are incarnations issued by the real block
  * class registry. No symlink, geometry or partition appears before its owner
  * registers, and stale inodes cannot become another disk after slot reuse. */
@@ -896,11 +919,12 @@ static int sys_id(const struct nas_fs_node *node) {
 }
 static void sys_fill(unsigned id,struct nas_fs_node *out) {
     const struct sys_entry *entry=&sys_entries[id];
+    bool link=sys_entry_link(id);
     *out=(struct nas_fs_node){.ino=SYS_INO_BASE+id,
         .nlink=entry->directory?2:1,
-        .mode=entry->directory?0040555U:0100444U,
+        .mode=entry->directory?0040555U:link?0120777U:0100444U,
         .size=entry->contents?strlen(entry->contents):0,
-        .is_dir=entry->directory};
+        .is_dir=entry->directory,.is_symlink=link};
 }
 static int sys_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -941,7 +965,7 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
         return 0;
     }
     for(unsigned i=1;i<SYS_NODE_COUNT;i++)
-        if(sys_entries[i].parent==(unsigned)id &&
+        if(sys_entry_visible(i) && sys_entries[i].parent==(unsigned)id &&
            !strcmp(name,sys_entries[i].name)) {
             sys_fill(i,out);
             return 0;
@@ -1038,7 +1062,7 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
             uint64_t skip=cursor-2;
             bool found=false;
             for(unsigned i=1;i<SYS_NODE_COUNT;i++) {
-                if(sys_entries[i].parent!=(unsigned)id)continue;
+                if(!sys_entry_visible(i) || sys_entries[i].parent!=(unsigned)id)continue;
                 if(skip--!=0)continue;
                 child=i;
                 name=sys_entries[i].name;
@@ -1079,7 +1103,7 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
             if(!found)break;
         }
         int rc=fill_dirent(&out[count],name,SYS_INO_BASE+child,
-                           sys_entries[child].directory?4:8);
+                           sys_entry_dtype(child));
         if(rc)return rc;
     }
     return (int)count;
@@ -1110,6 +1134,7 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
         content=kind==SYS_MEMORY_STATE?"online\n":"0\n";
     } else {
         if(sys_entries[id].directory)return -EISDIR;
+        if(sys_entry_link((unsigned)id))return -EINVAL;
         content=sys_entries[id].contents;
     }
     if(!content)return -EIO;
@@ -1120,6 +1145,14 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     return (int64_t)length;
 }
 static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
+    int id=sys_id(node);
+    if(id>=0 && sys_entry_link((unsigned)id)) {
+        if(!sys_entry_visible((unsigned)id))return -ESTALE;
+        const char *link=sys_entries[id].contents;
+        size_t n=strlen(link);
+        memcpy(target,link,n+1);
+        return (int)n;
+    }
     unsigned kind;
     const struct nas_block_device *dev=sys_block_decode(node,&kind);
     if(!dev || (kind!=SB_ROOT_LINK && kind!=SB_DEV_LINK))return -EINVAL;
