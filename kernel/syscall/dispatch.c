@@ -620,7 +620,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_capset) return nas_sys_capabilities(true,args[1],args[2]);
     if(nr==NAS_SC_shmget)return nas_sysvipc_call(NAS_SYSVIPC_SHM,0,args[1],args[2],args[3],0);
     if(nr==NAS_SC_shmctl)return nas_sysvipc_call(NAS_SYSVIPC_SHM,1,args[1],args[2],args[3],0);
-    if(nr==NAS_SC_shmat || nr==NAS_SC_shmdt)return (uint64_t)-ENOSYS;
+    if(nr==NAS_SC_shmat)return nas_sysvipc_call(NAS_SYSVIPC_SHM,2,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_shmdt)return nas_sysvipc_call(NAS_SYSVIPC_SHM,3,args[1],0,0,0);
     if(nr==NAS_SC_semget)return nas_sysvipc_call(NAS_SYSVIPC_SEM,0,args[1],args[2],args[3],0);
     if(nr==NAS_SC_semctl)return nas_sysvipc_call(NAS_SYSVIPC_SEM,1,args[1],args[2],args[3],args[4]);
     if(nr==NAS_SC_semop)return (uint64_t)-ENOSYS;
