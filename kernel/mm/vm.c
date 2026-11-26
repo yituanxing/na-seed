@@ -257,15 +257,16 @@ static uint64_t vm_device_shared_mmap(uint64_t hint,uint64_t length,
     uint64_t result=(uint64_t)-EOPNOTSUPP;
     struct nas_anon_regions planned={0};
     if((flags&3U)!=1U || (prot&NAS_VM_EXEC))goto finish;
-    /* A framebuffer may end midway through its final PMM page. The mapped
-     * logical bytes, not the rounded-up virtual page extent, are bounded
-     * by the actual device surface size. */
+    /* mmap maps complete pages, including the dedicated final partial
+     * device page. Bound page count rather than logical byte count; fbdev
+     * callers may pass the already rounded length. Never admit an extra
+     * page beyond the provider's owned backing. */
     uint64_t size=device->extent_bytes;
-    if(offset>=size || length>size-offset) {
+    uint64_t pages=(length+PAGE-1)/PAGE,bytes=pages*PAGE;
+    if(offset>=size || pages>(size-offset)/PAGE+((size-offset)%PAGE!=0)) {
         result=(uint64_t)-EINVAL;
         goto finish;
     }
-    uint64_t pages=(length+PAGE-1)/PAGE,bytes=pages*PAGE;
     uint64_t last=0;
     if(!device->page || device->page(device->context,
                                     offset+(pages-1)*PAGE,&last) || !last)
