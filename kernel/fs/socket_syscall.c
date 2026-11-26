@@ -1304,6 +1304,19 @@ int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
     *count=msg.iovlen;
     return 1;
 }
+/* Linux MSG_DONTWAIT is per-call: do not change a dup/fork-shared
+ * open description's O_NONBLOCK state. Pipe-backed AF_UNIX streams use
+ * -EOPNOTSUPP solely as their internal "would block" sentinel when the
+ * File is blocking. Translate that sentinel only while the corresponding
+ * direction is genuinely not ready; preserve all real provider errors. */
+static uint64_t unix_msg_dontwait_result(uint64_t result,uint64_t flags,
+                                         unsigned slot,bool receiving) {
+    if((flags&0x40ULL) && (int64_t)result==-EOPNOTSUPP &&
+       !(receiving ? nas_pipe_read_ready(slot) :
+                     nas_pipe_write_ready(slot)))
+        return (uint64_t)-EAGAIN;
+    return result;
+}
 static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
@@ -1350,7 +1363,8 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         if((int64_t)wrote>0)nas_unix_rights_commit(&transfer);
         else nas_unix_rights_cancel(&transfer);
     }
-    return wrote;
+    return unix_msg_dontwait_result(wrote,flags,
+                                     TASK.fds->entries[fd].slot,false);
 }
 static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
                                     uint64_t flags,unsigned receiver_slot) {
@@ -1373,7 +1387,8 @@ static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
         msg.control,16ULL+(uint64_t)capacity*4ULL))
         return (uint64_t)-EFAULT;
     uint64_t received=nas_fs_fd_readv(fd,msg.iov,msg.iovlen);
-    if((int64_t)received<0)return received;
+    if((int64_t)received<0)
+        return unix_msg_dontwait_result(received,flags,receiver_slot,true);
     /* Rights may arrive while readv parks. Inspect the pinned endpoint,
      * not the original integer FD, which another task may have reused. */
     unsigned pending=nas_unix_rights_count(receiver_slot);
