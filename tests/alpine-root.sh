@@ -803,9 +803,17 @@ with open(f'{work}/init.log','w') as log:
                     input_ok=verify_input()
                 if input_ok:
                     tools_ok=verify_xorg_tools()
-                    wm_ok=verify_wm()
-                    if wm_ok:
+                    # Retain the full Openbox/GTK acceptance, but isolate its
+                    # occasional exit delay from the separate Wayland verdict.
+                    # Neither failure may be converted into a global PASS.
+                    try:
+                        wm_ok=verify_wm()
+                    except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
+                        print(f'Openbox/GTK regression failed: {error}')
+                    try:
                         wayland_ok=verify_wayland()
+                    except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
+                        print(f'Wayland protocol/client acceptance failed: {error}')
             except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
