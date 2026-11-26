@@ -16,5 +16,12 @@ int nas_drm_gem_map_offset(unsigned slot,uint32_t handle,uint64_t *out);
 int nas_drm_gem_destroy(unsigned slot,uint32_t handle);
 int nas_drm_gem_mmap_pin(unsigned slot,uint64_t offset,
                          struct nas_vm_device **out);
+/* KMS framebuffer owns a separate object reference. Destroying the GEM
+ * handle or final-closing the originating File does not invalidate scanout. */
+int nas_drm_gem_pin_fb(unsigned slot,uint32_t handle,
+                       struct nas_vm_device **out,uint64_t *bytes,
+                       uint32_t *pitch);
+int nas_drm_gem_copy_from(struct nas_vm_device *owner,uint64_t offset,
+                           uint8_t *dst,uint64_t bytes);
 void nas_drm_gem_file_release(unsigned slot);
 #endif

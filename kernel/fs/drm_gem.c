@@ -154,6 +154,39 @@ int nas_drm_gem_mmap_pin(unsigned slot,uint64_t offset,
     }
     return -EINVAL;
 }
+int nas_drm_gem_pin_fb(unsigned slot,uint32_t handle,
+                       struct nas_vm_device **out,uint64_t *bytes,
+                       uint32_t *pitch) {
+    if(!out || !bytes || !pitch)return -EINVAL;
+    *out=NULL;*bytes=0;*pitch=0;
+    struct gem_object *o=find_handle(slot,handle);
+    if(!o)return -ENOENT;
+    if(!vm_get(o))return -EBUSY;
+    *out=&o->vm;
+    *bytes=o->size;
+    *pitch=o->pitch;
+    return 0;
+}
+int nas_drm_gem_copy_from(struct nas_vm_device *owner,uint64_t offset,
+                           uint8_t *dst,uint64_t bytes) {
+    if(!owner || !dst)return -EINVAL;
+    struct gem_object *o=owner->context;
+    if(!o || &o->vm!=owner || !o->refs || !o->frames ||
+       offset>o->size || bytes>o->size-offset)return -EINVAL;
+    uint64_t done=0;
+    while(done<bytes) {
+        uint64_t at=offset+done;
+        unsigned page=(unsigned)(at/GEM_PAGE);
+        uint64_t within=at%GEM_PAGE;
+        uint64_t chunk=GEM_PAGE-within;
+        if(chunk>bytes-done)chunk=bytes-done;
+        if(page>=o->pages || !o->frames[page])return -EIO;
+        memcpy(dst+done,(const void *)(uintptr_t)
+               (nas_hhdm_offset()+o->frames[page]+within),(size_t)chunk);
+        done+=chunk;
+    }
+    return 0;
+}
 void nas_drm_gem_file_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return;
     for(unsigned i=0;i<GEM_MAX_OBJECTS;i++) {

@@ -4,6 +4,7 @@
  * Do not claim unimplemented GEM/KMS capabilities merely to start Weston. */
 #include "drm_chrdev.h"
 #include "drm_gem.h"
+#include "drm_kms.h"
 #include "../drivers/core/chrdev.h"
 #include "../drivers/display/virtio_gpu.h"
 #include "../fd.h"
@@ -45,13 +46,20 @@ _Static_assert(sizeof(struct nas_drm_gem_close)==8U,"DRM GEM close");
 static bool drm_present(unsigned unit) {
     return unit==0U && nas_virtio_gpu_count()!=0U;
 }
+static int drm_file_open(unsigned slot,unsigned unit) {
+    if(!drm_present(unit))return -ENODEV;
+    return nas_drm_kms_open(slot);
+}
+static const struct nas_chrdev_provider drm_provider={
+    .name="linux-drm-primary",.open=drm_file_open
+};
 static struct nas_chrdev_node drm_node={
     .path="/dev/dri/card0",
     .info={
         .fd_kind=FD_DRM,.unit=0,.dev=2,.ino=3060,
         .rdev=(226U<<8),.mode=0020600U
     },
-    .present=drm_present
+    .present=drm_present,.provider=&drm_provider
 };
 int nas_drm_chrdev_init(void) {
     return nas_chrdev_node_register(&drm_node);
@@ -165,6 +173,7 @@ int nas_drm_chrdev_mmap_pin(unsigned slot,uint64_t offset,
     return nas_drm_gem_mmap_pin(slot,offset,out);
 }
 void nas_drm_chrdev_release(unsigned slot) {
+    nas_drm_kms_release(slot);
     nas_drm_gem_file_release(slot);
 }
 uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
@@ -183,5 +192,5 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
         return dumb_destroy(slot,user_arg,false);
     if(request==NAS_DRM_IOCTL_GEM_CLOSE)
         return dumb_destroy(slot,user_arg,true);
-    return (uint64_t)-ENOTTY;
+    return nas_drm_kms_ioctl(slot,(uint32_t)request,user_arg);
 }

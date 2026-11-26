@@ -203,6 +203,15 @@ try:
     print("DRM_GEM_MMAP_PASS", flush=True)
     first_map.close()
     second_map.close()
+    # Public original libdrm KMS discovery. A real connected connector and
+    # an actual mode must exist, not a hardcoded successful ioctl return.
+    drm.drmModeGetResources.argtypes=[ctypes.c_int]
+    drm.drmModeGetResources.restype=ctypes.c_void_p
+    drm.drmModeFreeResources.argtypes=[ctypes.c_void_p]
+    res=drm.drmModeGetResources(fd)
+    assert res,"original libdrm could not enumerate DRM resources"
+    drm.drmModeFreeResources(res)
+    print("DRM_KMS_DISCOVERY_PASS",flush=True)
     print("DRM_LIBDRM_PASS", flush=True)
 finally:
     os.close(fd)
