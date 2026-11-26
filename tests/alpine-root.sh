@@ -146,6 +146,61 @@ python_runtime() {
     python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"' &&
     python3 -c 'import socket,select; a,b=socket.socketpair(); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; a.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==1; assert b.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
 }
+unix_msg_dontwait() {
+    # The stock Alpine Python socket module exercises Linux recvmsg/sendmsg
+    # on accepted *blocking* AF_UNIX sockets. MSG_DONTWAIT must affect only
+    # this syscall, never the shared File's O_NONBLOCK setting.
+    python3 - <<'SOCKETCHECK'
+import errno, fcntl, os, socket
+path='/tmp/naseed-unix-stream.sock'
+listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+listener.bind(path)
+listener.listen(1)
+client=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+client.connect(path)
+peer,_=listener.accept()
+initial=fcntl.fcntl(peer.fileno(),fcntl.F_GETFL)
+assert not initial&os.O_NONBLOCK
+try:
+    peer.recvmsg(64,0,socket.MSG_DONTWAIT)
+except OSError as ex:
+    assert ex.errno in (errno.EAGAIN,errno.EWOULDBLOCK),ex
+else:
+    raise AssertionError('empty AF_UNIX recvmsg(MSG_DONTWAIT) must return EAGAIN')
+assert fcntl.fcntl(peer.fileno(),fcntl.F_GETFL)==initial
+assert client.sendmsg([b'first'],[],socket.MSG_DONTWAIT)==5
+assert peer.recvmsg(64)[0]==b'first'
+assert peer.sendmsg([b'second'],[],socket.MSG_DONTWAIT)==6
+assert client.recvmsg(64)[0]==b'second'
+sent=0
+full=False
+for _ in range(20):
+    try:
+        n=client.sendmsg([b'x'*4096],[],socket.MSG_DONTWAIT)
+        assert n>0
+        sent+=n
+    except OSError as ex:
+        assert ex.errno in (errno.EAGAIN,errno.EWOULDBLOCK),ex
+        full=True
+        break
+assert full and sent>=4096, ('AF_UNIX nonblocking backpressure',sent)
+assert peer.recvmsg(4096)[0]==b'x'*4096
+a,b=socket.socketpair()
+try:
+    b.recvmsg(1,0,socket.MSG_DONTWAIT)
+except OSError as ex:
+    assert ex.errno in (errno.EAGAIN,errno.EWOULDBLOCK),ex
+else:
+    raise AssertionError('socketpair recvmsg(MSG_DONTWAIT) must return EAGAIN')
+a.close()
+b.close()
+peer.close()
+client.close()
+listener.close()
+os.unlink(path)
+print('original Alpine Python: AF_UNIX MSG_DONTWAIT RX/TX and shared File flags PASS')
+SOCKETCHECK
+}
 sysv_shared_memory() {
     # Genuine Alpine GCC program: separate processes attach the same SysV
     # segment, publish changes through physical aliases, and retain deleted
@@ -246,6 +301,7 @@ run archive-zstd archive
 run sqlite database
 run lua lua_runtime
 run python python_runtime
+run unix-msg-dontwait unix_msg_dontwait
 run readonly-shared-mmap readonly_shared_mmap
 run sysv-shm sysv_shared_memory
 run git git_repository
@@ -871,7 +927,7 @@ debugfs -R 'cat /root/wayland-client.trace' "$work/partition.ext4" > "$work/wayl
 debugfs -R 'cat /root/wayland-traced-info.log' "$work/partition.ext4" > "$work/wayland-traced-info.log" 2>/dev/null || :
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
-for app in archive-zstd sqlite lua python readonly-shared-mmap sysv-shm git gcc-make; do
+for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap sysv-shm git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"
