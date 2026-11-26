@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi font-adobe-100dpi
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -44,6 +44,8 @@ sudo chroot "$root" /bin/busybox sh -ec '
         mkfontdir "$dir"
         mkfontscale "$dir"
     done
+    fc-cache --system-only
+    fc-match sans
 '
 # Use the ordinary Xorg configuration interface, not a patched X server.
 sudo tee "$root/root/xorg.conf" >/dev/null <<'XORG'
