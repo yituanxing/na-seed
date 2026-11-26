@@ -565,7 +565,7 @@ def verify_xorg_tools():
         ('xmodmap', 'timeout 15 xmodmap -pm > /root/xorg-xmodmap.log 2>&1 && grep -qi shift /root/xorg-xmodmap.log'),
         ('xlsfonts', 'timeout 15 xlsfonts -fn fixed > /root/xorg-xlsfonts.log 2>&1 && grep -Fxq fixed /root/xorg-xlsfonts.log'),
         ('xkbcomp', 'timeout 15 xkbcomp -xkb :0 /root/xorg-keymap.xkb > /root/xorg-xkbcomp.log 2>&1 && test -s /root/xorg-keymap.xkb'),
-        ('xrdb', "printf 'NaSeed.xorgProbe: confirmed\n' | timeout 15 xrdb -merge > /root/xorg-xrdb.log 2>&1 && timeout 15 xrdb -query | grep -Fq 'NaSeed.xorgProbe:'"),
+        ('xrdb', "printf 'NaSeed.xorgProbe: confirmed\\n' | timeout 15 xrdb -merge > /root/xorg-xrdb.log 2>&1 && timeout 15 xrdb -query | grep -Fq 'NaSeed.xorgProbe:'"),
         ('xwd', 'timeout 15 xwd -root -silent -out /root/xorg-root.xwd > /root/xorg-xwd.log 2>&1 && test "$(wc -c </root/xorg-root.xwd)" -gt 1024'),
     ]
     passed=True
