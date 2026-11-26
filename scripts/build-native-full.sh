@@ -118,6 +118,7 @@ for f in $common $arch $lwip_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
     case "$f" in ports/lwip/*|third_party/lwip/*)
         clang $flags -I ports/lwip/freestanding -c "$f" -o "$target" ;;
+      third_party/tlsf/*) clang $flags -I ports/tlsf/freestanding -c "$f" -o "$target" ;;
       *) clang $flags -c "$f" -o "$target" ;;
     esac
     obj="$obj $target"

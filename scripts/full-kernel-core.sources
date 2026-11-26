@@ -50,6 +50,7 @@ kernel/drivers/display/fbcon.c
 kernel/drivers/display/fbdev_chrdev.c
 kernel/mm/frame.c
 kernel/mm/heap.c
+third_party/tlsf/tlsf.c
 kernel/mm/vm.c
 kernel/mm/usercopy.c
 kernel/mm/remote_copy.c
