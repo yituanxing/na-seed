@@ -309,12 +309,10 @@ with open(f'{work}/init.log','w') as log:
             if not mapped['xterm']:
                 # A failure must preserve the original syscall evidence, not
                 # be converted into a pass by changing xterm resources.
-                guest.sendline('cat /proc/$xtp/status; ls -l /proc/$xtp/fd; kill "$xtp" 2>/dev/null; echo XTERM_STATE_END')
+                guest.sendline('cat /proc/$xtp/status; ls -l /proc/$xtp/fd; echo XTERM_STATE_END')
                 guest.expect(r'\r*\nXTERM_STATE_END\r*\n',timeout=60)
-                guest.sendline('strace -tt -o /root/xterm.trace '+apps[0][2]+' >/root/xterm-traced.log 2>&1 & tp=$!; sleep 20; tail -100 /root/xterm.trace; cat /root/xterm-traced.log; echo XTERM_TRACE_END')
-                guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=90)
-                guest.sendline('kill -KILL "$tp" $(pidof xterm) 2>/dev/null; wait "$tp" 2>/dev/null; echo XTERM_TRACE_CLEAN')
-                guest.expect(r'\r*\nXTERM_TRACE_CLEAN\r*\n',timeout=60)
+                guest.sendline("timeout -s KILL 15 python3 -c 'import ctypes,os,sys; p=int(sys.argv[1]); libc=ctypes.CDLL(None,use_errno=True); libc.ptrace.restype=ctypes.c_long; libc.ptrace.argtypes=[ctypes.c_long,ctypes.c_long,ctypes.c_void_p,ctypes.c_void_p]; r=(ctypes.c_ulonglong*27)(); assert libc.ptrace(16,p,None,None)==0,ctypes.get_errno(); os.waitpid(p,0); assert libc.ptrace(12,p,None,ctypes.byref(r))==0,ctypes.get_errno(); print(\"BLOCKED_REGS\",p,\"rax\",r[10],\"orig_rax\",r[15],\"rip\",hex(r[16]),\"args\",[hex(r[i]) for i in (14,13,12,7,9,8)],flush=True); assert libc.ptrace(17,p,None,None)==0,ctypes.get_errno()' \"$xtp\"; echo XTERM_TRACE_END")
+                guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=60)
             guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
             guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
         if result!=0:
