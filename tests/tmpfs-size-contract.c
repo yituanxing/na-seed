@@ -9,6 +9,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
+
+/* Hosted architecture and VFS ownership boundaries. */
+void nas_arch_halt(void) { abort(); }
+static const void *leased_inode;
+bool nas_vfs_inode_is_pinned(const void *inode) {
+    return leased_inode && inode==leased_inode;
+}
 
 #define P 4096U
 #define NFRAMES 64U
@@ -160,11 +168,45 @@ static void shrink_releases_keep_size_reservations(void) {
     assert(tmp_resize(&f,0)==0 && q.used_pages==0 &&
            frames_used()==0 && f.index_root==0);
 }
+/* Keep the REAL tmpfs orphan reclaimer while faking only the VFS lease
+ * predicate. Open File/VMA owners preserve the inode after final unlink;
+ * inode data dies only on final unpin, and an independent PTE frame ref
+ * survives the inode's own storage put until its mapping is destroyed. */
+static void orphaned_inode_lifetime(void) {
+    assert(frames_used()==0);
+    struct nas_tmp_quota q={.max_pages=3,.max_inodes=2};
+    struct nas_tmp_file *f=tmp_inode_alloc_quota(false,0644,&q);
+    assert(f && f->used && q.used_inodes==1);
+    tmp_inode_link(f);
+    tmp_inode_link(f); /* two names, then both unlinked */
+    uint8_t payload=0x77;
+    assert(tmp_write_at(f,10,&payload,1)==1);
+    uint64_t pa=0;
+    assert(tmp_acquire_shared_page(f,0,&pa)==0 && pa &&
+           nas_frame_refs(pa)==2);
+    leased_inode=f;
+    tmp_inode_unlink(f);
+    assert(f->nlink==1 && f->used);
+    tmp_inode_unlink(f);
+    assert(!f->nlink && f->used && q.used_pages==1);
+    tmp_inode_discard(f); /* even an explicit orphan probe cannot free it */
+    uint8_t got=0;
+    assert(tmp_read_at(f,10,&got,1)==1 && got==payload);
+    assert(nas_frame_refs(pa)==2 && q.used_inodes==1);
+    leased_inode=NULL;
+    tmp_inode_discard(f); /* models VFS final inode lease release */
+    assert(!f->used && q.used_pages==0 && q.used_inodes==0);
+    assert(nas_frame_refs(pa)==1); /* independent shared PTE ownership */
+    assert(nas_frame_put(pa) && nas_frame_refs(pa)==0);
+    /* One reusable inode-slab metadata frame remains intentionally cached. */
+    assert(frames_used()==1);
+}
 int main(void) {
     shrink_releases_keep_size_reservations();
     sparse_growth_and_held_shared_page();
     sparse_extent_and_reservation();
     quota_cannot_publish_missing_pages();
-    puts("PASS: real tmpfs EOF tail, sparse growth, shared pin, quota and release");
+    orphaned_inode_lifetime();
+    puts("PASS: real tmpfs EOF tail, sparse growth, quota and orphan inode/PTE ownership");
     return 0;
 }
