@@ -289,9 +289,14 @@ with open(f'{work}/init.log','w') as log:
             guest.sendline('export DISPLAY=:0; app_pids=""')
             mapped={}
             for name,title,command,_,_ in apps:
+                if name=='xclock':
+                    command='strace -f -o /root/xclock.trace '+command
                 guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
                 guest.sendline(f'for i in $(seq 1 20); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
                 mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=120)==0
+            if not mapped['xclock']:
+                guest.sendline('tail -100 /root/xclock.trace; echo XCLOCK_TRACE_END')
+                guest.expect(r'\r*\nXCLOCK_TRACE_END\r*\n',timeout=60)
             try:
                 time.sleep(1)
                 apps_ok=verify_apps(mapped)
