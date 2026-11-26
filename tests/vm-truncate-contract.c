@@ -75,16 +75,22 @@ static void reset(unsigned kind,struct nas_mapped_file *file) {
     exchanges=releases=matches=resolves=0;
     resident=true;
 }
-static void private_copy_survives_truncate(void) {
+static void private_cow_never_mutated_in_place(void) {
     reset(NAS_VMA_FILE_PRIVATE_LAZY,&backing);
     nas_vm_invalidate_file(inode,1000);
+    assert(!resident && exchanges==1 && releases==1);
+    /* Another fork's COW leaf may still hold this actual physical frame. */
     assert(physical[999]==0xa5 && physical[1000]==0xa5 &&
            physical[PAGE-1]==0xa5);
-    assert(resident && exchanges==0 && releases==0);
     reset(NAS_VMA_FILE_PRIVATE_LAZY,&backing);
     nas_vm_invalidate_file(inode,0);
-    assert(resident && physical[0]==0xa5 && physical[PAGE-1]==0xa5);
-    assert(exchanges==0 && releases==0);
+    assert(!resident && exchanges==1 && releases==1);
+    assert(physical[0]==0xa5 && physical[PAGE-1]==0xa5);
+    /* Nothing before the new EOF may be dropped or modified. */
+    reset(NAS_VMA_FILE_PRIVATE_LAZY,&backing);
+    nas_vm_invalidate_file(inode,PAGE+1000);
+    assert(resident && exchanges==0 && releases==0);
+    assert(physical[PAGE-1]==0xa5);
 }
 static void shared_mapping_tracks_new_eof(void) {
     reset(NAS_VMA_FILE_MUTABLE_SHARED,&backing);
@@ -103,9 +109,9 @@ static void unrelated_inode_is_untouched(void) {
            exchanges==0 && releases==0);
 }
 int main(void) {
-    private_copy_survives_truncate();
+    private_cow_never_mutated_in_place();
     shared_mapping_tracks_new_eof();
     unrelated_inode_is_untouched();
-    puts("PASS: truncate preserves private COW snapshots, invalidates only shared cache aliases");
+    puts("PASS: truncate unmaps private COW leaves without modifying shared physical frames");
     return 0;
 }

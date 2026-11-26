@@ -772,32 +772,36 @@ struct nas_vm_resize_context {
     const struct nas_fs_node *node;
     uint64_t new_size;
 };
-/* A truncate must invalidate resident MAP_SHARED cache aliases in every
- * MM.  MAP_PRIVATE lazy file pages are different: the initial fault already
- * COPIED the source into a private PMM frame, which can be COW-shared across
- * fork and later privately modified.  Truncate must NEVER unmap or zero
- * those existing private copies, or it would corrupt another process's COW
- * snapshot. Nonresident private pages still read the live pinned inode on
- * their next fault (and get SIGBUS if now past EOF).
- * Compare stable VFS inode identity, never a recycled pathname. */
+/* A truncate invalidates resident mappings of the changed inode in
+ * every MM. MAP_PRIVATE lazy pages are *already copies* of the file, and
+ * after fork may share COW frames with other MMs. Linux's truncate path
+ * unmaps even such private COW PTEs when the new EOF crosses their page.
+ * NEVER memset a private copy in place: drop only this MM's leaf reference
+ * and let a future fault read the pinned inode (or SIGBUS past EOF).
+ * Private pages entirely before EOF remain intact. Compare stable VFS inode
+ * identity, never a recycled pathname. */
 static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
     const struct nas_vm_resize_context *ctx=opaque;
     for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
-        if(!mutable_shared(v) ||
+        if((!mutable_shared(v) && v->kind!=NAS_VMA_FILE_PRIVATE_LAZY) ||
            !nas_fs_mmap_matches(v->backing,ctx->node))continue;
+        const bool private_copy=v->kind==NAS_VMA_FILE_PRIVATE_LAZY;
         for(uint64_t va=v->start;va<v->end;va+=PAGE) {
             uint64_t off=v->file_offset+(va-v->start);
             uint64_t pa=0;
             if(!nas_mm_resolve_user(mm,va,&pa,0))continue;
-            if(off>=ctx->new_size) {
+            /* For a private snapshot invalidate the entire last partial
+             * page instead of modifying a frame held by another COW MM. */
+            if(off>=ctx->new_size ||
+               (private_copy && ctx->new_size-off<PAGE)) {
                 uint64_t old=0;
                 if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,0,0,&old) ||
                    old!=(pa&~(PAGE-1)))nas_arch_halt();
                 if(!nas_frame_put(old))nas_arch_halt();
             } else if(ctx->new_size-off<PAGE) {
-                /* Only live shared cache frames are mutable here.
-                 * Private lazy snapshots are never touched by truncate. */
+                /* Only the live MAP_SHARED cache page is modified here;
+                 * every private frame touched by EOF has been unmapped. */
                 uint64_t first=ctx->new_size-off;
                 memset((void *)(uintptr_t)(nas_hhdm_offset()+
                        (pa&~(PAGE-1))+first),0,(size_t)(PAGE-first));

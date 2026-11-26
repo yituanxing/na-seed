@@ -42,7 +42,8 @@ callers use the typed VMA interface.
 
 The host contract `tests/vm-truncate-contract.c` links the production VM
 truncate walker with fake page-table, inode-match and frame interfaces.
-Truncating a file must invalidate its resident **shared** cache mappings, but
-must not zero or discard already copied MAP_PRIVATE lazy pages; those may
-contain post-fork COW data. Absent private pages still fault through the pinned
-file inode and reflect its new EOF. Run via `make check-host`.
+Truncating a file invalidates resident shared cache mappings and private
+COW leaves crossing the new EOF. A private frame may still be held by a forked
+process; it must be **unmapped and frame_put**, never zeroed in place. Private
+pages entirely before EOF remain untouched. Absent private pages fault via the
+pinned inode and reflect its new EOF. Run via `make check-host`.
