@@ -105,8 +105,13 @@ with open(f'{work}/init.log','w') as log:
         guest.expect('Password:')
         guest.sendline('naseed-ci-only')
         guest.expect(r'# ')
-        guest.sendline('test -s /etc/apk/world && test -x /sbin/init && id -u && cat /etc/alpine-release && echo CLI_READY')
-        guest.expect(r'\r?\n0\r?\n3\.23\.7\r?\nCLI_READY\r?\n')
+        # Kernel serial diagnostics can occur between guest process outputs.
+        # Check values inside the shell, then emit one standalone success line.
+        guest.sendline('test -s /etc/apk/world && test -x /sbin/init && '
+                       'test "$(id -u)" = 0 && '
+                       'test "$(cat /etc/alpine-release)" = 3.23.7 && '
+                       'echo CLI_READY')
+        guest.expect(r'\r*\nCLI_READY\r*\n')
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF)
         guest.close()
