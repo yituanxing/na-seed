@@ -10,6 +10,13 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
  * mappings. MAP_FIXED replaces only an allowed owned user range. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset);
+/* Map a shared PMM-backed provider (SysV IPC or another kernel object).
+ * Caller transfers ONE get() owner pin; this function always puts it.
+ * The VMA keeps independent get()/put() refs through fork/munmap/exit. */
+struct nas_vm_device;
+uint64_t nas_vm_map_owned_device(uint64_t hint,uint64_t length,
+                                  uint64_t prot,uint64_t flags,
+                                  struct nas_vm_device *device);
 uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags);
 /* Linux mincore: report real resident PTEs and inode-owned cache pages
  * without making the queried memory resident. */
