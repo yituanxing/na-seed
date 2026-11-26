@@ -547,15 +547,15 @@ def verify_wm():
     capture_scanout('openbox-closed')
     print('PASS: Openbox close and surviving managed xterm keyboard/PTY')
     verify_desktop()
-    guest.sendline('timeout 5 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 10); do kill -0 "$wp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
+    guest.sendline('timeout 5 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 15); do if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
     if guest.expect([r'\r*\nWM_EXIT=0\r*\n',r'\r*\nWM_EXIT_FAILED\r*\n',r'\r*\nWM_EXIT=[0-9]+\r*\n'],timeout=40):
         raise RuntimeError('Openbox session exit failed')
     print('PASS: Openbox clean window-manager exit')
     return True
 
 # Exercise the original X.Org client suite against the running Xorg server.
-# Keep these checks after Openbox/GTK so a new failure cannot conceal the
-# established keyboard, window manager and persistent-edit regressions.
+# Probe core X11 clients before Openbox, so an unrelated window-manager exit
+# issue cannot suppress the direct X.Org results; still require every gate.
 def verify_xorg_tools():
     checks=[
         ('xrandr', 'timeout 15 xrandr --query > /root/xorg-xrandr.log 2>&1 && grep -q "Screen 0:" /root/xorg-xrandr.log'),
@@ -667,9 +667,8 @@ with open(f'{work}/init.log','w') as log:
                 if apps_ok:
                     input_ok=verify_input()
                 if input_ok:
-                    wm_ok=verify_wm()
-                if wm_ok:
                     tools_ok=verify_xorg_tools()
+                    wm_ok=verify_wm()
             except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
