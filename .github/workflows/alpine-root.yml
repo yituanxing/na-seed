@@ -1,0 +1,29 @@
+name: Alpine distribution acceptance
+on:
+  push:
+    branches: [refactor/naseed-cleanup-01-20261124]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alpine-root-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  alpine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and QEMU tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+      - name: Build and boot original Alpine
+        run: sh tests/alpine-root.sh
+      - name: Preserve real serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-root-serial
+          path: |
+            build/alpine-root/shell.log
+            build/alpine-root/init.log
+          if-no-files-found: ignore
