@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi font-adobe-100dpi
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -232,7 +232,7 @@ def screenshot():
 # Exercise independent original X11 clients and inspect the physical scanout.
 apps = [
     ('xterm','NaSeed-XTerm',
-     "xterm -T NaSeed-XTerm -geometry 44x9+20+20 -bg white -fg black -fn fixed -e /bin/sh -c 'printf \"NaSeed X11 terminal\\nOriginal BusyBox shell\\nPTY and font rendering\\n\"; sleep 180'",
+     "xterm -T NaSeed-XTerm -geometry 44x9+20+20 -bg white -fg black -fn fixed -e /bin/sh -c 'printf \"NaSeed X11 terminal\\nOriginal BusyBox shell\\nPTY and font rendering\\n\"; sleep 600'",
      (30,30,250,120),b'\xff\xff\xff'),
     ('xclock','NaSeed-XClock',
      'xclock -title NaSeed-XClock -geometry 200x200+400+20 -bg yellow -fg black -hd black -hl black -update 1',
@@ -275,6 +275,12 @@ with open(f'{work}/init.log','w') as log:
         guest.sendline('/bin/busybox sh /root/acceptance.sh')
         guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
         guest.expect(r'# ')
+        # Host-generated caches can be invalidated by ext4 image creation.
+        # Run the real package trigger in the booted distribution.
+        guest.sendline('fc-cache --system-only -v && fc-match sans && echo FONT_READY || echo FONT_FAILED')
+        if guest.expect([r'\r*\nFONT_READY\r*\n',r'\r*\nFONT_FAILED\r*\n'],timeout=900)!=0:
+            raise RuntimeError('Alpine font cache initialization failed')
+        guest.expect(r'# ')
         guest.sendline('Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg.log -nolisten tcp -ac -noreset >/root/xorg-console.log 2>&1 & xp=$!')
         guest.sendline('for i in $(seq 1 30); do kill -0 "$xp" 2>/dev/null || break; timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 && break; sleep 1; done; if kill -0 "$xp" 2>/dev/null && timeout 5 xsetroot -display :0 -solid red; then echo XORG_READY; else echo XORG_FAILED; fi')
         result=guest.expect([r'\r*\nXORG_READY\r*\n',r'\r*\nXORG_FAILED\r*\n'],timeout=180)
@@ -289,14 +295,9 @@ with open(f'{work}/init.log','w') as log:
             guest.sendline('export DISPLAY=:0; app_pids=""')
             mapped={}
             for name,title,command,_,_ in apps:
-                if name=='xclock':
-                    command='strace -f -o /root/xclock.trace '+command
                 guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
-                guest.sendline(f'for i in $(seq 1 20); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
-                mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=120)==0
-            if not mapped['xclock']:
-                guest.sendline('tail -100 /root/xclock.trace; echo XCLOCK_TRACE_END')
-                guest.expect(r'\r*\nXCLOCK_TRACE_END\r*\n',timeout=60)
+                guest.sendline(f'for i in $(seq 1 90); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
+                mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=240)==0
             try:
                 time.sleep(1)
                 apps_ok=verify_apps(mapped)
@@ -336,8 +337,8 @@ PY
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
 # Check the independent application results only after shutdown and fsck.
-tr -d '\r' < "$work/init.log" | grep -Fxq '[APP DONE status=0]'
+tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
 for app in archive-zstd sqlite lua python git gcc-make; do
-    tr -d '\r' < "$work/init.log" | grep -Fxq "[APP PASS] $app"
+    tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"

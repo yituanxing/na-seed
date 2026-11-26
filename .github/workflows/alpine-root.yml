@@ -26,4 +26,6 @@ jobs:
           path: |
             build/alpine-root/shell.log
             build/alpine-root/init.log
+            build/alpine-root/xorg.ppm
+            build/alpine-root/x11-apps.ppm
           if-no-files-found: ignore
