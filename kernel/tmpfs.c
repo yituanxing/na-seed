@@ -463,21 +463,6 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
             uint64_t *root = (uint64_t *)(uintptr_t)(
                 nas_hhdm_offset() + file->index_root);
             uint64_t first = (size + TMP_PAGE_SIZE - 1) / TMP_PAGE_SIZE;
-            uint64_t oldpages = (old + TMP_PAGE_SIZE - 1) / TMP_PAGE_SIZE;
-            for (uint64_t page = first; page < oldpages; page++) {
-                unsigned outer = (unsigned)(page / TMP_PAGE_ENTRIES);
-                uint64_t frame = root[outer];
-                if (!frame) continue;
-                uint64_t *slots = (uint64_t *)(uintptr_t)(
-                    nas_hhdm_offset() + frame);
-                unsigned inner = (unsigned)(page % TMP_PAGE_ENTRIES);
-                if (slots[inner]) {
-                    (void)nas_frame_put(slots[inner]);
-                    slots[inner] = 0;
-                    if(file->quota && file->quota->used_pages)
-                        file->quota->used_pages--;
-                }
-            }
             bool root_has_index = false;
             uint64_t surviving_highest = 0;
             for (unsigned outer = 0; outer < TMP_INDEX_ROOT_ENTRIES; outer++) {
@@ -486,15 +471,27 @@ int tmp_resize(struct nas_tmp_file *file, uint64_t size) {
                 uint64_t *slots = (uint64_t *)(uintptr_t)(
                     nas_hhdm_offset() + frame);
                 bool any = false;
-                /* This existing shrink sweep already visits every resident
-                 * index frame; recover the high-water mark without a new
-                 * O(file size) scan on each FIEMAP extent. */
-                for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++)
-                    if (slots[i]) {
-                        any = true;
-                        uint64_t after = (uint64_t)outer * TMP_PAGE_ENTRIES + i + 1;
-                        if (after > surviving_highest) surviving_highest = after;
+                /* KEEP_SIZE fallocate may have reserved data beyond the
+                 * old logical EOF. Sweep the actually allocated index
+                 * frames, not [new EOF,old EOF), or those reservations leak
+                 * quota and survive truncate. This same pass rebuilds the
+                 * FIEMAP high-water mark without scanning sparse holes. */
+                for (unsigned i = 0; i < TMP_PAGE_ENTRIES; i++) {
+                    if (!slots[i]) continue;
+                    uint64_t page = (uint64_t)outer * TMP_PAGE_ENTRIES + i;
+                    if (page >= first) {
+                        if(!nas_frame_put(slots[i]))nas_arch_halt();
+                        slots[i]=0;
+                        if(file->quota) {
+                            if(!file->quota->used_pages)nas_arch_halt();
+                            --file->quota->used_pages;
+                        }
+                        continue;
                     }
+                    any = true;
+                    if (page + 1 > surviving_highest)
+                        surviving_highest = page + 1;
+                }
                 if (!any) {
                     (void)nas_frame_put(frame);
                     root[outer] = 0;

@@ -137,7 +137,31 @@ static void quota_cannot_publish_missing_pages(void) {
     assert(tmp_acquire_shared_page(&empty,0,&shared)==-ENOSPC);
     assert(!empty.index_root && frames_used()==0);
 }
+static void shrink_releases_keep_size_reservations(void) {
+    struct nas_tmp_quota q={.max_pages=8,.max_inodes=8};
+    struct nas_tmp_file f=fresh();
+    f.quota=&q;
+    /* One live low page, then KEEP_SIZE pages at two distant offsets:
+     * allocations must not change i_size but must count against quota. */
+    assert(tmp_resize(&f,P)==0);
+    const uint8_t b=0x6d;
+    assert(tmp_write_at(&f,17,&b,1)==1);
+    assert(tmp_preallocate(&f,5*P,P,1)==0);
+    assert(tmp_preallocate(&f,(TMP_PAGE_ENTRIES+3)*P,P,1)==0);
+    assert(f.size==P && q.used_pages==3 && frames_used()==6);
+    assert(f.highest_allocated_data_page_plus_one==TMP_PAGE_ENTRIES+4);
+    /* Shrink below EOF: both out-of-EOF reserved pages must go, including
+     * the indirect index at 512+, but the retained low page stays alive. */
+    assert(tmp_resize(&f,P/2)==0);
+    assert(f.size==P/2 && q.used_pages==1 && frames_used()==3);
+    assert(f.highest_allocated_data_page_plus_one==1);
+    uint8_t readback=0;
+    assert(tmp_read_at(&f,17,&readback,1)==1 && readback==b);
+    assert(tmp_resize(&f,0)==0 && q.used_pages==0 &&
+           frames_used()==0 && f.index_root==0);
+}
 int main(void) {
+    shrink_releases_keep_size_reservations();
     sparse_growth_and_held_shared_page();
     sparse_extent_and_reservation();
     quota_cannot_publish_missing_pages();

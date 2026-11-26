@@ -73,3 +73,12 @@ A full tmpfs data-page quota now changes allocation requests to lookup-only
 **before** allocating the optional root/indirect index. Existing pages remain
 usable, while repeated writes at new sparse index regions cannot evade the
 quota by consuming metadata pages. The host test checks both paths.
+
+## tmpfs KEEP_SIZE reservation reclamation
+
+A file may have data frames reserved by `fallocate(KEEP_SIZE)` **after**
+its logical EOF. On actual truncate shrink, the provider now removes all
+indexed pages outside the new EOF, not merely pages up to the old `i_size`.
+The single indexed-frame sweep also recomputes FIEMAP's allocation
+high-watermark and frees empty indirect pages. The tmpfs host contract checks
+preallocations across two indirect tables and quota/frame accounting.
