@@ -7,7 +7,7 @@ permissions:
   contents: write
 jobs:
   vendor:
-    if: github.event.head_commit.message == 'Vendor pinned lwIP and LVGL'
+    if: github.event.head_commit.message == 'Vendor pinned lwIP and LVGL sources only'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -42,21 +42,16 @@ jobs:
           }
           vendor lwip 77dcd25a72509eb83f72b033d219b1d40cd8eb95 https://github.com/lwip-tcpip/lwip.git src COPYING README BUILDING FEATURES UPGRADING CHANGELOG
           vendor lvgl c016f72d4c125098287be5e83c0f1abed4706ee5 https://github.com/lvgl/lvgl.git src lvgl.h lvgl_private.h lv_version.h lv_conf_template.h LICENCE.txt COPYRIGHTS.md README.md Kconfig lvgl.mk
-          git rm -- .gitmodules .github/workflows/vendor-once.yml
+          git rm -- .gitmodules
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('.github/workflows/kernel.yml')
-          s = p.read_text()
-          old = '        with:\n          submodules: recursive\n'
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, ''))
           p = Path('README.md')
           s = p.read_text()
           old = ' Checkout with `git submodule update --init --recursive`.'
           assert s.count(old) == 1
           p.write_text(s.replace(old, ' Core third-party library sources are tracked in this repository.'))
           PY
-          git add -- .github/workflows/kernel.yml README.md
+          git add -- README.md
           test -z "$(git ls-files -s | awk '$1 == 160000')"
           git diff --cached --stat | tail -n 1
       - name: Install compiler tools
