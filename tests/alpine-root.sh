@@ -49,8 +49,8 @@ sudo chroot "$root" /bin/busybox sh -ec '
     glib-compile-schemas /usr/share/glib-2.0/schemas
     update-mime-database /usr/share/mime
     update-desktop-database /usr/share/applications
-    mkdir -p /root/desktop /root/.config
-    printf "original text\n" > /root/desktop/note.txt
+    mkdir -p /root/desktop/documents /root/.config
+    printf "original text\n" > /root/desktop/documents/note.txt
     printf "[Default Applications]\ntext/plain=org.xfce.mousepad.desktop;\n" > /root/.config/mimeapps.list
     test -f /usr/share/applications/org.xfce.mousepad.desktop
 '
@@ -139,7 +139,7 @@ lua_runtime() {
 }
 python_runtime() {
     python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"' &&
-    python3 -c 'import socket,select; a,b=socket.socketpair(); e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
+    python3 -c 'import socket,select; a,b=socket.socketpair(); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; a.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==1; assert b.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
 }
 git_repository() {
     git init -q repo &&
@@ -404,7 +404,14 @@ def wait_desktop_window(kind):
         guest.sendline(f'id=$(xdotool getactivewindow 2>/dev/null); if xprop -id "$id" WM_CLASS 2>/dev/null | grep -qi "{kind}"; then echo DESKTOP_WINDOW_OK; else echo DESKTOP_WINDOW_WAIT; fi')
         if guest.expect([r'\r*\nDESKTOP_WINDOW_OK\r*\n',r'\r*\nDESKTOP_WINDOW_WAIT\r*\n'],timeout=20)==0:
             return
+        if kind=='pcmanfm':
+            guest.sendline('if kill -0 "$fp" 2>/dev/null; then echo FILES_ALIVE; else wait "$fp"; printf "FILES_DEAD=%s\\n" "$?"; fi')
+            if guest.expect([r'\r*\nFILES_ALIVE\r*\n',r'\r*\nFILES_DEAD=([0-9]+)\r*\n'],timeout=20):
+                raise RuntimeError(f'PCManFM exited {guest.match.group(1)}')
         time.sleep(0.25)
+    capture_scanout('desktop-focus-failed')
+    guest.sendline('xwininfo -root -tree; xprop -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW; echo DESKTOP_STATE_END')
+    guest.expect(r'\r*\nDESKTOP_STATE_END\r*\n',timeout=20)
     raise RuntimeError(f'no focused {kind} window')
 
 def verify_desktop():
@@ -429,7 +436,13 @@ def verify_desktop():
     def open_note():
         wait_desktop_window('pcmanfm')
         desktop_chord(['ctrl','l'])
-        type_keys('/root/desktop/note.txt\n')
+        desktop_chord(['ctrl','a'])
+        type_keys('/root/desktop/documents\n')
+        time.sleep(1)
+        # PCManFM navigates directories via its location entry; select
+        # the sole file in this directory using the normal folder view.
+        desktop_chord(['home'])
+        desktop_chord(['ret'])
         wait_desktop_window('mousepad')
         time.sleep(0.5)
     open_note()
@@ -437,7 +450,7 @@ def verify_desktop():
     desktop_chord(['ctrl','a'])
     type_keys('naseed desktop works\n')
     desktop_chord(['ctrl','s'])
-    guest.sendline('for i in $(seq 1 10); do test "$(cat /root/desktop/note.txt)" = "naseed desktop works" && break; sleep 1; done; if test "$(cat /root/desktop/note.txt)" = "naseed desktop works"; then echo EDIT_SAVED; else echo EDIT_FAILED; fi')
+    guest.sendline('for i in $(seq 1 10); do test "$(cat /root/desktop/documents/note.txt)" = "naseed desktop works" && break; sleep 1; done; if test "$(cat /root/desktop/documents/note.txt)" = "naseed desktop works"; then echo EDIT_SAVED; else echo EDIT_FAILED; fi')
     if guest.expect([r'\r*\nEDIT_SAVED\r*\n',r'\r*\nEDIT_FAILED\r*\n'],timeout=30):
         raise RuntimeError('Mousepad did not save edited text')
     capture_scanout('desktop-editor-saved')
@@ -656,7 +669,7 @@ for app in archive-zstd sqlite lua python git gcc-make; do
 done
 grep -Fxq PASS "$work/xorg.result"
 # Read persisted content from the clean, unmounted ext4 image itself.
-debugfs -R 'cat /root/desktop/note.txt' "$work/partition.ext4" > "$work/desktop-note.txt"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/desktop-note.txt"
 test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
 debugfs -R 'stat /root/desktop/newfolder' "$work/partition.ext4" | grep -F 'Type: directory'
 echo 'PASS: desktop-created directory and edited file survived shutdown'

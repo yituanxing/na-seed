@@ -6,6 +6,7 @@
 /* In-kernel AF_UNIX SOCK_STREAM endpoint ownership. The actual byte queues
  * are the same refcounted bidirectional pipes used by socketpair(). */
 int nas_unix_socket_init(unsigned slot);
+int nas_unix_socket_reuseaddr(unsigned slot,bool set,bool value);
 int nas_unix_socket_pair_ready(unsigned first,unsigned second);
 void nas_unix_socket_release(unsigned slot);
 /* Bind through one VFS-owned parent Path; the socket open description keeps

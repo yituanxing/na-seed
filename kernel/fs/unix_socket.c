@@ -30,7 +30,7 @@ struct local_socket {
     unsigned first,count,queue[NAS_UNIX_BACKLOG];
     uint8_t name[109],peer_name[109];
     unsigned name_len,peer_name_len;
-    bool abstract;
+    bool abstract,reuseaddr;
     struct socket_rights rights;
 };
 /* FileOps is the protocol type tag. Never interpret a foreign File's
@@ -139,6 +139,14 @@ unsigned nas_unix_rights_receive(unsigned receiver,uint8_t *kinds,
     return count;
 }
 
+/* SO_REUSEADDR is a socket-owned boolean even for AF_UNIX, where
+ * it does not override pathname or abstract-name exclusivity. */
+int nas_unix_socket_reuseaddr(unsigned slot,bool set,bool value) {
+    struct local_socket *s=socket_at(slot);
+    if(!s)return -EBADF;
+    if(set)s->reuseaddr=value;
+    return s->reuseaddr;
+}
 int nas_unix_socket_init(unsigned slot) {
     struct local_socket *s=NULL;
     int rc=socket_alloc(slot,&s);

@@ -666,6 +666,17 @@ static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
     }
     return (uint64_t)-EBADF;
 }
+static uint64_t sys_unix_setsockopt(uint64_t fd,uint64_t level,
+                                    uint64_t opt,uint64_t address,uint64_t size) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(level!=1 || opt!=2)return (uint64_t)-ENOPROTOOPT;
+    if(size<4)return (uint64_t)-EINVAL;
+    uint32_t value;
+    if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
+        return (uint64_t)-EFAULT;
+    int rc=nas_unix_socket_reuseaddr(TASK.fds->entries[fd].slot,true,value!=0);
+    return rc<0?(uint64_t)(int64_t)rc:0;
+}
 static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
                                     uint64_t size_ptr) {
@@ -688,7 +699,12 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
     }
     if(size<4)return (uint64_t)-EINVAL;
     uint32_t value;
-    if(opt==3)value=1; /* SO_TYPE: stream */
+    if(opt==2) { /* SO_REUSEADDR */
+        int rc=nas_unix_socket_reuseaddr(TASK.fds->entries[fd].slot,false,false);
+        if(rc<0)return (uint64_t)(int64_t)rc;
+        value=(uint32_t)rc;
+    }
+    else if(opt==3)value=1; /* SO_TYPE: stream */
     else if(opt==4)value=0; /* SO_ERROR: no pending asynchronous error */
     else return (uint64_t)-ENOPROTOOPT;
     size=4;
@@ -1784,7 +1800,7 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
             sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_setsockopt: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_setsockopt(args[1],args[2],args[3],args[4],args[5]) :
-        (uint64_t)-ENOPROTOOPT);
+        sys_unix_setsockopt(args[1],args[2],args[3],args[4],args[5]));
     case NAS_SC_sendmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_sendmsg(args[1],args[2],args[3]) :
         sys_unix_sendmsg(args[1],args[2],args[3]));
