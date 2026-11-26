@@ -25,6 +25,8 @@
 #define NAS_VT_PROCESS 1U
 #define NAS_KD_TEXT 0U
 #define NAS_KD_GRAPHICS 1U
+#define NAS_K_XLATE 1U
+#define NAS_K_OFF 4U
 #define NAS_VT_ACKACQ 2U
 
 /* Linux include/uapi/linux/vt.h; 8 byte structure on every target ISA. */
@@ -84,7 +86,7 @@ static void reset_graphics_ownership(void) {
     vt.mode=(struct nas_linux_vt_mode){0};
     vt.mode_owner_pid=0;
     vt.kd_mode=NAS_KD_TEXT;
-    vt.keyboard_mode=1; /* Linux K_XLATE, never pretend raw scancode output. */
+    vt.keyboard_mode=NAS_K_XLATE;
 }
 static void default_termios(void) {
     nas_termios_defaults(&vt.termios,NAS_TERMIOS_CONSOLE_CFLAG);
@@ -185,9 +187,15 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         return nas_user_write_bytes(arg,(const uint8_t *)&mode,sizeof(mode))?
             0:(uint64_t)-EFAULT;
     }
-    case 0x4b45U: /* KDSKBMODE: only supported translated key mode */
-        if(arg!=1U)return (uint64_t)-EOPNOTSUPP;
+    case 0x4b45U: /* KDSKBMODE: translated console or keyboard disabled */
+        if(arg!=NAS_K_XLATE && arg!=NAS_K_OFF)
+            return (uint64_t)-EOPNOTSUPP;
         vt.keyboard_mode=(unsigned)arg;
+        /* Drop queued terminal bytes on a mode change. Keep physical
+         * modifier state and the independent evdev event stream intact. */
+        nas_ldisc_reset(&vt.ldisc);
+        vt.head=vt.count=0;
+        vt.rx_overflow=false;
         return 0;
     case 0x5401U: /* TCGETS */
         return nas_user_write_bytes(arg,(const uint8_t *)&vt.termios,36)?
@@ -463,12 +471,14 @@ void nas_tty_vt_key_event(uint16_t code,bool pressed) {
         vt.alt=vt.alt_bits!=0;return;
     }
     case 58:
-        if(pressed&&!vt.caps_down)vt.caps=!vt.caps;
+        if(pressed&&!vt.caps_down&&vt.keyboard_mode!=NAS_K_OFF)
+            vt.caps=!vt.caps;
         vt.caps_down=pressed;
         return;
     default:break;
     }
-    if(!pressed)return;
+    /* K_OFF disables VT translation, not the physical input core or evdev. */
+    if(!pressed || vt.keyboard_mode==NAS_K_OFF)return;
     switch(code){
     case 103:emit_bytes("\x1b[A");break;
     case 108:emit_bytes("\x1b[B");break;
