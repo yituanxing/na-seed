@@ -829,7 +829,7 @@ def verify_wayland():
     width,height,baseline=capture_scanout('wayland-before')
     # Explicitly select the official legacy data path for an A/B diagnostic,
     # not a hardcoded keyboard map or a patch to upstream Weston.
-    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
+    guest.sendline('wlc=; wtp=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
     try:
         guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1; then echo WAYLAND_SOCKET_READY; else echo WAYLAND_SOCKET_MISSING; fi')
         socket_ok=guest.expect([r'\r*\nWAYLAND_SOCKET_READY\r*\n',r'\r*\nWAYLAND_SOCKET_MISSING\r*\n'],timeout=90)==0
@@ -893,6 +893,30 @@ def verify_wayland():
             'original Wayland client did not paint the nested compositor content',
             (delta,painted))
         print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
+        # Exercise a real Wayland PTY terminal and physical keyboard, not
+        # only the simple-shm graphics demonstration.
+        guest.sendline('env WAYLAND_DISPLAY=wayland-1 weston-terminal --shell=/bin/sh >/root/weston-terminal.log 2>&1 & wtp=$!; echo WAYLAND_TERMINAL_STARTED')
+        guest.expect(r'\r*\nWAYLAND_TERMINAL_STARTED\r*\n',timeout=30)
+        time.sleep(2)
+        guest.sendline('if kill -0 "$wtp" 2>/dev/null && test -S /run/user/0/wayland-1; then echo WAYLAND_TERMINAL_ALIVE; else echo WAYLAND_TERMINAL_DEAD; fi')
+        if guest.expect([r'\r*\nWAYLAND_TERMINAL_ALIVE\r*\n',r'\r*\nWAYLAND_TERMINAL_DEAD\r*\n'],timeout=30):
+            guest.sendline('cat /root/weston-terminal.log; echo WAYLAND_TERMINAL_LOG_END')
+            guest.expect(r'\r*\nWAYLAND_TERMINAL_LOG_END\r*\n',timeout=30)
+            raise RuntimeError('original Weston terminal did not create a lasting Wayland session')
+        # The compositor itself is the X11 window: QMP input must cross
+        # VirtIO -> evdev -> Xorg -> Weston -> terminal's native Wayland seat.
+        move_to(wx+ww//2,wy+wh//2)
+        click()
+        type_keys('echo 47 >/tmp/wlkey\n')
+        guest.sendline('for i in $(seq 1 12); do test "$(cat /tmp/wlkey 2>/dev/null)" = 47 && break; sleep 1; done; if test "$(cat /tmp/wlkey 2>/dev/null)" = 47; then echo WAYLAND_TERMINAL_INPUT_PASS; else echo WAYLAND_TERMINAL_INPUT_FAIL; fi')
+        terminal_input=guest.expect([r'\r*\nWAYLAND_TERMINAL_INPUT_PASS\r*\n',r'\r*\nWAYLAND_TERMINAL_INPUT_FAIL\r*\n'],timeout=45)==0
+        capture_scanout('wayland-terminal')
+        if not terminal_input:
+            guest.sendline('tail -60 /root/weston-terminal.log; echo WAYLAND_TERMINAL_LOG_END')
+            guest.expect(r'\r*\nWAYLAND_TERMINAL_LOG_END\r*\n',timeout=30)
+            print('Weston terminal input diagnostics:',guest.before)
+            raise RuntimeError('QMP keyboard input did not reach the real Wayland terminal shell')
+        print('PASS: original Weston terminal executes command through real QMP keyboard -> Xorg -> Wayland -> PTY')
         assert protocol_ok,'Wayland client registry lacks wl_compositor or xdg_wm_base'
         assert xkb_alias_ok,'canonical xkeyboard-config alias is unreadable in NaSeed guest, even if explicit XKB_CONFIG_ROOT worked'
         return True
@@ -900,7 +924,7 @@ def verify_wayland():
         # Run the unmodified compositor directly, without a ptrace parent
         # retaining its process tree. Check real process termination; cap
         # teardown rather than letting a stuck waiter obscure the pass.
-        guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; for i in $(seq 1 15); do if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then wait "$wlp"; printf "WESTON_STOP=%s\\n" "$?"; else echo WESTON_STOP_FAILED; kill -9 "$wlp" 2>/dev/null; fi; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
+        guest.sendline('if [ -n "$wtp" ]; then kill "$wtp" 2>/dev/null; fi; if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; for i in $(seq 1 15); do if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then wait "$wlp"; printf "WESTON_STOP=%s\\n" "$?"; else echo WESTON_STOP_FAILED; kill -9 "$wlp" 2>/dev/null; fi; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log /root/weston-terminal.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
         guest.expect(r'\r*\nWAYLAND_LOG_END\r*\n',timeout=100)
         teardown=guest.before
         print(teardown)
