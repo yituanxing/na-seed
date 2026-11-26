@@ -52,6 +52,10 @@ static struct {
 static void feed_input(void);
 static void push_byte(uint8_t b);
 static void fbcon_report(const uint8_t *bytes,uint64_t length);
+static void activate_text(void) {
+    nas_fbcon_activate(true);
+    (void)nas_fbcon_dimensions(&vt.cols,&vt.rows);
+}
 
 static struct nas_chrdev_node vt_nodes[]={
     { .path="/dev/tty0", .info={.fd_kind=23,.unit=0,.dev=2,
@@ -113,7 +117,7 @@ void nas_vt_open_session(uint64_t flags) {
     vt.sid=task->sid;
     vt.pgid=task->pgid;
     reset_input();
-    nas_fbcon_activate(true);
+    activate_text();
 }
 static uint64_t copy_pid(uint64_t arg,uint64_t pid) {
     uint32_t n=(uint32_t)pid;
@@ -222,7 +226,7 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         bool new_owner=vt.sid!=task->sid;
         if(vt.sid && new_owner)reset_input();
         vt.sid=task->sid;vt.pgid=task->pgid;
-        if(new_owner)nas_fbcon_activate(true);
+        if(new_owner)activate_text();
         return 0;
     }
     case 0x5422U: /* TIOCNOTTY */

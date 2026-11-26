@@ -9,6 +9,7 @@
  * A graphical KD owner suspends painting while preserving the text plane;
  * KD_TEXT restores all cells from that plane onto physical scanout. */
 void nas_fbcon_activate(bool enabled);
+bool nas_fbcon_dimensions(uint16_t *cols, uint16_t *rows);
 void nas_fbcon_set_graphics(bool graphics);
 /* Linux console status/cursor reports travel back through the owning VT
  * input discipline, just like physical terminal response bytes. */
