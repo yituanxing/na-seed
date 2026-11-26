@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xlsfonts xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -553,10 +553,61 @@ def verify_wm():
     print('PASS: Openbox clean window-manager exit')
     return True
 
+# Exercise the original X.Org client suite against the running Xorg server.
+# Keep these checks after Openbox/GTK so a new failure cannot conceal the
+# established keyboard, window manager and persistent-edit regressions.
+def verify_xorg_tools():
+    checks=[
+        ('xrandr', 'timeout 15 xrandr --query > /root/xorg-xrandr.log 2>&1 && grep -q "Screen 0:" /root/xorg-xrandr.log'),
+        ('xinput', 'timeout 15 xinput list --short > /root/xorg-xinput.log 2>&1 && grep -qi pointer /root/xorg-xinput.log && grep -qi keyboard /root/xorg-xinput.log'),
+        ('xset', 'timeout 15 xset q > /root/xorg-xset.log 2>&1 && grep -q "Keyboard Control" /root/xorg-xset.log'),
+        ('xhost', 'timeout 15 xhost > /root/xorg-xhost.log 2>&1 && test -s /root/xorg-xhost.log'),
+        ('xmodmap', 'timeout 15 xmodmap -pm > /root/xorg-xmodmap.log 2>&1 && grep -qi shift /root/xorg-xmodmap.log'),
+        ('xlsfonts', 'timeout 15 xlsfonts -fn fixed > /root/xorg-xlsfonts.log 2>&1 && grep -Fxq fixed /root/xorg-xlsfonts.log'),
+        ('xkbcomp', 'timeout 15 xkbcomp -xkb :0 /root/xorg-keymap.xkb > /root/xorg-xkbcomp.log 2>&1 && test -s /root/xorg-keymap.xkb'),
+        ('xrdb', "printf 'NaSeed.xorgProbe: confirmed\n' | timeout 15 xrdb -merge > /root/xorg-xrdb.log 2>&1 && timeout 15 xrdb -query | grep -Fq 'NaSeed.xorgProbe:'"),
+        ('xwd', 'timeout 15 xwd -root -silent -out /root/xorg-root.xwd > /root/xorg-xwd.log 2>&1 && test "$(wc -c </root/xorg-root.xwd)" -gt 1024'),
+    ]
+    passed=True
+    for name,command in checks:
+        guest.sendline(f'if {command}; then echo XORG_TOOL_PASS_{name}; else echo XORG_TOOL_FAIL_{name}; fi')
+        ok=guest.expect([rf'\r*\nXORG_TOOL_PASS_{name}\r*\n',rf'\r*\nXORG_TOOL_FAIL_{name}\r*\n'],timeout=90)==0
+        print(f'Xorg original tool {name}: {"PASS" if ok else "FAIL"}')
+        if not ok:
+            guest.sendline(f'tail -30 /root/xorg-{name}.log 2>/dev/null; echo XORG_TOOL_LOG_END')
+            guest.expect(r'\r*\nXORG_TOOL_LOG_END\r*\n',timeout=30)
+            print(guest.before)
+        passed=passed and ok
+    for name,title,command in (
+        ('xeyes','NaSeed-XEyes','xeyes -title NaSeed-XEyes -geometry 130x100+625+310'),
+        ('xcalc','NaSeed-XCalc','xcalc -title NaSeed-XCalc -geometry 210x220+545+310'),
+    ):
+        width,height,before=capture_scanout(f'x11-{name}-before')
+        guest.sendline(f'{command} > /root/{name}.log 2>&1 & ep=$!')
+        guest.sendline(f'for i in $(seq 1 20); do kill -0 "$ep" 2>/dev/null || break; xwininfo -name {title} 2>/dev/null | grep -q "Map State: IsViewable" && break; sleep 1; done; if kill -0 "$ep" 2>/dev/null && xwininfo -name {title} 2>/dev/null | grep -q "Map State: IsViewable"; then echo XORG_CLIENT_MAPPED; else echo XORG_CLIENT_FAILED; fi')
+        mapped=guest.expect([r'\r*\nXORG_CLIENT_MAPPED\r*\n',r'\r*\nXORG_CLIENT_FAILED\r*\n'],timeout=90)==0
+        changed=0
+        if mapped:
+            time.sleep(0.5)
+            w,h,after=capture_scanout(f'x11-{name}')
+            assert (w,h)==(width,height),(w,h)
+            changed=sum(before[i:i+3]!=after[i:i+3] for i in range(0,len(before),3))
+        ok=mapped and changed>=500
+        print(f'Xorg original client {name}: mapped={mapped}, framebuffer_changed={changed}, {"PASS" if ok else "FAIL"}')
+        if not ok:
+            guest.sendline(f'cat /root/{name}.log; echo XORG_CLIENT_LOG_END')
+            guest.expect(r'\r*\nXORG_CLIENT_LOG_END\r*\n',timeout=30)
+            print(guest.before)
+        guest.sendline('kill "$ep" 2>/dev/null; wait "$ep" 2>/dev/null; echo XORG_CLIENT_STOPPED')
+        guest.expect(r'\r*\nXORG_CLIENT_STOPPED\r*\n',timeout=30)
+        passed=passed and ok
+    return passed
+
 xorg_ok=False
 apps_ok=False
 input_ok=False
 wm_ok=False
+tools_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -618,6 +669,8 @@ with open(f'{work}/init.log','w') as log:
                     input_ok=verify_input()
                 if input_ok:
                     wm_ok=verify_wm()
+                if wm_ok:
+                    tools_ok=verify_xorg_tools()
             except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
@@ -657,7 +710,7 @@ print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
-pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok and wm_ok else 'FAIL\n')
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok and wm_ok and tools_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
