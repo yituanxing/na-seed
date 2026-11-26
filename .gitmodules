@@ -5,7 +5,3 @@
 [submodule "third_party/lvgl"]
 	path = third_party/lvgl
 	url = https://github.com/lvgl/lvgl.git
-
-[submodule "third_party/uacpi"]
-	path = third_party/uacpi
-	url = https://github.com/uACPI/uACPI.git
