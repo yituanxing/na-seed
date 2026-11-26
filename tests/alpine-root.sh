@@ -415,24 +415,40 @@ def verify_wm():
     resized=geometry(term)
     assert resized[3]>=width+24 and resized[4]>=height+20,(moved,resized)
     print(f'PASS: Openbox physical Alt+right-drag resize {moved[3:]} -> {resized[3:]}')
+    # An Xt clock can opt out of keyboard focus. Record its ICCCM hints,
+    # then test keyboard switching between two ordinary interactive clients.
+    guest.sendline('xprop -name NaSeed-XClock WM_HINTS WM_PROTOCOLS _NET_WM_STATE; echo WM_CLOCK_HINTS_END')
+    guest.expect(r'\r*\nWM_CLOCK_HINTS_END\r*\n',timeout=20)
+    print(guest.before)
+    guest.sendline("xterm -T NaSeed-WM-Term -geometry 30x8+460+330 -bg cyan -fg black -fn fixed -e /bin/sh -i >/root/wm-term.log 2>&1 & wtp=$!; app_pids=\"$app_pids $wtp\"")
+    guest.sendline('for i in $(seq 1 30); do kill -0 "$wtp" 2>/dev/null || break; timeout 3 xwininfo -name NaSeed-WM-Term 2>/dev/null | grep -q "Map State: IsViewable" && break; sleep 1; done; if kill -0 "$wtp" 2>/dev/null && timeout 3 xwininfo -name NaSeed-WM-Term 2>/dev/null | grep -q "Map State: IsViewable"; then echo WM_NEW_READY; else echo WM_NEW_FAILED; fi')
+    if guest.expect([r'\r*\nWM_NEW_READY\r*\n',r'\r*\nWM_NEW_FAILED\r*\n'],timeout=90):
+        raise RuntimeError('Openbox failed to map a newly launched xterm')
+    other=geometry('NaSeed-WM-Term')
+    guest.sendline('xprop -root _NET_CLIENT_LIST; echo WM_NEW_CLIENTS_END')
+    guest.expect(r'\r*\nWM_NEW_CLIENTS_END\r*\n',timeout=20)
+    assert all(hex(wid) in guest.before for wid in (a[0],b[0],other[0])), 'all three clients must remain managed'
+    move_to(other[1]+other[3]//2,other[2]+other[4]//2)
+    click()
+    wait_active(other[0])
     move_to(resized[1]+resized[3]//2,resized[2]+resized[4]//2)
     click()
     wait_active(a[0])
     chord('tab')
-    wait_active(b[0])
+    wait_active(other[0])
     print('PASS: Openbox physical Alt+Tab focus switch')
     # The reparented clients must still paint on the real QEMU framebuffer.
     w,h,pixels=capture_scanout('openbox-managed')
-    for g,color in ((resized,b'\xff\xff\xff'),(geometry(clock),b'\xff\xff\x00')):
+    for g,color in ((resized,b'\xff\xff\xff'),(geometry(clock),b'\xff\xff\x00'),(other,b'\x00\xff\xff')):
         _,gx,gy,gw,gh=g
         x0,y0=max(0,gx),max(0,gy)
         x1,y1=min(w,gx+gw),min(h,gy+gh)
         region=b''.join(pixels[(row*w+x0)*3:(row*w+x1)*3] for row in range(y0,y1))
         assert region.count(color)>=200,(g,color)
     chord('f4')
-    guest.sendline('for i in $(seq 1 15); do kill -0 "$xcp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$xcp" 2>/dev/null && ! xdotool search --name "^NaSeed-XClock$" >/dev/null 2>&1 && kill -0 "$xtp" 2>/dev/null && kill -0 "$wp" 2>/dev/null; then wait "$xcp"; printf "WM_CLOSED=%s\\n" "$?"; else echo WM_CLOSE_FAILED; fi')
+    guest.sendline('for i in $(seq 1 15); do kill -0 "$wtp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$wtp" 2>/dev/null && ! xdotool search --name "^NaSeed-WM-Term$" >/dev/null 2>&1 && kill -0 "$xtp" 2>/dev/null && kill -0 "$xcp" 2>/dev/null && kill -0 "$wp" 2>/dev/null; then wait "$wtp"; printf "WM_CLOSED=%s\\n" "$?"; else echo WM_CLOSE_FAILED; fi')
     if guest.expect([r'\r*\nWM_CLOSED=0\r*\n',r'\r*\nWM_CLOSE_FAILED\r*\n',r'\r*\nWM_CLOSED=[0-9]+\r*\n'],timeout=40):
-        raise RuntimeError('Openbox Alt+F4 did not close xclock cleanly')
+        raise RuntimeError('Openbox Alt+F4 did not close the second interactive terminal cleanly')
     wait_active(a[0])
     type_keys('echo 43 >/tmp/wmcheck\n')
     guest.sendline('for i in $(seq 1 10); do test "$(cat /tmp/wmcheck 2>/dev/null)" = 43 && break; sleep 1; done; if test "$(cat /tmp/wmcheck 2>/dev/null)" = 43; then echo WM_SHELL_OK; else echo WM_SHELL_FAILED; fi')
@@ -520,7 +536,7 @@ with open(f'{work}/init.log','w') as log:
                 guest.expect(r'\r*\nXTERM_STATE_END\r*\n',timeout=60)
                 guest.sendline("timeout -s KILL 15 python3 -c 'import ctypes,os,sys; p=int(sys.argv[1]); libc=ctypes.CDLL(None,use_errno=True); libc.ptrace.restype=ctypes.c_long; libc.ptrace.argtypes=[ctypes.c_long,ctypes.c_long,ctypes.c_void_p,ctypes.c_void_p]; r=(ctypes.c_ulonglong*27)(); assert libc.ptrace(16,p,None,None)==0,ctypes.get_errno(); os.waitpid(p,0); assert libc.ptrace(12,p,None,ctypes.byref(r))==0,ctypes.get_errno(); print(\"BLOCKED_REGS\",p,\"rax\",r[10],\"orig_rax\",r[15],\"rip\",hex(r[16]),\"args\",[hex(r[i]) for i in (14,13,12,7,9,8)],flush=True); assert libc.ptrace(17,p,None,None)==0,ctypes.get_errno()' \"$xtp\"; echo XTERM_TRACE_END")
                 guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=60)
-            guest.sendline('if [ -n "$wp" ]; then kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null; fi; cat /root/openbox.log /root/openbox-exit.log 2>/dev/null; echo WM_LOG_END')
+            guest.sendline('if [ -n "$wp" ]; then kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null; fi; cat /root/openbox.log /root/openbox-exit.log /root/wm-term.log 2>/dev/null; echo WM_LOG_END')
             guest.expect(r'\r*\nWM_LOG_END\r*\n',timeout=60)
             guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
             guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
