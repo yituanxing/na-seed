@@ -252,6 +252,9 @@ with open(f'{work}/init.log','w') as log:
                 xorg_ok=True
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'Xorg scanout failed: {error}')
+        if result!=0:
+            guest.sendline('strace -e trace=socket,connect,getsockname,getpeername,getsockopt,setsockopt,fcntl,poll,ppoll,select,pselect6,read,readv,write,writev,recvmsg,sendmsg,recvfrom,sendto,shutdown,close -o /root/xclient.trace xdpyinfo -display :0 >/root/xclient.log 2>&1; tail -100 /root/xclient.trace; cat /root/xclient.log; echo XCLIENT_TRACE_END')
+            guest.expect(r'\r*\nXCLIENT_TRACE_END\r*\n',timeout=60)
         guest.sendline('kill "$xp" 2>/dev/null; wait "$xp"; cat /root/xorg-console.log /root/Xorg.log /root/xdpyinfo.log; echo XORG_LOG_END')
         guest.expect(r'\r*\nXORG_LOG_END\r*\n',timeout=180)
         guest.sendline('poweroff')
