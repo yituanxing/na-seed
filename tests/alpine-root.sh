@@ -854,17 +854,39 @@ def verify_wayland():
         changed=sum(baseline[i:i+3]!=compositor[i:i+3] for i in range(0,len(baseline),3))
         print(f'Weston nested X11 framebuffer_changed={changed}')
         assert changed>=500,'Weston X11 backend did not draw a physical window'
+        # Locate the *actual nested compositor* client window. Clock ticks
+        # elsewhere on the Xorg root window are not evidence of Wayland
+        # drawing: an earlier full-screen diff produced that false positive.
+        _,wx,wy,ww,wh=geometry('Weston Compositor - screen0')
+        x0=max(0,wx+25);x1=min(width,wx+ww-25)
+        y0=max(0,wy+35);y1=min(height,wy+wh-25)
+        assert x1-x0>=100 and y1-y0>=100,(wx,wy,ww,wh)
+        print(f'Weston interior verification bounds: {x0},{y0} to {x1},{y1}')
         guest.sendline('env WAYLAND_DISPLAY=wayland-1 WAYLAND_DEBUG=client weston-simple-shm >/root/weston-simple-shm.log 2>&1 & wlc=$!; echo WAYLAND_CLIENT_STARTED')
         guest.expect(r'\r*\nWAYLAND_CLIENT_STARTED\r*\n',timeout=30)
         time.sleep(2.0)
         guest.sendline('if kill -0 "$wlc" 2>/dev/null && test -S /run/user/0/wayland-1; then echo WAYLAND_CLIENT_ALIVE; else echo WAYLAND_CLIENT_DEAD; fi')
         if guest.expect([r'\r*\nWAYLAND_CLIENT_ALIVE\r*\n',r'\r*\nWAYLAND_CLIENT_DEAD\r*\n'],timeout=30):
             raise RuntimeError('original weston-simple-shm client failed to stay connected')
-        w,h,client=capture_scanout('wayland-simple-shm')
-        assert (w,h)==(width,height)
-        delta=sum(compositor[i:i+3]!=client[i:i+3] for i in range(0,len(client),3))
-        print(f'Wayland original shm client framebuffer_changed={delta}')
-        assert delta>=500,'Wayland client did not change the real QEMU framebuffer'
+        delta=0
+        painted=0
+        for attempt in range(5):
+            w,h,client=capture_scanout('wayland-simple-shm')
+            assert (w,h)==(width,height)
+            delta=0;painted=0
+            for y in range(y0,y1):
+                for x in range(x0,x1):
+                    p=(y*width+x)*3
+                    before_pixel=compositor[p:p+3]
+                    after_pixel=client[p:p+3]
+                    if before_pixel!=after_pixel:delta+=1
+                    if max(after_pixel)>=40:painted+=1
+            if delta>=500 and painted>=500:break
+            time.sleep(0.5)
+        print(f'Wayland SHM interior: changed={delta}, painted={painted}')
+        assert delta>=500 and painted>=500,(
+            'original Wayland client did not paint the nested compositor content',
+            (delta,painted))
         print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
         assert protocol_ok,'Wayland client registry lacks wl_compositor or xdg_wm_base'
         assert xkb_alias_ok,'canonical xkeyboard-config alias is unreadable in NaSeed guest, even if explicit XKB_CONFIG_ROOT worked'
