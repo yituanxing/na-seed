@@ -58,6 +58,7 @@ struct nas_input_device {
     uint8_t propbit[NAS_INPUT_BIT_BYTES(NAS_INPUT_PROP_MAX)];
     struct nas_input_absinfo absinfo[NAS_INPUT_ABS_MAX + 1U];
     uint8_t key_state[NAS_INPUT_BIT_BYTES(NAS_INPUT_KEY_MAX)];
+    uint8_t sw_state[3], led_state[2];
     unsigned index;             /* stable eventN ordinal while registered */
     unsigned readers;           /* pinned independent OpenFile consumers */
     bool registered;

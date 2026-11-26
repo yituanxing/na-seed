@@ -167,6 +167,10 @@ const uint8_t *nas_input_capabilities(const struct nas_input_device *dev,
         *bytes = sizeof(dev->sndbit); return dev->sndbit;
     case NAS_INPUT_EV_REP:
         *bytes = sizeof(dev->repbit); return dev->repbit;
+    case 21U: { /* EV_FF: no force-feedback provider is registered. */
+        static const uint8_t no_ff[16];
+        *bytes = sizeof(no_ff); return no_ff;
+    }
     default: return NULL;
     }
 }
@@ -193,6 +197,10 @@ void nas_input_event(struct nas_input_device *dev, uint16_t type,
                 if (value) bit_set(dev->key_state, code);
                 else bit_clear(dev->key_state, code);
             }
+        } else if (type == NAS_INPUT_EV_SW || type == NAS_INPUT_EV_LED) {
+            uint8_t *state = type == NAS_INPUT_EV_SW ? dev->sw_state : dev->led_state;
+            if ((value != 0 && value != 1) || bit_test(state,code) == (value != 0)) return;
+            if (value) bit_set(state,code); else bit_clear(state,code);
         } else if (type == NAS_INPUT_EV_ABS) {
             if (dev->absinfo[code].value == value) return;
             dev->absinfo[code].value = value;
