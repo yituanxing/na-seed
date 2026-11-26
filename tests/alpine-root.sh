@@ -1117,7 +1117,7 @@ with open(f'{work}/init.log','w') as log:
         # Original upstream libdrm modetest, not a local ioctl driver-test
         # binary: enumerate the virtual connector and request a real KMS
         # framebuffer modeset. Compare QEMU scanout, not ioctl return values.
-        guest.sendline('modetest -D /dev/dri/card0 -c -e -p >/root/modetest-discovery.log 2>&1; printf "MODETEST_ENUM_STATUS=%s\n" "$?"')
+        guest.sendline('modetest -M virtio_gpu -c -e -p >/root/modetest-discovery.log 2>&1; printf "MODETEST_ENUM_STATUS=%s\n" "$?"')
         guest.expect(r'\r*\nMODETEST_ENUM_STATUS=([0-9]+)\r*\n',timeout=60)
         if guest.match.group(1)!='0':
             guest.sendline('cat /root/modetest-discovery.log; echo MODETEST_LOG_END')
@@ -1125,7 +1125,7 @@ with open(f'{work}/init.log','w') as log:
             raise RuntimeError('original Alpine modetest could not enumerate KMS')
         guest.expect(r'# ')
         width,height,before_kms=capture_scanout('kms-before')
-        guest.sendline('modetest -D /dev/dri/card0 -s 44@42:800x600 </dev/null >/root/modetest-scanout.log 2>&1; printf "MODETEST_SET_STATUS=%s\n" "$?"')
+        guest.sendline('modetest -M virtio_gpu -s 44@42:800x600 </dev/null >/root/modetest-scanout.log 2>&1; printf "MODETEST_SET_STATUS=%s\n" "$?"')
         guest.expect(r'\r*\nMODETEST_SET_STATUS=([0-9]+)\r*\n',timeout=120)
         if guest.match.group(1)!='0':
             guest.sendline('cat /root/modetest-scanout.log; echo MODETEST_LOG_END')
