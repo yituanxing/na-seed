@@ -11,7 +11,7 @@ archive="alpine-minirootfs-$version-x86_64.tar.gz"
 url="https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/$archive"
 mkdir -p "$work"
 # Build from the current commit, not a recovered historical kernel.
-make ARCH=x86_64 OUT="$out" NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_M191_ALPINE_ROOT=1 iso
+make ARCH=x86_64 OUT="$out" NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_M191_ALPINE_ROOT=1 NAS_ENABLE_VIRTIO_GPU=1 NAS_ENABLE_VIRTIO_INPUT=1 iso
 curl -fLsS --retry 3 -o "$work/$archive" "$url"
 curl -fLsS --retry 3 -o "$work/$archive.sha256" "$url.sha256"
 (cd "$work" && sha256sum -c "$archive.sha256")
@@ -23,7 +23,9 @@ sudo chown 0:0 "$root"
 docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     cp -a /target/etc/apk/keys/. /etc/apk/keys/
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
-        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main add alpine-base openrc git sqlite lua5.4 python3 zstd build-base
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
+        add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -36,6 +38,23 @@ sudo chroot "$root" /bin/busybox sh -ec '
     if ! grep -qx ttyS0 /etc/securetty 2>/dev/null; then echo ttyS0 >> /etc/securetty; fi
     echo "root:naseed-ci-only" | chpasswd
 '
+# Use the ordinary Xorg configuration interface, not a patched X server.
+sudo tee "$root/root/xorg.conf" >/dev/null <<'XORG'
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "AutoAddGPU" "false"
+EndSection
+Section "Device"
+    Identifier "Display"
+    Driver "fbdev"
+    Option "fbdev" "/dev/fb0"
+EndSection
+Section "Screen"
+    Identifier "Screen"
+    Device "Display"
+    DefaultDepth 24
+EndSection
+XORG
 # One distribution workload, using unchanged signed packages. Each group
 # reports its result independently; a failed group never hides a later one.
 sudo tee "$root/root/acceptance.sh" >/dev/null <<'GUEST'
@@ -160,14 +179,43 @@ echo 'PASS: original Alpine BusyBox from physical ext4'
 # Run original init and exercise a real serial login. pexpect verifies output
 # on its own line (not echoed command text), then asks the real PID1 to shut down.
 python3 - "$work" "$ovmf" "$disk" <<'PY'
-import pathlib, sys, pexpect
+import json, pathlib, socket, sys, time, pexpect
 work, ovmf, disk = sys.argv[1:]
 args = ['-M','q35','-m','1024M','-cpu','qemu64','-display','none','-monitor','none',
         '-serial','stdio','-no-reboot','-no-shutdown','-nic','none',
         '-device','isa-debug-exit,iobase=0xf4,iosize=0x04',
         '-drive',f'if=pflash,unit=0,format=raw,file={ovmf},readonly=on',
         '-drive',f'if=none,id=root,format=raw,file={disk}',
-        '-device','virtio-blk-pci,drive=root,disable-legacy=on','-cdrom',f'{work}/init.iso']
+        '-device','virtio-blk-pci,drive=root,disable-legacy=on',
+        '-vga','none','-device','virtio-gpu-pci,disable-legacy=on',
+        '-device','virtio-keyboard-pci,disable-legacy=on',
+        '-device','virtio-mouse-pci,disable-legacy=on',
+        '-qmp',f'unix:{work}/qmp.sock,server=on,wait=off',
+        '-cdrom',f'{work}/init.iso']
+def screenshot():
+    # Read the real QEMU scanout, not a guest-generated screenshot.
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(10)
+        sock.connect(f'{work}/qmp.sock')
+        with sock.makefile('rwb') as stream:
+            json.loads(stream.readline())
+            for command in ({'execute':'qmp_capabilities'},
+                            {'execute':'screendump','arguments':{'filename':f'{work}/xorg.ppm'}}):
+                stream.write(json.dumps(command).encode()+b'\n')
+                stream.flush()
+                while True:
+                    reply=json.loads(stream.readline())
+                    if 'event' in reply: continue
+                    if 'error' in reply: raise RuntimeError(reply)
+                    if 'return' in reply: break
+    magic, width, height, maximum, pixels = pathlib.Path(work,'xorg.ppm').read_bytes().split(None,4)
+    assert magic==b'P6' and maximum==b'255', (magic,maximum)
+    count=int(width)*int(height)
+    assert len(pixels)==count*3
+    red=sum(pixels[i:i+3]==b'\xff\x00\x00' for i in range(0,len(pixels),3))
+    print(f'Xorg QEMU scanout: {int(width)}x{int(height)}, red={red}/{count}')
+    assert red>=count*0.9, 'Xorg root-window color not visible on real scanout'
+xorg_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -187,6 +235,18 @@ with open(f'{work}/init.log','w') as log:
         guest.sendline('/bin/busybox sh /root/acceptance.sh')
         guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
         guest.expect(r'# ')
+        guest.sendline('Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg.log -nolisten tcp -ac -noreset >/root/xorg-console.log 2>&1 & xp=$!')
+        guest.sendline('for i in $(seq 1 30); do kill -0 "$xp" 2>/dev/null || break; timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 && break; sleep 1; done; if kill -0 "$xp" 2>/dev/null && timeout 5 xsetroot -display :0 -solid red; then echo XORG_READY; else echo XORG_FAILED; fi')
+        result=guest.expect([r'\r*\nXORG_READY\r*\n',r'\r*\nXORG_FAILED\r*\n'],timeout=180)
+        if result==0:
+            try:
+                time.sleep(1)
+                screenshot()
+                xorg_ok=True
+            except (OSError,ValueError,AssertionError,RuntimeError) as error:
+                print(f'Xorg scanout failed: {error}')
+        guest.sendline('kill "$xp" 2>/dev/null; wait "$xp"; cat /root/xorg-console.log /root/Xorg.log /root/xdpyinfo.log; echo XORG_LOG_END')
+        guest.expect(r'\r*\nXORG_LOG_END\r*\n',timeout=180)
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF)
         guest.close()
@@ -204,6 +264,11 @@ for line in serial.splitlines():
     if line.startswith(('[APP PASS]', '[APP FAIL]', '[APP DONE]','[APP DONE status=')):
         print(line)
 print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
+# Emit the full Xorg diagnostic tail, including failed starts, to the CI log.
+start=serial.rfind('XORG_READY')
+if start<0: start=serial.rfind('XORG_FAILED')
+if start>=0: print(serial[start:])
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
@@ -213,3 +278,4 @@ tr -d '\r' < "$work/init.log" | grep -Fxq '[APP DONE status=0]'
 for app in archive-zstd sqlite lua python git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fxq "[APP PASS] $app"
 done
+grep -Fxq PASS "$work/xorg.result"
