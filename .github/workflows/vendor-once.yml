@@ -7,7 +7,7 @@ permissions:
   contents: write
 jobs:
   vendor:
-    if: github.event.head_commit.message == 'vendor: one-time migration of pinned lwIP and LVGL'
+    if: github.event.head_commit.message == 'Vendor pinned lwIP and LVGL'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
