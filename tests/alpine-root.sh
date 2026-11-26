@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop openbox font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -46,6 +46,13 @@ sudo chroot "$root" /bin/busybox sh -ec '
     done
     fc-cache --system-only
     fc-match sans
+    glib-compile-schemas /usr/share/glib-2.0/schemas
+    update-mime-database /usr/share/mime
+    update-desktop-database /usr/share/applications
+    mkdir -p /root/desktop /root/.config
+    printf "original text\n" > /root/desktop/note.txt
+    printf "[Default Applications]\ntext/plain=org.xfce.mousepad.desktop;\n" > /root/.config/mimeapps.list
+    test -f /usr/share/applications/org.xfce.mousepad.desktop
 '
 # Use the ordinary Xorg configuration interface, not a patched X server.
 sudo tee "$root/root/xorg.conf" >/dev/null <<'XORG'
@@ -172,10 +179,10 @@ readelf -l "$work/rescue/bin/busybox" | grep -F '/lib/ld-musl-x86_64.so.1'
 sha256sum "$work/rescue/bin/busybox" "$work/rescue/lib/ld-musl-x86_64.so.1"
 # MBR partition starts at 2 MiB; leave space for the signed toolchain.
 rm -f "$disk" "$work/partition.ext4"
-truncate -s 1022M "$work/partition.ext4"
+truncate -s 1534M "$work/partition.ext4"
 sudo mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' -d "$root" "$work/partition.ext4"
-truncate -s 1024M "$disk"
-printf 'label: dos\nunit: sectors\n\nstart=4096, size=2093056, type=83\n' | sfdisk "$disk"
+truncate -s 1536M "$disk"
+printf 'label: dos\nunit: sectors\n\nstart=4096, size=3141632, type=83\n' | sfdisk "$disk"
 e2fsck -fn "$work/partition.ext4"
 # Match the historical disk builder: publish a clean, durable host image
 # before QEMU opens it, rather than charging image creation writeback to
@@ -316,7 +323,7 @@ def click():
 
 def type_keys(text):
     for ch in text:
-        key={' ':'spc','/':'slash','>':'dot','\n':'ret'}.get(ch,ch)
+        key={' ':'spc','/':'slash','.':'dot','>':'dot','\n':'ret'}.get(ch,ch)
         keys=['shift',key] if ch=='>' else [key]
         for k in keys:
             input_events([{'type':'key','data':{'key':{'type':'qcode','data':k},'down':True}}])
@@ -384,6 +391,76 @@ def drag(button,start,end):
         input_events([{'type':'btn','data':{'button':button,'down':False}}])
         key_event('alt',False)
     time.sleep(0.4)
+
+def desktop_chord(keys):
+    for k in keys:
+        key_event(k,True)
+    for k in reversed(keys):
+        key_event(k,False)
+    time.sleep(0.4)
+
+def wait_desktop_window(kind):
+    for _ in range(30):
+        guest.sendline(f'id=$(xdotool getactivewindow 2>/dev/null); if xprop -id "$id" WM_CLASS 2>/dev/null | grep -qi "{kind}"; then echo DESKTOP_WINDOW_OK; else echo DESKTOP_WINDOW_WAIT; fi')
+        if guest.expect([r'\r*\nDESKTOP_WINDOW_OK\r*\n',r'\r*\nDESKTOP_WINDOW_WAIT\r*\n'],timeout=20)==0:
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f'no focused {kind} window')
+
+def verify_desktop():
+    # Use a real private D-Bus session and the original GTK programs.
+    guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0; dbus-daemon --session --fork --print-address=1 --print-pid=1 >/root/desktop-bus; ds=$?; export DBUS_SESSION_BUS_ADDRESS=$(head -1 /root/desktop-bus); bp=$(tail -1 /root/desktop-bus); printf "BUS_STATUS=%s\\n" "$ds"')
+    guest.expect(r'\r*\nBUS_STATUS=([0-9]+)\r*\n',timeout=60)
+    assert guest.match.group(1)=='0','D-Bus session startup failed'
+    guest.sendline('dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/root/desktop-bus.log 2>&1; printf "BUS_QUERY=%s\\n" "$?"')
+    guest.expect(r'\r*\nBUS_QUERY=([0-9]+)\r*\n',timeout=30)
+    assert guest.match.group(1)=='0','D-Bus session query failed'
+    guest.sendline('pcmanfm /root/desktop >/root/pcmanfm.log 2>&1 & fp=$!; app_pids="$app_pids $fp"')
+    wait_desktop_window('pcmanfm')
+    capture_scanout('desktop-files')
+    desktop_chord(['ctrl','shift','n'])
+    time.sleep(0.6)
+    capture_scanout('desktop-folder-dialog')
+    type_keys('newfolder\n')
+    guest.sendline('for i in $(seq 1 10); do test -d /root/desktop/newfolder && break; sleep 1; done; if test -d /root/desktop/newfolder; then echo FOLDER_CREATED; else echo FOLDER_FAILED; fi')
+    if guest.expect([r'\r*\nFOLDER_CREATED\r*\n',r'\r*\nFOLDER_FAILED\r*\n'],timeout=30):
+        raise RuntimeError('PCManFM did not create directory via GUI')
+    print('PASS: original GTK file manager creates directory via keyboard')
+    def open_note():
+        wait_desktop_window('pcmanfm')
+        desktop_chord(['ctrl','l'])
+        type_keys('/root/desktop/note.txt\n')
+        wait_desktop_window('mousepad')
+        time.sleep(0.5)
+    open_note()
+    capture_scanout('desktop-editor-original')
+    desktop_chord(['ctrl','a'])
+    type_keys('naseed desktop works\n')
+    desktop_chord(['ctrl','s'])
+    guest.sendline('for i in $(seq 1 10); do test "$(cat /root/desktop/note.txt)" = "naseed desktop works" && break; sleep 1; done; if test "$(cat /root/desktop/note.txt)" = "naseed desktop works"; then echo EDIT_SAVED; else echo EDIT_FAILED; fi')
+    if guest.expect([r'\r*\nEDIT_SAVED\r*\n',r'\r*\nEDIT_FAILED\r*\n'],timeout=30):
+        raise RuntimeError('Mousepad did not save edited text')
+    capture_scanout('desktop-editor-saved')
+    print('PASS: original GTK editor modifies and saves existing file')
+    chord('f4')
+    wait_desktop_window('pcmanfm')
+    open_note()
+    desktop_chord(['ctrl','a'])
+    desktop_chord(['ctrl','c'])
+    guest.sendline('if test "$(timeout 5 xclip -selection clipboard -o)" = "naseed desktop works"; then echo EDIT_REOPENED; else echo REOPEN_FAILED; fi')
+    if guest.expect([r'\r*\nEDIT_REOPENED\r*\n',r'\r*\nREOPEN_FAILED\r*\n'],timeout=20):
+        raise RuntimeError('reopened Mousepad document differs from saved content')
+    capture_scanout('desktop-editor-reopened')
+    print('PASS: file-manager launch, editor reopen and actual X11 clipboard content')
+    chord('f4')
+    wait_desktop_window('pcmanfm')
+    chord('f4')
+    guest.sendline('for i in $(seq 1 10); do kill -0 "$fp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$fp" 2>/dev/null; then wait "$fp"; printf "FILES_EXIT=%s\\n" "$?"; else echo FILES_EXIT_FAILED; fi')
+    if guest.expect([r'\r*\nFILES_EXIT=0\r*\n',r'\r*\nFILES_EXIT_FAILED\r*\n',r'\r*\nFILES_EXIT=[0-9]+\r*\n'],timeout=30):
+        raise RuntimeError('PCManFM did not exit cleanly')
+    guest.sendline('kill "$bp"; echo DESKTOP_DONE')
+    guest.expect(r'\r*\nDESKTOP_DONE\r*\n',timeout=20)
+    print('PASS: GTK application session exit')
 
 def verify_wm():
     guest.sendline('openbox --sm-disable >/root/openbox.log 2>&1 & wp=$!')
@@ -456,6 +533,7 @@ def verify_wm():
         raise RuntimeError('surviving managed xterm cannot execute a shell command')
     capture_scanout('openbox-closed')
     print('PASS: Openbox close and surviving managed xterm keyboard/PTY')
+    verify_desktop()
     guest.sendline('timeout 5 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 10); do kill -0 "$wp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
     if guest.expect([r'\r*\nWM_EXIT=0\r*\n',r'\r*\nWM_EXIT_FAILED\r*\n',r'\r*\nWM_EXIT=[0-9]+\r*\n'],timeout=40):
         raise RuntimeError('Openbox session exit failed')
@@ -536,7 +614,7 @@ with open(f'{work}/init.log','w') as log:
                 guest.expect(r'\r*\nXTERM_STATE_END\r*\n',timeout=60)
                 guest.sendline("timeout -s KILL 15 python3 -c 'import ctypes,os,sys; p=int(sys.argv[1]); libc=ctypes.CDLL(None,use_errno=True); libc.ptrace.restype=ctypes.c_long; libc.ptrace.argtypes=[ctypes.c_long,ctypes.c_long,ctypes.c_void_p,ctypes.c_void_p]; r=(ctypes.c_ulonglong*27)(); assert libc.ptrace(16,p,None,None)==0,ctypes.get_errno(); os.waitpid(p,0); assert libc.ptrace(12,p,None,ctypes.byref(r))==0,ctypes.get_errno(); print(\"BLOCKED_REGS\",p,\"rax\",r[10],\"orig_rax\",r[15],\"rip\",hex(r[16]),\"args\",[hex(r[i]) for i in (14,13,12,7,9,8)],flush=True); assert libc.ptrace(17,p,None,None)==0,ctypes.get_errno()' \"$xtp\"; echo XTERM_TRACE_END")
                 guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=60)
-            guest.sendline('if [ -n "$wp" ]; then kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null; fi; cat /root/openbox.log /root/openbox-exit.log /root/wm-term.log 2>/dev/null; echo WM_LOG_END')
+            guest.sendline('if [ -n "$wp" ]; then kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null; fi; if [ -n "$bp" ]; then kill "$bp" 2>/dev/null; fi; cat /root/openbox.log /root/openbox-exit.log /root/wm-term.log /root/desktop-bus.log /root/pcmanfm.log 2>/dev/null; echo WM_LOG_END')
             guest.expect(r'\r*\nWM_LOG_END\r*\n',timeout=60)
             guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
             guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
@@ -577,3 +655,8 @@ for app in archive-zstd sqlite lua python git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"
+# Read persisted content from the clean, unmounted ext4 image itself.
+debugfs -R 'cat /root/desktop/note.txt' "$work/partition.ext4" > "$work/desktop-note.txt"
+test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
+debugfs -R 'stat /root/desktop/newfolder' "$work/partition.ext4" | grep -F 'Type: directory'
+echo 'PASS: desktop-created directory and edited file survived shutdown'
