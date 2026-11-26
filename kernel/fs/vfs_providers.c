@@ -484,9 +484,10 @@ static struct runtime_tmpfs {
     bool used;
 } runtime_tmpfs[NAS_RUNTIME_TMPFS_MAX];
 
-int nas_vfs_mount_tmpfs(const char *target,const char *source,
+static int mount_tmpfs(const char *target,const char *source,
                         uint32_t mode,bool read_only,uint64_t max_pages,
-                        uint64_t max_inodes,bool strict_atime) {
+                        uint64_t max_inodes,bool strict_atime,
+                        bool bootstrap) {
     if(!target || !source || !source[0] ||
        strlen(target)>=sizeof(runtime_tmpfs[0].target) ||
        strlen(source)>=sizeof(runtime_tmpfs[0].source) ||
@@ -509,7 +510,7 @@ int nas_vfs_mount_tmpfs(const char *target,const char *source,
     entry->mount=(struct nas_vfs_mount){
         .mountpoint=entry->target,.type=&tmp_type,
         .private_data=root,.source_label=entry->source,
-        .read_only=read_only
+        .allow_missing_mountpoint=bootstrap,.read_only=read_only
     };
     int rc=nas_vfs_register_mount(&entry->mount);
     if(rc) {
@@ -522,6 +523,12 @@ int nas_vfs_mount_tmpfs(const char *target,const char *source,
     return 0;
 }
 
+int nas_vfs_mount_tmpfs(const char *target,const char *source,
+                        uint32_t mode,bool read_only,uint64_t max_pages,
+                        uint64_t max_inodes,bool strict_atime) {
+    return mount_tmpfs(target,source,mode,read_only,max_pages,max_inodes,
+                       strict_atime,false);
+}
 int nas_vfs_umount_tmpfs(const char *target) {
     if(!target)return -EINVAL;
     for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++) {
@@ -1155,34 +1162,46 @@ static struct nas_vfs_mount external_pseudos[
 static bool external_pseudos_mounted;
 int nas_vfs_register_pseudo_mounts(void) {
     if(external_pseudos_mounted)return 0;
-    for(unsigned i=0;i<sizeof(external_pseudos)/sizeof(external_pseudos[0]);i++) {
+    unsigned i=0;
+    int rc=0;
+    for(;i<sizeof(external_pseudos)/sizeof(external_pseudos[0]);i++) {
+        /* The legacy /tmp overlay borrows an immutable bootfs inode.
+         * A physical root must not depend on rescue archive contents. */
+        if(defaults[i+1].type==&tmp_type)continue;
         external_pseudos[i]=defaults[i+1];
-        /* Never guest-detach the legacy bootfs mounts. Only the external
-         * disk boot's final PID1 lifecycle is allowed to release these. */
         external_pseudos[i].permanent=false;
-        int rc=nas_vfs_register_mount(&external_pseudos[i]);
-        if(rc) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
-            extern void nas_print(const char *);
-            extern void nas_dec(uint64_t);
-            nas_print("[M191 ROOT FAIL] pseudo-attach ");
-            nas_print(external_pseudos[i].mountpoint);
-            nas_print(" code=");nas_dec((uint64_t)(rc<0?-rc:rc));
-            nas_print("\n");
-#endif
-            while(i>0) {
-                if(nas_vfs_unregister_mount(&external_pseudos[--i]))
-                    return -EIO;
-            }
-            return rc;
-        }
+        rc=nas_vfs_register_mount(&external_pseudos[i]);
+        if(rc)goto rollback;
     }
+    /* Use the same real tmpfs superblock and teardown as mount(2).
+     * The external root's /tmp is a normal sticky temporary directory. */
+    uint64_t limit=nas_managed_frames()/2U;
+    if(!limit)limit=1;
+    rc=mount_tmpfs("/tmp","tmpfs",01777U,false,limit,limit,false,true);
+    if(rc)goto rollback;
     external_pseudos_mounted=true;
     return 0;
+rollback:
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    extern void nas_print(const char *);
+    extern void nas_dec(uint64_t);
+    nas_print("[M191 ROOT FAIL] pseudo-attach ");
+    nas_print(i<sizeof(external_pseudos)/sizeof(external_pseudos[0]) ?
+              external_pseudos[i].mountpoint : "/tmp");
+    nas_print(" code=");nas_dec((uint64_t)(rc<0?-rc:rc));nas_print("\n");
+#endif
+    while(i>0) {
+        --i;
+        if(defaults[i+1].type!=&tmp_type &&
+           nas_vfs_unregister_mount(&external_pseudos[i]))return -EIO;
+    }
+    return rc;
 }
 int nas_vfs_shutdown_external_root_pseudos(void) {
     if(!external_pseudos_mounted)return -EINVAL;
     for(unsigned i=sizeof(external_pseudos)/sizeof(external_pseudos[0]);i>0;i--) {
+        /* /tmp was already released by runtime tmpfs shutdown. */
+        if(defaults[i].type==&tmp_type)continue;
         int rc=nas_vfs_unregister_mount(&external_pseudos[i-1]);
         if(rc) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
