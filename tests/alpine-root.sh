@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop openbox font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -342,9 +342,114 @@ def verify_input():
     capture_scanout('x11-input')
     return True
 
+# Openbox is the signed, unchanged distribution package. Read EWMH and
+# geometry to measure outcomes; issue every window operation via QMP.
+def geometry(title):
+    guest.sendline(f'id=$(xdotool search --name "^{title}$" | head -1); if [ -n "$id" ]; then eval "$(xdotool getwindowgeometry --shell "$id")"; printf "WM_GEOM=%s,%s,%s,%s,%s\\n" "$id" "$X" "$Y" "$WIDTH" "$HEIGHT"; else echo WM_GEOM_FAILED; fi')
+    if guest.expect([r'\r*\nWM_GEOM=([0-9]+),(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+)\r*\n',r'\r*\nWM_GEOM_FAILED\r*\n'],timeout=20):
+        raise RuntimeError(f'no managed window: {title}')
+    return tuple(int(v) for v in guest.match.groups())
+
+def active_window():
+    guest.sendline('id=$(xdotool getactivewindow 2>/dev/null); printf "WM_ACTIVE=%s\\n" "$id"')
+    guest.expect(r'\r*\nWM_ACTIVE=([0-9]*)\r*\n',timeout=20)
+    return int(guest.match.group(1) or 0)
+
+def wait_active(wid):
+    for _ in range(10):
+        if active_window()==wid:
+            return
+        time.sleep(0.15)
+    raise RuntimeError(f'Openbox did not focus {wid}')
+
+def key_event(key,down):
+    input_events([{'type':'key','data':{'key':{'type':'qcode','data':key},'down':down}}])
+
+def chord(key):
+    key_event('alt',True)
+    try:
+        key_event(key,True)
+        key_event(key,False)
+    finally:
+        key_event('alt',False)
+    time.sleep(0.35)
+
+def drag(button,start,end):
+    move_to(*start)
+    key_event('alt',True)
+    input_events([{'type':'btn','data':{'button':button,'down':True}}])
+    try:
+        move_to(*end)
+    finally:
+        input_events([{'type':'btn','data':{'button':button,'down':False}}])
+        key_event('alt',False)
+    time.sleep(0.4)
+
+def verify_wm():
+    guest.sendline('openbox --sm-disable >/root/openbox.log 2>&1 & wp=$!')
+    guest.sendline('for i in $(seq 1 30); do kill -0 "$wp" 2>/dev/null || break; wid=$(xprop -root _NET_SUPPORTING_WM_CHECK | sed "s/.*# //"); xprop -id "$wid" _NET_WM_NAME 2>/dev/null | grep -qi openbox && break; sleep 1; done; if kill -0 "$wp" 2>/dev/null && xprop -id "$wid" _NET_WM_NAME 2>/dev/null | grep -qi openbox; then echo WM_READY; else echo WM_FAILED; fi')
+    if guest.expect([r'\r*\nWM_READY\r*\n',r'\r*\nWM_FAILED\r*\n'],timeout=90):
+        raise RuntimeError('Openbox did not publish its EWMH identity')
+    term='NaSeed-XTerm'
+    clock='NaSeed-XClock'
+    a=geometry(term)
+    b=geometry(clock)
+    guest.sendline('xprop -root _NET_CLIENT_LIST; echo WM_CLIENTS_END')
+    guest.expect(r'\r*\nWM_CLIENTS_END\r*\n',timeout=20)
+    ids=guest.before
+    assert hex(a[0]) in ids and hex(b[0]) in ids, 'both clients must be managed by Openbox'
+    capture_scanout('openbox-before')
+    _,x,y,width,height=a
+    dx=85 if x+width+110<800 else -85
+    dy=65 if y+height+90<600 else -65
+    center=(x+width//2,y+height//2)
+    drag('left',center,(center[0]+dx,center[1]+dy))
+    moved=geometry(term)
+    assert abs(moved[1]-x)+abs(moved[2]-y)>=40,(a,moved)
+    print(f'PASS: Openbox physical Alt+drag move {a[1:3]} -> {moved[1:3]}')
+    _,x,y,width,height=moved
+    start=(x+width-18,y+height-18)
+    target=(min(790,start[0]+75),min(590,start[1]+55))
+    assert target[0]-start[0]>=25 and target[1]-start[1]>=25,(start,target)
+    drag('right',start,target)
+    resized=geometry(term)
+    assert resized[3]>=width+24 and resized[4]>=height+20,(moved,resized)
+    print(f'PASS: Openbox physical Alt+right-drag resize {moved[3:]} -> {resized[3:]}')
+    move_to(resized[1]+resized[3]//2,resized[2]+resized[4]//2)
+    click()
+    wait_active(a[0])
+    chord('tab')
+    wait_active(b[0])
+    print('PASS: Openbox physical Alt+Tab focus switch')
+    # The reparented clients must still paint on the real QEMU framebuffer.
+    w,h,pixels=capture_scanout('openbox-managed')
+    for g,color in ((resized,b'\xff\xff\xff'),(geometry(clock),b'\xff\xff\x00')):
+        _,gx,gy,gw,gh=g
+        x0,y0=max(0,gx),max(0,gy)
+        x1,y1=min(w,gx+gw),min(h,gy+gh)
+        region=b''.join(pixels[(row*w+x0)*3:(row*w+x1)*3] for row in range(y0,y1))
+        assert region.count(color)>=200,(g,color)
+    chord('f4')
+    guest.sendline('for i in $(seq 1 15); do kill -0 "$xcp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$xcp" 2>/dev/null && ! xdotool search --name "^NaSeed-XClock$" >/dev/null 2>&1 && kill -0 "$xtp" 2>/dev/null && kill -0 "$wp" 2>/dev/null; then wait "$xcp"; printf "WM_CLOSED=%s\\n" "$?"; else echo WM_CLOSE_FAILED; fi')
+    if guest.expect([r'\r*\nWM_CLOSED=0\r*\n',r'\r*\nWM_CLOSE_FAILED\r*\n',r'\r*\nWM_CLOSED=[0-9]+\r*\n'],timeout=40):
+        raise RuntimeError('Openbox Alt+F4 did not close xclock cleanly')
+    wait_active(a[0])
+    type_keys('echo 43 >/tmp/wmcheck\n')
+    guest.sendline('for i in $(seq 1 10); do test "$(cat /tmp/wmcheck 2>/dev/null)" = 43 && break; sleep 1; done; if test "$(cat /tmp/wmcheck 2>/dev/null)" = 43; then echo WM_SHELL_OK; else echo WM_SHELL_FAILED; fi')
+    if guest.expect([r'\r*\nWM_SHELL_OK\r*\n',r'\r*\nWM_SHELL_FAILED\r*\n'],timeout=30):
+        raise RuntimeError('surviving managed xterm cannot execute a shell command')
+    capture_scanout('openbox-closed')
+    print('PASS: Openbox close and surviving managed xterm keyboard/PTY')
+    guest.sendline('timeout 5 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 10); do kill -0 "$wp" 2>/dev/null || break; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
+    if guest.expect([r'\r*\nWM_EXIT=0\r*\n',r'\r*\nWM_EXIT_FAILED\r*\n',r'\r*\nWM_EXIT=[0-9]+\r*\n'],timeout=40):
+        raise RuntimeError('Openbox session exit failed')
+    print('PASS: Openbox clean window-manager exit')
+    return True
+
 xorg_ok=False
 apps_ok=False
 input_ok=False
+wm_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -387,12 +492,14 @@ with open(f'{work}/init.log','w') as log:
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'Xorg scanout failed: {error}')
         if xorg_ok:
-            guest.sendline('export DISPLAY=:0; app_pids=""')
+            guest.sendline('export DISPLAY=:0; app_pids=""; wp=')
             mapped={}
             for name,title,command,_,_ in apps:
                 guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
                 if name=='xterm':
                     guest.sendline('xtp=$ap')
+                elif name=='xclock':
+                    guest.sendline('xcp=$ap')
                 elif name=='xmessage':
                     guest.sendline('xmp=$ap')
                 guest.sendline(f'for i in $(seq 1 90); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
@@ -402,7 +509,9 @@ with open(f'{work}/init.log','w') as log:
                 apps_ok=verify_apps(mapped)
                 if apps_ok:
                     input_ok=verify_input()
-            except (OSError,ValueError,AssertionError,RuntimeError) as error:
+                if input_ok:
+                    wm_ok=verify_wm()
+            except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
                 # A failure must preserve the original syscall evidence, not
@@ -411,6 +520,8 @@ with open(f'{work}/init.log','w') as log:
                 guest.expect(r'\r*\nXTERM_STATE_END\r*\n',timeout=60)
                 guest.sendline("timeout -s KILL 15 python3 -c 'import ctypes,os,sys; p=int(sys.argv[1]); libc=ctypes.CDLL(None,use_errno=True); libc.ptrace.restype=ctypes.c_long; libc.ptrace.argtypes=[ctypes.c_long,ctypes.c_long,ctypes.c_void_p,ctypes.c_void_p]; r=(ctypes.c_ulonglong*27)(); assert libc.ptrace(16,p,None,None)==0,ctypes.get_errno(); os.waitpid(p,0); assert libc.ptrace(12,p,None,ctypes.byref(r))==0,ctypes.get_errno(); print(\"BLOCKED_REGS\",p,\"rax\",r[10],\"orig_rax\",r[15],\"rip\",hex(r[16]),\"args\",[hex(r[i]) for i in (14,13,12,7,9,8)],flush=True); assert libc.ptrace(17,p,None,None)==0,ctypes.get_errno()' \"$xtp\"; echo XTERM_TRACE_END")
                 guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=60)
+            guest.sendline('if [ -n "$wp" ]; then kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null; fi; cat /root/openbox.log /root/openbox-exit.log 2>/dev/null; echo WM_LOG_END')
+            guest.expect(r'\r*\nWM_LOG_END\r*\n',timeout=60)
             guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
             guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
         if result!=0:
@@ -439,7 +550,7 @@ print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
-pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok else 'FAIL\n')
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok and wm_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
