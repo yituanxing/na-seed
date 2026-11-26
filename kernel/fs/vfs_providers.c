@@ -1183,6 +1183,7 @@ int nas_vfs_register_pseudo_mounts(void) {
     return 0;
 rollback:
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    ; /* C11 label must precede a statement. */
     extern void nas_print(const char *);
     extern void nas_dec(uint64_t);
     nas_print("[M191 ROOT FAIL] pseudo-attach ");
