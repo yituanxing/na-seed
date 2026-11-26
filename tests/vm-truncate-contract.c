@@ -14,12 +14,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PAGE 4096U
 #define VA UINT64_C(0x40000000)
 #define PA UINT64_C(0x1000)
 struct nas_mapped_file { int marker; };
 static struct nas_mapped_file backing={1}, other={2};
-static struct nas_fs_node inode;
+/* VFS node is opaque to VM: identity is never dereferenced by this test. */
+static _Alignas(16) unsigned char inode_storage[16];
+static const struct nas_fs_node *const inode =
+    (const struct nas_fs_node *)(const void *)inode_storage;
 static struct nas_anon_region vma;
 static struct nas_mm mm;
 static _Alignas(PAGE) uint8_t physical[PAGE];
@@ -32,7 +34,7 @@ bool nas_mm_walk_live(nas_mm_live_visit fn,void *ctx) {
 bool nas_fs_mmap_matches(struct nas_mapped_file *file,
                          const struct nas_fs_node *node) {
     ++matches;
-    return file==&backing && node==&inode;
+    return file==&backing && node==inode;
 }
 bool nas_mm_resolve_user(const struct nas_mm *owner,uint64_t addr,
                          uint64_t *pa,unsigned *access) {
@@ -75,28 +77,28 @@ static void reset(unsigned kind,struct nas_mapped_file *file) {
 }
 static void private_copy_survives_truncate(void) {
     reset(NAS_VMA_FILE_PRIVATE_LAZY,&backing);
-    nas_vm_invalidate_file(&inode,1000);
+    nas_vm_invalidate_file(inode,1000);
     assert(physical[999]==0xa5 && physical[1000]==0xa5 &&
            physical[PAGE-1]==0xa5);
     assert(resident && exchanges==0 && releases==0);
     reset(NAS_VMA_FILE_PRIVATE_LAZY,&backing);
-    nas_vm_invalidate_file(&inode,0);
+    nas_vm_invalidate_file(inode,0);
     assert(resident && physical[0]==0xa5 && physical[PAGE-1]==0xa5);
     assert(exchanges==0 && releases==0);
 }
 static void shared_mapping_tracks_new_eof(void) {
     reset(NAS_VMA_FILE_MUTABLE_SHARED,&backing);
-    nas_vm_invalidate_file(&inode,1000);
+    nas_vm_invalidate_file(inode,1000);
     assert(resident && exchanges==0 && releases==0 && matches==1);
     assert(physical[999]==0xa5 && physical[1000]==0 &&
            physical[PAGE-1]==0);
     reset(NAS_VMA_FILE_MUTABLE_SHARED,&backing);
-    nas_vm_invalidate_file(&inode,0);
+    nas_vm_invalidate_file(inode,0);
     assert(!resident && exchanges==1 && releases==1);
 }
 static void unrelated_inode_is_untouched(void) {
     reset(NAS_VMA_FILE_MUTABLE_SHARED,&other);
-    nas_vm_invalidate_file(&inode,0);
+    nas_vm_invalidate_file(inode,0);
     assert(resident && matches==1 && resolves==0 &&
            exchanges==0 && releases==0);
 }
