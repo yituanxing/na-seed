@@ -241,7 +241,9 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
-H0_HW_SRCS := kernel/platform/firmware_acpi.c \
+UACPI_FLAGS := -DUACPI_BAREBONES_MODE -I third_party/uacpi/include
+UACPI_SRCS := $(addprefix third_party/uacpi/source/,tables.c uacpi.c stdlib.c utilities.c)
+H0_HW_SRCS := $(UACPI_SRCS) kernel/platform/firmware_acpi.c \
  kernel/drivers/core/pci_scan.c kernel/platform/x86_h0_pci.c
 ifeq ($(NAS_ENABLE_H1_ECAM_DISCOVERY),1)
 H0_HW_SRCS += kernel/platform/pci_ecam.c kernel/platform/x86_h1_ecam.c
@@ -288,10 +290,13 @@ H0_HW_SRCS += kernel/platform/x86_h15_ftdi.c \
   kernel/drivers/usb/xhci.c kernel/fs/usb_serial_chrdev.c
 endif
 H0_HW_OBJS := $(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(H0_HW_SRCS)))
+$(OUT)/h0_firmware_acpi.o: private CFLAGS += $(UACPI_FLAGS)
+$(patsubst %.c,$(OUT)/h0_%.o,$(notdir $(UACPI_SRCS))): private CFLAGS += $(UACPI_FLAGS) -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable
+
 define nas_compile_h0_hw
 $(OUT)/h0_$(notdir $(basename $(1))).o: $(1) $(HDR)
 	mkdir -p $(OUT)
-	clang $(CFLAGS) -MMD -MP -c $$< -o $$@
+	clang $$(CFLAGS) -MMD -MP -c $$< -o $$@
 endef
 $(foreach source,$(H0_HW_SRCS),$(eval $(call nas_compile_h0_hw,$(source))))
 endif
@@ -864,6 +869,8 @@ check-host:
 	$(OUT)/test/tmpfs-size-contract
 	cc -std=c11 -O2 -Wall -Wextra -Werror -I ports/tlsf/freestanding kernel/mm/heap.c third_party/tlsf/tlsf.c tests/heap-contract.c -o $(OUT)/test/heap-contract
 	$(OUT)/test/heap-contract
+	clang -std=gnu11 -O2 -Wall -Wextra -DUACPI_BAREBONES_MODE -I third_party/uacpi/include kernel/platform/firmware_acpi.c third_party/uacpi/source/tables.c third_party/uacpi/source/uacpi.c third_party/uacpi/source/stdlib.c third_party/uacpi/source/utilities.c tests/acpi-contract.c -o $(OUT)/test/acpi-contract
+	$(OUT)/test/acpi-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:

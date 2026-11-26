@@ -33,6 +33,9 @@ jobs:
       - name: Display host contract
         if: matrix.arch == 'x86_64'
         run: make check-host
+      - name: Build uACPI hardware discovery kernel
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 OUT=build/h0 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 kernel
       - name: Build UEFI ISO
         if: matrix.arch == 'x86_64'
         run: make iso

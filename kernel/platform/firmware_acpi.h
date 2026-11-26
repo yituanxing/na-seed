@@ -34,7 +34,7 @@ struct nas_acpi_discovery {
  * Return 0 only after all requested table/checksum/resource validation.
  * A nonzero result leaves `out` entirely zeroed, without partial discovery.
  */
-int nas_acpi_probe(const void *rsdp, size_t rsdp_available,
+int nas_acpi_probe(const void *rsdp, size_t rsdp_available, uint64_t rsdp_physical,
                    nas_acpi_map_fn map, void *context,
                    struct nas_acpi_discovery *out);
 

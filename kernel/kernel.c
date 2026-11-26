@@ -126,7 +126,7 @@ static bool h0_acpi_diagnostic(struct nas_acpi_discovery *out) {
         return false;
     }
     struct nas_acpi_discovery acpi={0};
-    if(nas_acpi_probe(h0_rsdp_req.response->address,available,
+    if(nas_acpi_probe(h0_rsdp_req.response->address,available,physical,
                       h0_acpi_physical_map,NULL,&acpi)) {
         nas_print("[H0 ACPI] invalid/inaccessible tables; no MMIO mapped\n");
         return false;
