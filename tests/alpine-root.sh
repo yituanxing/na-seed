@@ -277,8 +277,9 @@ with open(f'{work}/init.log','w') as log:
         guest.expect(r'# ')
         # Host-generated caches can be invalidated by ext4 image creation.
         # Run the real package trigger in the booted distribution.
-        guest.sendline('fc-cache --system-only -v && fc-match sans && echo FONT_READY || echo FONT_FAILED')
-        if guest.expect([r'\r*\nFONT_READY\r*\n',r'\r*\nFONT_FAILED\r*\n'],timeout=900)!=0:
+        guest.sendline("fc-cache --system-only -v && fc-match sans; printf 'FONT_STATUS=%s\\n' \"$?\"")
+        guest.expect(r'\r*\nFONT_STATUS=([0-9]+)\r*\n',timeout=900)
+        if guest.match.group(1)!='0':
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
         guest.sendline('Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg.log -nolisten tcp -ac -noreset >/root/xorg-console.log 2>&1 & xp=$!')
