@@ -146,6 +146,37 @@ python_runtime() {
     python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"' &&
     python3 -c 'import socket,select; a,b=socket.socketpair(); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; a.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==1; assert b.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
 }
+readonly_shared_mmap() {
+    # The same inode frame must be visible through independent mappings,
+    # observe ordinary writes and truncate, and never claim unsupported
+    # PROT_WRITE MAP_SHARED is implemented.
+    python3 - <<'MAPCHECK'
+import errno, mmap, os
+path = "/root/acceptance-data/readonly-shared.bin"
+fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+assert os.write(fd, b"A" * 4096) == 4096
+first = mmap.mmap(fd, 4096, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ)
+second = mmap.mmap(fd, 4096, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ)
+assert first[:4] == second[:4] == b"AAAA"
+os.lseek(fd, 1, os.SEEK_SET)
+assert os.write(fd, b"BC") == 2
+assert first[:4] == second[:4] == b"ABCA", "shared read mappings lost write(2) coherence"
+try:
+    invalid = mmap.mmap(fd, 4096, flags=mmap.MAP_SHARED,
+                        prot=mmap.PROT_READ | mmap.PROT_WRITE)
+except OSError as ex:
+    assert ex.errno == errno.ENODEV, ex
+else:
+    invalid.close()
+    raise AssertionError("writable shared ext4 mapping must fail closed")
+os.ftruncate(fd, 2)
+assert first[2:4] == second[2:4] == b"\x00\x00"
+second.close()
+first.close()
+os.close(fd)
+print("MAP_SHARED ext4 readonly page identity, write visibility, EOF and write rejection PASS")
+MAPCHECK
+}
 git_repository() {
     git init -q repo &&
     git -C repo config user.name NaSeed &&
@@ -169,6 +200,7 @@ run archive-zstd archive
 run sqlite database
 run lua lua_runtime
 run python python_runtime
+run readonly-shared-mmap readonly_shared_mmap
 run git git_repository
 run gcc-make native_build
 printf '[APP DONE status=%s]\n' "$failures"
@@ -767,7 +799,7 @@ dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
-for app in archive-zstd sqlite lua python git gcc-make; do
+for app in archive-zstd sqlite lua python readonly-shared-mmap git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"
