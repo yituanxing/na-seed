@@ -146,6 +146,52 @@ python_runtime() {
     python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"' &&
     python3 -c 'import socket,select; a,b=socket.socketpair(); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; a.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); assert a.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==1; assert b.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)==0; e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
 }
+sysv_shared_memory() {
+    # Genuine Alpine GCC program: separate processes attach the same SysV
+    # segment, publish changes through physical aliases, and retain deleted
+    # segments until their last VMA owner is gone (MIT-SHM lifecycle).
+    cat > sysv-shared.c <<'SHMTEST'
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+int main(void) {
+    int id=shmget(IPC_PRIVATE,4096,IPC_CREAT|0600);
+    if(id<0){perror("shmget");return 1;}
+    volatile unsigned char *a=shmat(id,NULL,0);
+    if(a==(void *)-1){perror("shmat");return 2;}
+    a[0]=17;
+    pid_t child=fork();
+    if(child<0){perror("fork");return 3;}
+    if(!child) {
+        volatile unsigned char *b=shmat(id,NULL,0);
+        if(b==(void *)-1 || b[0]!=17)_exit(4);
+        b[0]=42;
+        if(shmdt((const void *)b))_exit(5);
+        _exit(0);
+    }
+    int status=0;
+    if(waitpid(child,&status,0)!=child ||
+       !WIFEXITED(status) || WEXITSTATUS(status))return 6;
+    if(a[0]!=42)return 7;
+    struct shmid_ds info;
+    if(shmctl(id,IPC_STAT,&info) || info.shm_segsz!=4096 ||
+       info.shm_nattch<1)return 8;
+    if(shmctl(id,IPC_RMID,NULL)){perror("shmctl IPC_RMID");return 9;}
+    /* Linux allows an attach by ID after IPC_RMID as long as an existing
+     * mapping retains the segment (required by actual MIT-SHM clients). */
+    volatile unsigned char *late=shmat(id,NULL,SHM_RDONLY);
+    if(late==(void *)-1 || late[0]!=42)return 10;
+    if(shmdt((const void *)late)||shmdt((const void *)a))return 11;
+    puts("SysV shared memory cross-process attach/RMID/lifetime PASS");
+    return 0;
+}
+SHMTEST
+    cc -O2 -o sysv-shared sysv-shared.c &&
+    ./sysv-shared
+}
 readonly_shared_mmap() {
     # The same inode frame must be visible through independent mappings,
     # observe ordinary writes and truncate, and never claim unsupported
@@ -201,6 +247,7 @@ run sqlite database
 run lua lua_runtime
 run python python_runtime
 run readonly-shared-mmap readonly_shared_mmap
+run sysv-shm sysv_shared_memory
 run git git_repository
 run gcc-make native_build
 printf '[APP DONE status=%s]\n' "$failures"
@@ -799,7 +846,7 @@ dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
-for app in archive-zstd sqlite lua python readonly-shared-mmap git gcc-make; do
+for app in archive-zstd sqlite lua python readonly-shared-mmap sysv-shm git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"
