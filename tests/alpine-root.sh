@@ -192,6 +192,29 @@ except OSError as ex:
     assert ex.errno in (errno.EAGAIN,errno.EWOULDBLOCK),ex
 else:
     raise AssertionError('socketpair recvmsg(MSG_DONTWAIT) must return EAGAIN')
+# SCM_RIGHTS and MSG_CMSG_CLOEXEC use ordinary File ownership and
+# Linux ancillary-data ABI; Wayland keymaps and wl_shm rely on both.
+import array
+rights_path='/root/acceptance-data/unix-rights.bin'
+rights_fd=os.open(rights_path,os.O_CREAT|os.O_RDWR|os.O_TRUNC,0o600)
+assert os.write(rights_fd,b'rights')==6
+os.lseek(rights_fd,0,os.SEEK_SET)
+assert a.sendmsg([b'R'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,
+                           array.array('i',[rights_fd]).tobytes())],
+                 socket.MSG_DONTWAIT)==1
+payload,control,_,_=b.recvmsg(1,socket.CMSG_SPACE(4),
+                              socket.MSG_CMSG_CLOEXEC|socket.MSG_DONTWAIT)
+assert payload==b'R' and len(control)==1, (payload,control)
+level,kind,transfer=control[0]
+assert (level,kind)==(socket.SOL_SOCKET,socket.SCM_RIGHTS)
+fds=array.array('i')
+fds.frombytes(transfer)
+assert len(fds)==1
+received_fd=fds[0]
+assert fcntl.fcntl(received_fd,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
+assert os.read(received_fd,6)==b'rights'
+os.close(received_fd)
+os.close(rights_fd)
 a.close()
 b.close()
 peer.close()
@@ -755,7 +778,7 @@ def verify_wayland():
     width,height,baseline=capture_scanout('wayland-before')
     # Explicitly select the official legacy data path for an A/B diagnostic,
     # not a hardcoded keyboard map or a patch to upstream Weston.
-    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
+    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; strace -f -s 128 -o /root/weston-process.trace -e trace=sendmsg,recvmsg,accept4,epoll_wait,epoll_pwait,poll,ppoll,memfd_create,ftruncate,mmap,munmap,fcntl,openat,exit_group weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
     try:
         guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1; then echo WAYLAND_SOCKET_READY; else echo WAYLAND_SOCKET_MISSING; fi')
         socket_ok=guest.expect([r'\r*\nWAYLAND_SOCKET_READY\r*\n',r'\r*\nWAYLAND_SOCKET_MISSING\r*\n'],timeout=90)==0
@@ -799,6 +822,9 @@ def verify_wayland():
         guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; wait "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; wait "$wlp" 2>/dev/null; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
         guest.expect(r'\r*\nWAYLAND_LOG_END\r*\n',timeout=90)
         print(guest.before)
+        guest.sendline('tail -130 /root/weston-process.trace 2>/dev/null; echo WESTON_PROCESS_TRACE_END')
+        guest.expect(r'\r*\nWESTON_PROCESS_TRACE_END\r*\n',timeout=90)
+        print('Original Weston and desktop-shell syscall trace:',guest.before)
 
 xorg_ok=False
 apps_ok=False
@@ -925,6 +951,7 @@ e2fsck -fn "$work/partition.ext4"
 # Preserve original guest syscall evidence even when the Wayland gate fails.
 debugfs -R 'cat /root/wayland-client.trace' "$work/partition.ext4" > "$work/wayland-client.trace" 2>/dev/null || :
 debugfs -R 'cat /root/wayland-traced-info.log' "$work/partition.ext4" > "$work/wayland-traced-info.log" 2>/dev/null || :
+debugfs -R 'cat /root/weston-process.trace' "$work/partition.ext4" > "$work/weston-process.trace" 2>/dev/null || :
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
 for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap sysv-shm git gcc-make; do
