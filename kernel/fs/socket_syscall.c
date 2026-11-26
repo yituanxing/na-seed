@@ -376,14 +376,16 @@ uint64_t nas_fs_socket_control_description(unsigned slot) {
     if(rc==0)return (uint64_t)-EAGAIN;
     return (uint64_t)(int64_t)(rc==1 ? result.status:rc);
 }
-/* Linux sockaddr_un has a native two-byte family followed by the pathname.
- * This first backend supports Linux pathname sockets, not abstract names. */
-static int unix_pathname(uint64_t addr,uint64_t length,char out[109]) {
+/* Linux sockaddr_un: pathname strings and binary abstract addresses. */
+static int unix_address(uint64_t addr,uint64_t length,char out[109]) {
     uint8_t buffer[110];
     if(length<3 || length>sizeof(buffer))return -EINVAL;
     if(!nas_user_read_bytes(addr,buffer,length))return -EFAULT;
     if(buffer[0]!=1 || buffer[1])return -EAFNOSUPPORT;
-    if(!buffer[2])return -EOPNOTSUPP;
+    if(!buffer[2]) {
+        memcpy(out,buffer+2,length-2);
+        return (int)(length-2);
+    }
     unsigned n=0;
     for(;n<length-2 && buffer[n+2] && n<108;n++)
         out[n]=(char)buffer[n+2];
@@ -393,8 +395,10 @@ static int unix_pathname(uint64_t addr,uint64_t length,char out[109]) {
 static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     char path[109];
-    int rc=unix_pathname(address,size,path);
-    if(rc)return (uint64_t)(int64_t)rc;
+    int rc=unix_address(address,size,path);
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(rc>0)return (uint64_t)(int64_t)nas_unix_socket_bind_abstract(
+        TASK.fds->entries[fd].slot,(const uint8_t *)path,(unsigned)rc);
     struct nas_fs_path_request request;
     rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -418,8 +422,10 @@ static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
 static uint64_t sys_unix_connect(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     char path[109];
-    int rc=unix_pathname(address,size,path);
-    if(rc)return (uint64_t)(int64_t)rc;
+    int rc=unix_address(address,size,path);
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(rc>0)return (uint64_t)(int64_t)nas_unix_socket_connect_abstract(
+        TASK.fds->entries[fd].slot,(const uint8_t *)path,(unsigned)rc);
     struct nas_fs_path_request request;
     rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -639,14 +645,8 @@ static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
     if(!nas_user_read_bytes(length_ptr,(uint8_t *)&size,4))
         return (uint64_t)-EFAULT;
     uint8_t output[110]={1,0};
-    const char *path=peer ? 0 : nas_unix_socket_name(TASK.fds->entries[fd].slot);
-    uint32_t actual=2;
-    if(path) {
-        unsigned n=(unsigned)strnlen(path,107);
-        memcpy(output+2,path,n);
-        output[n+2]=0;
-        actual=n+3;
-    }
+    uint32_t actual=2+nas_unix_socket_name(
+        TASK.fds->entries[fd].slot,peer,output+2);
     if(size>actual)size=actual;
     if(!nas_user_prepare_write(length_ptr,4) ||
        (size && !nas_user_prepare_write(address,size)))

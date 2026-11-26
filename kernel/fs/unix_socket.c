@@ -28,7 +28,9 @@ struct local_socket {
     uint32_t owner_pid,peer_pid,peer_uid,peer_gid;
     bool has_peer;
     unsigned first,count,queue[NAS_UNIX_BACKLOG];
-    char name[256];
+    uint8_t name[109],peer_name[109];
+    unsigned name_len,peer_name_len;
+    bool abstract;
     struct socket_rights rights;
 };
 /* FileOps is the protocol type tag. Never interpret a foreign File's
@@ -197,6 +199,30 @@ int nas_unix_socket_bind(unsigned slot,const struct nas_vfs_path *parent,
     s->state=SOCK_BOUND;
     s->bound=created;
     memcpy(s->name,display_name,name_len+1);
+    s->name_len=(unsigned)name_len+1;
+    return 0;
+}
+/* Abstract addresses are binary, length-delimited keys in the socket
+ * namespace, independent of filesystem Paths and permissions. Final close
+ * removes the key together with its owning open description. */
+static unsigned abstract_lookup(const uint8_t *name,unsigned length) {
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++) {
+        const struct local_socket *s=socket_at(i);
+        if(s && s->abstract && s->name_len==length &&
+           !memcmp(s->name,name,length))return i;
+    }
+    return NAS_OPEN_FILE_LIMIT;
+}
+int nas_unix_socket_bind_abstract(unsigned slot,const uint8_t *name,
+                                 unsigned length) {
+    struct local_socket *s=socket_at(slot);
+    if(!s || s->state!=SOCK_NEW || !name || !length ||
+       length>108 || name[0])return -EINVAL;
+    if(abstract_lookup(name,length)!=NAS_OPEN_FILE_LIMIT)return -EADDRINUSE;
+    memcpy(s->name,name,length);
+    s->name_len=length;
+    s->abstract=true;
+    s->state=SOCK_BOUND;
     return 0;
 }
 int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
@@ -206,6 +232,49 @@ int nas_unix_socket_listen(unsigned slot,unsigned backlog) {
     socket_at(slot)->state=SOCK_LISTEN;
     socket_at(slot)->owner_pid=(uint32_t)nas_current_task->tgid;
     return 0;
+}
+static int connect_listener(unsigned slot,unsigned listener) {
+    struct local_socket *s=socket_at(listener);
+    if(!s || s->state!=SOCK_LISTEN)return -ECONNREFUSED;
+    if(s->count==NAS_UNIX_BACKLOG)return -EAGAIN;
+    unsigned peer=NAS_OPEN_FILE_LIMIT;
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if(!nas_open_files[i].refcount && i!=slot) {peer=i;break;}
+    if(peer==NAS_OPEN_FILE_LIMIT)return -ENFILE;
+    struct local_socket *peer_socket=nas_heap_calloc(1,sizeof(*peer_socket));
+    if(!peer_socket)return -ENOMEM;
+    int rc=nas_pipe_create_socketpair(slot,peer);
+    if(rc) { (void)nas_heap_free(peer_socket); return rc; }
+    nas_open_files[peer]=(struct nas_open_file){
+        .refcount=1,.status_flags=2,
+        .ops=nas_fs_ops_for_kind(FD_SOCKET)
+    };
+    nas_open_files[peer].private.provider=peer_socket;
+    uint32_t client_pid=(uint32_t)nas_current_task->tgid;
+    *peer_socket=(struct local_socket){
+        .state=SOCK_CONNECTED,.owner_pid=s->owner_pid,
+        .peer_pid=client_pid,.has_peer=true
+    };
+    /* Accepted endpoints inherit the address, not ownership of the bind. */
+    memcpy(peer_socket->name,s->name,s->name_len);
+    peer_socket->name_len=s->name_len;
+    struct local_socket *client=socket_at(slot);
+    memcpy(client->peer_name,s->name,s->name_len);
+    client->peer_name_len=s->name_len;
+    client->state=SOCK_CONNECTED;
+    client->peer_pid=s->owner_pid;
+    client->peer_uid=0;
+    client->peer_gid=0;
+    client->has_peer=true;
+    s->queue[(s->first+s->count)%NAS_UNIX_BACKLOG]=peer;
+    s->count++;
+    return 0;
+}
+int nas_unix_socket_connect_abstract(unsigned slot,const uint8_t *name,
+                                    unsigned length) {
+    if(!socket_at(slot) || socket_at(slot)->state!=SOCK_NEW)return -EISCONN;
+    if(!name || !length || length>108 || name[0])return -EINVAL;
+    return connect_listener(slot,abstract_lookup(name,length));
 }
 int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target) {
     if(!socket_at(slot) || socket_at(slot)->state!=SOCK_NEW)
@@ -223,35 +292,7 @@ int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target) {
             listener=i;break;
         }
     }
-    if(listener==NAS_OPEN_FILE_LIMIT)return -ECONNREFUSED;
-    struct local_socket *s=socket_at(listener);
-    if(s->count==NAS_UNIX_BACKLOG)return -EAGAIN;
-    unsigned peer=NAS_OPEN_FILE_LIMIT;
-    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(!nas_open_files[i].refcount && i!=slot) {peer=i;break;}
-    if(peer==NAS_OPEN_FILE_LIMIT)return -ENFILE;
-    struct local_socket *peer_socket=nas_heap_calloc(1,sizeof(*peer_socket));
-    if(!peer_socket)return -ENOMEM;
-    rc=nas_pipe_create_socketpair(slot,peer);
-    if(rc) { (void)nas_heap_free(peer_socket); return rc; }
-    nas_open_files[peer]=(struct nas_open_file){
-        .refcount=1,.status_flags=2,
-        .ops=nas_fs_ops_for_kind(FD_SOCKET)
-    };
-    nas_open_files[peer].private.provider=peer_socket;
-    uint32_t client_pid=(uint32_t)nas_current_task->tgid;
-    *peer_socket=(struct local_socket){
-        .state=SOCK_CONNECTED,.owner_pid=s->owner_pid,
-        .peer_pid=client_pid,.has_peer=true
-    };
-    socket_at(slot)->state=SOCK_CONNECTED;
-    socket_at(slot)->peer_pid=s->owner_pid;
-    socket_at(slot)->peer_uid=0;
-    socket_at(slot)->peer_gid=0;
-    socket_at(slot)->has_peer=true;
-    s->queue[(s->first+s->count)%NAS_UNIX_BACKLOG]=peer;
-    s->count++;
-    return 0;
+    return connect_listener(slot,listener);
 }
 int nas_unix_socket_accept(unsigned slot,unsigned *peer_slot) {
     if(!socket_at(slot) || socket_at(slot)->state!=SOCK_LISTEN)
@@ -269,10 +310,13 @@ bool nas_unix_socket_listening(unsigned slot) {
 bool nas_unix_socket_readable(unsigned slot) {
     return nas_unix_socket_listening(slot) && socket_at(slot)->count!=0;
 }
-const char *nas_unix_socket_name(unsigned slot) {
-    return socket_at(slot) &&
-        (socket_at(slot)->state==SOCK_BOUND ||
-         socket_at(slot)->state==SOCK_LISTEN) ? socket_at(slot)->name : 0;
+unsigned nas_unix_socket_name(unsigned slot,bool peer,uint8_t out[108]) {
+    const struct local_socket *s=socket_at(slot);
+    if(!s)return 0;
+    unsigned length=peer?s->peer_name_len:s->name_len;
+    if(length>108)length=108;
+    if(length)memcpy(out,peer?s->peer_name:s->name,length);
+    return length;
 }
 int nas_unix_socket_peercred(unsigned slot,uint32_t credentials[3]) {
     if(!socket_at(slot) || !socket_at(slot)->has_peer)

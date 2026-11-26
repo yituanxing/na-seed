@@ -242,8 +242,6 @@ with open(f'{work}/init.log','w') as log:
         guest.sendline('/bin/busybox sh /root/acceptance.sh')
         guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
         guest.expect(r'# ')
-        guest.sendline('ls -l /dev/fb0 /sys/class/graphics/fb0; readlink /sys/class/graphics/fb0; python3 -c \'import os,fcntl; fd=os.open("/dev/fb0",os.O_RDWR); b=bytearray(80); fcntl.ioctl(fd,0x4602,b,True); print("FB_FIX",b.hex()); os.close(fd)\'; echo FB_DIAG_END')
-        guest.expect(r'\r*\nFB_DIAG_END\r*\n',timeout=120)
         guest.sendline('Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg.log -nolisten tcp -ac -noreset >/root/xorg-console.log 2>&1 & xp=$!')
         guest.sendline('for i in $(seq 1 30); do kill -0 "$xp" 2>/dev/null || break; timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 && break; sleep 1; done; if kill -0 "$xp" 2>/dev/null && timeout 5 xsetroot -display :0 -solid red; then echo XORG_READY; else echo XORG_FAILED; fi')
         result=guest.expect([r'\r*\nXORG_READY\r*\n',r'\r*\nXORG_FAILED\r*\n'],timeout=180)
@@ -255,12 +253,7 @@ with open(f'{work}/init.log','w') as log:
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'Xorg scanout failed: {error}')
         guest.sendline('kill "$xp" 2>/dev/null; wait "$xp"; cat /root/xorg-console.log /root/Xorg.log /root/xdpyinfo.log; echo XORG_LOG_END')
-        if result!=0:
-            guest.expect(r'\r*\nXORG_LOG_END\r*\n',timeout=180)
-            guest.sendline('timeout 100 strace -f -e trace=open,openat,readlink,readlinkat,ioctl,bind,connect -o /root/xorg.trace Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg-traced.log -nolisten tcp -ac -noreset >/root/xorg-traced-console.log 2>&1; grep -E "/dev/fb|/sys/class/graphics|/dev/tty|bind\\(|connect\\(|ioctl\\(" /root/xorg.trace | tail -80; cat /root/xorg-traced-console.log; echo XORG_TRACE_END')
-            guest.expect(r'\r*\nXORG_TRACE_END\r*\n',timeout=180)
-        else:
-            guest.expect(r'\r*\nXORG_LOG_END\r*\n',timeout=180)
+        guest.expect(r'\r*\nXORG_LOG_END\r*\n',timeout=180)
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF)
         guest.close()
@@ -279,8 +272,7 @@ for line in serial.splitlines():
         print(line)
 print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 # Emit the full Xorg diagnostic tail, including failed starts, to the CI log.
-start=serial.find('FB_FIX')
-if start<0: start=serial.rfind('FB_DIAG_END')
+start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
 pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok else 'FAIL\n')
