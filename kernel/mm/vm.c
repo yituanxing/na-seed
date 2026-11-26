@@ -511,6 +511,80 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
 }
+/* Linux mremap for regular mmap-backed VMAs. The VMA ledger is the
+ * authoritative owner of virtual space, independently of resident PTEs.
+ * Grow/shrink private anonymous VMAs without materializing absent pages;
+ * grow/relocate live MAP_SHARED file VMAs via their original pinned inode
+ * cache (even when the fd was closed). This is NOT an mmap of a new fd.
+ *
+ * No other mapping kind may be silently resized: snapshot pages cannot
+ * regrow from a missing backing, and anonymous/device shared relocations
+ * need their own physical alias transfer. Refuse unsupported forms until
+ * those full ownership contracts are implemented. */
+uint64_t nas_vm_mremap(uint64_t old_addr,uint64_t old_size,
+                        uint64_t new_size,uint64_t flags,
+                        uint64_t new_addr) {
+    const uint64_t MREMAP_MAYMOVE=1ULL,MREMAP_FIXED=2ULL,
+                   MREMAP_DONTUNMAP=4ULL;
+    if((old_addr&(PAGE-1)) || !old_size || !new_size ||
+       old_size>UINT64_MAX-(PAGE-1) ||
+       new_size>UINT64_MAX-(PAGE-1) ||
+       (flags&~(MREMAP_MAYMOVE|MREMAP_FIXED|MREMAP_DONTUNMAP)))
+        return (uint64_t)-EINVAL;
+    /* Explicit target replacement and DONTUNMAP require separate,
+     * all-or-nothing PTE ownership transactions. Never acknowledge them. */
+    if(flags&(MREMAP_FIXED|MREMAP_DONTUNMAP))
+        return (uint64_t)-EOPNOTSUPP;
+    (void)new_addr;
+    const uint64_t old_bytes=(old_size+PAGE-1)&~(PAGE-1);
+    const uint64_t new_bytes=(new_size+PAGE-1)&~(PAGE-1);
+    if(!nas_anon_fixed_range_allowed(old_addr,old_bytes))
+        return (uint64_t)-EFAULT;
+    struct nas_anon_regions *regions=&TASK.mm->mmap_vmas;
+    const struct nas_anon_region *source=nas_vma_find(regions,old_addr);
+    if(!source || old_bytes>source->end-old_addr)
+        return (uint64_t)-EFAULT;
+    if(old_bytes==new_bytes)return old_addr;
+    if(new_bytes<old_bytes) {
+        uint64_t result=nas_vm_munmap(old_addr+new_bytes,
+                                       old_bytes-new_bytes);
+        return (int64_t)result<0 ? result:old_addr;
+    }
+    const unsigned kind=source->kind;
+    if(kind!=NAS_VMA_FILE_MUTABLE_SHARED &&
+       kind!=NAS_VMA_ANON_PRIVATE &&
+       kind!=NAS_VMA_FILE_PRIVATE_LAZY)
+        return (uint64_t)-EOPNOTSUPP;
+    const uint64_t added=new_bytes-old_bytes;
+    const bool inplace=nas_anon_fixed_range_allowed(old_addr,new_bytes) &&
+        !nas_anon_intersects(regions,old_addr+old_bytes,added);
+    uint64_t destination=old_addr;
+    if(!inplace) {
+        if(!(flags&MREMAP_MAYMOVE))return (uint64_t)-ENOMEM;
+        /* A backed, coherent shared file can fault every moved page from
+         * the SAME inode cache. Private/COW pages cannot be dropped and
+         * recreated; their relocation awaits a real leaf transfer. */
+        if(kind!=NAS_VMA_FILE_MUTABLE_SHARED)
+            return (uint64_t)-EOPNOTSUPP;
+        if(!nas_anon_find_gap(regions,new_bytes,&destination))
+            return (uint64_t)-ENOMEM;
+        int sync=sync_shared_intersection(regions,old_addr,old_bytes,false);
+        if(sync)return (uint64_t)(int64_t)sync;
+    }
+    /* Clone, split, and publish the complete metadata transaction before
+     * releasing any old leaf. Allocation failures retain the original
+     * mapping, including its inode pin, file offset and data. */
+    if(!nas_vma_remap_region(regions,old_addr,old_bytes,
+                              destination,new_bytes))
+        return (uint64_t)-ENOMEM;
+    if(destination!=old_addr) {
+        for(uint64_t va=old_addr;va<old_addr+old_bytes;va+=PAGE) {
+            if(nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+                nas_fail("mremap: committed shared leaf release invariant");
+        }
+    }
+    return destination;
+}
 /* Linux msync accepts flags=0 (historically equivalent to ASYNC), but
  * neither unknown bits nor simultaneous ASYNC/SYNC are valid. Anonymous
  * and private snapshot mappings have no file writeback; live shared VMAs
