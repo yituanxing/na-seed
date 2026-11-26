@@ -14,6 +14,8 @@ uint64_t nas_epoll_wait_description(unsigned slot,uint64_t events,
 uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests);
 void nas_epoll_arm_current_task(uint64_t epfd);
 bool nas_epoll_task_ready(const struct nas_task *task);
+/* Provider-generated poll wakeup, independent of epoll wait sampling. */
+void nas_epoll_notify(unsigned slot,uint16_t events);
 void nas_epoll_target_final_close(unsigned slot);
 void nas_epoll_release(unsigned slot);
 #endif

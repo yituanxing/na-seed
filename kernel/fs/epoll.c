@@ -84,8 +84,8 @@ static bool instance_ready(unsigned slot,const struct nas_task *task){
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
         struct ep_watch *w=&state->watches[i];
         uint16_t ready=ready_now(w,task);
-        if(!ready)w->last_ready=0;
-        else if(!(w->events&EP_EDGE) || (ready & ~w->last_ready))return true;
+        w->last_ready &= ready;
+        if(ready && (!(w->events&EP_EDGE) || (ready & ~w->last_ready)))return true;
     }
     return false;
 }
@@ -178,7 +178,8 @@ uint64_t nas_epoll_wait_description(unsigned slot,uint64_t out,
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX && done<maximum;i++){
         struct ep_watch *w=&state->watches[i];
         uint16_t ready=ready_now(w,task);
-        if(!ready) {w->last_ready=0;continue;}
+        w->last_ready &= ready;
+        if(!ready)continue;
         if((w->events&EP_EDGE) && !(ready & ~w->last_ready))continue;
         uint8_t bytes[EP_EVENT_BYTES]={0};
         uint32_t events=ready;
@@ -232,6 +233,22 @@ bool nas_epoll_task_ready(const struct nas_task *task){
     unsigned slot=task->wait.description_slot;
     if(!nas_file_slot_live(slot))return true;
     return instance_ready(slot,task);
+}
+/* A provider's successful I/O can produce a new notification even when no
+ * epoll_wait observed the intervening empty/full state. Rearm only the
+ * affected readiness bits; ONESHOT remains disabled until MOD. */
+void nas_epoll_notify(unsigned target,uint16_t events){
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){
+        if(!nas_file_slot_live(i))continue;
+        struct ep_state *state=epoll_state(i);
+        if(!state)continue;
+        for(unsigned j=0;j<NAS_EPOLL_EVENTS_MAX;j++){
+            struct ep_watch *w=&state->watches[j];
+            if(w->used && !w->disabled && w->slot==target &&
+               (w->events&EP_EDGE))
+                w->last_ready &= (uint16_t)~events;
+        }
+    }
 }
 void nas_epoll_target_final_close(unsigned target){
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){

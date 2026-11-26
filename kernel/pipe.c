@@ -2,6 +2,7 @@
 #include "fd.h"
 #include "task.h"
 #include "errno.h"
+#include "fs/epoll.h"
 #include "mm/heap.h"
 extern void nas_print(const char *);
 extern void nas_dec(uint64_t);
@@ -37,6 +38,20 @@ static struct nas_pipe *pipe_for_slot(unsigned slot, bool writing) {
     struct nas_pipe *pipe = &pipe_table[owner - 1];
     return pipe->used ? pipe : 0;
 }
+/* Notify the actual peer descriptions, not the issuing task's fd number.
+ * Named FIFOs may have multiple independently opened descriptions. */
+static void pipe_notify(const struct nas_pipe *pipe,bool writing){
+    const uint16_t event=writing?0x0004U:0x0001U;
+    if(!pipe->named){
+        unsigned peer=writing?pipe->write_slot:pipe->read_slot;
+        if(peer<NAS_OPEN_FILE_LIMIT)nas_epoll_notify(peer,event);
+        return;
+    }
+    unsigned owner=(unsigned)(pipe-pipe_table)+1U;
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if((writing?pipe_write_owner[i]:pipe_read_owner[i])==owner)
+            nas_epoll_notify(i,event);
+}
 static struct nas_pipe *pipe_for_end(unsigned slot) {
     struct nas_pipe *pipe = pipe_for_slot(slot, false);
     return pipe ? pipe : pipe_for_slot(slot, true);
@@ -68,6 +83,7 @@ int64_t nas_pipe_set_capacity(unsigned slot, int32_t requested) {
     pipe->capacity = target;
     pipe->head = 0;
     (void)nas_heap_free(old);
+    if(target>pipe->count)pipe_notify(pipe,true);
     return (int64_t)target;
 }
 static bool pipe_has_reader(const struct nas_pipe *pipe) {
@@ -284,6 +300,7 @@ void nas_pipe_read_commit(unsigned slot, unsigned count) {
     if (!pipe) return;
     pipe->head = (pipe->head + count) % pipe->capacity;
     pipe->count -= count;
+    if(count)pipe_notify(pipe,true);
 }
 int64_t nas_pipe_write_amount(unsigned slot, uint64_t requested, bool nonblock) {
     const struct nas_pipe *pipe = pipe_for_slot(slot,true);
@@ -321,7 +338,10 @@ void nas_pipe_write_byte(unsigned slot, unsigned offset, uint8_t value) {
 }
 void nas_pipe_write_commit(unsigned slot, unsigned count) {
     struct nas_pipe *pipe = pipe_for_slot(slot,true);
-    if (pipe) pipe->count += count;
+    if(pipe && count){
+        pipe->count += count;
+        pipe_notify(pipe,false);
+    }
 }
 bool nas_pipe_snapshot(unsigned index, unsigned *bytes,
                        bool *readers, bool *writers) {

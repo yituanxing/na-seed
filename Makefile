@@ -734,7 +734,7 @@ $(OUT)/fd.o: kernel/fd.c kernel/fd.h kernel/task.h kernel/errno.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(OUT)/pipe.o: kernel/pipe.c kernel/pipe.h kernel/fd.h kernel/task.h kernel/errno.h
+$(OUT)/pipe.o: kernel/pipe.c kernel/pipe.h kernel/fd.h kernel/task.h kernel/errno.h kernel/fs/epoll.h
 	mkdir -p $(dir $@)
 	clang $(CFLAGS) -MMD -MP -c $< -o $@
 

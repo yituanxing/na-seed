@@ -102,7 +102,8 @@ lua_runtime() {
     test "$(cat lua.txt)" = 42
 }
 python_runtime() {
-    python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"'
+    python3 -c 'import json,pathlib,subprocess; p=pathlib.Path("python.json"); p.write_text(json.dumps({"value":42})); assert json.loads(p.read_text())["value"]==42; assert subprocess.check_output(["/bin/busybox","echo","42"]).strip()==b"42"' &&
+    python3 -c 'import socket,select; a,b=socket.socketpair(); e=select.epoll(); e.register(a,select.EPOLLIN|select.EPOLLOUT|select.EPOLLET); assert e.poll(0); b.sendall(b"x"); assert any(v&select.EPOLLIN for _,v in e.poll(0)); assert a.recv(1)==b"x"; b.sendall(b"y"); assert any(v&select.EPOLLIN for _,v in e.poll(0)), "lost socket edge after drain/refill"; assert not e.poll(0); assert a.recv(1)==b"y"; e.close(); a.close(); b.close()'
 }
 git_repository() {
     git init -q repo &&
