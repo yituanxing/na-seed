@@ -829,7 +829,7 @@ def verify_wayland():
     width,height,baseline=capture_scanout('wayland-before')
     # Explicitly select the official legacy data path for an A/B diagnostic,
     # not a hardcoded keyboard map or a patch to upstream Weston.
-    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; strace -f -s 128 -o /root/weston-process.trace -e trace=sendmsg,recvmsg,accept4,epoll_wait,epoll_pwait,poll,ppoll,memfd_create,ftruncate,mmap,munmap,fcntl,openat,exit_group weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
+    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
     try:
         guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1; then echo WAYLAND_SOCKET_READY; else echo WAYLAND_SOCKET_MISSING; fi')
         socket_ok=guest.expect([r'\r*\nWAYLAND_SOCKET_READY\r*\n',r'\r*\nWAYLAND_SOCKET_MISSING\r*\n'],timeout=90)==0
@@ -870,12 +870,14 @@ def verify_wayland():
         assert xkb_alias_ok,'canonical xkeyboard-config alias is unreadable in NaSeed guest, even if explicit XKB_CONFIG_ROOT worked'
         return True
     finally:
-        guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; wait "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; wait "$wlp" 2>/dev/null; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
-        guest.expect(r'\r*\nWAYLAND_LOG_END\r*\n',timeout=90)
-        print(guest.before)
-        guest.sendline('tail -130 /root/weston-process.trace 2>/dev/null; echo WESTON_PROCESS_TRACE_END')
-        guest.expect(r'\r*\nWESTON_PROCESS_TRACE_END\r*\n',timeout=90)
-        print('Original Weston and desktop-shell syscall trace:',guest.before)
+        # Run the unmodified compositor directly, without a ptrace parent
+        # retaining its process tree. Check real process termination; cap
+        # teardown rather than letting a stuck waiter obscure the pass.
+        guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; for i in $(seq 1 15); do if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wlp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wlp/status" 2>/dev/null; then wait "$wlp"; printf "WESTON_STOP=%s\\n" "$?"; else echo WESTON_STOP_FAILED; kill -9 "$wlp" 2>/dev/null; fi; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
+        guest.expect(r'\r*\nWAYLAND_LOG_END\r*\n',timeout=100)
+        teardown=guest.before
+        print(teardown)
+        assert 'WESTON_STOP=0' in teardown,'Weston did not exit cleanly after SIGTERM'
 
 xorg_ok=False
 apps_ok=False
@@ -1002,7 +1004,6 @@ e2fsck -fn "$work/partition.ext4"
 # Preserve original guest syscall evidence even when the Wayland gate fails.
 debugfs -R 'cat /root/wayland-client.trace' "$work/partition.ext4" > "$work/wayland-client.trace" 2>/dev/null || :
 debugfs -R 'cat /root/wayland-traced-info.log' "$work/partition.ext4" > "$work/wayland-traced-info.log" 2>/dev/null || :
-debugfs -R 'cat /root/weston-process.trace' "$work/partition.ext4" > "$work/weston-process.trace" 2>/dev/null || :
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
 for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap mremap-shared-file sysv-shm git gcc-make; do
