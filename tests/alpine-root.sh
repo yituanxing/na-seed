@@ -182,6 +182,24 @@ try:
     waited, status = os.waitpid(pid, 0)
     assert waited == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
     assert first_map[16:20] == b"fork"
+    # Close the FINAL DRM OpenFile while a VMA still owns the backing.
+    # This must not release/recycle the mapped PMM pages.
+    temporary_fd = os.open("/dev/dri/card0", os.O_RDWR | os.O_CLOEXEC)
+    tmp_handle, tmp_size, tmp_offset = new_dumb(temporary_fd, 20, 10)
+    temporary_map = mmap.mmap(temporary_fd, tmp_size,
+                              flags=mmap.MAP_SHARED,
+                              prot=mmap.PROT_READ | mmap.PROT_WRITE,
+                              offset=tmp_offset)
+    os.close(temporary_fd)
+    temporary_map[:8] = b"FDClosed"
+    assert temporary_map[:8] == b"FDClosed"
+    temporary_map.close()
+    # A small bounded churn checks handle/object slots are actually
+    # reclaimed after GEM_CLOSE/DESTROY, not merely hidden from lookup.
+    for _ in range(40):
+        recycled, _, _ = new_dumb(fd, 16, 16)
+        assert drm.drmModeDestroyDumbBuffer(fd, recycled) == 0
+    print("DRM_GEM_FINAL_CLOSE_PASS", flush=True)
     print("DRM_GEM_MMAP_PASS", flush=True)
     first_map.close()
     second_map.close()
