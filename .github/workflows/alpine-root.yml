@@ -14,8 +14,29 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Select weekly apt cache
+        id: apt-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore signed Ubuntu package downloads
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: naseed-apt-noble-${{ runner.arch }}-alpine-${{ steps.apt-week.outputs.week }}-${{ hashFiles('.github/workflows/alpine-root.yml') }}
+          restore-keys: |
+            naseed-apt-noble-${{ runner.arch }}-alpine-
+            naseed-apt-noble-${{ runner.arch }}-
       - name: Install build and QEMU tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+        run: |
+          mkdir -p "$HOME/.cache/naseed-apt"
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get -o Acquire::Retries=3 -o Dir::Cache::archives="$HOME/.cache/naseed-apt" -o APT::Keep-Downloaded-Packages=true -o Binary::apt-get::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+      - name: Save downloaded packages before running tests
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - name: Build and boot original Alpine
         run: sh tests/alpine-root.sh
       - name: Preserve real serial logs

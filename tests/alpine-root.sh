@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -297,6 +297,8 @@ with open(f'{work}/init.log','w') as log:
             mapped={}
             for name,title,command,_,_ in apps:
                 guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
+                if name=='xterm':
+                    guest.sendline('xtp=$ap')
                 guest.sendline(f'for i in $(seq 1 90); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
                 mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=240)==0
             try:
@@ -304,6 +306,15 @@ with open(f'{work}/init.log','w') as log:
                 apps_ok=verify_apps(mapped)
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'X11 application scanout failed: {error}')
+            if not mapped['xterm']:
+                # A failure must preserve the original syscall evidence, not
+                # be converted into a pass by changing xterm resources.
+                guest.sendline('cat /proc/$xtp/status; ls -l /proc/$xtp/fd; kill "$xtp" 2>/dev/null; echo XTERM_STATE_END')
+                guest.expect(r'\r*\nXTERM_STATE_END\r*\n',timeout=60)
+                guest.sendline('strace -tt -o /root/xterm.trace '+apps[0][2]+' >/root/xterm-traced.log 2>&1 & tp=$!; sleep 20; tail -100 /root/xterm.trace; cat /root/xterm-traced.log; echo XTERM_TRACE_END')
+                guest.expect(r'\r*\nXTERM_TRACE_END\r*\n',timeout=90)
+                guest.sendline('kill -KILL "$tp" $(pidof xterm) 2>/dev/null; wait "$tp" 2>/dev/null; echo XTERM_TRACE_CLEAN')
+                guest.expect(r'\r*\nXTERM_TRACE_CLEAN\r*\n',timeout=60)
             guest.sendline('kill $app_pids 2>/dev/null; for p in $app_pids; do wait "$p"; done; for a in xterm xclock xmessage; do echo "=== $a ==="; cat /root/$a.log /root/$a.window; done; echo XAPP_LOG_END')
             guest.expect(r'\r*\nXAPP_LOG_END\r*\n',timeout=120)
         if result!=0:

@@ -18,11 +18,33 @@ jobs:
         arch: [x86_64, riscv64, aarch64]
     steps:
       - uses: actions/checkout@v4
-      - name: Install compiler tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils curl make
-      - name: Install x86 UEFI and QEMU tools
-        if: matrix.arch == 'x86_64'
-        run: sudo apt-get install -y xorriso ovmf qemu-system-x86
+      - name: Select weekly apt cache
+        id: apt-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore signed Ubuntu package downloads
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: naseed-apt-noble-${{ runner.arch }}-kernel-${{ matrix.arch }}-${{ steps.apt-week.outputs.week }}-${{ hashFiles('.github/workflows/kernel.yml') }}
+          restore-keys: |
+            naseed-apt-noble-${{ runner.arch }}-kernel-${{ matrix.arch }}-
+            naseed-apt-noble-${{ runner.arch }}-
+      - name: Install compiler and target tools
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p "$HOME/.cache/naseed-apt"
+          sudo apt-get update -o Acquire::Retries=3
+          set -- clang lld binutils curl make
+          if [ "$TARGET_ARCH" = x86_64 ]; then set -- "$@" xorriso ovmf qemu-system-x86; fi
+          sudo apt-get -o Acquire::Retries=3 -o Dir::Cache::archives="$HOME/.cache/naseed-apt" -o APT::Keep-Downloaded-Packages=true -o Binary::apt-get::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends "$@"
+      - name: Save downloaded packages before running tests
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - name: Validate shell entry points
         run: |
           for script in scripts/*.sh tests/*.sh; do sh -n "$script"; done
