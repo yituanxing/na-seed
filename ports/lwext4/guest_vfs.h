@@ -7,6 +7,7 @@
 #include "../../kernel/fs/vfs.h"
 struct ext4_mountpoint;
 struct ext4_sblock;
+struct nas_lwext4_shared_page;
 
 /* One independently mountable ext4 filesystem. The caller owns the
  * persistent source image and this context through final unmount.
@@ -51,6 +52,8 @@ struct nas_lwext4_mount {
      * epoch before side effects, invalidating the previous read cursor. */
     uint64_t namespace_epoch;
     struct nas_lwext4_dir_hint directory_hint;
+    /* Inode-keyed, read-only MAP_SHARED pages; File pins own their lifetime. */
+    struct nas_lwext4_shared_page *shared_pages;
     char block_name[32];
     char device_name[32];
     bool mounted;
