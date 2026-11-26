@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        weston weston-backend-x11 weston-shell-desktop weston-clients weston-terminal wayland-utils \
+        weston weston-backend-x11 weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
         xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
@@ -60,6 +60,54 @@ sudo chroot "$root" /bin/busybox sh -ec '
 sudo chroot "$root" /bin/busybox sh -ec 'test -r /usr/share/xkeyboard-config-2/rules/evdev && head -c 1 /usr/share/xkeyboard-config-2/rules/evdev >/dev/null'
 echo 'PASS: original Alpine canonical XKB path readable in host chroot'
 # Use the ordinary Xorg configuration interface, not a patched X server.
+
+# Query NaSeed's live DRM node through Alpine's unmodified libdrm.so.2.
+# No copied Linux ioctl implementation or fabricated KMS resources in tests.
+sudo tee "$root/root/drm-probe.py" >/dev/null <<'DRM_PROBE'
+import ctypes
+import os
+import stat
+
+class Version(ctypes.Structure):
+    _fields_ = [
+        ("major", ctypes.c_int), ("minor", ctypes.c_int),
+        ("patchlevel", ctypes.c_int),
+        ("name_len", ctypes.c_size_t), ("name", ctypes.c_void_p),
+        ("date_len", ctypes.c_size_t), ("date", ctypes.c_void_p),
+        ("desc_len", ctypes.c_size_t), ("desc", ctypes.c_void_p),
+    ]
+
+assert ctypes.sizeof(Version) == 64
+fd = os.open("/dev/dri/card0", os.O_RDWR | os.O_CLOEXEC)
+try:
+    info = os.fstat(fd)
+    assert stat.S_ISCHR(info.st_mode), info
+    assert (os.major(info.st_rdev), os.minor(info.st_rdev)) == (226, 0), info
+    drm = ctypes.CDLL("libdrm.so.2")
+    drm.drmGetVersion.argtypes = [ctypes.c_int]
+    drm.drmGetVersion.restype = ctypes.POINTER(Version)
+    drm.drmFreeVersion.argtypes = [ctypes.POINTER(Version)]
+    drm.drmGetCap.argtypes = [ctypes.c_int, ctypes.c_uint64,
+                              ctypes.POINTER(ctypes.c_uint64)]
+    drm.drmGetCap.restype = ctypes.c_int
+    ptr = drm.drmGetVersion(fd)
+    assert ptr, "original libdrm could not identify DRM primary node"
+    try:
+        ver = ptr.contents
+        driver = ctypes.string_at(ver.name, ver.name_len)
+        print("DRM_DRIVER", driver.decode(), ver.major, ver.minor, flush=True)
+        assert driver == b"virtio_gpu", driver
+        assert (ver.major, ver.minor, ver.patchlevel) == (0, 1, 0)
+    finally:
+        drm.drmFreeVersion(ptr)
+    dumb = ctypes.c_uint64(0xffffffffffffffff)
+    assert drm.drmGetCap(fd, 1, ctypes.byref(dumb)) == 0
+    assert dumb.value == 0, "must not claim GEM dumb buffers before implementation"
+    print("DRM_LIBDRM_PASS", flush=True)
+finally:
+    os.close(fd)
+DRM_PROBE
+
 sudo tee "$root/root/xorg.conf" >/dev/null <<'XORG'
 Section "ServerFlags"
     Option "AutoAddDevices" "false"
@@ -952,6 +1000,11 @@ with open(f'{work}/init.log','w') as log:
                        'test "$(cat /etc/alpine-release)" = 3.23.7 && '
                        'echo CLI_READY')
         guest.expect(r'\r*\nCLI_READY\r*\n')
+        guest.sendline('python3 /root/drm-probe.py; printf "DRM_PROBE_STATUS=%s\n" "$?"')
+        guest.expect(r'\r*\nDRM_PROBE_STATUS=([0-9]+)\r*\n',timeout=90)
+        if guest.match.group(1)!='0':
+            raise RuntimeError('original Alpine libdrm failed to identify VirtIO GPU')
+        guest.expect(r'# ')
         guest.sendline('/bin/busybox sh /root/acceptance.sh')
         guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
         guest.expect(r'# ')
