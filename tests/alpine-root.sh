@@ -25,6 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
+        weston weston-backend-x11 weston-shell-desktop weston-clients weston-terminal wayland-utils \
         xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
@@ -602,11 +603,46 @@ def verify_xorg_tools():
         passed=passed and ok
     return passed
 
+# Weston is the original Alpine compositor using its X11/pixman backend.
+# Keep Xorg and its complete acceptance intact: a Wayland failure is separate.
+def verify_wayland():
+    guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
+    try:
+        width,height,baseline=capture_scanout('wayland-before')
+        guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1 && timeout 15 env WAYLAND_DISPLAY=wayland-1 wayland-info >/root/wayland-info.log 2>&1 && grep -q "wl_compositor" /root/wayland-info.log && grep -q "xdg_wm_base" /root/wayland-info.log; then echo WAYLAND_PROTOCOL_PASS; else echo WAYLAND_PROTOCOL_FAIL; fi')
+        if guest.expect([r'\r*\nWAYLAND_PROTOCOL_PASS\r*\n',r'\r*\nWAYLAND_PROTOCOL_FAIL\r*\n'],timeout=115):
+            raise RuntimeError('original Weston X11 backend did not provide a usable Wayland compositor and xdg_wm_base')
+        print('PASS: Alpine Weston X11 backend serves original wayland-info and xdg_wm_base')
+        time.sleep(0.7)
+        w,h,compositor=capture_scanout('wayland-weston')
+        assert (w,h)==(width,height)
+        changed=sum(baseline[i:i+3]!=compositor[i:i+3] for i in range(0,len(baseline),3))
+        print(f'Weston nested X11 framebuffer_changed={changed}')
+        assert changed>=500,'Weston X11 backend did not draw a physical window'
+        guest.sendline('env WAYLAND_DISPLAY=wayland-1 weston-simple-shm >/root/weston-simple-shm.log 2>&1 & wlc=$!; echo WAYLAND_CLIENT_STARTED')
+        guest.expect(r'\r*\nWAYLAND_CLIENT_STARTED\r*\n',timeout=30)
+        time.sleep(2.0)
+        guest.sendline('if kill -0 "$wlc" 2>/dev/null && test -S /run/user/0/wayland-1; then echo WAYLAND_CLIENT_ALIVE; else echo WAYLAND_CLIENT_DEAD; fi')
+        if guest.expect([r'\r*\nWAYLAND_CLIENT_ALIVE\r*\n',r'\r*\nWAYLAND_CLIENT_DEAD\r*\n'],timeout=30):
+            raise RuntimeError('original weston-simple-shm client failed to stay connected')
+        w,h,client=capture_scanout('wayland-simple-shm')
+        assert (w,h)==(width,height)
+        delta=sum(compositor[i:i+3]!=client[i:i+3] for i in range(0,len(client),3))
+        print(f'Wayland original shm client framebuffer_changed={delta}')
+        assert delta>=500,'Wayland client did not change the real QEMU framebuffer'
+        print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
+        return True
+    finally:
+        guest.sendline('if [ -n "$wlc" ]; then kill "$wlc" 2>/dev/null; wait "$wlc" 2>/dev/null; fi; kill "$wlp" 2>/dev/null; wait "$wlp" 2>/dev/null; for f in /root/weston.log /root/wayland-info.log /root/weston-simple-shm.log; do echo "=== $f ==="; tail -70 "$f" 2>/dev/null; done; echo WAYLAND_LOG_END')
+        guest.expect(r'\r*\nWAYLAND_LOG_END\r*\n',timeout=90)
+        print(guest.before)
+
 xorg_ok=False
 apps_ok=False
 input_ok=False
 wm_ok=False
 tools_ok=False
+wayland_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -669,6 +705,8 @@ with open(f'{work}/init.log','w') as log:
                 if input_ok:
                     tools_ok=verify_xorg_tools()
                     wm_ok=verify_wm()
+                    if wm_ok:
+                        wayland_ok=verify_wayland()
             except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
@@ -708,7 +746,7 @@ print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
-pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok and wm_ok and tools_ok else 'FAIL\n')
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok and wm_ok and tools_ok and wayland_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
