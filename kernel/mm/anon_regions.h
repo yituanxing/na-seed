@@ -118,6 +118,12 @@ bool nas_anon_find_gap(const struct nas_anon_regions *,uint64_t length,uint64_t 
 /* Whole MAP_FIXED interval must stay in the historical low VA domain or the
  * extended mmap domain; never overwrite the intervening user stack/gap. */
 bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length);
+/* Transactionally resize or relocate a VMA interval, retaining original
+ * backing/device pins, offsets, protection and MADV_DONTFORK policy.
+ * Caller owns the resident PTE transition (if any) after success. */
+bool nas_vma_remap_region(struct nas_anon_regions *,
+                          uint64_t old_start,uint64_t old_bytes,
+                          uint64_t new_start,uint64_t new_bytes);
 bool nas_anon_forget(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_covered(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_intersects(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
