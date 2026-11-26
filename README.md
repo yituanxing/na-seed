@@ -6,7 +6,7 @@ NaSeed is an independently developed operating-system kernel targeting x86-64, R
 
 This branch intentionally removes the accumulated milestone-specific acceptance framework, CI workflows, historical reports, distribution fixture generators and per-profile Limine configurations. **This is a tooling reset, not proof that old distribution or hardware integrations still pass.** Historical tests remain recoverable from Git history; do not treat their removal as feature validation.
 
-Required tools: `clang`, `ld.lld`, `make`, `curl`, `readelf`; x86 UEFI ISO/boot additionally need `xorriso`, Limine downloads, `qemu-system-x86_64`, `ovmf`, and `timeout`. Checkout with `git submodule update --init --recursive`.
+Required tools: `clang`, `ld.lld`, `make`, `curl`, `readelf`; x86 UEFI ISO/boot additionally need `xorriso`, Limine downloads, `qemu-system-x86_64`, `ovmf`, and `timeout`. Core third-party library sources are tracked in this repository.
 
 - `make ARCH=x86_64 kernel`: build full x86 kernel ELF.
 - `make iso`: build x86_64 UEFI ISO using `limine.conf`.
