@@ -856,6 +856,8 @@ check-host:
 	$(OUT)/test/vma-contract
 	cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections kernel/mm/vm.c tests/vm-truncate-contract.c -Wl,--gc-sections -o $(OUT)/test/vm-truncate-contract
 	$(OUT)/test/vm-truncate-contract
+	cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections kernel/tmpfs.c tests/tmpfs-size-contract.c -Wl,--gc-sections -o $(OUT)/test/tmpfs-size-contract
+	$(OUT)/test/tmpfs-size-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:
