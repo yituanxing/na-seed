@@ -2049,10 +2049,14 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(length>INT64_MAX)return -EFBIG;
     if(!nas_vfs_can_write(node))return -EROFS;
     if(!node->filesystem->resize)return -EOPNOTSUPP;
+    /* Only a real shrink revokes PTEs. Extending a file or ftruncate to
+     * the existing size must not discard a resident private COW copy;
+     * the filesystem provider zeroes any newly visible backing bytes. */
+    uint64_t original_size=nas_vfs_node_size(node);
     int rc=node->filesystem->resize(node,length);
     if(!rc) {
         publish_inode_size(node,length);
-        nas_vm_invalidate_file(node,length);
+        if(length<original_size)nas_vm_invalidate_file(node,length);
         inotify_emit_inode_and_parents(node,NAS_IN_MODIFY);
     }
     return rc;
@@ -2077,8 +2081,10 @@ int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
     if(!rc && !(mode&1U)) {
         uint64_t end=offset+length;
         if(end>old_size) {
+            /* This is a growth-only operation: the provider has already
+             * zeroed newly visible bytes; existing private COW leaves
+             * are not invalidated on an EOF extension. */
             publish_inode_size(node,end);
-            nas_vm_invalidate_file(node,end);
         }
     }
     return rc;

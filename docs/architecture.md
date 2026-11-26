@@ -52,3 +52,11 @@ Truncate walks only the boundary page and suffix of each mapped file window,
 computed using that VMA's actual split-adjusted `file_offset`. The host
 contract checks a large sparse VMA and nonzero-offset shared/private maps,
 including exactly one page-table probe at a partial EOF.
+
+## File size change and resident COW mappings
+
+VFS invokes the MM's truncation invalidation only for a **real shrink**.
+An equal-size `ftruncate`, sparse extension or successful growing `fallocate`
+must not discard already resident private-COW PTEs. File providers are
+responsible for zeroing newly visible bytes; the MM still drops affected
+leaves when the new EOF actually moves backwards.
