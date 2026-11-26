@@ -857,7 +857,12 @@ def verify_wayland():
         # Locate the *actual nested compositor* client window. Clock ticks
         # elsewhere on the Xorg root window are not evidence of Wayland
         # drawing: an earlier full-screen diff produced that false positive.
-        _,wx,wy,ww,wh=geometry('Weston Compositor - screen0')
+        # Weston itself prints the X11 output window's server-assigned XID.
+        # Query that real X11 object instead of assuming a window title.
+        guest.sendline("wid=$(awk '/x11 output/ && /window id/ {print $NF}' /root/weston.log | tail -1); if [ -n \"$wid\" ] && eval \"$(xdotool getwindowgeometry --shell \"$wid\" 2>/dev/null)\"; then printf 'WESTON_GEOMETRY=%s,%s,%s,%s\\n' \"$X\" \"$Y\" \"$WIDTH\" \"$HEIGHT\"; else echo WESTON_GEOMETRY_FAIL; fi")
+        if guest.expect([r'\r*\nWESTON_GEOMETRY=(-?[0-9]+),(-?[0-9]+),([0-9]+),([0-9]+)\r*\n',r'\r*\nWESTON_GEOMETRY_FAIL\r*\n'],timeout=30):
+            raise RuntimeError('Weston X11 output XID is not mapped to a valid X Server window')
+        wx,wy,ww,wh=(int(v) for v in guest.match.groups())
         x0=max(0,wx+25);x1=min(width,wx+ww-25)
         y0=max(0,wy+35);y1=min(height,wy+wh-25)
         assert x1-x0>=100 and y1-y0>=100,(wx,wy,ww,wh)
