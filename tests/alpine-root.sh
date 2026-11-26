@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xlsfonts xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -563,7 +563,6 @@ def verify_xorg_tools():
         ('xset', 'timeout 15 xset q > /root/xorg-xset.log 2>&1 && grep -q "Keyboard Control" /root/xorg-xset.log'),
         ('xhost', 'timeout 15 xhost > /root/xorg-xhost.log 2>&1 && test -s /root/xorg-xhost.log'),
         ('xmodmap', 'timeout 15 xmodmap -pm > /root/xorg-xmodmap.log 2>&1 && grep -qi shift /root/xorg-xmodmap.log'),
-        ('xlsfonts', 'timeout 15 xlsfonts -fn fixed > /root/xorg-xlsfonts.log 2>&1 && grep -Fxq fixed /root/xorg-xlsfonts.log'),
         ('xkbcomp', 'timeout 15 xkbcomp -xkb :0 /root/xorg-keymap.xkb > /root/xorg-xkbcomp.log 2>&1 && test -s /root/xorg-keymap.xkb'),
         ('xrdb', "printf 'NaSeed.xorgProbe: confirmed\\n' | timeout 15 xrdb -merge > /root/xorg-xrdb.log 2>&1 && timeout 15 xrdb -query | grep -Fq 'NaSeed.xorgProbe:'"),
         ('xwd', 'timeout 15 xwd -root -silent -out /root/xorg-root.xwd > /root/xorg-xwd.log 2>&1 && test "$(wc -c </root/xorg-root.xwd)" -gt 1024'),
