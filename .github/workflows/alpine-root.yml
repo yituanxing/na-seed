@@ -30,7 +30,11 @@ jobs:
         run: |
           mkdir -p "$HOME/.cache/naseed-apt"
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get -o Acquire::Retries=3 -o Dir::Cache::archives="$HOME/.cache/naseed-apt" -o APT::Keep-Downloaded-Packages=true -o Binary::apt-get::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+          # Keep apt's _apt download sandbox and normal signature validation.
+          find "$HOME/.cache/naseed-apt" -maxdepth 1 -name '*.deb' -exec sudo cp -t /var/cache/apt/archives -- {} +
+          sudo apt-get -o Acquire::Retries=3 -o APT::Keep-Downloaded-Packages=true install -y --download-only --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+          find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -t "$HOME/.cache/naseed-apt" -- {} +
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
       - name: Save downloaded packages before running tests
         if: steps.apt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
