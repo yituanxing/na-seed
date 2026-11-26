@@ -113,7 +113,7 @@ if [ "${NAS_ENABLE_VIRTIO_NET:-0}" = 1 ]; then
     arch="$arch ports/uboot/net_port.c ports/uboot/virtio_net_bus.c"
 fi
 lwip_src="ports/lwip/libc_port.c ports/lwip/sys_arch.c ports/lwip/netif_port.c ports/lwip/network_boot.c ports/lwip/netconn_bridge.c ports/lwip/socket_port.c third_party/lwip/src/core/*.c third_party/lwip/src/core/ipv4/*.c third_party/lwip/src/api/*.c third_party/lwip/src/netif/ethernet.c"
-fdt_src="kernel/platform/firmware_fdt.c third_party/dtc/libfdt/fdt.c third_party/dtc/libfdt/fdt_ro.c third_party/dtc/libfdt/fdt_check.c"
+fdt_src="kernel/platform/firmware_fdt.c third_party/libfdt/fdt.c third_party/libfdt/fdt_ro.c third_party/libfdt/fdt_check.c"
 obj=
 for f in $common $arch $lwip_src $fdt_src; do
     target="$out/$(printf '%s' "$f" | tr '/' '_').o"
@@ -121,7 +121,7 @@ for f in $common $arch $lwip_src $fdt_src; do
         clang $flags -I ports/lwip/freestanding -c "$f" -o "$target" ;;
       third_party/tlsf/*) clang $flags -I ports/tlsf/freestanding -c "$f" -o "$target" ;;
       third_party/flanterm/*) clang $flags -DFLANTERM_FB_DISABLE_BUMP_ALLOC -c "$f" -o "$target" ;;
-      third_party/dtc/*|kernel/platform/firmware_fdt.c) clang $flags -I ports/fdt/freestanding -I third_party/dtc/libfdt -Wno-unused-parameter -Wno-sign-compare -c "$f" -o "$target" ;;
+      third_party/libfdt/*|kernel/platform/firmware_fdt.c) clang $flags -I ports/fdt/freestanding -I third_party/libfdt -Wno-unused-parameter -Wno-sign-compare -c "$f" -o "$target" ;;
       *) clang $flags -c "$f" -o "$target" ;;
     esac
     obj="$obj $target"
