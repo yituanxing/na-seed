@@ -63,6 +63,8 @@ jobs:
             build/alpine-root/wayland-before.ppm
             build/alpine-root/wayland-weston.ppm
             build/alpine-root/wayland-simple-shm.ppm
+            build/alpine-root/wayland-client.trace
+            build/alpine-root/wayland-traced-info.log
             build/alpine-root/desktop-*.ppm
             build/alpine-root/desktop-note.txt
           if-no-files-found: ignore
