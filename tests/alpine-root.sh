@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -64,6 +64,35 @@ Section "Screen"
     DefaultDepth 24
 EndSection
 XORG
+# Resolve the actual event nodes by Linux capability bits, not probe order.
+sudo tee "$root/root/xorg-input.py" >/dev/null <<'INPUT'
+import fcntl, glob, os
+devices={}
+for path in sorted(glob.glob('/dev/input/event*')):
+    with open(path,'rb',buffering=0) as fd:
+        name=bytearray(128)
+        fcntl.ioctl(fd,0x80804506,name,True)
+        keys=bytearray(96)
+        rel=bytearray(8)
+        fcntl.ioctl(fd,0x80604521,keys,True)
+        try:
+            fcntl.ioctl(fd,0x80084522,rel,True)
+        except OSError:
+            pass
+        if keys[30//8] & (1<<(30%8)):
+            devices['Keyboard']=path
+        elif rel[0]&3==3:
+            devices['Mouse']=path
+        print(path,name.split(b'\0',1)[0].decode(),flush=True)
+assert set(devices)=={'Keyboard','Mouse'},devices
+with open('/root/xorg.conf','a') as cfg:
+    for kind,path in devices.items():
+        cfg.write(f'\nSection "InputDevice"\n    Identifier "{kind}"\n    Driver "evdev"\n    Option "Device" "{path}"\n    Option "GrabDevice" "false"\n')
+        if kind=='Keyboard':
+            cfg.write('    Option "XkbLayout" "us"\n')
+        cfg.write('EndSection\n')
+    cfg.write('\nSection "ServerLayout"\n    Identifier "Layout"\n    Screen "Screen"\n    InputDevice "Keyboard" "CoreKeyboard"\n    InputDevice "Mouse" "CorePointer"\nEndSection\n')
+INPUT
 # One distribution workload, using unchanged signed packages. Each group
 # reports its result independently; a failed group never hides a later one.
 sudo tee "$root/root/acceptance.sh" >/dev/null <<'GUEST'
@@ -202,22 +231,25 @@ args = ['-M','q35','-m','1024M','-cpu','qemu64','-display','none','-monitor','no
         '-device','virtio-mouse-pci,disable-legacy=on',
         '-qmp',f'unix:{work}/qmp.sock,server=on,wait=off',
         '-cdrom',f'{work}/init.iso']
-def capture_scanout(name):
-    # Read the real QEMU scanout, not a guest-generated screenshot.
+def qmp(command):
+    # Input and screenshots traverse the same real QEMU device path.
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(10)
         sock.connect(f'{work}/qmp.sock')
         with sock.makefile('rwb') as stream:
             json.loads(stream.readline())
-            for command in ({'execute':'qmp_capabilities'},
-                            {'execute':'screendump','arguments':{'filename':f'{work}/{name}.ppm'}}):
-                stream.write(json.dumps(command).encode()+b'\n')
+            for request in ({'execute':'qmp_capabilities'},command):
+                stream.write(json.dumps(request).encode()+b'\n')
                 stream.flush()
                 while True:
                     reply=json.loads(stream.readline())
                     if 'event' in reply: continue
                     if 'error' in reply: raise RuntimeError(reply)
                     if 'return' in reply: break
+    return reply['return']
+
+def capture_scanout(name):
+    qmp({'execute':'screendump','arguments':{'filename':f'{work}/{name}.ppm'}})
     magic, width, height, maximum, pixels = pathlib.Path(work,f'{name}.ppm').read_bytes().split(None,4)
     assert magic==b'P6' and maximum==b'255', (magic,maximum)
     count=int(width)*int(height)
@@ -233,7 +265,7 @@ def screenshot():
 # Exercise independent original X11 clients and inspect the physical scanout.
 apps = [
     ('xterm','NaSeed-XTerm',
-     "xterm -T NaSeed-XTerm -geometry 44x9+20+20 -bg white -fg black -fn fixed -e /bin/sh -c 'printf \"NaSeed X11 terminal\\nOriginal BusyBox shell\\nPTY and font rendering\\n\"; sleep 600'",
+     "xterm -T NaSeed-XTerm -geometry 44x9+20+20 -bg white -fg black -fn fixed -e /bin/sh -c 'printf \"NaSeed X11 terminal\\nOriginal BusyBox shell\\nPTY and font rendering\\n\"; exec /bin/sh -i'",
      (30,30,250,120),b'\xff\xff\xff'),
     ('xclock','NaSeed-XClock',
      'xclock -title NaSeed-XClock -geometry 200x200+400+20 -bg yellow -fg black -hd black -hl black -update 1',
@@ -255,8 +287,64 @@ def verify_apps(mapped):
         print(f'X11 {name}: mapped={mapped[name]}, background={bg}/{len(colors)}, black={ink}, {"PASS" if ok else "FAIL"}')
         passed=passed and ok
     return passed
+# xdotool is used only to read the server's pointer position; all motion,
+# buttons and keys originate from QMP, never XTEST or a guest-side injection.
+def pointer():
+    guest.sendline('p=$(xdotool getmouselocation --shell); eval "$p"; printf "POINTER=%s,%s\n" "$X" "$Y"')
+    guest.expect(r'\r*\nPOINTER=([0-9]+),([0-9]+)\r*\n',timeout=20)
+    return tuple(int(v) for v in guest.match.groups())
+
+def input_events(events):
+    qmp({'execute':'input-send-event','arguments':{'events':events}})
+    time.sleep(0.08)
+
+def move_to(x,y):
+    for _ in range(25):
+        px,py=pointer()
+        if abs(x-px)<=3 and abs(y-py)<=3:
+            return
+        events=[]
+        for axis,delta in (('x',x-px),('y',y-py)):
+            if delta:
+                events.append({'type':'rel','data':{'axis':axis,'value':max(-50,min(50,delta))}})
+        input_events(events)
+    raise RuntimeError(f'pointer could not reach {(x,y)}; last={(px,py)}')
+
+def click():
+    for down in (True,False):
+        input_events([{'type':'btn','data':{'button':'left','down':down}}])
+
+def type_keys(text):
+    for ch in text:
+        key={' ':'spc','/':'slash','>':'dot','\n':'ret'}.get(ch,ch)
+        keys=['shift',key] if ch=='>' else [key]
+        for k in keys:
+            input_events([{'type':'key','data':{'key':{'type':'qcode','data':k},'down':True}}])
+        for k in reversed(keys):
+            input_events([{'type':'key','data':{'key':{'type':'qcode','data':k},'down':False}}])
+
+def verify_input():
+    move_to(120,90)
+    click()
+    type_keys('echo 42 >/tmp/keycheck\n')
+    guest.sendline('for i in $(seq 1 10); do test "$(cat /tmp/keycheck 2>/dev/null)" = 42 && break; sleep 1; done; if test "$(cat /tmp/keycheck 2>/dev/null)" = 42; then echo KEYBOARD_OK; else echo KEYBOARD_FAILED; fi')
+    if guest.expect([r'\r*\nKEYBOARD_OK\r*\n',r'\r*\nKEYBOARD_FAILED\r*\n'],timeout=30)!=0:
+        raise RuntimeError('hardware keyboard did not execute command in xterm')
+    print('PASS: QMP keyboard -> VirtIO -> evdev -> Xorg -> xterm -> BusyBox shell')
+    capture_scanout('x11-keyboard')
+    # The actual round-two scanout places the OK button at (36,418).
+    move_to(36,418)
+    click()
+    guest.sendline('for i in $(seq 1 10); do kill -0 "$xmp" 2>/dev/null || break; sleep 1; done; if kill -0 "$xmp" 2>/dev/null; then echo MOUSE_FAILED; else wait "$xmp"; printf "MOUSE_EXIT=%s\n" "$?"; fi')
+    if guest.expect([r'\r*\nMOUSE_EXIT=0\r*\n',r'\r*\nMOUSE_FAILED\r*\n',r'\r*\nMOUSE_EXIT=[0-9]+\r*\n'],timeout=30)!=0:
+        raise RuntimeError('hardware mouse did not activate xmessage OK button')
+    print('PASS: QMP mouse -> VirtIO -> evdev -> Xorg -> xmessage exit 0')
+    capture_scanout('x11-input')
+    return True
+
 xorg_ok=False
 apps_ok=False
+input_ok=False
 with open(f'{work}/init.log','w') as log:
     guest = pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',codec_errors='replace',timeout=180)
     guest.logfile_read = log
@@ -283,6 +371,11 @@ with open(f'{work}/init.log','w') as log:
         if guest.match.group(1)!='0':
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
+        guest.sendline('python3 /root/xorg-input.py; printf "INPUT_CONFIG_STATUS=%s\n" "$?"')
+        guest.expect(r'\r*\nINPUT_CONFIG_STATUS=([0-9]+)\r*\n',timeout=60)
+        if guest.match.group(1)!='0':
+            raise RuntimeError('real evdev device discovery failed')
+        guest.expect(r'# ')
         guest.sendline('Xorg :0 vt1 -keeptty -config /root/xorg.conf -logfile /root/Xorg.log -nolisten tcp -ac -noreset >/root/xorg-console.log 2>&1 & xp=$!')
         guest.sendline('for i in $(seq 1 30); do kill -0 "$xp" 2>/dev/null || break; timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 && break; sleep 1; done; if kill -0 "$xp" 2>/dev/null && timeout 5 xsetroot -display :0 -solid red; then echo XORG_READY; else echo XORG_FAILED; fi')
         result=guest.expect([r'\r*\nXORG_READY\r*\n',r'\r*\nXORG_FAILED\r*\n'],timeout=180)
@@ -300,11 +393,15 @@ with open(f'{work}/init.log','w') as log:
                 guest.sendline(f'{command} >/root/{name}.log 2>&1 & ap=$!; app_pids="$app_pids $ap"')
                 if name=='xterm':
                     guest.sendline('xtp=$ap')
+                elif name=='xmessage':
+                    guest.sendline('xmp=$ap')
                 guest.sendline(f'for i in $(seq 1 90); do kill -0 "$ap" 2>/dev/null || break; timeout 3 xwininfo -name {title} >/root/{name}.window 2>&1 && grep -q "Map State: IsViewable" /root/{name}.window && break; sleep 1; done; if kill -0 "$ap" 2>/dev/null && grep -q "Map State: IsViewable" /root/{name}.window; then echo XAPP_MAPPED; else echo XAPP_FAILED; fi')
                 mapped[name]=guest.expect([r'\r*\nXAPP_MAPPED\r*\n',r'\r*\nXAPP_FAILED\r*\n'],timeout=240)==0
             try:
                 time.sleep(1)
                 apps_ok=verify_apps(mapped)
+                if apps_ok:
+                    input_ok=verify_input()
             except (OSError,ValueError,AssertionError,RuntimeError) as error:
                 print(f'X11 application scanout failed: {error}')
             if not mapped['xterm']:
@@ -342,7 +439,7 @@ print('PASS: original Alpine init, serial login, CLI and PID1 poweroff')
 start=serial.rfind('XORG_READY')
 if start<0: start=serial.rfind('XORG_FAILED')
 if start>=0: print(serial[start:])
-pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok else 'FAIL\n')
+pathlib.Path(work,'xorg.result').write_text('PASS\n' if xorg_ok and apps_ok and input_ok else 'FAIL\n')
 PY
 # Prove that the actual physical disk was left clean, not only a RAM copy.
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none

@@ -53,4 +53,6 @@ jobs:
             build/alpine-root/init.log
             build/alpine-root/xorg.ppm
             build/alpine-root/x11-apps.ppm
+            build/alpine-root/x11-keyboard.ppm
+            build/alpine-root/x11-input.ppm
           if-no-files-found: ignore
