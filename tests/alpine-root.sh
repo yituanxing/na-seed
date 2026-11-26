@@ -224,6 +224,56 @@ os.unlink(path)
 print('original Alpine Python: AF_UNIX MSG_DONTWAIT RX/TX and shared File flags PASS')
 SOCKETCHECK
 }
+mremap_shared_file() {
+    # Genuine distribution GCC program: mremap must move/grow a live inode-
+    # pinned MAP_SHARED VMA after its source fd closes. Check both writable
+    # and read-only mappings, shared aliases, shrink and error semantics.
+    cat > mremap-shared.c <<'MREMAPTEST'
+#define _GNU_SOURCE
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+int main(void) {
+    int fd=memfd_create("generic-shared-remap",MFD_CLOEXEC);
+    if(fd<0 || ftruncate(fd,8192))return 1;
+    volatile unsigned char *source=mmap(NULL,4096,PROT_READ|PROT_WRITE,
+                                          MAP_SHARED,fd,0);
+    if(source==MAP_FAILED)return 2;
+    volatile unsigned char *alias=mmap(NULL,8192,PROT_READ,MAP_SHARED,fd,0);
+    if(alias==MAP_FAILED)return 3;
+    source[0]=0x61;source[4095]=0x62;
+    close(fd); /* both VMAs, not a reopened integer fd, own the inode */
+    volatile unsigned char *expanded=mremap((void *)source,4096,8192,
+                                               MREMAP_MAYMOVE);
+    if(expanded==MAP_FAILED){perror("mremap grow");return 4;}
+    if(expanded[0]!=0x61 || expanded[4095]!=0x62)return 5;
+    expanded[4096]=0x63;
+    if(alias[0]!=0x61 || alias[4095]!=0x62 || alias[4096]!=0x63)
+        return 6;
+    volatile unsigned char *shrunk=mremap((void *)expanded,8192,4096,0);
+    if(shrunk==MAP_FAILED || shrunk[0]!=0x61)return 7;
+    if(munmap((void *)shrunk,4096) || munmap((void *)alias,8192))
+        return 8;
+    /* Private, demand-zero anonymous mappings can shrink without any
+     * eager frame allocation or change to an unrelated VMA. */
+    volatile unsigned char *anon=mmap(NULL,8192,PROT_READ|PROT_WRITE,
+                                        MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if(anon==MAP_FAILED)return 9;
+    anon[0]=0x51;
+    volatile unsigned char *small=mremap((void *)anon,8192,4096,0);
+    if(small==MAP_FAILED || small[0]!=0x51)return 10;
+    if(munmap((void *)small,4096))return 11;
+    puts("Linux mremap real pinned MAP_SHARED inode, grow/move, alias and shrink PASS");
+    return 0;
+}
+MREMAPTEST
+    cc -O2 -Wall -Werror -o mremap-shared mremap-shared.c &&
+    ./mremap-shared
+}
 sysv_shared_memory() {
     # Genuine Alpine GCC program: separate processes attach the same SysV
     # segment, publish changes through physical aliases, and retain deleted
@@ -326,6 +376,7 @@ run lua lua_runtime
 run python python_runtime
 run unix-msg-dontwait unix_msg_dontwait
 run readonly-shared-mmap readonly_shared_mmap
+run mremap-shared-file mremap_shared_file
 run sysv-shm sysv_shared_memory
 run git git_repository
 run gcc-make native_build
@@ -954,7 +1005,7 @@ debugfs -R 'cat /root/wayland-traced-info.log' "$work/partition.ext4" > "$work/w
 debugfs -R 'cat /root/weston-process.trace' "$work/partition.ext4" > "$work/weston-process.trace" 2>/dev/null || :
 # Check the independent application results only after shutdown and fsck.
 tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
-for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap sysv-shm git gcc-make; do
+for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap mremap-shared-file sysv-shm git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
 grep -Fxq PASS "$work/xorg.result"
