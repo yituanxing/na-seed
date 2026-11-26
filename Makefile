@@ -854,6 +854,8 @@ check-host:
 	$(OUT)/test/display-contract
 	cc -std=c11 -O2 -Wall -Wextra -Werror kernel/mm/anon_regions.c tests/vma-contract.c -o $(OUT)/test/vma-contract
 	$(OUT)/test/vma-contract
+	cc -std=c11 -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections kernel/mm/vm.c tests/vm-truncate-contract.c -Wl,--gc-sections -o $(OUT)/test/vm-truncate-contract
+	$(OUT)/test/vm-truncate-contract
 run: iso
 	sh scripts/run.sh $(ISO)
 clean:

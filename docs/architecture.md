@@ -37,3 +37,12 @@ coalescing, private-file offsets after protect/split, MM clone ownership,
 failed backing-pin rollback and DMA-device pin balances. Old, uncalled M11
 anonymous overlay/record compatibility wrappers have been retired; all live
 callers use the typed VMA interface.
+
+## Truncate and COW protection
+
+The host contract `tests/vm-truncate-contract.c` links the production VM
+truncate walker with fake page-table, inode-match and frame interfaces.
+Truncating a file must invalidate its resident **shared** cache mappings, but
+must not zero or discard already copied MAP_PRIVATE lazy pages; those may
+contain post-fork COW data. Absent private pages still fault through the pinned
+file inode and reflect its new EOF. Run via `make check-host`.

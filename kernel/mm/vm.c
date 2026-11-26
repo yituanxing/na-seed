@@ -772,14 +772,19 @@ struct nas_vm_resize_context {
     const struct nas_fs_node *node;
     uint64_t new_size;
 };
-/* A truncate affects every process mapping this inode, not just the Task
- * issuing ftruncate(2). The VFS lease pins an incarnation across close,
- * unlink and rename; an inode-number-only comparison would be unsound. */
+/* A truncate must invalidate resident MAP_SHARED cache aliases in every
+ * MM.  MAP_PRIVATE lazy file pages are different: the initial fault already
+ * COPIED the source into a private PMM frame, which can be COW-shared across
+ * fork and later privately modified.  Truncate must NEVER unmap or zero
+ * those existing private copies, or it would corrupt another process's COW
+ * snapshot. Nonresident private pages still read the live pinned inode on
+ * their next fault (and get SIGBUS if now past EOF).
+ * Compare stable VFS inode identity, never a recycled pathname. */
 static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
     const struct nas_vm_resize_context *ctx=opaque;
     for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
-        if((!mutable_shared(v) && v->kind!=NAS_VMA_FILE_PRIVATE_LAZY) ||
+        if(!mutable_shared(v) ||
            !nas_fs_mmap_matches(v->backing,ctx->node))continue;
         for(uint64_t va=v->start;va<v->end;va+=PAGE) {
             uint64_t off=v->file_offset+(va-v->start);
@@ -791,8 +796,8 @@ static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
                    old!=(pa&~(PAGE-1)))nas_arch_halt();
                 if(!nas_frame_put(old))nas_arch_halt();
             } else if(ctx->new_size-off<PAGE) {
-                /* Linux zeroes the tail of the last partial page after
-                 * truncate, including private-lazy fault-time snapshots. */
+                /* Only live shared cache frames are mutable here.
+                 * Private lazy snapshots are never touched by truncate. */
                 uint64_t first=ctx->new_size-off;
                 memset((void *)(uintptr_t)(nas_hhdm_offset()+
                        (pa&~(PAGE-1))+first),0,(size_t)(PAGE-first));
