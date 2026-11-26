@@ -787,7 +787,17 @@ static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
         if((!mutable_shared(v) && v->kind!=NAS_VMA_FILE_PRIVATE_LAZY) ||
            !nas_fs_mmap_matches(v->backing,ctx->node))continue;
         const bool private_copy=v->kind==NAS_VMA_FILE_PRIVATE_LAZY;
-        for(uint64_t va=v->start;va<v->end;va+=PAGE) {
+        /* Only the page overlapping the new EOF and following leaves
+         * can change. Skip the untouched prefix without probing page
+         * tables for every sparse/absent page in a multi-GiB VMA.
+         * file_offset belongs to this split VMA, not the original FD. */
+        uint64_t first_va=v->start;
+        if(ctx->new_size>v->file_offset) {
+            uint64_t full_pages=(ctx->new_size-v->file_offset)/PAGE;
+            if(full_pages>=(v->end-v->start)/PAGE)continue;
+            first_va+=full_pages*PAGE;
+        }
+        for(uint64_t va=first_va;va<v->end;va+=PAGE) {
             uint64_t off=v->file_offset+(va-v->start);
             uint64_t pa=0;
             if(!nas_mm_resolve_user(mm,va,&pa,0))continue;

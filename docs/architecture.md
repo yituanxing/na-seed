@@ -47,3 +47,8 @@ COW leaves crossing the new EOF. A private frame may still be held by a forked
 process; it must be **unmapped and frame_put**, never zeroed in place. Private
 pages entirely before EOF remain untouched. Absent private pages fault via the
 pinned inode and reflect its new EOF. Run via `make check-host`.
+
+Truncate walks only the boundary page and suffix of each mapped file window,
+computed using that VMA's actual split-adjusted `file_offset`. The host
+contract checks a large sparse VMA and nonzero-offset shared/private maps,
+including exactly one page-table probe at a partial EOF.
