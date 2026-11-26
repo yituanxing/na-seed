@@ -30,6 +30,8 @@ void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t new_size);
  * timestamps merely because an application called sync. */
 void nas_vm_rearm_file(const struct nas_fs_node *node);
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t length);
+uint64_t nas_vm_mremap(uint64_t old_addr,uint64_t old_size,
+                        uint64_t new_size,uint64_t flags,uint64_t new_addr);
 uint64_t nas_vm_madvise(uint64_t addr, uint64_t length, uint64_t advice);
 uint64_t nas_vm_brk(uint64_t want);
 uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot);
