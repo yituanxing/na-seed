@@ -24,6 +24,9 @@
 #include "../drivers/vt.h"
 #include "../drivers/pty.h"
 #include "../drivers/display/fbdev.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "drm_chrdev.h"
+#endif
 #include "../drivers/core/chrdev.h"
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
@@ -1278,6 +1281,13 @@ static const struct nas_file_ops ops_fbdev={
     .poll_description=dpoll_always,
     .ioctl=fb_ioctl
 };
+#ifdef NAS_ENABLE_VIRTIO_GPU
+/* DRM's nonblocking event/poll and GEM data plane arrive with KMS.
+ * Do not advertise invented framebuffer semantics on a DRM descriptor. */
+static const struct nas_file_ops ops_drm={
+    .ioctl=nas_drm_chrdev_ioctl
+};
+#endif
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
  * Filesystem types are selected only by the inode's provider callbacks. */
 static const struct nas_file_ops ops_vfs_regular={
@@ -1502,6 +1512,9 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
     [FD_BOOTFS]=&ops_bootfs,
     [FD_FRAMEBUFFER]=&ops_fbdev,
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    [FD_DRM]=&ops_drm,
+#endif
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
     defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \

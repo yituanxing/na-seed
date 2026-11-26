@@ -322,7 +322,7 @@ ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
 VIRTIO_X86_SRCS += kernel/drivers/input/virtio_input.c
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_GPU),1)
-VIRTIO_X86_SRCS += kernel/drivers/display/virtio_gpu.c
+VIRTIO_X86_SRCS += kernel/drivers/display/virtio_gpu.c kernel/fs/drm_chrdev.c
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
 VIRTIO_X86_SRCS += kernel/block/request.c ports/uboot/async_blk.c

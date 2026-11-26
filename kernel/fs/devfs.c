@@ -8,8 +8,9 @@
 #include "../lib/string.h"
 #include <stddef.h>
 
-enum { DEV_ROOT_INO=1, DEV_INPUT_INO=2, DEV_PTS_INO=3 };
-static const char directory_tags[3];
+enum { DEV_ROOT_INO=1, DEV_INPUT_INO=2, DEV_PTS_INO=3,
+       DEV_DRI_INO=4, DEV_DIR_COUNT=4 };
+static const char directory_tags[DEV_DIR_COUNT];
 
 static bool is_dir(const struct nas_fs_node *node,unsigned index) {
     return node && node->inode==&directory_tags[index] && node->is_dir &&
@@ -51,8 +52,8 @@ static bool block_inode_known(const struct nas_fs_node *node) {
     return false;
 }
 static unsigned dir_number(const struct nas_fs_node *node) {
-    for(unsigned i=0;i<3U;i++)if(is_dir(node,i))return i;
-    return 3U;
+    for(unsigned i=0;i<DEV_DIR_COUNT;i++)if(is_dir(node,i))return i;
+    return DEV_DIR_COUNT;
 }
 /* Return a node's SINGLE direct-child component, or NULL if it belongs to
  * a different directory. Any future class can publish /dev/name without
@@ -60,7 +61,8 @@ static unsigned dir_number(const struct nas_fs_node *node) {
 static const char *child_name(const struct nas_chrdev_node *node,
                               unsigned directory) {
     const char *prefix=directory==DEV_ROOT_INO-1U?"/dev/":
-        directory==DEV_INPUT_INO-1U?"/dev/input/":"/dev/pts/";
+        directory==DEV_INPUT_INO-1U?"/dev/input/":
+        directory==DEV_PTS_INO-1U?"/dev/pts/":"/dev/dri/";
     size_t length=strlen(prefix);
     if(strncmp(node->path,prefix,length))return NULL;
     const char *name=node->path+length;
@@ -78,9 +80,10 @@ static int lookup_child(const struct nas_fs_node *parent,const char *name,
                         struct nas_fs_node *out) {
     if(!parent || !out || !name || !*name || strchr(name,'/'))return -EINVAL;
     unsigned dir=dir_number(parent);
-    if(dir==3U)return -ENOTDIR;
+    if(dir==DEV_DIR_COUNT)return -ENOTDIR;
     if(dir==0U && !strcmp(name,"input")) {dir_inode(1,out);return 0;}
     if(dir==0U && !strcmp(name,"pts")) {dir_inode(2,out);return 0;}
+    if(dir==0U && !strcmp(name,"dri")) {dir_inode(DEV_DRI_INO-1U,out);return 0;}
     for(unsigned i=0;;i++) {
         struct nas_chrdev_node *node=nas_chrdev_node_at(i);
         if(!node)break;
@@ -99,7 +102,7 @@ static int lookup_child(const struct nas_fs_node *parent,const char *name,
 }
 static int validate_inode(const struct nas_fs_node *node) {
     if(!node)return -EINVAL;
-    if(dir_number(node)!=3U)return 0;
+    if(dir_number(node)!=DEV_DIR_COUNT)return 0;
     if((node->mode&0170000U)==0060000U)
         return block_inode_known(node)?0:-ESTALE;
     const struct nas_chrdev_node *device=node->inode;
@@ -110,7 +113,7 @@ static int validate_inode(const struct nas_fs_node *node) {
     return 0;
 }
 static int first_inode_pin(const struct nas_fs_node *node) {
-    if(dir_number(node)!=3U)return 0;
+    if(dir_number(node)!=DEV_DIR_COUNT)return 0;
     if((node->mode&0170000U)==0060000U) {
         if(!block_inode_known(node))return -ESTALE;
         struct nas_block_device *dev=(struct nas_block_device *)node->inode;
@@ -124,16 +127,16 @@ static int first_inode_pin(const struct nas_fs_node *node) {
     return nas_chrdev_node_pin((struct nas_chrdev_node *)(uintptr_t)node->inode);
 }
 static void last_inode_unpin(const struct nas_fs_node *node) {
-    if(dir_number(node)==3U && (node->mode&0170000U)==0060000U)
+    if(dir_number(node)==DEV_DIR_COUNT && (node->mode&0170000U)==0060000U)
         nas_block_put((struct nas_block_device *)(uintptr_t)node->inode);
-    else if(dir_number(node)==3U)
+    else if(dir_number(node)==DEV_DIR_COUNT)
         nas_chrdev_node_put((struct nas_chrdev_node *)(uintptr_t)node->inode);
 }
 static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     int rc=validate_inode(node);
     if(rc)return rc;
     *out=*node;
-    if(dir_number(node)!=3U)return 0;
+    if(dir_number(node)!=DEV_DIR_COUNT)return 0;
     if((node->mode&0170000U)==0060000U)return 0;
     const struct nas_chrdev_node *device=node->inode;
     /* Preserve mount/incarnation, but read mutable metadata from owner. */
@@ -159,7 +162,8 @@ static int entry_at(unsigned directory,uint64_t cursor,
     if(directory==0U) {
         if(cursor==0U)return dirent(out,"input",DEV_INPUT_INO,4U);
         if(cursor==1U)return dirent(out,"pts",DEV_PTS_INO,4U);
-        cursor-=2U;
+        if(cursor==2U)return dirent(out,"dri",DEV_DRI_INO,4U);
+        cursor-=3U;
     }
     for(unsigned i=0;;i++) {
         struct nas_chrdev_node *node=nas_chrdev_node_at(i);
