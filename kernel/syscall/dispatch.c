@@ -37,6 +37,7 @@
 #include "../fs/syscall.h"
 #include "../fs/user_broker.h"
 #include "../fs/socket_syscall.h"
+#include "../fs/unix_socket.h"
 #include "../fs/memfd.h"
 #include "../../ports/lwip/socket_port.h"
 #include "../fs/epoll.h"
@@ -431,14 +432,15 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
  * it must reach the same held-description Task wait used by write(), while
  * MSG_NOSIGNAL suppresses SIGPIPE without changing the shared File flags.
  * Do not use this path for UDP, addressed sendto or any other MSG flags. */
-static bool native_tcp_send_nosignal_wait(enum nas_syscall_op nr,
+static bool stream_send_nosignal_wait(enum nas_syscall_op nr,
                                          const uint64_t *args) {
     if(nr!=NAS_SC_sendto || args[4]!=0x4000ULL || args[5] || args[6] ||
        args[1]>=NAS_FD_LIMIT ||
        TASK.fds->entries[args[1]].kind!=FD_SOCKET)return false;
     unsigned slot=TASK.fds->entries[args[1]].slot;
-    return nas_lwip_socket_is_slot(slot) &&
-           nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP;
+    return nas_unix_socket_connected(slot) ||
+           (nas_lwip_socket_is_slot(slot) &&
+            nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP);
 }
 static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
                                    const uint64_t *args,uint64_t result) {
@@ -950,15 +952,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
            NAS_LWIP_BRIDGE_TCP)
         return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
                             args[1],args[2],args[3],false);
-    /* Connected send()/recv() with zero flags, plus TCP MSG_NOSIGNAL send,
+    /* Connected send()/recv() with zero flags, plus stream MSG_NOSIGNAL send,
      * use the held-OpenFile wait path. Unsupported per-call flags and all
      * addressed sendto requests stay on the strict socket ABI path. */
-    const bool send_nosignal_wait=native_tcp_send_nosignal_wait(nr,args);
+    const bool send_nosignal_wait=stream_send_nosignal_wait(nr,args);
     if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) &&
        (!args[4] || send_nosignal_wait) &&
        args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
-       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
-       ) {
+       (nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot) ||
+        nas_unix_socket_connected(TASK.fds->entries[args[1]].slot))) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
                                 args[1],args[2],args[3],send_nosignal_wait);

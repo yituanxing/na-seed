@@ -1791,10 +1791,19 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
     case NAS_SC_recvmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_recvmsg(args[1],args[2],args[3]) :
         sys_unix_recvmsg(args[1],args[2],args[3]));
-    case NAS_SC_sendto: SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],
-                                                       args[4],args[5],args[6]));
-    case NAS_SC_recvfrom: SOCKET_RESULT(sys_ipv4_recvfrom(args[1],args[2],args[3],
-                                                           args[4],args[5],args[6]));
+    /* Connected UNIX send/recv without ancillary addresses uses the common
+     * parked File path in dispatch.c; do not misreport unsupported forms
+     * as an invalid IPv4 descriptor. */
+    case NAS_SC_sendto:
+        if(unix_fd(args[1]))SOCKET_RESULT((uint64_t)(
+            nas_unix_socket_connected(TASK.fds->entries[args[1]].slot) ?
+            -EOPNOTSUPP : -ENOTCONN));
+        SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],args[4],args[5],args[6]));
+    case NAS_SC_recvfrom:
+        if(unix_fd(args[1]))SOCKET_RESULT((uint64_t)(
+            nas_unix_socket_connected(TASK.fds->entries[args[1]].slot) ?
+            -EOPNOTSUPP : -ENOTCONN));
+        SOCKET_RESULT(sys_ipv4_recvfrom(args[1],args[2],args[3],args[4],args[5],args[6]));
     case NAS_SC_shutdown: SOCKET_RESULT(sys_socket_shutdown(args[1],args[2]));
     default: return (struct nas_fs_result){ .handled=false, .value=0 };
     }

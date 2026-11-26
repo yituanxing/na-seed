@@ -304,6 +304,9 @@ int nas_unix_socket_accept(unsigned slot,unsigned *peer_slot) {
     s->count--;
     return 0;
 }
+bool nas_unix_socket_connected(unsigned slot) {
+    return socket_at(slot) && socket_at(slot)->state==SOCK_CONNECTED;
+}
 bool nas_unix_socket_listening(unsigned slot) {
     return socket_at(slot) && socket_at(slot)->state==SOCK_LISTEN;
 }

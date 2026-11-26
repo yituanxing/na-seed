@@ -20,6 +20,7 @@ int nas_unix_socket_listen(unsigned slot,unsigned backlog);
 /* target is a BORROWED positive Path held by the syscall namei owner. */
 int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target);
 int nas_unix_socket_accept(unsigned slot,unsigned *peer_slot);
+bool nas_unix_socket_connected(unsigned slot);
 bool nas_unix_socket_listening(unsigned slot);
 bool nas_unix_socket_readable(unsigned slot);
 unsigned nas_unix_socket_name(unsigned slot,bool peer,uint8_t out[108]);
