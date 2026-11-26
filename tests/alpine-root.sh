@@ -72,12 +72,14 @@ class Version(ctypes.Structure):
     _fields_ = [
         ("major", ctypes.c_int), ("minor", ctypes.c_int),
         ("patchlevel", ctypes.c_int),
-        ("name_len", ctypes.c_size_t), ("name", ctypes.c_void_p),
-        ("date_len", ctypes.c_size_t), ("date", ctypes.c_void_p),
-        ("desc_len", ctypes.c_size_t), ("desc", ctypes.c_void_p),
+        # libdrm's public drmVersion is NOT the 64-byte Linux ioctl UAPI
+        # struct drm_version: these lengths are int, not native size_t.
+        ("name_len", ctypes.c_int), ("name", ctypes.c_void_p),
+        ("date_len", ctypes.c_int), ("date", ctypes.c_void_p),
+        ("desc_len", ctypes.c_int), ("desc", ctypes.c_void_p),
     ]
 
-assert ctypes.sizeof(Version) == 64
+assert ctypes.sizeof(Version) == 56
 fd = os.open("/dev/dri/card0", os.O_RDWR | os.O_CLOEXEC)
 try:
     info = os.fstat(fd)
@@ -94,6 +96,10 @@ try:
     assert ptr, "original libdrm could not identify DRM primary node"
     try:
         ver = ptr.contents
+        # Fail safely on a corrupt ABI result instead of reading unbounded
+        # guest memory and flooding the serial console.
+        assert 0 < ver.name_len <= 128, ver.name_len
+        assert ver.name, "libdrm did not return a driver name"
         driver = ctypes.string_at(ver.name, ver.name_len)
         print("DRM_DRIVER", driver.decode(), ver.major, ver.minor, flush=True)
         assert driver == b"virtio_gpu", driver
@@ -1000,7 +1006,7 @@ with open(f'{work}/init.log','w') as log:
                        'test "$(cat /etc/alpine-release)" = 3.23.7 && '
                        'echo CLI_READY')
         guest.expect(r'\r*\nCLI_READY\r*\n')
-        guest.sendline('python3 /root/drm-probe.py; printf "DRM_PROBE_STATUS=%s\n" "$?"')
+        guest.sendline('python3 /root/drm-probe.py; printf "DRM_PROBE_STATUS=%s\\n" "$?"')
         guest.expect(r'\r*\nDRM_PROBE_STATUS=([0-9]+)\r*\n',timeout=90)
         if guest.match.group(1)!='0':
             raise RuntimeError('original Alpine libdrm failed to identify VirtIO GPU')
