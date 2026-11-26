@@ -68,3 +68,8 @@ refcounted in-memory PMM. It verifies sparse growth, the zeroing of bytes
 written through shared mappings beyond EOF before they become visible,
 normal and KEEP_SIZE fallocate, quota rollback and delayed final frame
 reclamation while a shared page still owns an independent reference.
+
+A full tmpfs data-page quota now changes allocation requests to lookup-only
+**before** allocating the optional root/indirect index. Existing pages remain
+usable, while repeated writes at new sparse index regions cannot evade the
+quota by consuming metadata pages. The host test checks both paths.

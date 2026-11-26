@@ -99,6 +99,11 @@ static uint64_t tmp_data_frame(struct nas_tmp_file *file,uint64_t number,
                                bool create) {
     if (!file || number >= TMP_INDEX_ROOT_ENTRIES * (uint64_t)TMP_PAGE_ENTRIES)
         return 0;
+    /* A full data-page quota must not allocate even a root/indirect index
+     * frame for a new sparse offset. Downgrade creation to lookup-only:
+     * existing quota-owned pages remain writable and mappable. */
+    if(create && file->quota &&
+       file->quota->used_pages>=file->quota->max_pages)create=false;
     if (!file->index_root) {
         if (!create) return 0;
         uint64_t root_addr = nas_frame_alloc();

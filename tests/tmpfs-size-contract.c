@@ -44,6 +44,11 @@ bool nas_frame_put(uint64_t pa) {
     return true;
 }
 uint32_t nas_frame_refs(uint64_t pa) { return refs[slot_for(pa)]; }
+static unsigned frames_used(void) {
+    unsigned count=0;
+    for(unsigned i=0;i<NFRAMES;i++)count+=refs[i]!=0;
+    return count;
+}
 bool nas_time_realtime_ns(uint64_t *now) {
     *now=++timestamp;
     return true;
@@ -112,7 +117,25 @@ static void quota_cannot_publish_missing_pages(void) {
     assert(tmp_resize(&f,2*P)==0);
     assert(tmp_preallocate(&f,0,2*P,1)==-ENOSPC && q.used_pages==1);
     assert(f.size==2*P);
-    assert(tmp_resize(&f,0)==0 && q.used_pages==0);
+    /* A new indirect region must not consume metadata pages while full.
+     * The same existing data page must remain mappable under full quota. */
+    assert(tmp_resize(&f,(TMP_PAGE_ENTRIES+1)*P)==0);
+    unsigned before=frames_used();
+    uint64_t shared=0;
+    assert(tmp_acquire_shared_page(&f,TMP_PAGE_ENTRIES*P,&shared)==-ENOSPC);
+    assert(!shared && frames_used()==before);
+    assert(tmp_preallocate(&f,TMP_PAGE_ENTRIES*P,P,1)==-ENOSPC);
+    assert(frames_used()==before);
+    assert(tmp_acquire_shared_page(&f,0,&shared)==0 && shared);
+    assert(nas_frame_refs(shared)==2 && nas_frame_put(shared));
+    assert(tmp_resize(&f,0)==0 && q.used_pages==0 && frames_used()==0);
+
+    struct nas_tmp_quota zero={.max_pages=0,.max_inodes=4};
+    struct nas_tmp_file empty=fresh();
+    empty.quota=&zero;
+    assert(tmp_resize(&empty,P)==0);
+    assert(tmp_acquire_shared_page(&empty,0,&shared)==-ENOSPC);
+    assert(!empty.index_root && frames_used()==0);
 }
 int main(void) {
     sparse_growth_and_held_shared_page();
