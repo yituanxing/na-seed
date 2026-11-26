@@ -118,7 +118,11 @@ truncate -s 1022M "$work/partition.ext4"
 sudo mke2fs -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' -d "$root" "$work/partition.ext4"
 truncate -s 1024M "$disk"
 printf 'label: dos\nunit: sectors\n\nstart=4096, size=2093056, type=83\n' | sfdisk "$disk"
-dd if="$work/partition.ext4" of="$disk" bs=1M seek=2 conv=notrunc status=none
+e2fsck -fn "$work/partition.ext4"
+# Match the historical disk builder: publish a clean, durable host image
+# before QEMU opens it, rather than charging image creation writeback to
+# the guest's first VirtIO FLUSH.
+dd if="$work/partition.ext4" of="$disk" bs=1M seek=2 conv=notrunc,fsync status=none
 # Each case uses the same built kernel, disk and genuine rescue archive.
 make_iso() {
     name=$1
