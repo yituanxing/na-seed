@@ -44,6 +44,12 @@
 #define KMS_IOCTL_RMFB UINT32_C(0xc00464af)
 #define KMS_IOCTL_DIRTYFB UINT32_C(0xc01864b1)
 #define KMS_IOCTL_SET_CLIENT_CAP UINT32_C(0x4010640d)
+#define KMS_IOCTL_OBJ_GETPROPERTIES UINT32_C(0xc02064b9)
+#define KMS_IOCTL_GETPROPERTY UINT32_C(0xc04064aa)
+#define KMS_PROP_PLANE_TYPE 46U
+#define KMS_OBJ_CRTC UINT32_C(0xcccccccc)
+#define KMS_OBJ_CONNECTOR UINT32_C(0xc0c0c0c0)
+#define KMS_OBJ_PLANE UINT32_C(0xeeeeeeee)
 #define KMS_IOCTL_SET_MASTER UINT32_C(0x641e)
 #define KMS_IOCTL_DROP_MASTER UINT32_C(0x641f)
 struct kms_modeinfo {
@@ -90,6 +96,20 @@ struct kms_dirty {
     uint64_t clips;
 };
 struct kms_client_cap {uint64_t capability,value;};
+struct kms_obj_properties {
+    uint64_t props,values;
+    uint32_t count,obj_id,obj_type;
+};
+struct kms_get_property {
+    uint64_t values,enums;
+    uint32_t id,flags;
+    char name[32];
+    uint32_t count_values,count_enums;
+};
+struct kms_property_enum {uint64_t value;char name[32];};
+_Static_assert(sizeof(struct kms_obj_properties)==32U,"DRM object props");
+_Static_assert(sizeof(struct kms_get_property)==64U,"DRM get property");
+_Static_assert(sizeof(struct kms_property_enum)==40U,"DRM enum property");
 _Static_assert(sizeof(struct kms_modeinfo)==68U,"Linux DRM modeinfo");
 _Static_assert(sizeof(struct kms_res)==64U,"Linux DRM resources");
 _Static_assert(sizeof(struct kms_crtc)==104U,"Linux DRM CRTC");
@@ -238,6 +258,50 @@ static uint64_t get_plane(uint64_t arg) {
     p.possible_crtcs=1;p.gamma_size=0;p.count_formats=1;
     return (uint64_t)(int64_t)copyout(arg,&p,sizeof(p));
 }
+/* DRM objects are discoverable without invented properties. A primary
+ * plane genuinely carries the standard immutable "type" enum. The legacy
+ * KMS API does not require atomic-only FB_ID/CRTC_ID property controls. */
+static uint64_t object_properties(uint64_t arg) {
+    struct kms_obj_properties req;
+    int rc=copyin(&req,arg,sizeof(req));
+    if(rc)return (uint64_t)(int64_t)rc;
+    const uint32_t plane_property=KMS_PROP_PLANE_TYPE;
+    const uint64_t plane_type=1U; /* DRM_PLANE_TYPE_PRIMARY */
+    uint32_t count=0;
+    if(req.obj_id==KMS_CRTC && req.obj_type==KMS_OBJ_CRTC)
+        count=0;
+    else if(req.obj_id==KMS_CONNECTOR &&
+            req.obj_type==KMS_OBJ_CONNECTOR)count=0;
+    else if(req.obj_id==KMS_PLANE && req.obj_type==KMS_OBJ_PLANE)
+        count=1;
+    else return (uint64_t)-ENOENT;
+    if(count && req.count>=count && req.props && req.values) {
+        rc=copyout(req.props,&plane_property,sizeof(plane_property));
+        if(!rc)rc=copyout(req.values,&plane_type,sizeof(plane_type));
+        if(rc)return (uint64_t)(int64_t)rc;
+    }
+    req.count=count;
+    return (uint64_t)(int64_t)copyout(arg,&req,sizeof(req));
+}
+static uint64_t get_property(uint64_t arg) {
+    struct kms_get_property prop;
+    int rc=copyin(&prop,arg,sizeof(prop));
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(prop.id!=KMS_PROP_PLANE_TYPE)return (uint64_t)-ENOENT;
+    static const struct kms_property_enum enums[3]={
+        {0,"Overlay"},{1,"Primary"},{2,"Cursor"}
+    };
+    if(prop.enums && prop.count_enums>=3U) {
+        rc=copyout(prop.enums,enums,sizeof(enums));
+        if(rc)return (uint64_t)(int64_t)rc;
+    }
+    prop.flags=(1U<<2)|(1U<<3); /* IMMUTABLE | ENUM */
+    memset(prop.name,0,sizeof(prop.name));
+    memcpy(prop.name,"type",5U);
+    prop.count_values=0;
+    prop.count_enums=3U;
+    return (uint64_t)(int64_t)copyout(arg,&prop,sizeof(prop));
+}
 static uint64_t add_fb(unsigned slot,uint64_t arg,bool modern) {
     struct nas_vm_device *backing=NULL;
     uint32_t handle=0,pitch=0,width=0,height=0;
@@ -383,6 +447,8 @@ uint64_t nas_drm_kms_ioctl(unsigned slot,uint32_t cmd,uint64_t arg) {
     case KMS_IOCTL_ADDFB2:return add_fb(slot,arg,true);
     case KMS_IOCTL_RMFB:return rm_fb(slot,arg);
     case KMS_IOCTL_DIRTYFB:return dirty_fb(slot,arg);
+    case KMS_IOCTL_OBJ_GETPROPERTIES:return object_properties(arg);
+    case KMS_IOCTL_GETPROPERTY:return get_property(arg);
     default:return (uint64_t)-ENOTTY;
     }
 }
