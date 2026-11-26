@@ -701,17 +701,22 @@ def verify_wayland():
     # not a hardcoded keyboard map or a patch to upstream Weston.
     guest.sendline('wlc=; mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset WAYLAND_DISPLAY; weston --backend=x11 --renderer=pixman --no-config --idle-time=0 --socket=wayland-1 --width=600 --height=420 > /root/weston.log 2>&1 & wlp=$!')
     try:
-        guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1 && timeout 15 env WAYLAND_DISPLAY=wayland-1 wayland-info >/root/wayland-info.log 2>&1 && grep -q "wl_compositor" /root/wayland-info.log && grep -q "xdg_wm_base" /root/wayland-info.log; then echo WAYLAND_PROTOCOL_PASS; else echo WAYLAND_PROTOCOL_FAIL; fi')
-        if guest.expect([r'\r*\nWAYLAND_PROTOCOL_PASS\r*\n',r'\r*\nWAYLAND_PROTOCOL_FAIL\r*\n'],timeout=115):
-            raise RuntimeError('original Weston X11 backend did not provide a usable Wayland compositor and xdg_wm_base')
-        print('PASS: Alpine Weston X11 backend serves original wayland-info and xdg_wm_base')
+        guest.sendline('for i in $(seq 1 45); do test -S /run/user/0/wayland-1 && break; kill -0 "$wlp" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-1; then echo WAYLAND_SOCKET_READY; else echo WAYLAND_SOCKET_MISSING; fi')
+        socket_ok=guest.expect([r'\r*\nWAYLAND_SOCKET_READY\r*\n',r'\r*\nWAYLAND_SOCKET_MISSING\r*\n'],timeout=90)==0
+        guest.sendline('timeout 15 env WAYLAND_DEBUG=client WAYLAND_DISPLAY=wayland-1 wayland-info >/root/wayland-info.log 2>&1; is=$?; if test "$is" = 0 && grep -q wl_compositor /root/wayland-info.log && grep -q xdg_wm_base /root/wayland-info.log; then echo WAYLAND_PROTOCOL_PASS; else printf "WAYLAND_INFO_STATUS=%s\\n" "$is"; echo WAYLAND_PROTOCOL_FAIL; fi')
+        protocol_ok=guest.expect([r'\r*\nWAYLAND_PROTOCOL_PASS\r*\n',r'\r*\nWAYLAND_PROTOCOL_FAIL\r*\n'],timeout=60)==0
+        if not protocol_ok:
+            guest.sendline('ls -la /run/user/0; test -S /run/user/0/wayland-1 && echo WAYLAND_SOCKET_STILL_PRESENT; test -r /root/wayland-info.log && { wc -c /root/wayland-info.log; tail -100 /root/wayland-info.log; }; echo WAYLAND_DIAG_END')
+            guest.expect(r'\r*\nWAYLAND_DIAG_END\r*\n',timeout=40)
+            print('Wayland protocol diagnostics:',guest.before)
+        print(f'Wayland X11 compositor socket={socket_ok} client_registry={protocol_ok}')
         time.sleep(0.7)
         w,h,compositor=capture_scanout('wayland-weston')
         assert (w,h)==(width,height)
         changed=sum(baseline[i:i+3]!=compositor[i:i+3] for i in range(0,len(baseline),3))
         print(f'Weston nested X11 framebuffer_changed={changed}')
         assert changed>=500,'Weston X11 backend did not draw a physical window'
-        guest.sendline('env WAYLAND_DISPLAY=wayland-1 weston-simple-shm >/root/weston-simple-shm.log 2>&1 & wlc=$!; echo WAYLAND_CLIENT_STARTED')
+        guest.sendline('env WAYLAND_DISPLAY=wayland-1 WAYLAND_DEBUG=client weston-simple-shm >/root/weston-simple-shm.log 2>&1 & wlc=$!; echo WAYLAND_CLIENT_STARTED')
         guest.expect(r'\r*\nWAYLAND_CLIENT_STARTED\r*\n',timeout=30)
         time.sleep(2.0)
         guest.sendline('if kill -0 "$wlc" 2>/dev/null && test -S /run/user/0/wayland-1; then echo WAYLAND_CLIENT_ALIVE; else echo WAYLAND_CLIENT_DEAD; fi')
@@ -723,6 +728,7 @@ def verify_wayland():
         print(f'Wayland original shm client framebuffer_changed={delta}')
         assert delta>=500,'Wayland client did not change the real QEMU framebuffer'
         print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
+        assert protocol_ok,'Wayland client registry lacks wl_compositor or xdg_wm_base'
         assert xkb_alias_ok,'canonical xkeyboard-config alias is unreadable in NaSeed guest, even if explicit XKB_CONFIG_ROOT worked'
         return True
     finally:
