@@ -313,6 +313,13 @@ finish:
     device->put(device->context);
     return result;
 }
+uint64_t nas_vm_map_owned_device(uint64_t hint,uint64_t length,
+                                  uint64_t prot,uint64_t flags,
+                                  struct nas_vm_device *device) {
+    if(!device || !device->put || !device->get || !device->page)
+        return (uint64_t)-EINVAL;
+    return vm_device_shared_mmap(hint,length,prot,flags,0,device);
+}
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     /* glibc's ELF loader maps DSOs with MAP_COPY=MAP_PRIVATE|MAP_DENYWRITE.
