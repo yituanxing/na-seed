@@ -11,6 +11,7 @@
 #define NAS_NETLINK_MAX_DATAGRAM 4096U
 #define NAS_NETLINK_ROUTE_PROTOCOL 0U
 #define NAS_NETLINK_SOCK_DIAG_PROTOCOL 4U
+#define NAS_NETLINK_KOBJECT_PROTOCOL 15U
 
 struct nas_file_ops;
 bool nas_netlink_core_supports(unsigned protocol);

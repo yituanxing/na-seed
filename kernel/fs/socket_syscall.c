@@ -25,6 +25,7 @@
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "netlink_core.h"
+#include "netlink_kobject.h"
 #include "packet_socket.h"
 #define TASK (*nas_current_task)
 
@@ -1220,6 +1221,16 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
         break;
     }
     case 39:answer=16;break;/* SO_DOMAIN: AF_NETLINK */
+    case 16: { /* SO_PASSCRED: credential ancillary-data subscription */
+        if(nas_netlink_core_protocol(TASK.fds->entries[fd].slot)!=15)
+            return (uint64_t)-ENOPROTOOPT;
+        bool enabled=false;
+        int rc=nas_netlink_kobject_get_passcred(TASK.fds->entries[fd].slot,
+                                                 &enabled);
+        if(rc)return (uint64_t)(int64_t)rc;
+        answer=enabled?1U:0U;
+        break;
+    }
     default:return (uint64_t)-ENOPROTOOPT;
     }
     uint32_t length;
@@ -1237,7 +1248,9 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
                                       uint64_t option,uint64_t value,
                                       uint64_t length) {
     if(!netlink_fd(fd))return (uint64_t)-EBADF;
-    if(level!=1 || (option!=7 && option!=8))
+    if(level!=1 || (option!=7 && option!=8 && option!=16))
+        return (uint64_t)-ENOPROTOOPT;
+    if(option==16 && nas_netlink_core_protocol(TASK.fds->entries[fd].slot)!=15)
         return (uint64_t)-ENOPROTOOPT;
     if(length<4)return (uint64_t)-EINVAL;
     if(!value)return (uint64_t)-EFAULT;
@@ -1247,7 +1260,8 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
     if(requested<0)return (uint64_t)-EINVAL;
     unsigned slot=TASK.fds->entries[fd].slot;
     int rc=option==7 ? nas_netlink_core_set_sndbuf(slot,(uint32_t)requested) :
-                        nas_netlink_core_set_rcvbuf(slot,(uint32_t)requested);
+           option==8 ? nas_netlink_core_set_rcvbuf(slot,(uint32_t)requested) :
+                       nas_netlink_kobject_set_passcred(slot,requested!=0);
     return (uint64_t)(int64_t)rc;
 }
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
