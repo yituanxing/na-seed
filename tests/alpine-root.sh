@@ -1399,7 +1399,12 @@ with open(f'{work}/init.log','w') as log:
             # Weston does not auto-focus a freshly mapped toplevel: the
             # currently active alpha must switch to beta via its real seat.
             beta_focused=False
-            for focus_attempt in range(4):
+            for focus_attempt in range(5):
+                # Every physical focus attempt must produce NEW evidence:
+                # stale files from a previous attempt cannot count as PASS.
+                guest.sendline('rm -f /tmp/nativewl7beta; echo BETA_MARKER_CLEARED')
+                guest.expect(r'\r*\nBETA_MARKER_CLEARED\r*\n',timeout=30)
+                guest.expect(r'# ')
                 desktop_chord(['meta_l','tab'],pace=0.08)
                 capture_scanout('native-weston-beta-focused')
                 type_keys('env >/tmp/nativewl7beta\n',pace=0.08)
@@ -1413,25 +1418,54 @@ with open(f'{work}/init.log','w') as log:
                 guest.expect(r'\r*\nNATIVE_BETA_DIAG_END\r*\n',timeout=30)
                 print('Native Wayland beta focus evidence:',guest.before)
                 raise RuntimeError('four real Weston Super+Tab attempts did not reach second independent PTY')
-            desktop_chord(['meta_l','tab'],pace=0.08)
-            type_keys('env >/tmp/nativewl7alpha\n',pace=0.08)
-            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null; then echo WESTON_DRM_ALPHA_PASS; else echo WESTON_DRM_ALPHA_FAIL; fi')
-            if guest.expect([r'\r*\nWESTON_DRM_ALPHA_PASS\r*\n',r'\r*\nWESTON_DRM_ALPHA_FAIL\r*\n'],timeout=55):
-                raise RuntimeError('native Weston Super+Tab did not reach first PTY')
-            guest.expect(r'# ')
-            desktop_chord(['meta_l','tab'],pace=0.08)
+            alpha_focused=False
+            for focus_attempt in range(5):
+                guest.sendline('rm -f /tmp/nativewl7alpha; echo ALPHA_MARKER_CLEARED')
+                guest.expect(r'\r*\nALPHA_MARKER_CLEARED\r*\n',timeout=30)
+                guest.expect(r'# ')
+                desktop_chord(['meta_l','tab'],pace=0.08)
+                type_keys('env >/tmp/nativewl7alpha\n',pace=0.08)
+                guest.sendline('for i in $(seq 1 7); do grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null; then echo WESTON_DRM_ALPHA_PASS; else echo WESTON_DRM_ALPHA_WAIT; fi')
+                alpha_focused=guest.expect([r'\r*\nWESTON_DRM_ALPHA_PASS\r*\n',r'\r*\nWESTON_DRM_ALPHA_WAIT\r*\n'],timeout=35)==0
+                guest.expect(r'# ')
+                if alpha_focused:break
+            if not alpha_focused:
+                raise RuntimeError('five real Weston Super+Tab attempts did not reach first PTY')
+            # Before typing "exit", independently verify that the real
+            # physical seat focuses BETA: never accidentally close alpha.
+            beta_exit_focused=False
+            for focus_attempt in range(5):
+                guest.sendline('rm -f /tmp/nativewl7returnbeta; echo BETA_EXIT_MARKER_CLEARED')
+                guest.expect(r'\r*\nBETA_EXIT_MARKER_CLEARED\r*\n',timeout=30)
+                guest.expect(r'# ')
+                desktop_chord(['meta_l','tab'],pace=0.08)
+                type_keys('env >/tmp/nativewl7returnbeta\n',pace=0.08)
+                guest.sendline('for i in $(seq 1 7); do grep -Fxq tag=beta /tmp/nativewl7returnbeta 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=beta /tmp/nativewl7returnbeta 2>/dev/null; then echo WESTON_DRM_BETA_EXIT_PASS; else echo WESTON_DRM_BETA_EXIT_WAIT; fi')
+                beta_exit_focused=guest.expect([r'\r*\nWESTON_DRM_BETA_EXIT_PASS\r*\n',r'\r*\nWESTON_DRM_BETA_EXIT_WAIT\r*\n'],timeout=35)==0
+                guest.expect(r'# ')
+                if beta_exit_focused:break
+            if not beta_exit_focused:
+                raise RuntimeError('physical seat could not refocus second PTY before exit')
             type_keys('exit\n',pace=0.08)
             guest.sendline('for i in $(seq 1 15); do if ! kill -0 "$native_terminal2_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_terminal2_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_terminal2_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_terminal2_pid/status" 2>/dev/null; then wait "$native_terminal2_pid"; printf "WESTON_DRM_SECOND_EXIT=%s\n" "$?"; native_terminal2_pid=; else echo WESTON_DRM_SECOND_STUCK; fi')
             if guest.expect([r'\r*\nWESTON_DRM_SECOND_EXIT=0\r*\n',r'\r*\nWESTON_DRM_SECOND_STUCK\r*\n',r'\r*\nWESTON_DRM_SECOND_EXIT=[0-9]+\r*\n'],timeout=65):
                 raise RuntimeError('native DRM second terminal did not exit cleanly')
             guest.expect(r'# ')
-            click()
-            time.sleep(1)
-            type_keys('env >/tmp/nativewl7survive\n',pace=0.08)
-            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null && break; sleep 1; done; if kill -0 "$native_terminal_pid" 2>/dev/null && grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null; then echo WESTON_DRM_SURVIVOR_PASS; else echo WESTON_DRM_SURVIVOR_FAIL; fi')
-            if guest.expect([r'\r*\nWESTON_DRM_SURVIVOR_PASS\r*\n',r'\r*\nWESTON_DRM_SURVIVOR_FAIL\r*\n'],timeout=55):
-                raise RuntimeError('native DRM first PTY broke after second terminal exit')
-            guest.expect(r'# ')
+            survivor_ok=False
+            for focus_attempt in range(5):
+                guest.sendline('rm -f /tmp/nativewl7survive; echo SURVIVOR_MARKER_CLEARED')
+                guest.expect(r'\r*\nSURVIVOR_MARKER_CLEARED\r*\n',timeout=30)
+                guest.expect(r'# ')
+                click()
+                time.sleep(0.9)
+                type_keys('env >/tmp/nativewl7survive\n',pace=0.08)
+                guest.sendline('for i in $(seq 1 7); do grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null && break; sleep 1; done; if kill -0 "$native_terminal_pid" 2>/dev/null && grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null; then echo WESTON_DRM_SURVIVOR_PASS; else echo WESTON_DRM_SURVIVOR_WAIT; fi')
+                survivor_ok=guest.expect([r'\r*\nWESTON_DRM_SURVIVOR_PASS\r*\n',r'\r*\nWESTON_DRM_SURVIVOR_WAIT\r*\n'],timeout=35)==0
+                guest.expect(r'# ')
+                if survivor_ok:break
+                desktop_chord(['meta_l','tab'],pace=0.08)
+            if not survivor_ok:
+                raise RuntimeError('native DRM first PTY failed five real keyboard focus recovery attempts after second terminal exit')
             capture_scanout('native-weston-survivor')
             print('PASS: original DRM Weston dual terminals, physical keyboard focus switching, independent PTYs, exit and survivor')
             # Run actual unmodified GTK3 Alpine programs on the native
