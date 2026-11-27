@@ -63,6 +63,101 @@ sudo chroot "$root" /bin/busybox sh -ec '
     printf "[Default Applications]\ntext/plain=org.xfce.mousepad.desktop;\n" > /root/.config/mimeapps.list
     test -f /usr/share/applications/org.xfce.mousepad.desktop
 '
+# Install an optional REAL OpenRC-managed desktop session. Keep it disabled
+# during the existing comprehensive graphics suite, which needs exclusive
+# DRM ownership; the second boot explicitly enables it for a third,
+# independent unattended desktop boot. No fake desktop/client binaries.
+sudo mkdir -p "$root/usr/local/sbin" "$root/etc/init.d" "$root/etc/runlevels/default"
+sudo tee "$root/usr/local/sbin/naseed-desktop-session" >/dev/null <<'DESKTOP_SESSION'
+#!/bin/sh
+# NaSeed desktop bring-up: the applications and compositor are UNMODIFIED
+# Alpine packages. This script only supplies an ordinary user session.
+set -eu
+umask 077
+mkdir -p /run/user/0 /run/naseed-desktop /var/log/naseed-desktop
+chmod 0700 /run/user/0 /run/naseed-desktop
+export HOME=/root USER=root LOGNAME=root
+export XDG_RUNTIME_DIR=/run/user/0
+export XDG_SESSION_TYPE=wayland GDK_BACKEND=wayland
+export XKB_CONFIG_ROOT=/usr/share/X11/xkb
+export WAYLAND_DISPLAY=wayland-0
+export NO_AT_BRIDGE=1 LIBSEAT_BACKEND=seatd
+unset DISPLAY
+seat_pid= weston_pid= bus_pid= thunar_pid= terminal_pid=
+cleanup() {
+    trap - 0 HUP INT TERM
+    for pid in "$terminal_pid" "$thunar_pid" "$weston_pid" "$bus_pid" "$seat_pid"; do
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || :
+        fi
+    done
+    for pid in "$terminal_pid" "$thunar_pid" "$weston_pid" "$bus_pid" "$seat_pid"; do
+        if [ -n "$pid" ]; then
+            wait "$pid" 2>/dev/null || :
+        fi
+    done
+    rm -f /run/naseed-desktop/bus
+}
+trap cleanup 0
+trap 'exit 0' HUP INT TERM
+# The ordinary Alpine eudev package derives input properties from the
+# kernel's real sysfs nodes. No fake keyboard classification or static events.
+mkdir -p /run/udev
+for event in /sys/class/input/event*; do
+    [ -e "$event" ] || continue
+    udevadm test "$event" >>/var/log/naseed-desktop/udev.log 2>&1 || :
+done
+SEATD_VTBOUND=0 seatd -g root -l info >/var/log/naseed-desktop/seatd.log 2>&1 &
+seat_pid=$!
+sleep 1
+kill -0 "$seat_pid"
+dbus-daemon --session --fork --print-address=1 --print-pid=1 \
+    >/run/naseed-desktop/bus 2>/var/log/naseed-desktop/dbus.log
+export DBUS_SESSION_BUS_ADDRESS="$(sed -n '1p' /run/naseed-desktop/bus)"
+bus_pid="$(sed -n '2p' /run/naseed-desktop/bus)"
+test -n "$DBUS_SESSION_BUS_ADDRESS"
+weston --backend=drm --renderer=pixman --drm-device=card0 \
+    --no-config --continue-without-input --idle-time=0 \
+    --socket=wayland-0 > /var/log/naseed-desktop/weston.log 2>&1 &
+weston_pid=$!
+ready=0
+for attempt in $(seq 1 90); do
+    if [ -S /run/user/0/wayland-0 ] && kill -0 "$weston_pid" 2>/dev/null; then
+        ready=1
+        break
+    fi
+    kill -0 "$weston_pid" 2>/dev/null || break
+    sleep 1
+done
+if [ "$ready" -ne 1 ]; then
+    echo 'DESKTOP_SESSION_ERROR=weston_socket' >>/var/log/naseed-desktop/session.log
+    exit 1
+fi
+echo 'DESKTOP_SESSION_WAYLAND_READY=1' >>/var/log/naseed-desktop/session.log
+# Long-lived genuine apps. Their windows remain independent of the test
+# harness, and users can launch arbitrary further Wayland clients.
+thunar /root/desktop >/var/log/naseed-desktop/thunar.log 2>&1 &
+thunar_pid=$!
+weston-terminal --shell=/bin/sh >/var/log/naseed-desktop/terminal.log 2>&1 &
+terminal_pid=$!
+echo 'DESKTOP_SESSION_APPS_STARTED=1' >>/var/log/naseed-desktop/session.log
+# Keep the session service alive for the entire compositor lifecycle.
+# If Weston exits unexpectedly, the supervisor exits and cleans up children.
+wait "$weston_pid"
+DESKTOP_SESSION
+sudo tee "$root/etc/init.d/naseed-desktop" >/dev/null <<'DESKTOP_SERVICE'
+#!/sbin/openrc-run
+description="NaSeed persistent Weston DRM desktop (original Alpine applications)"
+command="/usr/local/sbin/naseed-desktop-session"
+command_background="yes"
+pidfile="/run/naseed-desktop-service.pid"
+depend() {
+    need localmount
+    after udev
+}
+DESKTOP_SERVICE
+sudo chmod 755 "$root/usr/local/sbin/naseed-desktop-session" "$root/etc/init.d/naseed-desktop"
+test ! -e "$root/etc/runlevels/default/naseed-desktop"
 # Verify the original XKB package's versioned alias before imaging it into
 # ext4; this comparison distinguishes packaging from guest VFS semantics.
 sudo chroot "$root" /bin/busybox sh -ec 'test -r /usr/share/xkeyboard-config-2/rules/evdev && head -c 1 /usr/share/xkeyboard-config-2/rules/evdev >/dev/null'
@@ -1706,6 +1801,11 @@ with open(f'{work}/second-boot.log','w') as log:
         guest.sendline('test "$(cat /root/desktop/documents/note.txt)" = "naseed desktop works" && test -d /root/desktop/newfolder && test -x /usr/bin/weston && test "$(cat /etc/alpine-release)" = 3.23.7 && echo SECOND_BOOT_PERSISTENCE_PASS')
         guest.expect(r'\r*\nSECOND_BOOT_PERSISTENCE_PASS\r*\n',timeout=75)
         guest.expect(r'# ')
+        # Enable the stock OpenRC service ON DISK so the NEXT actual
+        # /sbin/init boot launches the desktop without a test command.
+        guest.sendline('test -x /etc/init.d/naseed-desktop && test -x /usr/local/sbin/naseed-desktop-session && ln -s ../../init.d/naseed-desktop /etc/runlevels/default/naseed-desktop && test -L /etc/runlevels/default/naseed-desktop && echo DESKTOP_AUTOSTART_INSTALLED')
+        guest.expect(r'\r*\nDESKTOP_AUTOSTART_INSTALLED\r*\n',timeout=45)
+        guest.expect(r'# ')
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF,timeout=180)
         guest.close()
@@ -1728,3 +1828,102 @@ debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$wor
 test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
 debugfs -R 'stat /root/desktop/newfolder' "$work/partition.ext4" | grep -F 'Type: directory'
 echo 'PASS: two genuine QEMU boots, clean ext4, durable original desktop edits'
+
+# Third real boot: NO manual Weston/seatd/D-Bus/application start command.
+# Original Alpine PID1/OpenRC launches its enabled desktop service.
+# Exercise a real Wayland application and the physical QEMU GPU scanout.
+python3 - "$work" "$ovmf" "$disk" <<'DESKTOP_BOOT'
+import json, pathlib, pexpect, socket, sys, time
+work,ovmf,disk=sys.argv[1:]
+args=['-M','q35','-m','1024M','-cpu','qemu64','-display','none',
+      '-monitor','none','-serial','stdio','-no-reboot','-no-shutdown',
+      '-nic','none','-device','isa-debug-exit,iobase=0xf4,iosize=0x04',
+      '-drive',f'if=pflash,unit=0,format=raw,file={ovmf},readonly=on',
+      '-drive',f'if=none,id=root,format=raw,file={disk}',
+      '-device','virtio-blk-pci,drive=root,disable-legacy=on',
+      '-vga','none','-device','virtio-gpu-pci,disable-legacy=on',
+      '-device','virtio-keyboard-pci,disable-legacy=on',
+      '-device','virtio-mouse-pci,disable-legacy=on',
+      '-qmp',f'unix:{work}/desktop-qmp.sock,server=on,wait=off',
+      '-cdrom',f'{work}/init.iso']
+def scanout(label):
+    path=f'{work}/{label}.ppm'
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(20)
+        sock.connect(f'{work}/desktop-qmp.sock')
+        with sock.makefile('rwb') as stream:
+            json.loads(stream.readline())
+            for command in ({'execute':'qmp_capabilities'},
+                            {'execute':'screendump','arguments':{'filename':path}}):
+                stream.write(json.dumps(command).encode()+b'\n')
+                stream.flush()
+                while True:
+                    msg=json.loads(stream.readline())
+                    if 'event' in msg:continue
+                    if 'error' in msg:raise RuntimeError(msg)
+                    if 'return' in msg:break
+    magic,w,h,maxval,pixels=pathlib.Path(path).read_bytes().split(None,4)
+    assert magic==b'P6' and maxval==b'255'
+    w,h=int(w),int(h)
+    assert len(pixels)==w*h*3
+    return w,h,pixels
+with open(f'{work}/desktop-boot.log','w') as log:
+    guest=pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',
+                        codec_errors='replace',timeout=240)
+    guest.logfile_read=log
+    try:
+        guest.expect('login:',timeout=240)
+        guest.sendline('root')
+        guest.expect('Password:')
+        guest.sendline('naseed-ci-only')
+        guest.expect(r'# ')
+        guest.sendline('for i in $(seq 1 110); do test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log 2>/dev/null && break; sleep 1; done; if test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log && test -L /etc/runlevels/default/naseed-desktop && pidof weston >/dev/null && pidof thunar >/dev/null; then echo OPENRC_DESKTOP_AUTOSTART_PASS; else echo OPENRC_DESKTOP_AUTOSTART_FAIL; cat /var/log/naseed-desktop/*.log 2>/dev/null; fi')
+        if guest.expect([r'\r*\nOPENRC_DESKTOP_AUTOSTART_PASS\r*\n',r'\r*\nOPENRC_DESKTOP_AUTOSTART_FAIL\r*\n'],timeout=240):
+            raise RuntimeError('Alpine OpenRC failed to independently autostart real Weston+Thunar desktop')
+        guest.expect(r'# ')
+        guest.sendline('env XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 wayland-info >/root/desktop-boot-wayland-info.log 2>&1; if test "$?" = 0 && grep -q xdg_wm_base /root/desktop-boot-wayland-info.log; then echo OPENRC_DESKTOP_PROTOCOL_PASS; else echo OPENRC_DESKTOP_PROTOCOL_FAIL; fi')
+        if guest.expect([r'\r*\nOPENRC_DESKTOP_PROTOCOL_PASS\r*\n',r'\r*\nOPENRC_DESKTOP_PROTOCOL_FAIL\r*\n'],timeout=120):
+            raise RuntimeError('OpenRC-managed Weston is not reachable by original Alpine wayland-info')
+        guest.expect(r'# ')
+        time.sleep(1.5)
+        width,height,before=scanout('desktop-boot-before')
+        guest.sendline('export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1; export DBUS_SESSION_BUS_ADDRESS="$(sed -n 1p /run/naseed-desktop/bus)"; mousepad /root/desktop/documents/note.txt >/root/desktop-boot-mousepad.log 2>&1 & desktop_mousepad_pid=$!; echo OPENRC_DESKTOP_EDITOR_LAUNCHED')
+        guest.expect(r'\r*\nOPENRC_DESKTOP_EDITOR_LAUNCHED\r*\n',timeout=35)
+        guest.expect(r'# ')
+        delta=0
+        for attempt in range(35):
+            time.sleep(1.0)
+            w,h,after=scanout('desktop-boot-mousepad')
+            assert (w,h)==(width,height)
+            delta=sum(before[i:i+3]!=after[i:i+3]
+                      for i in range(0,len(after),3))
+            if delta>15000:break
+        guest.sendline('if kill -0 "$desktop_mousepad_pid" 2>/dev/null && test -S /run/user/0/wayland-0; then echo OPENRC_DESKTOP_EDITOR_ALIVE; else echo OPENRC_DESKTOP_EDITOR_DEAD; fi')
+        alive=guest.expect([r'\r*\nOPENRC_DESKTOP_EDITOR_ALIVE\r*\n',r'\r*\nOPENRC_DESKTOP_EDITOR_DEAD\r*\n'],timeout=30)==0
+        guest.expect(r'# ')
+        if not alive or delta<15000:
+            guest.sendline('tail -80 /root/desktop-boot-mousepad.log /var/log/naseed-desktop/*.log 2>/dev/null; echo OPENRC_DESKTOP_DIAG_END')
+            guest.expect(r'\r*\nOPENRC_DESKTOP_DIAG_END\r*\n',timeout=35)
+            print('OpenRC desktop failure logs:',guest.before[-14000:])
+            raise RuntimeError(f'OpenRC desktop original GTK editor failed new visible Wayland window: live={alive}, changed_pixels={delta}')
+        print(f'PASS: autonomous Alpine OpenRC -> Weston DRM -> Thunar; original GTK editor QEMU changed pixels={delta}')
+        guest.sendline('kill "$desktop_mousepad_pid" 2>/dev/null; rc-service naseed-desktop stop >/root/desktop-service-stop.log 2>&1; rc=$?; if test "$rc" = 0; then echo OPENRC_DESKTOP_STOP_OK; else cat /root/desktop-service-stop.log; echo OPENRC_DESKTOP_STOP_FAIL; fi')
+        if guest.expect([r'\r*\nOPENRC_DESKTOP_STOP_OK\r*\n',r'\r*\nOPENRC_DESKTOP_STOP_FAIL\r*\n'],timeout=150):
+            raise RuntimeError('OpenRC cannot stop desktop service cleanly')
+        guest.expect(r'# ')
+        guest.sendline('poweroff')
+        guest.expect(pexpect.EOF,timeout=200)
+        guest.close()
+        assert guest.exitstatus==1,(guest.exitstatus,guest.signalstatus)
+    finally:
+        if guest.isalive():guest.close(force=True)
+serial=pathlib.Path(work,'desktop-boot.log').read_text()
+for marker in ('[M191 ROOT] original Alpine PID1 from mounted ext4: /sbin/init',
+               '[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount'):
+    assert marker in serial,marker
+assert '[FAIL]' not in serial
+print('PASS: third original Alpine PID1 boot auto-starts and cleanly stops real OpenRC-managed Wayland desktop')
+DESKTOP_BOOT
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+echo 'PASS: third auto-desktop boot leaves real ext4 consistent'
