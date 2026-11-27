@@ -145,8 +145,8 @@ def fileops_observe(guest, expr, marker, retries=15):
         f'for i in $(seq 1 {retries}); do {expr} && break; sleep 1; done; '
         f'if {expr}; then echo {marker}_PASS; else echo {marker}_FAIL; fi'
     )
-    passed = guest.expect([r"\\r*\\n" + marker + r"_PASS\\r*\\n",
-                           r"\\r*\\n" + marker + r"_FAIL\\r*\\n"],
+    passed = guest.expect([r"\r*\n" + marker + r"_PASS\r*\n",
+                           r"\r*\n" + marker + r"_FAIL\r*\n"],
                           timeout=retries + 50) == 0
     guest.expect(r"# ")
     if not passed:
@@ -159,7 +159,7 @@ def thunar_window_count(guest):
         'printf "THUNAR_TOPLEVELS=%s\\n" '
         '"$(grep -c get_toplevel /var/log/naseed-desktop/thunar.log 2>/dev/null || :)"'
     )
-    guest.expect(r"\\r*\\nTHUNAR_TOPLEVELS=([0-9]+)\\r*\\n", timeout=30)
+    guest.expect(r"\r*\nTHUNAR_TOPLEVELS=([0-9]+)\r*\n", timeout=30)
     count = int(guest.match.group(1))
     guest.expect(r"# ")
     return count
@@ -201,8 +201,8 @@ def fileops_mousepad(guest, baseline):
         'if pidof mousepad >/dev/null; then echo FILEOPS_EDITOR_ALIVE; '
         'else echo FILEOPS_EDITOR_MISSING; fi'
     )
-    alive = guest.expect([r"\\r*\\nFILEOPS_EDITOR_ALIVE\\r*\\n",
-                          r"\\r*\\nFILEOPS_EDITOR_MISSING\\r*\\n"],
+    alive = guest.expect([r"\r*\nFILEOPS_EDITOR_ALIVE\r*\n",
+                          r"\r*\nFILEOPS_EDITOR_MISSING\r*\n"],
                          timeout=35) == 0
     guest.expect(r"# ")
     if not alive or editor is None:
@@ -299,8 +299,8 @@ def run_fileops(guest, phase, root_frame, w, h):
     # confirmation dialog or immediately remove the file. Observe only.
     guest.sendline('if test -e /root/desktop/note.txt; then echo DELETE_NEEDS_CONFIRM; '
                    'else echo DELETE_ALREADY_DONE; fi')
-    confirm = guest.expect([r"\\r*\\nDELETE_NEEDS_CONFIRM\\r*\\n",
-                            r"\\r*\\nDELETE_ALREADY_DONE\\r*\\n"], timeout=25) == 0
+    confirm = guest.expect([r"\r*\nDELETE_NEEDS_CONFIRM\r*\n",
+                            r"\r*\nDELETE_ALREADY_DONE\r*\n"], timeout=25) == 0
     guest.expect(r"# ")
     if confirm:
         chord("ret")
