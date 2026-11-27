@@ -9,7 +9,9 @@ disk="$work/root.img"
 version=3.23.7
 archive="alpine-minirootfs-$version-x86_64.tar.gz"
 url="https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/$archive"
+# Preserve a fresh fail-closed verdict for each CI invocation.
 mkdir -p "$work"
+rm -f "$work/legacy-graphics.failed"
 # Build from the current commit, not a recovered historical kernel.
 make ARCH=x86_64 OUT="$out" NAS_ENABLE_LWEXT4=1 NAS_ENABLE_VIRTIO_BLK=1 NAS_ENABLE_M191_ALPINE_ROOT=1 NAS_ENABLE_VIRTIO_GPU=1 NAS_ENABLE_VIRTIO_INPUT=1 iso
 curl -fLsS --retry 3 -o "$work/$archive" "$url"
@@ -1805,7 +1807,13 @@ tr -d '\r' < "$work/init.log" | grep -Fx '[APP DONE status=0]' >/dev/null
 for app in archive-zstd sqlite lua python unix-msg-dontwait readonly-shared-mmap mremap-shared-file sysv-shm git gcc-make; do
     tr -d '\r' < "$work/init.log" | grep -Fx "[APP PASS] $app" >/dev/null
 done
-grep -Fxq PASS "$work/xorg.result"
+# Keep the independent desktop-autostart QEMU test running even if a
+# legacy compositor focus regression fails. Preserve the failed verdict
+# and reject the entire CI at the END; no test is silently skipped.
+if ! grep -Fxq PASS "$work/xorg.result"; then
+    echo 'DEFERRED_FAILURE: pre-existing Xorg/nested Wayland regression' >&2
+    : > "$work/legacy-graphics.failed"
+fi
 # Read persisted content from the clean, unmounted ext4 image itself.
 debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/desktop-note.txt"
 test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
@@ -1963,3 +1971,7 @@ DESKTOP_BOOT
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
 echo 'PASS: third auto-desktop boot leaves real ext4 consistent'
+if [ -f "$work/legacy-graphics.failed" ]; then
+    echo 'FAIL: legacy Xorg/nested Wayland regression remains red (all independent boot tests completed)' >&2
+    exit 1
+fi
