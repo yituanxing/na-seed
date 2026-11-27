@@ -2025,6 +2025,21 @@ e2fsck -fn "$work/partition.ext4"
 debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/gui-note.txt"
 test "$(cat "$work/gui-note.txt")" = 'naseed gui roundtrip'
 echo 'PASS: actual Thunar doubleclick -> Mousepad GUI edit/save -> GUI close -> poweroff -> reboot -> Thunar doubleclick reopen -> clean ext4'
+# Round 9: original Thunar performs real clipboard copy/paste, F2 rename,
+# Ctrl+N second Wayland window, and Shift+Delete. No guest shell mutates any
+# GUI-owned file. Two fresh QEMU boots verify durable positive/negative state.
+python3 tests/alpine-desktop-gui.py "$work" "$ovmf" "$disk" fileops
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+debugfs -R 'cat /root/desktop/archived.txt' "$work/partition.ext4" > "$work/gui-archive.txt"
+test "$(cat "$work/gui-archive.txt")" = 'naseed gui roundtrip'
+echo 'PASS: round 9 original Thunar GUI copy, rename, delete, new window; offline ext4 preserved archive'
+python3 tests/alpine-desktop-gui.py "$work" "$ovmf" "$disk" fileops-reopen
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+debugfs -R 'cat /root/desktop/archived.txt' "$work/partition.ext4" > "$work/gui-archive.txt"
+test "$(cat "$work/gui-archive.txt")" = 'naseed gui roundtrip'
+echo 'PASS: round 9 reboot GUI reopened renamed file; deleted copy absent; independent ext4 verification'
 if [ -f "$work/legacy-graphics.failed" ]; then
     echo 'FAIL: legacy Xorg/nested Wayland regression remains red (all independent boot tests completed)' >&2
     exit 1
