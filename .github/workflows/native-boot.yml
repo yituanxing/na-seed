@@ -37,6 +37,15 @@ jobs:
         run: sh tests/native-boot.sh "${{ matrix.arch }}"
       - name: Boot verified upstream Alpine musl/BusyBox through native syscalls
         run: sh tests/native-alpine.sh "${{ matrix.arch }}"
+      - name: Link full Alpine ext4, VirtIO GPU, DRM/GEM/KMS and evdev profile
+        env:
+          NAS_ENABLE_LWEXT4: "1"
+          NAS_ENABLE_VIRTIO_BLK: "1"
+          NAS_ENABLE_VIRTIO_GPU: "1"
+          NAS_ENABLE_VIRTIO_INPUT: "1"
+          NAS_ENABLE_M191_ALPINE_ROOT: "1"
+          NAS_M241_PLATFORM_POWERDOWN: "1"
+        run: make ARCH=${{ matrix.arch }} kernel
       - name: Preserve real native QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4
