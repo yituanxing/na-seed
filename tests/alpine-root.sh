@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        weston weston-backend-x11 weston-backend-drm libseat seatd-launch weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
+        weston weston-backend-x11 weston-backend-drm libseat seatd-launch eudev weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
         xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
@@ -1189,6 +1189,12 @@ with open(f'{work}/init.log','w') as log:
         if guest.match.group(1)!='0':
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
+        # Let original Alpine eudev derive input identity from the actual
+        # kernel's evdev/sysfs capabilities. Do not pre-write synthetic
+        # ID_INPUT properties or assign keyboard/mouse types in the test.
+        guest.sendline('mkdir -p /run/udev; : >/root/udev-input.log; for input in /sys/class/input/event*; do test -e "$input" || continue; udevadm test "$input" >>/root/udev-input.log 2>&1; done; if udevadm info --query=property --name=/dev/input/event0 >/root/udev-event0.log 2>&1; then echo UDEV_INPUT_INSPECTED; else echo UDEV_INPUT_DIAGNOSTIC; fi; grep -E "^(ID_INPUT|SUBSYSTEM|DEVNAME)=" /root/udev-event0.log 2>/dev/null; echo UDEV_INPUT_DIAG_END')
+        guest.expect(r'\r*\nUDEV_INPUT_DIAG_END\r*\n',timeout=120)
+        guest.expect(r'# ')
         # The original Weston DRM backend must paint and receive native
         # Wayland clients on VirtIO hardware WITHOUT an Xorg process.
         guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; SEATD_VTBOUND=0 seatd -g root -l debug >/root/seatd.log 2>&1 & seatd_pid=$!; sleep 1; LIBSEAT_BACKEND=seatd strace -f -s 96 -o /root/weston-drm.strace -e trace=socket,bind,setsockopt,getsockopt,epoll_ctl,epoll_wait,poll,open,openat,newfstatat,readlink,recvmsg,sendmsg weston --backend=drm --renderer=pixman --drm-device=card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1 & native_weston_pid=$!; echo WESTON_DRM_LAUNCHED')
@@ -1220,13 +1226,17 @@ with open(f'{work}/init.log','w') as log:
                 raise RuntimeError('original weston-simple-shm exited under native DRM')
             guest.expect(r'# ')
             changed=0
-            for _ in range(8):
+            # The real compositor repaints asynchronously following GPU
+            # transfer/flush; give it the same QEMU scheduling tolerance as
+            # the existing native modetest flip sampling, without weakening
+            # the visible-pixel assertion.
+            for _ in range(25):
                 nw,nh,native_after=capture_scanout('native-weston-simple-shm')
                 assert (nw,nh)==(800,600)
                 changed=sum(native_before[i:i+3]!=native_after[i:i+3]
                             for i in range(0,len(native_after),3))
                 if changed>=1000:break
-                time.sleep(0.5)
+                time.sleep(0.65)
             print(f'Native DRM Weston/SHM QEMU pixels changed: {changed}/480000')
             assert changed>=1000,'original Weston DRM client did not paint actual QEMU scanout'
             print('PASS: original Weston DRM + Pixman + Wayland SHM renders directly through VirtIO GPU, without Xorg')
@@ -1249,7 +1259,7 @@ with open(f'{work}/init.log','w') as log:
             print('PASS: native QMP keyboard -> VirtIO evdev -> Weston DRM seat -> original terminal PTY')
             native_success=True
         finally:
-            guest.sendline('kill "$native_terminal_pid" "$native_client_pid" 2>/dev/null; kill "$native_weston_pid" 2>/dev/null; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
+            guest.sendline('kill "$native_terminal_pid" "$native_client_pid" 2>/dev/null; kill "$native_weston_pid" 2>/dev/null; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log /root/udev-input.log /root/udev-event0.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
             guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=150)
             native_teardown=guest.before
             print('Original native Weston DRM diagnostic:',native_teardown[-16000:])
