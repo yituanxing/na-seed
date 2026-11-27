@@ -25,19 +25,24 @@ jobs:
             clang lld make binutils curl python3 \
             qemu-system-arm qemu-system-misc \
             qemu-efi-aarch64 qemu-efi-riscv64 ipxe-qemu \
-            dosfstools mtools
+            dosfstools mtools cpio
       - name: Check boot scripts
         run: |
           python3 -m py_compile tests/native-boot.py
           sh -n tests/native-boot.sh
+          sh -n tests/native-alpine.sh
       - name: Build actual full native kernel and user ELF
         run: make ARCH=${{ matrix.arch }} kernel
       - name: Boot original full kernel through Limine and execute native user ELF
         run: sh tests/native-boot.sh "${{ matrix.arch }}"
+      - name: Boot verified upstream Alpine musl/BusyBox through native syscalls
+        run: sh tests/native-alpine.sh "${{ matrix.arch }}"
       - name: Preserve real native QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.arch }}-serial
-          path: build/native-boot/${{ matrix.arch }}/serial.log
+          path: |
+            build/native-boot/${{ matrix.arch }}/serial.log
+            build/native-boot/${{ matrix.arch }}/alpine-serial.log
           if-no-files-found: ignore
