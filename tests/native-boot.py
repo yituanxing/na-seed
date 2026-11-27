@@ -30,7 +30,7 @@ base = [
     "-serial", "stdio", "-no-reboot", "-no-shutdown",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
     "-drive", f"if=none,id=bootdisk,format=raw,file={image},readonly=on",
-    "-device", "virtio-blk-pci,drive=bootdisk,bootindex=0",
+    "-device", "virtio-blk-device,drive=bootdisk",
 ]
 if arch == "aarch64":
     base += ["-cpu", "cortex-a72", "-semihosting-config",
