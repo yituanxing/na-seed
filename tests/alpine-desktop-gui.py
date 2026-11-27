@@ -94,7 +94,10 @@ def click():
 
 def double_click():
     click()
-    time.sleep(0.14)
+    # Keep the second press comfortably inside GTK's double-click interval.
+    # The previous 0.14s gap plus two 45ms QMP waits and connection latency
+    # could put the press-to-press interval near GTK's default threshold.
+    time.sleep(0.07)
     click()
     time.sleep(1.4)
 
@@ -119,6 +122,16 @@ def type_text(text):
 def pixels_changed(a, b):
     assert len(a) == len(b)
     return sum(a[i:i+3] != b[i:i+3] for i in range(0, len(a), 3))
+
+def pixels_changed_rect(a, b, width, left, top, right, bottom):
+    # The location entry changes only after navigation; selecting an icon
+    # changes thousands of other pixels but must never satisfy this check.
+    changed = 0
+    for y in range(top, bottom):
+        for x in range(left, right):
+            pos = (y * width + x) * 3
+            changed += a[pos:pos + 3] != b[pos:pos + 3]
+    return changed
 
 def observe(guest, shell, success):
     guest.sendline(shell + "; echo " + success)
@@ -169,8 +182,15 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
         dw, dh, documents = scanout("documents")
         assert (dw, dh) == (w, h)
         changed = pixels_changed(frame, documents)
-        assert changed > 3500, f"Thunar did not visibly navigate to documents: {changed}"
-        print(f"GUI {phase}: Thunar folder opened by QMP double click, pixels={changed}", flush=True)
+        # Real navigation changes Thunar's location entry (at 800x600,
+        # x=220..570, y=99..131) from /root/desktop/ to
+        # /root/desktop/documents/. Mere icon selection changes only the
+        # content pane and formerly produced a false PASS (5666 pixels).
+        address_change = pixels_changed_rect(frame, documents, w, 220, 99, 570, 131)
+        assert address_change > 80, (f"Thunar did not navigate into documents: "
+                                     f"screen_delta={changed} address_delta={address_change}")
+        print(f"PASS: GUI {phase}: Thunar really navigated to documents by "
+              f"QMP double-click, screen_pixels={changed} address_pixels={address_change}", flush=True)
         # note.txt is now the first entry in the same icon cell. Launch
         # its installed MIME handler by physical double click.
         move_to(330, 230)
