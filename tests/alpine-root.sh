@@ -48,6 +48,14 @@ sudo chroot "$root" /bin/busybox sh -ec '
     fc-cache --system-only
     fc-match sans
     glib-compile-schemas /usr/share/glib-2.0/schemas
+    # apk --no-scripts suppresses the official GTK/GdkPixbuf package
+    # triggers. Rebuild their normal indexes on the HOST before creating
+    # the disk: no package management or source building in NaSeed.
+    gdk-pixbuf-query-loaders --update-cache
+    for theme in /usr/share/icons/Adwaita /usr/share/icons/hicolor; do
+        [ -f "$theme/index.theme" ] || continue
+        gtk-update-icon-cache -f -t "$theme"
+    done
     update-mime-database /usr/share/mime
     update-desktop-database /usr/share/applications
     mkdir -p /root/desktop/documents /root/.config
@@ -1450,13 +1458,7 @@ with open(f'{work}/init.log','w') as log:
                 idle_change=sum(initial[i:i+3]!=before[i:i+3]
                                 for i in range(0,len(before),3))
                 assert idle_change<10000, ('native GTK baseline not stable',name,idle_change)
-                # Capture syscall chronology at process creation instead of
-                # ptrace-attaching to a running GLib thread (which timed out).
-                # This is diagnostics only; never count traced process liveness
-                # as a window-rendering PASS.
-                tracer=('strace -f -tt -s 96 -o /root/native-gtk-'+name+'.syscalls '
-                        '-e trace=epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat,read,write,readv,writev ') if name=='mousepad-minimal' else ''
-                guest.sendline(f'{tracer}env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
+                guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
                 guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
                 delta=0
@@ -1489,18 +1491,12 @@ with open(f'{work}/init.log','w') as log:
                         guest.sendline(f'echo === GTK_OPEN_DESCRIPTORS ===; ls -l /proc/$native_gtk_pid/fd 2>/dev/null; echo === GTK_SESSION_BUS ===; cat /root/native-gtk-bus.log 2>/dev/null; echo NATIVE_GTK_PASSIVE_DIAG_END')
                         guest.expect(r'\r*\nNATIVE_GTK_PASSIVE_DIAG_END\r*\n',timeout=30)
                         print(f'Native GTK {name} passive diagnostics:',guest.before[-12000:])
-                        if tracer:
-                            guest.sendline(f'echo === GTK_TRACE_START ===; head -95 /root/native-gtk-{name}.syscalls 2>/dev/null; echo === GTK_TRACE_END ===; tail -110 /root/native-gtk-{name}.syscalls 2>/dev/null; echo GTK_SYSCALL_CHRONOLOGY_END')
-                            guest.expect(r'\r*\nGTK_SYSCALL_CHRONOLOGY_END\r*\n',timeout=45)
-                            print(f'Native GTK {name} syscall chronology:',guest.before[-22000:])
                         raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
                     print(f'PASS: original Alpine GTK {name} on direct Weston DRM, actual central Wayland window pixels={delta}')
                 finally:
                     guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
                     guest.expect(r'\r*\nNATIVE_GTK_CLIENT_REAPED\r*\n',timeout=45)
                     guest.expect(r'# ')
-            native_gtk_window('mousepad-minimal','env GSETTINGS_BACKEND=memory GIO_USE_VFS=local DBUS_SESSION_BUS_ADDRESS= mousepad --disable-server /root/desktop/documents/note.txt')
-            native_gtk_window('mousepad-no-dbus','mousepad --disable-server /root/desktop/documents/note.txt')
             native_gtk_window('mousepad','mousepad /root/desktop/documents/note.txt')
             native_gtk_window('thunar','thunar /root/desktop')
             guest.sendline('kill "$native_gtk_bus_pid" 2>/dev/null; native_gtk_bus_pid=; echo NATIVE_GTK_BUS_CLOSED')
