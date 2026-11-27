@@ -1411,16 +1411,16 @@ with open(f'{work}/init.log','w') as log:
             # All dependencies were installed in the HOST-built Alpine
             # rootfs. GDK_BACKEND=wayland forbids X11 fallback.
             guest.sendline('kill "$native_terminal_pid" 2>/dev/null; wait "$native_terminal_pid" 2>/dev/null; native_terminal_pid=; echo NATIVE_GTK_SEAT_CLEARED')
-            guest.expect(r'\\r*\\nNATIVE_GTK_SEAT_CLEARED\\r*\\n',timeout=35)
+            guest.expect(r'\r*\nNATIVE_GTK_SEAT_CLEARED\r*\n',timeout=35)
             guest.expect(r'# ')
             guest.sendline('dbus-daemon --session --fork --print-address=1 --print-pid=1 >/root/native-gtk-bus.log 2>&1; rc=$?; if test "$rc" = 0; then export DBUS_SESSION_BUS_ADDRESS="$(head -1 /root/native-gtk-bus.log)"; native_gtk_bus_pid="$(tail -1 /root/native-gtk-bus.log)"; echo NATIVE_GTK_BUS_READY; else echo NATIVE_GTK_BUS_FAILED; fi')
-            if guest.expect([r'\\r*\\nNATIVE_GTK_BUS_READY\\r*\\n',r'\\r*\\nNATIVE_GTK_BUS_FAILED\\r*\\n'],timeout=60):
+            if guest.expect([r'\r*\nNATIVE_GTK_BUS_READY\r*\n',r'\r*\nNATIVE_GTK_BUS_FAILED\r*\n'],timeout=60):
                 raise RuntimeError('native Wayland GTK D-Bus session did not start')
             guest.expect(r'# ')
             def native_gtk_window(name,command):
                 bw,bh,before=capture_scanout('native-gtk-'+name+'-before')
                 guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
-                guest.expect(r'\\r*\\nNATIVE_GTK_STARTED\\r*\\n',timeout=30)
+                guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
                 delta=0
                 try:
@@ -1431,22 +1431,22 @@ with open(f'{work}/init.log','w') as log:
                         delta=sum(before[i:i+3]!=after[i:i+3] for i in range(0,len(after),3))
                         if delta>=1000: break
                     guest.sendline('if kill -0 "$native_gtk_pid" 2>/dev/null && ! grep -Eq "^State:[[:space:]]*Z" "/proc/$native_gtk_pid/status" 2>/dev/null; then echo NATIVE_GTK_CLIENT_LIVE; else echo NATIVE_GTK_CLIENT_DEAD; fi')
-                    live=guest.expect([r'\\r*\\nNATIVE_GTK_CLIENT_LIVE\\r*\\n',r'\\r*\\nNATIVE_GTK_CLIENT_DEAD\\r*\\n'],timeout=30)==0
+                    live=guest.expect([r'\r*\nNATIVE_GTK_CLIENT_LIVE\r*\n',r'\r*\nNATIVE_GTK_CLIENT_DEAD\r*\n'],timeout=30)==0
                     guest.expect(r'# ')
                     if not live or delta<1000:
                         guest.sendline(f'cat /root/native-gtk-{name}.log; echo NATIVE_GTK_ERROR_LOG_END')
-                        guest.expect(r'\\r*\\nNATIVE_GTK_ERROR_LOG_END\\r*\\n',timeout=30)
+                        guest.expect(r'\r*\nNATIVE_GTK_ERROR_LOG_END\r*\n',timeout=30)
                         print(f'Native GTK {name} diagnostics:',guest.before)
                         raise RuntimeError(f'original Alpine GTK {name} failed real Wayland surface rendering: live={live} pixels={delta}')
                     print(f'PASS: original Alpine GTK {name} on direct Weston DRM, GDK Wayland, QEMU changed pixels={delta}')
                 finally:
                     guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
-                    guest.expect(r'\\r*\\nNATIVE_GTK_CLIENT_REAPED\\r*\\n',timeout=45)
+                    guest.expect(r'\r*\nNATIVE_GTK_CLIENT_REAPED\r*\n',timeout=45)
                     guest.expect(r'# ')
             native_gtk_window('mousepad','mousepad /root/desktop/documents/note.txt')
             native_gtk_window('thunar','thunar /root/desktop')
             guest.sendline('kill "$native_gtk_bus_pid" 2>/dev/null; native_gtk_bus_pid=; echo NATIVE_GTK_BUS_CLOSED')
-            guest.expect(r'\\r*\\nNATIVE_GTK_BUS_CLOSED\\r*\\n',timeout=30)
+            guest.expect(r'\r*\nNATIVE_GTK_BUS_CLOSED\r*\n',timeout=30)
             guest.expect(r'# ')
             native_success=True
         finally:
