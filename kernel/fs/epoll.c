@@ -106,6 +106,38 @@ uint64_t nas_epoll_create1(uint64_t flags){
     nas_open_files[slot].private.epoll=state;
     return fd;
 }
+/* Linux accepts epoll-of-epoll as long as the watch graph stays acyclic
+ * and bounded. The physical OpenFile slot is the graph vertex, not the
+ * process-local descriptor (dup/fork may alias one vertex). */
+#define NAS_EPOLL_MAX_NEST 5U
+static bool epoll_path_to(unsigned start,unsigned destination,unsigned depth) {
+    if(start==destination)return true;
+    if(depth>=NAS_EPOLL_MAX_NEST)return true; /* reject invalid chains */
+    struct ep_state *state=epoll_state(start);
+    if(!state)return false;
+    for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++) {
+        const struct ep_watch *w=&state->watches[i];
+        if(w->used && w->kind==FD_EPOLL &&
+           epoll_path_to(w->slot,destination,depth+1U))return true;
+    }
+    return false;
+}
+static bool epoll_chain_too_deep(unsigned start,unsigned depth) {
+    if(depth>NAS_EPOLL_MAX_NEST)return true;
+    struct ep_state *state=epoll_state(start);
+    if(!state)return false;
+    for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++) {
+        const struct ep_watch *w=&state->watches[i];
+        if(w->used && w->kind==FD_EPOLL &&
+           epoll_chain_too_deep(w->slot,depth+1U))return true;
+    }
+    return false;
+}
+static bool epoll_graph_over_depth(void) {
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if(epoll_state(i) && epoll_chain_too_deep(i,1U))return true;
+    return false;
+}
 static bool decode_event(uint64_t addr,uint32_t *events,uint64_t *data){
     uint8_t bytes[EP_EVENT_BYTES];
     if(!addr || !nas_user_read_bytes(addr,bytes,sizeof(bytes)))return false;
@@ -120,7 +152,6 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     if(op<1 || op>3)return (uint64_t)-EINVAL;
     const struct nas_fd_entry *target=nas_task_fd_entry(task,fd);
     if(!target)return (uint64_t)-EBADF;
-    if(target->kind==FD_EPOLL)return (uint64_t)-ELOOP;
     if(epfd==fd)return (uint64_t)-EINVAL;
     const unsigned target_slot=target->slot;
     struct ep_state *state=epoll_state(slot);
@@ -142,11 +173,21 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     if(op==1){ /* EPOLL_CTL_ADD */
         if(slot_found)return (uint64_t)-EEXIST;
         if(!free_watch)return (uint64_t)-ENOSPC;
+        /* A nested epoll watches an independent real event stream; adding
+         * itself or an ancestor would recurse indefinitely during poll. */
+        if(target->kind==FD_EPOLL &&
+           epoll_path_to(target_slot,slot,0U))return (uint64_t)-ELOOP;
         *free_watch=(struct ep_watch){0};
         free_watch->used=true;
         free_watch->fd=(uint16_t)fd;
         free_watch->slot=(uint8_t)target_slot;
         free_watch->kind=target->kind;
+        /* The complete graph, including ancestors of this epoll, must
+         * stay within Linux's bounded nesting limit. Roll back atomically. */
+        if(target->kind==FD_EPOLL && epoll_graph_over_depth()) {
+            *free_watch=(struct ep_watch){0};
+            return (uint64_t)-ELOOP;
+        }
         slot_found=free_watch;
     }else if(!slot_found)return (uint64_t)-ENOENT;
     slot_found->events=events;
