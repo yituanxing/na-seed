@@ -1438,27 +1438,46 @@ with open(f'{work}/init.log','w') as log:
                 raise RuntimeError('native Wayland GTK D-Bus session did not start')
             guest.expect(r'# ')
             def native_gtk_window(name,command):
-                bw,bh,before=capture_scanout('native-gtk-'+name+'-before')
-                guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
+                # The previous weston-terminal is a huge painted rectangle.
+                # Wait until it has fully disappeared, then capture a STABLE
+                # clean desktop. A transition terminal -> desktop is NOT
+                # evidence that GTK has drawn a Wayland surface.
+                time.sleep(1.2)
+                bw,bh,initial=capture_scanout('native-gtk-'+name+'-settling')
+                time.sleep(0.8)
+                aw,ah,before=capture_scanout('native-gtk-'+name+'-before')
+                assert (aw,ah)==(bw,bh)
+                idle_change=sum(initial[i:i+3]!=before[i:i+3]
+                                for i in range(0,len(before),3))
+                assert idle_change<10000, ('native GTK baseline not stable',name,idle_change)
+                guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
                 guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
                 delta=0
                 try:
-                    for attempt in range(12):
-                        time.sleep(0.75)
+                    for attempt in range(16):
+                        time.sleep(0.8)
                         aw,ah,after=capture_scanout('native-gtk-'+name)
                         assert (aw,ah)==(bw,bh)
-                        delta=sum(before[i:i+3]!=after[i:i+3] for i in range(0,len(after),3))
-                        if delta>=1000: break
+                        # Exclude the top desktop clock and the pointer edge.
+                        # A real GTK window draws over a substantial central
+                        # region, unlike a transient background repaint.
+                        delta=0
+                        for yy in range(70,bh-70):
+                            for xx in range(80,bw-80):
+                                pos=(yy*bw+xx)*3
+                                if before[pos:pos+3]!=after[pos:pos+3]:
+                                    delta+=1
+                        if delta>=15000: break
                     guest.sendline('if kill -0 "$native_gtk_pid" 2>/dev/null && ! grep -Eq "^State:[[:space:]]*Z" "/proc/$native_gtk_pid/status" 2>/dev/null; then echo NATIVE_GTK_CLIENT_LIVE; else echo NATIVE_GTK_CLIENT_DEAD; fi')
                     live=guest.expect([r'\r*\nNATIVE_GTK_CLIENT_LIVE\r*\n',r'\r*\nNATIVE_GTK_CLIENT_DEAD\r*\n'],timeout=30)==0
                     guest.expect(r'# ')
-                    if not live or delta<1000:
-                        guest.sendline(f'cat /root/native-gtk-{name}.log; echo NATIVE_GTK_ERROR_LOG_END')
-                        guest.expect(r'\r*\nNATIVE_GTK_ERROR_LOG_END\r*\n',timeout=30)
-                        print(f'Native GTK {name} diagnostics:',guest.before)
-                        raise RuntimeError(f'original Alpine GTK {name} failed real Wayland surface rendering: live={live} pixels={delta}')
-                    print(f'PASS: original Alpine GTK {name} on direct Weston DRM, GDK Wayland, QEMU changed pixels={delta}')
+                    if not live or delta<15000:
+                        guest.sendline(f'echo === NATIVE_GTK_PROC ===; cat /proc/$native_gtk_pid/status /proc/$native_gtk_pid/wchan 2>/dev/null; echo === NATIVE_GTK_WAYLAND_LOG ===; tail -110 /root/native-gtk-{name}.log; echo NATIVE_GTK_ERROR_LOG_END')
+                        guest.expect(r'\r*\nNATIVE_GTK_ERROR_LOG_END\r*\n',timeout=45)
+                        print(f'Native GTK {name} diagnostics:',guest.before[-18000:])
+                        raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
+                    print(f'PASS: original Alpine GTK {name} on direct Weston DRM, actual central Wayland window pixels={delta}')
                 finally:
                     guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
                     guest.expect(r'\r*\nNATIVE_GTK_CLIENT_REAPED\r*\n',timeout=45)
