@@ -74,7 +74,12 @@ def move_to(x, y):
     # clamp it at (0,0) from ANY previous position. No invented pointer state.
     for _ in range(24):
         rel(-50, -50)
-    dx, dy = x, y
+    # On this fixed 800x600 QEMU/Weston fixture, libinput accelerates
+    # 35-unit REL steps. The first real failure screenshot measured the
+    # pointer hotspot near (370,267) for the requested (330,230), missing
+    # the documents icon entirely. Calibrate the *physical input deltas*
+    # to the resulting screen pixels; do not inject synthetic GUI events.
+    dx, dy = round(x * 0.89), round(y * 0.86)
     while dx or dy:
         step_x = min(35, dx)
         step_y = min(35, dy)
