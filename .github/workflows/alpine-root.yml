@@ -51,6 +51,7 @@ jobs:
           path: |
             build/alpine-root/shell.log
             build/alpine-root/init.log
+            build/alpine-root/second-boot.log
             build/alpine-root/kms-before.ppm
             build/alpine-root/kms-modetest.ppm
             build/alpine-root/kms-pageflip.ppm

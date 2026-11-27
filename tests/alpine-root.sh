@@ -1134,6 +1134,12 @@ def verify_wayland():
         teardown=guest.before
         print(teardown)
         assert 'WESTON_STOP=0' in teardown,'Weston did not exit cleanly after SIGTERM'
+        # Round 7: reap every original child and require the old socket gone
+        # before the next compositor can bind the same name.
+        guest.sendline('for pid in "$wtp" "$wtp2" "$wlc"; do if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; fi; done; for i in $(seq 1 12); do test ! -S /run/user/0/wayland-1 && break; sleep 1; done; if test ! -S /run/user/0/wayland-1 && ! kill -0 "$wlp" 2>/dev/null; then echo WESTON_LIFECYCLE_PASS; else echo WESTON_LIFECYCLE_FAIL; fi')
+        if guest.expect([r'\r*\nWESTON_LIFECYCLE_PASS\r*\n',r'\r*\nWESTON_LIFECYCLE_FAIL\r*\n'],timeout=45):
+            raise RuntimeError('Weston compositor process or Unix socket leaked on exit')
+        guest.expect(r'# ')
 
 xorg_ok=False
 apps_ok=False
@@ -1416,6 +1422,9 @@ with open(f'{work}/init.log','w') as log:
                         print(f'Openbox/GTK regression failed: {error}')
                     try:
                         wayland_ok=verify_wayland()
+                        if wayland_ok:
+                            wayland_ok=verify_wayland()
+                            print('PASS: nested Weston full two-terminal session passed twice with the same socket name')
                     except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
                         print(f'Wayland protocol/client acceptance failed: {error}')
             except (OSError,ValueError,AssertionError,RuntimeError,pexpect.TIMEOUT) as error:
@@ -1476,3 +1485,51 @@ debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$wor
 test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
 debugfs -R 'stat /root/desktop/newfolder' "$work/partition.ext4" | grep -F 'Type: directory'
 echo 'PASS: desktop-created directory and edited file survived shutdown'
+
+# Round 7: a SECOND genuine QEMU boot on the SAME physical ext4 disk,
+# with the original Alpine PID1 and files created through the GUI.
+python3 - "$work" "$ovmf" "$disk" <<'SECOND_BOOT'
+import pathlib, pexpect, sys
+work, ovmf, disk = sys.argv[1:]
+args = ['-M','q35','-m','1024M','-cpu','qemu64','-display','none',
+        '-monitor','none','-serial','stdio','-no-reboot','-no-shutdown',
+        '-nic','none','-device','isa-debug-exit,iobase=0xf4,iosize=0x04',
+        '-drive',f'if=pflash,unit=0,format=raw,file={ovmf},readonly=on',
+        '-drive',f'if=none,id=root,format=raw,file={disk}',
+        '-device','virtio-blk-pci,drive=root,disable-legacy=on',
+        '-cdrom',f'{work}/init.iso']
+with open(f'{work}/second-boot.log','w') as log:
+    guest=pexpect.spawn('qemu-system-x86_64',args,encoding='utf-8',
+                        codec_errors='replace',timeout=180)
+    guest.logfile_read=log
+    try:
+        guest.expect('login:')
+        guest.sendline('root')
+        guest.expect('Password:')
+        guest.sendline('naseed-ci-only')
+        guest.expect(r'# ')
+        guest.sendline('test "$(cat /root/desktop/documents/note.txt)" = "naseed desktop works" && test -d /root/desktop/newfolder && test -x /usr/bin/weston && test "$(cat /etc/alpine-release)" = 3.23.7 && echo SECOND_BOOT_PERSISTENCE_PASS')
+        guest.expect(r'\r*\nSECOND_BOOT_PERSISTENCE_PASS\r*\n',timeout=75)
+        guest.expect(r'# ')
+        guest.sendline('poweroff')
+        guest.expect(pexpect.EOF,timeout=180)
+        guest.close()
+        assert guest.exitstatus == 1, (guest.exitstatus,guest.signalstatus)
+    finally:
+        if guest.isalive(): guest.close(force=True)
+serial=pathlib.Path(work,'second-boot.log').read_text()
+for marker in ('[M191 ROOT] physical Alpine ext4 registered at /',
+               '[M191 ROOT] original Alpine PID1 from mounted ext4: /sbin/init',
+               '[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount',
+               '[PASS] cmdline userspace exit 0'):
+    assert marker in serial, marker
+assert '[FAIL]' not in serial
+print('PASS: second genuine Alpine PID1 QEMU boot reopens GUI-created ext4 files and cleanly shuts down')
+SECOND_BOOT
+# The second shutdown must also leave physical ext4 clean and persistent.
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/desktop-note.txt"
+test "$(cat "$work/desktop-note.txt")" = 'naseed desktop works'
+debugfs -R 'stat /root/desktop/newfolder' "$work/partition.ext4" | grep -F 'Type: directory'
+echo 'PASS: two genuine QEMU boots, clean ext4, durable original desktop edits'
