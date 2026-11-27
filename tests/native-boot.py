@@ -10,9 +10,14 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 4 or sys.argv[1] not in ("riscv64", "aarch64"):
-    raise SystemExit("usage: native-boot.py <riscv64|aarch64> <esp.img> <serial.log>")
-arch, image, logname = sys.argv[1:]
+if len(sys.argv) not in (4, 5) or sys.argv[1] not in ("riscv64", "aarch64"):
+    raise SystemExit(
+        "usage: native-boot.py <riscv64|aarch64> <esp.img> <serial.log> [hello|alpine]"
+    )
+arch, image, logname = sys.argv[1:4]
+scenario = sys.argv[4] if len(sys.argv) == 5 else "hello"
+if scenario not in ("hello", "alpine"):
+    raise SystemExit(f"unsupported native boot scenario: {scenario}")
 image = str(pathlib.Path(image).resolve())
 log = pathlib.Path(logname)
 log.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +33,7 @@ base = [
     f"qemu-system-{arch}", "-machine",
     "virt,acpi=off" if arch == "riscv64" else "virt", "-m", "1024M",
     "-smp", "1", "-display", "none", "-monitor", "none",
-    "-serial", "stdio", "-no-reboot", "-no-shutdown",
+    "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
     "-drive", f"if=none,id=bootdisk,format=raw,file={image},readonly=on",
     "-device", "virtio-blk-device,drive=bootdisk",
@@ -42,11 +47,17 @@ else:
 # Exit markers must come from executing the real ELF under the shared kernel.
 required = (
     "[BOOT] NaSeed kernel entered",
+    "[FDT] native hardware resources discovered",
     "[PASS] boot / serial / memory",
     "[ELF] userspace entry=",
-    "hello",
-    "[EXIT] user status=0",
-    "[PASS] userspace exit 0",
+) + (
+    ("\nhello\n", "[EXIT] user status=0", "[PASS] userspace exit 0")
+    if scenario == "hello" else (
+        "[M5] CPIO executable selected:",
+        f"\nNASEED_ALPINE_{arch}_OK\n",
+        "[EXIT] user status=0",
+        "[PASS] cmdline userspace exit 0",
+    )
 )
 deadline = time.monotonic() + 145
 succeeded = False
@@ -79,5 +90,10 @@ if not succeeded:
         f"FAIL: native {arch} physical-QEMU boot/user ELF not verified. "
         f"Missing serial markers: {missing}"
     )
-print(f"PASS: {arch} QEMU UEFI/Limine full kernel boot, real native "
-      "ELF write(2)/exit(2), PID1 exit", flush=True)
+if scenario == "hello":
+    print(f"PASS: {arch} QEMU UEFI/Limine full kernel boot, real native "
+          "ELF write(2)/exit(2), PID1 exit", flush=True)
+else:
+    print(f"PASS: {arch} official Alpine 3.23 musl/BusyBox ELF from "
+          "verified upstream minirootfs, native syscalls and clean exit",
+          flush=True)
