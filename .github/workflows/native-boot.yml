@@ -30,6 +30,7 @@ jobs:
         run: |
           python3 -m py_compile tests/native-boot.py
           python3 -m py_compile tests/native-gui-roundtrip.py
+          python3 -m py_compile tests/native-drm.py
           sh -n tests/native-boot.sh
           sh -n tests/native-alpine.sh
           sh -n tests/native-root.sh
@@ -79,4 +80,6 @@ jobs:
             build/native-boot/${{ matrix.arch }}/gui-*.log
             build/native-boot/${{ matrix.arch }}/gui-*.ppm
             build/native-boot/${{ matrix.arch }}/gui-note.txt
+            build/native-boot/${{ matrix.arch }}/drm-serial.log
+            build/native-boot/${{ matrix.arch }}/drm-*.ppm
           if-no-files-found: ignore
