@@ -75,8 +75,15 @@ static uint16_t ready_now(const struct ep_watch *w,const struct nas_task *task){
     /* All kinds share one open-description operation. Future AF_INET,
      * block devices and filesystems only need to implement their own
      * poll_description callback; epoll never learns the backend type. */
-    return nas_fs_poll_description_task(w->slot,
-        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP)),task);
+    const uint16_t requested =
+        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP));
+    const uint16_t ready =
+        nas_fs_poll_description_task(w->slot,requested,task);
+    /* poll providers may return additional Linux bits (e.g.
+     * POLLRDNORM together with POLLIN for timerfd). epoll_wait reports
+     * only the subscribed bits, plus unconditional ERR/HUP. Forwarding
+     * a raw poll mask leaks unrequested events into the epoll ABI. */
+    return ready & (uint16_t)(requested|EP_ERR|EP_HUP);
 }
 static bool instance_ready(unsigned slot,const struct nas_task *task){
     struct ep_state *state=epoll_state(slot);
