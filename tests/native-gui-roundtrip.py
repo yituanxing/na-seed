@@ -94,11 +94,14 @@ def rel(dx, dy):
 
 
 def move_to(x, y):
-    # Calibrated using x86-64's same 800x600 Weston/libinput QMP fixture.
-    # Always re-zero the actual relative pointer at the negative screen edge.
+    # Native ARM64/RV64 QEMU VirtIO-MMIO + libinput acceleration differs
+    # from x86 PCI. Both real failing screenshots independently measured
+    # requested (330,230) -> actual pointer (~490,350), and
+    # requested (520,340) -> (~763,521). Use screenshot-calibrated physical
+    # QMP REL deltas, not a fabricated absolute-pointer position.
     for _ in range(24):
         rel(-50, -50)
-    dx, dy = round(x * 0.89), round(y * 0.86)
+    dx, dy = round(x * 0.60), round(y * 0.56)
     while dx or dy:
         sx, sy = min(35, dx), min(35, dy)
         rel(sx, sy)
