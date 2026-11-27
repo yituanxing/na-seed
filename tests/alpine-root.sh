@@ -25,7 +25,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
-        weston weston-backend-x11 weston-backend-drm libseat weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
+        weston weston-backend-x11 weston-backend-drm libseat seatd-launch weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
         xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
@@ -1190,7 +1190,7 @@ with open(f'{work}/init.log','w') as log:
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
         # Probe original Weston DRM before Xorg: direct KMS/seat/udev.
-        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; LIBSEAT_BACKEND=builtin SEATD_VTBOUND=0 timeout -s TERM 12 weston --backend=drm --renderer=pixman --drm-device=/dev/dri/card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1; printf "WESTON_DRM_PROBE_EXIT=%s\n" "$?"')
+        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; LIBSEAT_BACKEND=seatd SEATD_VTBOUND=0 timeout -s TERM 12 seatd-launch -- weston --backend=drm --renderer=pixman --drm-device=/dev/dri/card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1; printf "WESTON_DRM_PROBE_EXIT=%s\n" "$?"')
         guest.expect(r'\r*\nWESTON_DRM_PROBE_EXIT=([0-9]+)\r*\n',timeout=65)
         guest.sendline('cat /root/weston-drm.log; echo WESTON_DRM_DIAG_END')
         guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=45)
