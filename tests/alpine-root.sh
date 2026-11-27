@@ -1190,7 +1190,7 @@ with open(f'{work}/init.log','w') as log:
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
         # Probe original Weston DRM before Xorg: direct KMS/seat/udev.
-        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; LIBSEAT_BACKEND=builtin timeout -s TERM 12 weston --backend=drm --renderer=pixman --drm-device=/dev/dri/card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1; printf "WESTON_DRM_PROBE_EXIT=%s\n" "$?"')
+        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; LIBSEAT_BACKEND=builtin SEATD_VTBOUND=0 timeout -s TERM 12 weston --backend=drm --renderer=pixman --drm-device=/dev/dri/card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1; printf "WESTON_DRM_PROBE_EXIT=%s\n" "$?"')
         guest.expect(r'\r*\nWESTON_DRM_PROBE_EXIT=([0-9]+)\r*\n',timeout=65)
         guest.sendline('cat /root/weston-drm.log; echo WESTON_DRM_DIAG_END')
         guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=45)

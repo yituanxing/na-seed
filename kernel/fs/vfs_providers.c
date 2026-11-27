@@ -8,6 +8,9 @@
 #include "../mm/frame.h"
 #include "../block/device.h"
 #include "../drivers/display/display.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/virtio_gpu.h"
+#endif
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -674,6 +677,9 @@ enum {
     SYS_VIRTUAL_GRAPHICS, SYS_GRAPHICS_FB, SYS_GRAPHICS_DEV,
     SYS_GRAPHICS_OWNER, SYS_CLASS_DISPLAY, SYS_DISPLAY_LINK,
     SYS_VIRTUAL_DISPLAY, SYS_DISPLAY_OWNER, SYS_DISPLAY_SUBSYSTEM,
+    SYS_CLASS_DRM, SYS_DRM_LINK, SYS_VIRTUAL_DRM, SYS_DRM_OWNER,
+    SYS_DRM_DEV, SYS_DRM_UEVENT, SYS_DRM_SUBSYSTEM,
+    SYS_DEV_CHAR, SYS_DEV_CHAR_DRM_LINK,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -729,7 +735,25 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
     [SYS_VIRTUAL_DISPLAY]={SYS_VIRTUAL,"display",0,SYS_DIR},
     [SYS_DISPLAY_OWNER]={SYS_VIRTUAL_DISPLAY,"scanout0",0,SYS_DIR},
     [SYS_DISPLAY_SUBSYSTEM]={SYS_DISPLAY_OWNER,"subsystem",
-                             "../../../../class/display",SYS_LINK}
+                             "../../../../class/display",SYS_LINK},
+    /* These are actual current DRM primary-node attributes, published only
+     * while the registered VirtIO GPU exists. /sys/dev/char and /sys/class
+     * converge on the same inode and one authoritative character-device
+     * identity (226:0), rather than a per-application fabricated device. */
+    [SYS_CLASS_DRM]={SYS_CLASS,"drm",0,SYS_DIR},
+    [SYS_DRM_LINK]={SYS_CLASS_DRM,"card0",
+                    "../../devices/virtual/drm/card0",SYS_LINK},
+    [SYS_VIRTUAL_DRM]={SYS_VIRTUAL,"drm",0,SYS_DIR},
+    [SYS_DRM_OWNER]={SYS_VIRTUAL_DRM,"card0",0,SYS_DIR},
+    [SYS_DRM_DEV]={SYS_DRM_OWNER,"dev","226:0\n",SYS_FILE},
+    [SYS_DRM_UEVENT]={SYS_DRM_OWNER,"uevent",
+                       "MAJOR=226\nMINOR=0\nDEVNAME=dri/card0\nDEVTYPE=drm_minor\n",
+                       SYS_FILE},
+    [SYS_DRM_SUBSYSTEM]={SYS_DRM_OWNER,"subsystem",
+                         "../../../../class/drm",SYS_LINK},
+    [SYS_DEV_CHAR]={SYS_DEV,"char",0,SYS_DIR},
+    [SYS_DEV_CHAR_DRM_LINK]={SYS_DEV_CHAR,"226:0",
+                             "../../devices/virtual/drm/card0",SYS_LINK}
 };
 /* The registered DisplayDevice is the owner of the fbdev endpoint,
  * not a second PCI device. Represent its class and the fbdev consumer
@@ -738,6 +762,13 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
 static bool sys_entry_visible(unsigned id) {
     if(id>=SYS_CLASS_GRAPHICS && id<=SYS_DISPLAY_SUBSYSTEM)
         return nas_display_primary()!=NULL;
+    if(id>=SYS_CLASS_DRM && id<=SYS_DEV_CHAR_DRM_LINK) {
+#ifdef NAS_ENABLE_VIRTIO_GPU
+        return nas_virtio_gpu_count()!=0U;
+#else
+        return false;
+#endif
+    }
     return true;
 }
 static bool sys_entry_link(unsigned id) {
