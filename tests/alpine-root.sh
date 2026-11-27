@@ -381,6 +381,25 @@ os.unlink(path)
 print('original Alpine Python: AF_UNIX MSG_DONTWAIT RX/TX and shared File flags PASS')
 SOCKETCHECK
 }
+unix_scm_credentials() {
+    python3 - <<'SCMCHECK'
+import errno,os,socket,struct
+first,second=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+ucred=struct.pack('=iii',os.getpid(),os.getuid(),os.getgid())
+assert first.sendmsg([b'C'],[(socket.SOL_SOCKET,2,ucred)])==1
+assert second.recv(1)==b'C'
+try:
+    first.sendmsg([b'X'],[(socket.SOL_SOCKET,2,
+                          struct.pack('=iii',0x7fffffff,os.getuid(),os.getgid()))])
+except OSError as error:
+    assert error.errno==errno.EPERM,error
+else:
+    raise AssertionError('SCM_CREDENTIALS must reject forged sender PID')
+first.close()
+second.close()
+print('original Alpine Python AF_UNIX SCM_CREDENTIALS validation PASS')
+SCMCHECK
+}
 mremap_shared_file() {
     # Genuine distribution GCC program: mremap must move/grow a live inode-
     # pinned MAP_SHARED VMA after its source fd closes. Check both writable
@@ -532,6 +551,7 @@ run sqlite database
 run lua lua_runtime
 run python python_runtime
 run unix-msg-dontwait unix_msg_dontwait
+run unix-scm-credentials unix_scm_credentials
 run readonly-shared-mmap readonly_shared_mmap
 run mremap-shared-file mremap_shared_file
 run sysv-shm sysv_shared_memory

@@ -1350,19 +1350,39 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         memcpy(&cmsglen,control,8);
         uint32_t level,type;
         memcpy(&level,control+8,4);memcpy(&type,control+12,4);
-        if(cmsglen<16 || cmsglen>msg.controllen || level!=1 || type!=1 ||
+        if(cmsglen<16 || cmsglen>msg.controllen || level!=1 ||
            (cmsglen-16)%4)return (uint64_t)-EOPNOTSUPP;
-        rights_count=(unsigned)((cmsglen-16)/4);
-        if(!rights_count || rights_count>NAS_UNIX_MAX_RIGHTS)
-            return (uint64_t)-EINVAL;
-        for(unsigned i=0;i<rights_count;i++) {
-            int32_t transferred;
-            memcpy(&transferred,control+16+i*4,4);
-            if(transferred<0 || transferred>=NAS_FD_LIMIT ||
-               TASK.fds->entries[transferred].kind==FD_CLOSED)return (uint64_t)-EBADF;
-            kinds[i]=TASK.fds->entries[transferred].kind;
-            slots[i]=TASK.fds->entries[transferred].slot;
-        }
+        if(type==2) { /* SCM_CREDENTIALS: Linux struct ucred (3 x u32). */
+            if(cmsglen!=28 || msg.controllen>32)return (uint64_t)-EINVAL;
+            uint32_t identity[3];
+            memcpy(identity,control+16,sizeof(identity));
+            const struct nas_credentials *actual=&TASK.credentials;
+            /* Do not let the sender forge another process or identity.
+             * CAP_SYS_ADMIN/CAP_SETUID/CAP_SETGID are not granted by
+             * NaSeed's intentionally narrow capability implementation. */
+            if(identity[0]!=(uint32_t)TASK.tgid ||
+               (identity[1]!=actual->ruid && identity[1]!=actual->euid &&
+                identity[1]!=actual->suid) ||
+               (identity[2]!=actual->rgid && identity[2]!=actual->egid &&
+                identity[2]!=actual->sgid))
+                return (uint64_t)-EPERM;
+            /* Valid credentials are accepted for the stream write.
+             * Ancillary receipt additionally requires SO_PASSCRED; do not
+             * fabricate per-message credentials on an unsubscribed peer. */
+        } else if(type==1) { /* SCM_RIGHTS: owned File descriptions. */
+            rights_count=(unsigned)((cmsglen-16)/4);
+            if(!rights_count || rights_count>NAS_UNIX_MAX_RIGHTS)
+                return (uint64_t)-EINVAL;
+            for(unsigned i=0;i<rights_count;i++) {
+                int32_t transferred;
+                memcpy(&transferred,control+16+i*4,4);
+                if(transferred<0 || transferred>=NAS_FD_LIMIT ||
+                   TASK.fds->entries[transferred].kind==FD_CLOSED)
+                    return (uint64_t)-EBADF;
+                kinds[i]=TASK.fds->entries[transferred].kind;
+                slots[i]=TASK.fds->entries[transferred].slot;
+            }
+        } else return (uint64_t)-EOPNOTSUPP;
     }
     struct nas_unix_rights_transfer transfer={0};
     if(rights_count) {
