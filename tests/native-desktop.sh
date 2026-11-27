@@ -71,3 +71,17 @@ python3 tests/native-boot.py "$arch" "$base/desktop-efi.img" \
     "$base/desktop-serial.log" desktop "$disk"
 e2fsck -fn "$disk"
 echo "PASS: $arch original Alpine OpenRC -> Weston DRM -> Thunar GTK compositor and clean poweroff"
+# Original GUI, no test-side file mutation: x86-like physical QMP input
+# drives the actual guest's native MMIO VirtIO keyboard and mouse.
+python3 tests/native-gui-roundtrip.py "$arch" edit
+e2fsck -fn "$disk"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$disk" > "$base/gui-note.txt"
+test "$(cat "$base/gui-note.txt")" = 'naseed gui roundtrip'
+echo "PASS: $arch GUI Mousepad edited the actual ext4 disk; offline content confirmed"
+# The second QEMU process/boot must independently navigate Thunar and reopen
+# the saved file. No in-guest CLI performs the editing or opening.
+python3 tests/native-gui-roundtrip.py "$arch" reopen
+e2fsck -fn "$disk"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$disk" > "$base/gui-note.txt"
+test "$(cat "$base/gui-note.txt")" = 'naseed gui roundtrip'
+echo "PASS: $arch GUI persisted across independent QEMU boot; offline ext4 consistent"
