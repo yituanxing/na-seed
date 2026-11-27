@@ -1455,7 +1455,7 @@ with open(f'{work}/init.log','w') as log:
                 # This is diagnostics only; never count traced process liveness
                 # as a window-rendering PASS.
                 tracer=('strace -f -tt -s 96 -o /root/native-gtk-'+name+'.syscalls '
-                        '-e trace=futex,epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat ') if name=='mousepad-no-dbus' else ''
+                        '-e trace=futex,epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat,read,write,readv,writev,clock_gettime ') if name=='mousepad-minimal' else ''
                 guest.sendline(f'{tracer}env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
                 guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
@@ -1488,7 +1488,7 @@ with open(f'{work}/init.log','w') as log:
                         guest.expect(r'\r*\nNATIVE_GTK_PASSIVE_DIAG_END\r*\n',timeout=30)
                         print(f'Native GTK {name} passive diagnostics:',guest.before[-12000:])
                         if tracer:
-                            guest.sendline(f'tail -150 /root/native-gtk-{name}.syscalls 2>/dev/null; echo GTK_SYSCALL_CHRONOLOGY_END')
+                            guest.sendline(f'echo === GTK_TRACE_START ===; head -95 /root/native-gtk-{name}.syscalls 2>/dev/null; echo === GTK_TRACE_END ===; tail -110 /root/native-gtk-{name}.syscalls 2>/dev/null; echo GTK_SYSCALL_CHRONOLOGY_END')
                             guest.expect(r'\r*\nGTK_SYSCALL_CHRONOLOGY_END\r*\n',timeout=45)
                             print(f'Native GTK {name} syscall chronology:',guest.before[-22000:])
                         raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
@@ -1497,6 +1497,7 @@ with open(f'{work}/init.log','w') as log:
                     guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
                     guest.expect(r'\r*\nNATIVE_GTK_CLIENT_REAPED\r*\n',timeout=45)
                     guest.expect(r'# ')
+            native_gtk_window('mousepad-minimal','env GSETTINGS_BACKEND=memory GIO_USE_VFS=local DBUS_SESSION_BUS_ADDRESS= mousepad --disable-server /root/desktop/documents/note.txt')
             native_gtk_window('mousepad-no-dbus','mousepad --disable-server /root/desktop/documents/note.txt')
             native_gtk_window('mousepad','mousepad /root/desktop/documents/note.txt')
             native_gtk_window('thunar','thunar /root/desktop')
