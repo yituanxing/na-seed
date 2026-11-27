@@ -1239,8 +1239,8 @@ with open(f'{work}/init.log','w') as log:
                              r'\r*\nWESTON_DRM_TERMINAL_DEAD\r*\n'],timeout=30):
                 raise RuntimeError('original weston-terminal did not open under native DRM')
             guest.expect(r'# ')
-            type_keys('echo 57 >/tmp/native-wlkey\n')
-            guest.sendline('for i in $(seq 1 15); do test "$(cat /tmp/native-wlkey 2>/dev/null)" = 57 && break; sleep 1; done; if test "$(cat /tmp/native-wlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_FAIL; fi')
+            type_keys('echo 57 >/tmp/nativewlkey\n')
+            guest.sendline('for i in $(seq 1 15); do test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57 && break; sleep 1; done; if test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_FAIL; fi')
             if guest.expect([r'\r*\nWESTON_DRM_KEYBOARD_PASS\r*\n',
                              r'\r*\nWESTON_DRM_KEYBOARD_FAIL\r*\n'],timeout=55):
                 raise RuntimeError('native QMP VirtIO evdev keyboard did not reach Weston terminal PTY')
