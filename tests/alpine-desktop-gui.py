@@ -12,7 +12,7 @@ import sys
 import time
 
 work, ovmf, disk, phase = sys.argv[1:]
-assert phase in ("edit", "reopen"), phase
+assert phase in ("edit", "reopen", "fileops", "fileops-reopen"), phase
 work = pathlib.Path(work)
 sockpath = str(work / f"gui-{phase}-qmp.sock")
 args = [
@@ -114,7 +114,7 @@ def chord(*keys):
 
 def type_text(text):
     for ch in text:
-        keycode = {" ": "spc", "\n": "ret"}.get(ch, ch)
+        keycode = {" ": "spc", "\n": "ret", ".": "dot"}.get(ch, ch)
         key(keycode, True)
         key(keycode, False)
         time.sleep(0.06)
@@ -137,6 +137,181 @@ def observe(guest, shell, success):
     guest.sendline(shell + "; echo " + success)
     guest.expect(r"\r*\n" + success + r"\r*\n", timeout=95)
     guest.expect(r"# ")
+
+
+def fileops_observe(guest, expr, marker, retries=15):
+    """Only read guest state; mutating file operations MUST use QMP inputs."""
+    guest.sendline(
+        f'for i in $(seq 1 {retries}); do {expr} && break; sleep 1; done; '
+        f'if {expr}; then echo {marker}_PASS; else echo {marker}_FAIL; fi'
+    )
+    passed = guest.expect([r"\\r*\\n" + marker + r"_PASS\\r*\\n",
+                           r"\\r*\\n" + marker + r"_FAIL\\r*\\n"],
+                          timeout=retries + 50) == 0
+    guest.expect(r"# ")
+    if not passed:
+        raise RuntimeError(f"GUI file operation {marker} did not change actual guest filesystem")
+    print(f"PASS: GUI file operation {marker}, observed read-only", flush=True)
+
+
+def thunar_window_count(guest):
+    guest.sendline(
+        'printf "THUNAR_TOPLEVELS=%s\\n" '
+        '"$(grep -c get_toplevel /var/log/naseed-desktop/thunar.log 2>/dev/null || :)"'
+    )
+    guest.expect(r"\\r*\\nTHUNAR_TOPLEVELS=([0-9]+)\\r*\\n", timeout=30)
+    count = int(guest.match.group(1))
+    guest.expect(r"# ")
+    return count
+
+
+def fileops_navigate(phase, baseline, w, to_documents):
+    """Screen-path proof prevents selection-only false positives."""
+    move_to(330, 230)
+    double_click()
+    _, _, after = scanout("fileops-documents" if to_documents else "fileops-root")
+    address_change = pixels_changed_rect(baseline, after, w, 360, 131, 520, 154)
+    if address_change < 80:
+        raise RuntimeError(f"Thunar fileops navigation did not change location: "
+                           f"address_pixels={address_change}")
+    print(f"PASS: GUI fileops navigated {'documents' if to_documents else 'root'} "
+          f"by physical input, address_pixels={address_change}", flush=True)
+    return after
+
+
+def fileops_select_last():
+    # End is handled by the original Thunar icon view, not the guest shell.
+    chord("end")
+    time.sleep(0.3)
+
+
+def fileops_mousepad(guest, baseline):
+    fileops_select_last()
+    chord("ret")
+    editor = None
+    changed = 0
+    for _ in range(55):
+        time.sleep(0.7)
+        _, _, sample = scanout("fileops-reopened-editor")
+        changed = pixels_changed(baseline, sample)
+        if changed > 18000:
+            editor = sample
+            break
+    guest.sendline(
+        'if pidof mousepad >/dev/null; then echo FILEOPS_EDITOR_ALIVE; '
+        'else echo FILEOPS_EDITOR_MISSING; fi'
+    )
+    alive = guest.expect([r"\\r*\\nFILEOPS_EDITOR_ALIVE\\r*\\n",
+                          r"\\r*\\nFILEOPS_EDITOR_MISSING\\r*\\n"],
+                         timeout=35) == 0
+    guest.expect(r"# ")
+    if not alive or editor is None:
+        raise RuntimeError(f"GUI reopen of renamed persisted file failed: "
+                           f"mousepad_alive={alive} changed_pixels={changed}")
+    print(f"PASS: restarted Thunar opened renamed file in original Mousepad, "
+          f"visible_pixels={changed}", flush=True)
+    chord("ctrl", "w")
+    time.sleep(0.5)
+
+
+def run_fileops(guest, phase, root_frame, w, h):
+    assert (w, h) == (800, 600)
+    saved = 'test "$(cat /root/desktop/documents/note.txt)" = "naseed gui roundtrip"'
+    archived = 'test "$(cat /root/desktop/archived.txt)" = "naseed gui roundtrip"'
+    absent = 'test ! -e /root/desktop/note.txt'
+    fileops_observe(guest, saved, "ORIGINAL_INTACT", retries=1)
+    if phase == "fileops-reopen":
+        # A completely fresh QEMU boot: the retained copy exists, but the
+        # permanently deleted second copy must remain absent.
+        fileops_observe(guest, archived, "ARCHIVE_SURVIVED_REBOOT", retries=1)
+        fileops_observe(guest, absent, "DELETE_SURVIVED_REBOOT", retries=1)
+        fileops_mousepad(guest, root_frame)
+        fileops_observe(guest, archived, "ARCHIVE_REOPEN_CONTENT", retries=1)
+        print("PASS: GUI fileops second independent boot reopened renamed file; "
+              "permanent deletion survived", flush=True)
+        return
+
+    # 1. Original Thunar: real double-click and real Ctrl+C / Alt+Up / Ctrl+V.
+    documents = fileops_navigate(phase, root_frame, w, True)
+    move_to(330, 230)
+    click()
+    chord("ctrl", "c")
+    chord("alt", "up")
+    time.sleep(0.8)
+    _, _, parent = scanout("fileops-parent")
+    assert pixels_changed_rect(documents, parent, w, 360, 131, 520, 154) > 80, (
+        "Thunar Alt+Up failed to navigate to parent folder")
+    chord("ctrl", "v")
+    fileops_observe(guest,
+                    'test "$(cat /root/desktop/note.txt)" = "naseed gui roundtrip"',
+                    "COPY_TO_DESKTOP")
+    scanout("fileops-copied")
+
+    # 2. Rename the copied file in Thunar; original source is untouched.
+    fileops_select_last()
+    chord("f2")
+    time.sleep(0.65)
+    scanout("fileops-rename-dialog")
+    chord("ctrl", "a")
+    type_text("archived.txt")
+    chord("ret")
+    fileops_observe(guest, archived + ' && ' + absent, "RENAME")
+    scanout("fileops-renamed")
+
+    # 3. Open a second original Thunar window (not another app). Its
+    # xdg_toplevel must be a genuinely new Wayland request, then give it
+    # physical focus. The old Thunar window remains open underneath.
+    before_windows = thunar_window_count(guest)
+    chord("ctrl", "n")
+    time.sleep(2.0)
+    after_windows = thunar_window_count(guest)
+    if after_windows <= before_windows:
+        scanout("fileops-second-window-failed")
+        raise RuntimeError(f"Thunar Ctrl+N failed to create second Wayland window: "
+                           f"{before_windows=} {after_windows=}")
+    move_to(520, 340)
+    click()
+    time.sleep(0.65)
+    _, _, new_window = scanout("fileops-second-window")
+    print(f"PASS: second independent Thunar Wayland toplevel via QMP Ctrl+N: "
+          f"{before_windows=} {after_windows=}", flush=True)
+
+    # 4. Create a second copy via the new window; then permanently delete
+    # THAT copy via Shift+Delete (not rm, unlink, or a guest shell command).
+    new_documents = fileops_navigate(phase, new_window, w, True)
+    move_to(330, 230)
+    click()
+    chord("ctrl", "c")
+    chord("alt", "up")
+    time.sleep(0.8)
+    _, _, second_parent = scanout("fileops-second-parent")
+    assert pixels_changed_rect(new_documents, second_parent, w, 360, 131, 520, 154) > 80, (
+        "Second Thunar window Alt+Up failed")
+    chord("ctrl", "v")
+    fileops_observe(guest,
+                    'test "$(cat /root/desktop/note.txt)" = "naseed gui roundtrip"',
+                    "SECOND_COPY")
+    fileops_select_last()
+    chord("shift", "delete")
+    time.sleep(0.85)
+    scanout("fileops-delete-confirmation")
+    # Depending on the original Thunar preferences Shift+Delete may show a
+    # confirmation dialog or immediately remove the file. Observe only.
+    guest.sendline('if test -e /root/desktop/note.txt; then echo DELETE_NEEDS_CONFIRM; '
+                   'else echo DELETE_ALREADY_DONE; fi')
+    confirm = guest.expect([r"\\r*\\nDELETE_NEEDS_CONFIRM\\r*\\n",
+                            r"\\r*\\nDELETE_ALREADY_DONE\\r*\\n"], timeout=25) == 0
+    guest.expect(r"# ")
+    if confirm:
+        chord("ret")
+    fileops_observe(guest, absent + ' && ' + archived, "PERMANENT_DELETE")
+    scanout("fileops-deleted")
+    chord("ctrl", "w")
+    time.sleep(0.6)
+    fileops_observe(guest, archived + ' && ' + absent + ' && ' + saved,
+                    "TWO_WINDOWS_CLOSED_SAFELY", retries=1)
+    print("PASS: original Thunar copy, rename, two-window copy/delete via "
+          "real QMP mouse and keyboard; source and archived copy preserved", flush=True)
 
 with (work / f"gui-{phase}.log").open("w") as logfile:
     guest = pexpect.spawn("qemu-system-x86_64", args, encoding="utf-8",
@@ -182,89 +357,92 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
         time.sleep(0.7)
         fw, fh, frame = scanout("files-focused")
         assert (fw, fh) == (w, h)
-        # The actual 800x600 screenshot puts the first icon near (280,230)
-        # after libinput acceleration of the requested QMP REL movement.
-        # Only a changed path entry proves navigation: icon selection alone
-        # changed 5666 pixels and caused a false PASS in the previous test.
-        # The real address field is y=121..155, with path glyphs at y=131..154;
-        # x=360..520 covers the added /documents suffix, not the menu row.
-        address_change = changed = 0
-        for attempt in range(1, 4):
+        if phase in ("fileops", "fileops-reopen"):
+            run_fileops(guest, phase, frame, w, h)
+        else:
+            # The actual 800x600 screenshot puts the first icon near (280,230)
+            # after libinput acceleration of the requested QMP REL movement.
+            # Only a changed path entry proves navigation: icon selection alone
+            # changed 5666 pixels and caused a false PASS in the previous test.
+            # The real address field is y=121..155, with path glyphs at y=131..154;
+            # x=360..520 covers the added /documents suffix, not the menu row.
+            address_change = changed = 0
+            for attempt in range(1, 4):
+                move_to(330, 230)
+                double_click()
+                dw, dh, documents = scanout(f"documents-attempt-{attempt}")
+                assert (dw, dh) == (w, h)
+                changed = pixels_changed(frame, documents)
+                address_change = pixels_changed_rect(
+                    frame, documents, w, 360, 131, 520, 154)
+                if address_change > 80:
+                    break
+                print(f"GUI {phase}: Thunar still shows desktop after real "
+                      f"double-click attempt {attempt}, selection_pixels={changed}", flush=True)
+            else:
+                raise RuntimeError(f"Thunar did not navigate into documents after "
+                                   f"three physical double-click attempts: "
+                                   f"screen_delta={changed} address_delta={address_change}")
+            print(f"PASS: GUI {phase}: Thunar really navigated to documents by "
+                  f"QMP double-click, attempts={attempt} "
+                  f"screen_pixels={changed} address_pixels={address_change}", flush=True)
+            # note.txt is now the first entry in the same icon cell. Launch
+            # its installed MIME handler by physical double click.
             move_to(330, 230)
             double_click()
-            dw, dh, documents = scanout(f"documents-attempt-{attempt}")
-            assert (dw, dh) == (w, h)
-            changed = pixels_changed(frame, documents)
-            address_change = pixels_changed_rect(
-                frame, documents, w, 360, 131, 520, 154)
-            if address_change > 80:
-                break
-            print(f"GUI {phase}: Thunar still shows desktop after real "
-                  f"double-click attempt {attempt}, selection_pixels={changed}", flush=True)
-        else:
-            raise RuntimeError(f"Thunar did not navigate into documents after "
-                               f"three physical double-click attempts: "
-                               f"screen_delta={changed} address_delta={address_change}")
-        print(f"PASS: GUI {phase}: Thunar really navigated to documents by "
-              f"QMP double-click, attempts={attempt} "
-              f"screen_pixels={changed} address_pixels={address_change}", flush=True)
-        # note.txt is now the first entry in the same icon cell. Launch
-        # its installed MIME handler by physical double click.
-        move_to(330, 230)
-        double_click()
-        editor = None
-        delta = 0
-        for _ in range(60):
-            time.sleep(0.7)
-            _, _, candidate = scanout("editor-open")
-            delta = pixels_changed(documents, candidate)
-            if delta > 18000:
-                editor = candidate
-                break
-        guest.sendline('if pidof mousepad >/dev/null; then echo GUI_MOUSEPAD_LIVE; else echo GUI_MOUSEPAD_MISSING; fi')
-        alive = guest.expect([r"\r*\nGUI_MOUSEPAD_LIVE\r*\n",
-                              r"\r*\nGUI_MOUSEPAD_MISSING\r*\n"], timeout=35) == 0
-        guest.expect(r"# ")
-        if not alive or editor is None:
-            guest.sendline('tail -80 /var/log/naseed-desktop/thunar.log /var/log/naseed-desktop/weston.log 2>/dev/null; echo GUI_DIAGNOSTICS_END')
-            guest.expect(r"\r*\nGUI_DIAGNOSTICS_END\r*\n", timeout=35)
-            raise RuntimeError(f"Thunar doubleclick did not open visible original Mousepad: alive={alive} changed_pixels={delta}")
-        print(f"PASS: GUI {phase}: original Mousepad opened via Thunar physical double-click, pixels={delta}", flush=True)
-        if phase == "edit":
-            # No serial commands edit the file. Focus the actual GTK editor,
-            # select document contents, type fresh data, and Ctrl+S.
-            move_to(240, 180)
-            click()
-            time.sleep(0.6)
-            chord("ctrl", "a")
-            type_text("naseed gui roundtrip\n")
-            chord("ctrl", "s")
-            time.sleep(1.3)
-            scanout("editor-saved")
-            guest.sendline(
-                'for i in $(seq 1 18); do '
-                'test "$(cat /root/desktop/documents/note.txt)" = '
-                '"naseed gui roundtrip" && break; sleep 1; done; '
-                'if test "$(cat /root/desktop/documents/note.txt)" = '
-                '"naseed gui roundtrip"; then echo GUI_SAVED; else echo GUI_NOT_SAVED; fi'
-            )
-            if guest.expect([r"\r*\nGUI_SAVED\r*\n",
-                             r"\r*\nGUI_NOT_SAVED\r*\n"], timeout=60):
-                raise RuntimeError("Mousepad GUI Ctrl+S did not persist typed content")
+            editor = None
+            delta = 0
+            for _ in range(60):
+                time.sleep(0.7)
+                _, _, candidate = scanout("editor-open")
+                delta = pixels_changed(documents, candidate)
+                if delta > 18000:
+                    editor = candidate
+                    break
+            guest.sendline('if pidof mousepad >/dev/null; then echo GUI_MOUSEPAD_LIVE; else echo GUI_MOUSEPAD_MISSING; fi')
+            alive = guest.expect([r"\r*\nGUI_MOUSEPAD_LIVE\r*\n",
+                                  r"\r*\nGUI_MOUSEPAD_MISSING\r*\n"], timeout=35) == 0
             guest.expect(r"# ")
-            print("PASS: physical keyboard edited and saved file in original GTK Mousepad", flush=True)
-        else:
-            # The previous edit is verified from an offline ext4 image before
-            # this boot. This new Mousepad window must be opened by GUI again.
-            guest.sendline('if test "$(cat /root/desktop/documents/note.txt)" = "naseed gui roundtrip"; then echo GUI_REOPENED_DATA; else echo GUI_REOPENED_BAD_DATA; fi')
-            if guest.expect([r"\r*\nGUI_REOPENED_DATA\r*\n",
-                             r"\r*\nGUI_REOPENED_BAD_DATA\r*\n"], timeout=35):
-                raise RuntimeError("reboot lost saved GUI file content")
-            guest.expect(r"# ")
-            print("PASS: second original Alpine boot reopened the persisted file through Thunar GUI", flush=True)
-        chord("ctrl", "w")  # Close the original editor through the real UI.
-        time.sleep(1.0)
-        scanout("editor-closed")
+            if not alive or editor is None:
+                guest.sendline('tail -80 /var/log/naseed-desktop/thunar.log /var/log/naseed-desktop/weston.log 2>/dev/null; echo GUI_DIAGNOSTICS_END')
+                guest.expect(r"\r*\nGUI_DIAGNOSTICS_END\r*\n", timeout=35)
+                raise RuntimeError(f"Thunar doubleclick did not open visible original Mousepad: alive={alive} changed_pixels={delta}")
+            print(f"PASS: GUI {phase}: original Mousepad opened via Thunar physical double-click, pixels={delta}", flush=True)
+            if phase == "edit":
+                # No serial commands edit the file. Focus the actual GTK editor,
+                # select document contents, type fresh data, and Ctrl+S.
+                move_to(240, 180)
+                click()
+                time.sleep(0.6)
+                chord("ctrl", "a")
+                type_text("naseed gui roundtrip\n")
+                chord("ctrl", "s")
+                time.sleep(1.3)
+                scanout("editor-saved")
+                guest.sendline(
+                    'for i in $(seq 1 18); do '
+                    'test "$(cat /root/desktop/documents/note.txt)" = '
+                    '"naseed gui roundtrip" && break; sleep 1; done; '
+                    'if test "$(cat /root/desktop/documents/note.txt)" = '
+                    '"naseed gui roundtrip"; then echo GUI_SAVED; else echo GUI_NOT_SAVED; fi'
+                )
+                if guest.expect([r"\r*\nGUI_SAVED\r*\n",
+                                 r"\r*\nGUI_NOT_SAVED\r*\n"], timeout=60):
+                    raise RuntimeError("Mousepad GUI Ctrl+S did not persist typed content")
+                guest.expect(r"# ")
+                print("PASS: physical keyboard edited and saved file in original GTK Mousepad", flush=True)
+            else:
+                # The previous edit is verified from an offline ext4 image before
+                # this boot. This new Mousepad window must be opened by GUI again.
+                guest.sendline('if test "$(cat /root/desktop/documents/note.txt)" = "naseed gui roundtrip"; then echo GUI_REOPENED_DATA; else echo GUI_REOPENED_BAD_DATA; fi')
+                if guest.expect([r"\r*\nGUI_REOPENED_DATA\r*\n",
+                                 r"\r*\nGUI_REOPENED_BAD_DATA\r*\n"], timeout=35):
+                    raise RuntimeError("reboot lost saved GUI file content")
+                guest.expect(r"# ")
+                print("PASS: second original Alpine boot reopened the persisted file through Thunar GUI", flush=True)
+            chord("ctrl", "w")  # Close the original editor through the real UI.
+            time.sleep(1.0)
+            scanout("editor-closed")
         guest.sendline("poweroff")
         guest.expect(pexpect.EOF, timeout=200)
         guest.close()
