@@ -10,14 +10,17 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) not in (4, 5) or sys.argv[1] not in ("riscv64", "aarch64"):
+if len(sys.argv) not in (4, 5, 6) or sys.argv[1] not in ("riscv64", "aarch64"):
     raise SystemExit(
-        "usage: native-boot.py <riscv64|aarch64> <esp.img> <serial.log> [hello|alpine]"
+        "usage: native-boot.py <riscv64|aarch64> <esp.img> "
+        "<serial.log> [hello|alpine|root [root.ext4]]"
     )
 arch, image, logname = sys.argv[1:4]
-scenario = sys.argv[4] if len(sys.argv) == 5 else "hello"
-if scenario not in ("hello", "alpine"):
-    raise SystemExit(f"unsupported native boot scenario: {scenario}")
+scenario = sys.argv[4] if len(sys.argv) >= 5 else "hello"
+if scenario not in ("hello", "alpine", "root") or (
+    scenario == "root" and len(sys.argv) != 6
+) or (scenario != "root" and len(sys.argv) == 6):
+    raise SystemExit(f"invalid native boot arguments/scenario: {sys.argv[1:]}")
 image = str(pathlib.Path(image).resolve())
 log = pathlib.Path(logname)
 log.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +39,21 @@ base = [
     "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
     "-drive", f"if=none,id=bootdisk,format=raw,file={image},readonly=on",
-    "-device", "virtio-blk-device,drive=bootdisk",
+    "-device", (
+        "virtio-blk-pci,drive=bootdisk" if scenario == "root"
+        else "virtio-blk-device,drive=bootdisk"
+    ),
+]
+if scenario == "root":
+    root_disk = str(pathlib.Path(sys.argv[5]).resolve())
+    if not pathlib.Path(root_disk).is_file():
+        raise SystemExit(f"missing original Alpine ext4 image: {root_disk}")
+    base.extend([
+        "-drive", f"if=none,id=root,format=raw,file={root_disk}",
+        "-device", "virtio-blk-device,drive=root",
+    ])
+# Keep the native userspace boot independent of a host-injected guest shell.
+base += [
 ]
 if arch == "aarch64":
     base += ["-cpu", "cortex-a72", "-semihosting-config",
@@ -50,15 +67,19 @@ required = (
     "[FDT] native hardware resources discovered",
     "[PASS] boot / serial / memory",
     "[ELF] userspace entry=",
-) + (
-    ("\nhello\n", "[EXIT] user status=0", "[PASS] userspace exit 0")
-    if scenario == "hello" else (
-        "[M5] CPIO executable selected:",
-        f"\nNASEED_ALPINE_{arch}_OK\n",
-        "[EXIT] user status=0",
-        "[PASS] cmdline userspace exit 0",
-    )
 )
+if scenario == "hello":
+    required += ("\nhello\n", "[EXIT] user status=0", "[PASS] userspace exit 0")
+elif scenario == "alpine":
+    required += ("[M5] CPIO executable selected:",
+                 f"\nNASEED_ALPINE_{arch}_OK\n", "[EXIT] user status=0",
+                 "[PASS] cmdline userspace exit 0")
+else:
+    required += ("[ROOTFS] physical ext4 root registered at /",
+                 "[M191 ROOT] original Alpine PID1 from mounted ext4: /bin/busybox",
+                 f"\nNASEED_ALPINE_ROOT_{arch}_OK\n",
+                 "[LWEXT4 GUEST] clean upstream unmount and durable flush",
+                 "[EXIT] user status=0", "[PASS] cmdline userspace exit 0")
 deadline = time.monotonic() + 145
 succeeded = False
 with log.open("wb") as f:
@@ -93,7 +114,11 @@ if not succeeded:
 if scenario == "hello":
     print(f"PASS: {arch} QEMU UEFI/Limine full kernel boot, real native "
           "ELF write(2)/exit(2), PID1 exit", flush=True)
-else:
+elif scenario == "alpine":
     print(f"PASS: {arch} official Alpine 3.23 musl/BusyBox ELF from "
           "verified upstream minirootfs, native syscalls and clean exit",
+          flush=True)
+else:
+    print(f"PASS: {arch} official Alpine BusyBox from real writable "
+          "VirtIO-MMIO ext4 root, native syscalls, clean lwext4 unmount",
           flush=True)
