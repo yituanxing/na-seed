@@ -1320,12 +1320,24 @@ with open(f'{work}/init.log','w') as log:
             click()
             time.sleep(1)
             capture_scanout('native-weston-terminal-focused')
-            type_keys('echo 57 >/tmp/nativewlkey\n')
-            guest.sendline('for i in $(seq 1 15); do test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57 && break; sleep 1; done; if test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_FAIL; fi')
-            if guest.expect([r'\r*\nWESTON_DRM_KEYBOARD_PASS\r*\n',
-                             r'\r*\nWESTON_DRM_KEYBOARD_FAIL\r*\n'],timeout=55):
-                raise RuntimeError('native QMP VirtIO evdev keyboard did not reach Weston terminal PTY')
-            guest.expect(r'# ')
+            # QMP mouse button events and native libinput focus delivery are
+            # asynchronous. Reassert the *same physical seat path* with a
+            # bounded click/type/readback cycle rather than racing one click.
+            native_focused=False
+            for attempt in range(4):
+                click()
+                time.sleep(1.2)
+                type_keys('echo 57 >/tmp/nativewlkey\n')
+                guest.sendline('if test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_WAIT; fi')
+                if guest.expect([r'\r*\nWESTON_DRM_KEYBOARD_PASS\r*\n',
+                                 r'\r*\nWESTON_DRM_KEYBOARD_WAIT\r*\n'],timeout=30)==0:
+                    native_focused=True
+                guest.expect(r'# ')
+                if native_focused:
+                    break
+            if not native_focused:
+                capture_scanout('native-weston-terminal-focused')
+                raise RuntimeError('native QMP VirtIO evdev keyboard did not reach Weston terminal PTY after four genuine focus attempts')
             capture_scanout('native-weston-terminal')
             print('PASS: native QMP keyboard -> VirtIO evdev -> Weston DRM seat -> original terminal PTY')
             # Round 7: two original Alpine DRM/Wayland PTYs without Xorg.
