@@ -26,6 +26,7 @@
 #include "../drivers/display/fbdev.h"
 #ifdef NAS_ENABLE_VIRTIO_GPU
 #include "drm_chrdev.h"
+#include "drm_kms.h"
 #endif
 #include "../drivers/core/chrdev.h"
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
@@ -1285,6 +1286,12 @@ static const struct nas_file_ops ops_fbdev={
 /* DRM's nonblocking event/poll and GEM data plane arrive with KMS.
  * Do not advertise invented framebuffer semantics on a DRM descriptor. */
 static const struct nas_file_ops ops_drm={
+    .read_plan=nas_drm_kms_read_plan,
+    .read_record_bytes=32,
+    .read=nas_drm_kms_read,
+    .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
+    .poll_description=nas_drm_kms_poll,
     .ioctl=nas_drm_chrdev_ioctl,
     .release=nas_drm_chrdev_release
 };

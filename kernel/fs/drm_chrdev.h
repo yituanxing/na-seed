@@ -4,8 +4,7 @@
 struct nas_vm_device;
 
 /* Linux DRM primary-node personality for the existing VirtIO GPU owner.
- * This is only the identification ABI. GEM/KMS buffer ownership and
- * modesetting have not been published and must not be claimed as supported. */
+ * GEM, modesetting, and event delivery share the standard File/VM lifetime. */
 int nas_drm_chrdev_init(void);
 uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg);
 void nas_drm_chrdev_release(unsigned slot);

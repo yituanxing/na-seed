@@ -1140,6 +1140,33 @@ with open(f'{work}/init.log','w') as log:
         print(f'DRM KMS real scanout changed pixels: {changed}/{dw*dh}')
         assert changed>80000,'original modetest did not change QEMU VirtIO GPU scanout'
         print('PASS: original Alpine modetest -s -> DRM/KMS -> GEM -> VirtIO GPU changed QEMU pixels')
+        # A live input pipe holds unmodified modetest in its DRM event loop.
+        # Its page_flip_handler queues the next framebuffer from the real
+        # DRM_EVENT_FLIP_COMPLETE records received through libdrm/read/select.
+        guest.sendline('(sleep 25 | modetest -M virtio_gpu -s 44@42:800x600 -v) >/root/modetest-flip.log 2>&1 & flip_pid=$!; echo MODETEST_FLIP_STARTED')
+        guest.expect(r'\r*\nMODETEST_FLIP_STARTED\r*\n',timeout=30)
+        time.sleep(4)
+        sw,sh,flip_frame=capture_scanout('kms-pageflip')
+        assert (sw,sh)==(800,600)
+        moved=sum(flip_frame[i:i+3]!=after_kms[i:i+3]
+                  for i in range(0,len(flip_frame),3))
+        print(f'DRM page-flip real QEMU pixels changed: {moved}/{sw*sh}')
+        guest.sendline('wait "$flip_pid"; printf "MODETEST_FLIP_STATUS=%s\n" "$?"')
+        guest.expect(r'\r*\nMODETEST_FLIP_STATUS=([0-9]+)\r*\n',timeout=100)
+        if guest.match.group(1)!='0':
+            guest.sendline('cat /root/modetest-flip.log; echo PAGEFLIP_LOG_END')
+            guest.expect(r'\r*\nPAGEFLIP_LOG_END\r*\n',timeout=30)
+            raise RuntimeError('original Alpine modetest page flipping failed')
+        guest.expect(r'# ')
+        guest.sendline('if grep -Eq "freq: [1-9][0-9]*" /root/modetest-flip.log; then echo MODETEST_FLIP_EVENTS_PASS; else echo MODETEST_FLIP_EVENTS_FAIL; fi')
+        if guest.expect([r'\r*\nMODETEST_FLIP_EVENTS_PASS\r*\n',
+                         r'\r*\nMODETEST_FLIP_EVENTS_FAIL\r*\n'],timeout=40)!=0:
+            guest.sendline('cat /root/modetest-flip.log; echo PAGEFLIP_LOG_END')
+            guest.expect(r'\r*\nPAGEFLIP_LOG_END\r*\n',timeout=30)
+            raise RuntimeError('original modetest did not receive 60 completed DRM flips')
+        assert moved>10000, 'original page flips did not change real VirtIO GPU pixels'
+        print('PASS: original Alpine modetest -v receives 60+ DRM completion events and changes real QEMU scanout')
+        guest.expect(r'# ')
         guest.sendline('/bin/busybox sh /root/acceptance.sh')
         guest.expect(r'\r*\n\[APP DONE status=[01]\]\r*\n', timeout=900)
         guest.expect(r'# ')

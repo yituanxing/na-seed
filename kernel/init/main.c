@@ -100,6 +100,7 @@ extern bool nas_lwip_guest_boot(void);
 #ifdef NAS_ENABLE_VIRTIO_GPU
 #include "../drivers/display/virtio_gpu.h"
 #include "../fs/drm_chrdev.h"
+#include "../fs/drm_kms.h"
 #endif
 #ifdef NAS_ENABLE_VIRTIO_INPUT
 #include "../drivers/input/virtio_input.h"
@@ -132,6 +133,8 @@ static void deferred_gpu_scanout(void *context) {
     (void)context;
     if(nas_display_primary() && nas_display_present()<0)
         nas_fail("GPU scanout update failed");
+    if(nas_drm_kms_deferred_step()<0)
+        nas_fail("DRM/KMS page-flip completion failed");
     nas_virtio_gpu_report();
 }
 #endif

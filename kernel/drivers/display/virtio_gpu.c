@@ -89,6 +89,8 @@ struct gpu_device {
     struct nas_dma_page *pixels;
     struct nas_display_device display;
     uint64_t submitted, completed, transfers, flushes, irq_acks, next_fence;
+    /* Monotonic dirty/host-flushed epochs, not synthetic ioctl-complete. */
+    uint64_t dirty_serial, epoch_serial, displayed_serial;
     uint32_t irq_pending;
     uint32_t scanout;
     unsigned pixel_pages, entry_pages;
@@ -264,6 +266,7 @@ static int release_dma(struct gpu_device *g) {
 }
 
 static void mark_dirty(struct gpu_device *g,uint32_t first,uint32_t last) {
+    ++g->dirty_serial;
     if(!g->dirty) {g->dirty_y0=first;g->dirty_y1=last;g->dirty=true;}
     else {
         if(first<g->dirty_y0)g->dirty_y0=first;
@@ -378,6 +381,8 @@ static int runtime_complete(struct gpu_device *g) {
         return rc ? runtime_poison(g,rc) : 0;
     }
     ++g->flushes;
+    /* Only a host-ACKed resource flush advances real presentation. */
+    g->displayed_serial=g->epoch_serial;
     g->runtime_phase=GPU_RUNTIME_IDLE;
     return 0;
 }
@@ -409,6 +414,7 @@ static int gpu_present(struct nas_display_device *display) {
     /* New user writes during an in-flight epoch remain dirty for the next
      * transfer; an older flush must never erase those later writes. */
     g->epoch_first=first;g->epoch_last=last;
+    g->epoch_serial=g->dirty_serial;
     g->dirty=false;
     struct gpu_rect rect={0,little32(first),little32(GPU_WIDTH),
                           little32(last-first)};
@@ -578,6 +584,15 @@ int nas_virtio_gpu_driver_register(void) {
     return nas_bus_driver_register(&gpu_driver);
 }
 unsigned nas_virtio_gpu_count(void) {return gpu.claimed?1U:0U;}
+void nas_virtio_gpu_get_scanout_state(struct nas_virtio_gpu_scanout_state *out) {
+    if(!out)return;
+    *out=(struct nas_virtio_gpu_scanout_state){
+        .dirty_serial=gpu.dirty_serial,
+        .displayed_serial=gpu.displayed_serial,
+        .busy=gpu.runtime_phase!=GPU_RUNTIME_IDLE,
+        .dirty=gpu.dirty,.ready=gpu.claimed && !gpu.stalled
+    };
+}
 void nas_virtio_gpu_get_stats(struct nas_virtio_gpu_stats *out) {
     if(!out)return;
     *out=(struct nas_virtio_gpu_stats){

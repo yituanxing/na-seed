@@ -11,6 +11,8 @@
 #include "drm_kms.h"
 #include "drm_gem.h"
 #include "../drivers/display/display.h"
+#include "../drivers/display/virtio_gpu.h"
+#include "../arch/arch.h"
 #include "../mm/device_backing.h"
 #include "../mm/usercopy.h"
 #include "../fd.h"
@@ -43,6 +45,10 @@
 #define KMS_IOCTL_ADDFB2 UINT32_C(0xc06864b8)
 #define KMS_IOCTL_RMFB UINT32_C(0xc00464af)
 #define KMS_IOCTL_DIRTYFB UINT32_C(0xc01864b1)
+#define KMS_IOCTL_PAGE_FLIP UINT32_C(0xc01864b0)
+#define KMS_PAGE_FLIP_EVENT 1U
+#define KMS_EVENT_FLIP_COMPLETE 2U
+#define KMS_MAX_EVENTS 16U
 #define KMS_IOCTL_SET_CLIENT_CAP UINT32_C(0x4010640d)
 #define KMS_IOCTL_OBJ_GETPROPERTIES UINT32_C(0xc02064b9)
 #define KMS_IOCTL_GETPROPERTY UINT32_C(0xc04064aa)
@@ -96,6 +102,17 @@ struct kms_dirty {
     uint64_t clips;
 };
 struct kms_client_cap {uint64_t capability,value;};
+struct kms_page_flip {
+    uint32_t crtc_id,fb_id,flags,reserved;
+    uint64_t user_data;
+};
+struct kms_flip_event {
+    uint32_t type,length;
+    uint64_t user_data;
+    uint32_t tv_sec,tv_usec,sequence,crtc_id;
+};
+_Static_assert(sizeof(struct kms_page_flip)==24U,"DRM page flip");
+_Static_assert(sizeof(struct kms_flip_event)==32U,"DRM event_vblank");
 struct kms_obj_properties {
     uint64_t props,values;
     uint32_t count,obj_id,obj_type;
@@ -131,6 +148,20 @@ static uint32_t next_fb_id=64U;
 static unsigned master_slot=KMS_INVALID_SLOT;
 static uint32_t current_fb;
 static bool crtc_enabled,universal_planes[NAS_OPEN_FILE_LIMIT];
+/* Linux event records belong to a shared OpenFile, so dup/fork receive the
+ * same queue. The scheduler owns completion; usercopy happens only in read. */
+struct kms_event_fifo {
+    struct kms_flip_event records[KMS_MAX_EVENTS];
+    uint8_t read_index,count;
+};
+static struct kms_event_fifo event_fifo[NAS_OPEN_FILE_LIMIT];
+static struct {
+    bool pending,staged,want_event;
+    unsigned owner_slot;
+    uint32_t fb_id;
+    uint64_t user_data,submitted_serial;
+} flip;
+static uint32_t flip_sequence;
 
 static bool kms_available(void) {
     const struct nas_display_device *d=nas_display_primary();
@@ -361,12 +392,14 @@ static int release_fb(struct kms_framebuffer *fb) {
     backing->put(backing->context);
     return 0;
 }
+/* Do not reclaim the backing while an accepted flip still needs it. */
 static uint64_t rm_fb(unsigned slot,uint64_t arg) {
     uint32_t id=0;int rc=copyin(&id,arg,sizeof(id));
     if(rc)return (uint64_t)(int64_t)rc;
     struct kms_framebuffer *fb=find_fb(id);
     if(!fb)return (uint64_t)-ENOENT;
     if(fb->owner_slot!=slot)return (uint64_t)-EACCES;
+    if(flip.pending && flip.fb_id==fb->id)return (uint64_t)-EBUSY;
     return (uint64_t)(int64_t)release_fb(fb);
 }
 static uint64_t set_crtc(unsigned slot,uint64_t arg) {
@@ -374,6 +407,7 @@ static uint64_t set_crtc(unsigned slot,uint64_t arg) {
     if(rc)return (uint64_t)(int64_t)rc;
     if(c.crtc_id!=KMS_CRTC)return (uint64_t)-ENOENT;
     if(master_slot!=slot)return (uint64_t)-EACCES;
+    if(flip.pending)return (uint64_t)-EBUSY;
     if(!c.fb_id) {
         if(c.count_connectors || c.mode_valid)return (uint64_t)-EINVAL;
         current_fb=0;crtc_enabled=false;return 0;
@@ -400,14 +434,120 @@ static uint64_t dirty_fb(unsigned slot,uint64_t arg) {
     if(!crtc_enabled || current_fb!=fb->id)return 0;
     return (uint64_t)(int64_t)scanout_copy(fb);
 }
+static uint64_t page_flip(unsigned slot,uint64_t arg) {
+    struct kms_page_flip req;
+    int rc=copyin(&req,arg,sizeof(req));
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(req.crtc_id!=KMS_CRTC)return (uint64_t)-ENOENT;
+    if(req.flags&~KMS_PAGE_FLIP_EVENT || req.reserved)return (uint64_t)-EINVAL;
+    if(master_slot!=slot)return (uint64_t)-EACCES;
+    if(!crtc_enabled || !current_fb)return (uint64_t)-EINVAL;
+    if(flip.pending)return (uint64_t)-EBUSY;
+    struct kms_framebuffer *fb=find_fb(req.fb_id);
+    if(!fb || fb->owner_slot!=slot)return (uint64_t)-ENOENT;
+    if((req.flags&KMS_PAGE_FLIP_EVENT) &&
+       event_fifo[slot].count>=KMS_MAX_EVENTS)return (uint64_t)-EBUSY;
+    /* Accept only one outstanding flip on the single real CRTC. The
+     * staging copy and GPU submit are deferred until previous flushes
+     * retire, never performed against an in-flight DMA transfer. */
+    flip.pending=true;
+    flip.staged=false;
+    flip.want_event=(req.flags&KMS_PAGE_FLIP_EVENT)!=0;
+    flip.owner_slot=slot;
+    flip.fb_id=req.fb_id;
+    flip.user_data=req.user_data;
+    flip.submitted_serial=0;
+    return 0;
+}
+static void emit_flip_event(unsigned slot,uint64_t user_data) {
+    if(slot>=NAS_OPEN_FILE_LIMIT)return;
+    struct kms_event_fifo *fifo=&event_fifo[slot];
+    if(fifo->count>=KMS_MAX_EVENTS)__builtin_trap();
+    uint64_t ns=nas_arch_monotonic_ns();
+    struct kms_flip_event event={
+        .type=KMS_EVENT_FLIP_COMPLETE,
+        .length=sizeof(struct kms_flip_event),
+        .user_data=user_data,
+        .tv_sec=(uint32_t)(ns/UINT64_C(1000000000)),
+        .tv_usec=(uint32_t)((ns%UINT64_C(1000000000))/1000U),
+        .sequence=++flip_sequence,.crtc_id=KMS_CRTC
+    };
+    unsigned tail=(fifo->read_index+fifo->count)%KMS_MAX_EVENTS;
+    fifo->records[tail]=event;
+    ++fifo->count;
+}
+int nas_drm_kms_deferred_step(void) {
+    if(!flip.pending)return 0;
+    struct nas_virtio_gpu_scanout_state state={0};
+    nas_virtio_gpu_get_scanout_state(&state);
+    if(!state.ready)return -ENODEV;
+    if(!flip.staged) {
+        if(state.busy || state.dirty)return 0;
+        struct kms_framebuffer *fb=find_fb(flip.fb_id);
+        if(!fb || fb->owner_slot!=flip.owner_slot)return -EIO;
+        /* This path submits a real 800x600 VirtIO resource transfer and
+         * resource flush through the already owned DisplayDevice. */
+        int rc=scanout_copy(fb);
+        if(rc)return rc;
+        nas_virtio_gpu_get_scanout_state(&state);
+        flip.submitted_serial=state.dirty_serial;
+        flip.staged=true;
+        return 0;
+    }
+    if(state.displayed_serial<flip.submitted_serial)return 0;
+    /* Completion is after the host acknowledges the final flush, not
+     * after the PAGE_FLIP ioctl or CPU-side GEM copy. */
+    current_fb=flip.fb_id;
+    crtc_enabled=true;
+    unsigned owner=flip.owner_slot;
+    uint64_t data=flip.user_data;
+    bool event=flip.want_event;
+    flip.pending=false;
+    flip.staged=false;
+    if(event)emit_flip_event(owner,data);
+    return 0;
+}
+uint64_t nas_drm_kms_read_plan(unsigned slot,uint64_t requested) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_file_slot_live(slot))
+        return (uint64_t)-EBADF;
+    if(!requested)return 0;
+    if(requested<sizeof(struct kms_flip_event))
+        return (uint64_t)-EINVAL;
+    const struct kms_event_fifo *fifo=&event_fifo[slot];
+    if(!fifo->count)return (uint64_t)-EAGAIN;
+    uint64_t records=requested/sizeof(struct kms_flip_event);
+    if(records>fifo->count)records=fifo->count;
+    return records*sizeof(struct kms_flip_event);
+}
+uint64_t nas_drm_kms_read(unsigned slot,uint8_t *dst,uint64_t bytes) {
+    uint64_t budget=nas_drm_kms_read_plan(slot,bytes);
+    if((int64_t)budget<0)return budget;
+    if(bytes<budget || !dst)return (uint64_t)-EFAULT;
+    struct kms_event_fifo *fifo=&event_fifo[slot];
+    for(uint64_t i=0;i<budget/sizeof(struct kms_flip_event);i++) {
+        memcpy(dst+i*sizeof(struct kms_flip_event),
+               &fifo->records[fifo->read_index],
+               sizeof(struct kms_flip_event));
+        fifo->read_index=(fifo->read_index+1U)%KMS_MAX_EVENTS;
+        --fifo->count;
+    }
+    return budget;
+}
+uint16_t nas_drm_kms_poll(unsigned slot,uint16_t requested) {
+    return slot<NAS_OPEN_FILE_LIMIT && (requested&1U) &&
+           event_fifo[slot].count ? 1U:0U;
+}
 int nas_drm_kms_open(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return -EINVAL;
     universal_planes[slot]=false;
+    event_fifo[slot]=(struct kms_event_fifo){0};
     if(master_slot==KMS_INVALID_SLOT)master_slot=slot;
     return 0;
 }
 void nas_drm_kms_release(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT)return;
+    if(flip.pending && flip.owner_slot==slot)flip.pending=false;
+    event_fifo[slot]=(struct kms_event_fifo){0};
     for(unsigned i=0;i<KMS_FB_MAX;i++)
         if(fbs[i].backing && fbs[i].owner_slot==slot)
             (void)release_fb(&fbs[i]);
@@ -424,6 +564,7 @@ uint64_t nas_drm_kms_ioctl(unsigned slot,uint32_t cmd,uint64_t arg) {
     }
     if(cmd==KMS_IOCTL_DROP_MASTER) {
         if(master_slot!=slot)return (uint64_t)-EINVAL;
+        if(flip.pending && flip.owner_slot==slot)return (uint64_t)-EBUSY;
         master_slot=KMS_INVALID_SLOT;return 0;
     }
     if(cmd==KMS_IOCTL_SET_CLIENT_CAP) {
@@ -447,6 +588,7 @@ uint64_t nas_drm_kms_ioctl(unsigned slot,uint32_t cmd,uint64_t arg) {
     case KMS_IOCTL_ADDFB2:return add_fb(slot,arg,true);
     case KMS_IOCTL_RMFB:return rm_fb(slot,arg);
     case KMS_IOCTL_DIRTYFB:return dirty_fb(slot,arg);
+    case KMS_IOCTL_PAGE_FLIP:return page_flip(slot,arg);
     case KMS_IOCTL_OBJ_GETPROPERTIES:return object_properties(arg);
     case KMS_IOCTL_GETPROPERTY:return get_property(arg);
     default:return (uint64_t)-ENOTTY;
