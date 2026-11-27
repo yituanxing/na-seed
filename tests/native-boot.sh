@@ -32,19 +32,28 @@ mcopy -i "$disk" "build/deps/limine-binary/$efi" "::/EFI/BOOT/$efi"
 mcopy -i "$disk" "$kernel" "::/boot/kernel"
 mcopy -i "$disk" "$user" "::/boot/user-hello"
 # Same Limine module/entry contract used by x86; no guest-side fake program.
-if [ "$arch" = riscv64 ]; then
-    # This QEMU UEFI firmware may expose ACPI but no EFI DTB table.
-    # Pass the real, generated QEMU virt FDT through Limine's documented
-    # dtb_path. Never synthesize a device tree or hardcode IRQ/MMIO data.
-    qemu-system-riscv64 -machine "virt,acpi=off,dumpdtb=$dir/qemu-virt.dtb" \
-        -cpu rv64 -m 1024M -smp 1 -display none -monitor none -serial none \
-        -drive "if=none,id=bootdisk,format=raw,file=$disk,readonly=on" \
-        -device virtio-blk-device,drive=bootdisk
-    test -s "$dir/qemu-virt.dtb"
-    mcopy -i "$disk" "$dir/qemu-virt.dtb" ::/boot/qemu-virt.dtb
-    printf 'timeout: 0\n/NaSeed\n    protocol: limine\n    path: boot():/boot/kernel\n    module_path: boot():/boot/user-hello\n    dtb_path: boot():/boot/qemu-virt.dtb\n' > "$dir/limine.conf"
-else
-    cp limine.conf "$dir/limine.conf"
-fi
+# The distro UEFI firmware may not publish an EFI DTB table for either
+# architecture. Supply the exact QEMU-generated device tree to the official
+# Limine dtb_path instead of bypassing NaSeed's native hardware validation.
+case "$arch" in
+  riscv64)
+    qemu=qemu-system-riscv64
+    cpu=rv64
+    machine=virt,acpi=off
+    ;;
+  aarch64)
+    qemu=qemu-system-aarch64
+    cpu=cortex-a72
+    machine=virt
+    ;;
+esac
+rm -f "$dir/qemu-virt.dtb"
+"$qemu" -machine "$machine,dumpdtb=$dir/qemu-virt.dtb" \
+    -cpu "$cpu" -m 1024M -smp 1 -display none -monitor none -serial none \
+    -nic none -drive "if=none,id=bootdisk,format=raw,file=$disk,readonly=on" \
+    -device virtio-blk-device,drive=bootdisk
+test -s "$dir/qemu-virt.dtb"
+mcopy -i "$disk" "$dir/qemu-virt.dtb" ::/boot/qemu-virt.dtb
+printf 'timeout: 0\n/NaSeed\n    protocol: limine\n    path: boot():/boot/kernel\n    module_path: boot():/boot/user-hello\n    dtb_path: boot():/boot/qemu-virt.dtb\n' > "$dir/limine.conf"
 mcopy -i "$disk" "$dir/limine.conf" ::/boot/limine/limine.conf
 python3 tests/native-boot.py "$arch" "$disk" "$dir/serial.log"
