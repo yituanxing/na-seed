@@ -1265,32 +1265,58 @@ def verify_wayland():
         if guest.expect([r'\r*\nWAYLAND_BOTH_ALIVE\r*\n',r'\r*\nWAYLAND_BOTH_DEAD\r*\n'],timeout=30):
             raise RuntimeError('two original Wayland terminal clients did not coexist')
         capture_scanout('wayland-two-terminals')
-        # Commands are typed through physical QMP/VirtIO devices. Their
-        # inherited tag identifies the actual PTY that received each command.
+        # Commands are typed through PHYSICAL QMP/VirtIO keyboard. Never
+        # assume that clicking the overlapping terminal pair gives focus to
+        # beta: one real failing screenshot shows alpha still on top.
+        # Weston itself selects the next toplevel via Super+Tab. Check its
+        # actual independent PTY environment, with freshly cleared markers.
         move_to(wx+ww//2,wy+wh//2)
         click()
-        time.sleep(1)
-        type_keys('env >/tmp/wl6b\n',pace=0.08)
-        guest.sendline('for i in $(seq 1 12); do grep -Fxq tag=beta /tmp/wl6b 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=beta /tmp/wl6b 2>/dev/null; then echo WAYLAND_BETA_FOCUS_PASS; else echo WAYLAND_BETA_FOCUS_FAIL; fi')
-        if guest.expect([r'\r*\nWAYLAND_BETA_FOCUS_PASS\r*\n',r'\r*\nWAYLAND_BETA_FOCUS_FAIL\r*\n'],timeout=45):
-            raise RuntimeError('physical pointer failed to focus the second Wayland PTY')
-        desktop_chord(['meta_l','tab'],pace=0.08)
-        type_keys('env >/tmp/wl6a\n',pace=0.08)
-        guest.sendline('for i in $(seq 1 12); do grep -Fxq tag=alpha /tmp/wl6a 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=alpha /tmp/wl6a 2>/dev/null; then echo WAYLAND_ALPHA_SWITCH_PASS; else echo WAYLAND_ALPHA_SWITCH_FAIL; fi')
-        if guest.expect([r'\r*\nWAYLAND_ALPHA_SWITCH_PASS\r*\n',r'\r*\nWAYLAND_ALPHA_SWITCH_FAIL\r*\n'],timeout=45):
-            raise RuntimeError('Weston Super+Tab did not switch to the first original terminal PTY')
-        desktop_chord(['meta_l','tab'],pace=0.08)
+        time.sleep(0.7)
+        def nested_focus_tag(tag, marker, attempts=6):
+            for focus_attempt in range(attempts):
+                guest.sendline(f'rm -f {marker}; echo NESTED_WL_FRESH_MARKER')
+                guest.expect(r'\r*\nNESTED_WL_FRESH_MARKER\r*\n',timeout=35)
+                guest.expect(r'# ')
+                desktop_chord(['meta_l','tab'],pace=0.08)
+                type_keys(f'env >{marker}\n',pace=0.08)
+                guest.sendline(f'for i in $(seq 1 7); do grep -Fxq tag={tag} {marker} 2>/dev/null && break; sleep 1; done; if grep -Fxq tag={tag} {marker} 2>/dev/null; then echo NESTED_WL_FOCUS_PASS; else echo NESTED_WL_FOCUS_WAIT; fi')
+                focused=guest.expect([r'\r*\nNESTED_WL_FOCUS_PASS\r*\n',r'\r*\nNESTED_WL_FOCUS_WAIT\r*\n'],timeout=40)==0
+                guest.expect(r'# ')
+                if focused:return True
+            return False
+        if not nested_focus_tag('beta','/tmp/wl6b'):
+            capture_scanout('wayland-beta-focus-failed')
+            raise RuntimeError('physical Weston Super+Tab never reached independent beta Wayland PTY')
+        print('PASS: nested Weston switched physical keyboard into second original PTY')
+        if not nested_focus_tag('alpha','/tmp/wl6a'):
+            raise RuntimeError('physical Weston Super+Tab never returned to independent alpha Wayland PTY')
+        # Re-establish beta focus with NEW shell-side evidence before
+        # actually typing exit. Otherwise an out-of-focus exit can
+        # terminate alpha while the test falsely names beta.
+        if not nested_focus_tag('beta','/tmp/wl6returnbeta'):
+            raise RuntimeError('physical Weston seat cannot reselect beta before exit')
         type_keys('exit\n',pace=0.08)
         guest.sendline('for i in $(seq 1 15); do if ! kill -0 "$wtp2" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wtp2/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wtp2" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wtp2/status" 2>/dev/null; then wait "$wtp2"; printf "WAYLAND_SECOND_EXIT=%s\n" "$?"; wtp2=; else echo WAYLAND_SECOND_STUCK; fi')
         if guest.expect([r'\r*\nWAYLAND_SECOND_EXIT=0\r*\n',r'\r*\nWAYLAND_SECOND_STUCK\r*\n',r'\r*\nWAYLAND_SECOND_EXIT=[0-9]+\r*\n'],timeout=65):
             raise RuntimeError('second Weston PTY failed clean shell exit')
-        move_to(wx+ww//2,wy+wh//2)
-        click()
-        time.sleep(0.6)
-        type_keys('env >/tmp/wl6survive\n',pace=0.08)
-        guest.sendline('for i in $(seq 1 12); do grep -Fxq tag=alpha /tmp/wl6survive 2>/dev/null && break; sleep 1; done; if kill -0 "$wtp" 2>/dev/null && kill -0 "$wlp" 2>/dev/null && grep -Fxq tag=alpha /tmp/wl6survive 2>/dev/null; then echo WAYLAND_SURVIVOR_PASS; else echo WAYLAND_SURVIVOR_FAIL; fi')
-        if guest.expect([r'\r*\nWAYLAND_SURVIVOR_PASS\r*\n',r'\r*\nWAYLAND_SURVIVOR_FAIL\r*\n'],timeout=45):
-            raise RuntimeError('surviving Wayland PTY failed after other client exit')
+        guest.expect(r'# ')
+        survivor=False
+        for focus_attempt in range(5):
+            guest.sendline('rm -f /tmp/wl6survive; echo NESTED_SURVIVOR_MARKER_CLEARED')
+            guest.expect(r'\r*\nNESTED_SURVIVOR_MARKER_CLEARED\r*\n',timeout=30)
+            guest.expect(r'# ')
+            move_to(wx+ww//2,wy+wh//2)
+            click()
+            time.sleep(0.65)
+            type_keys('env >/tmp/wl6survive\n',pace=0.08)
+            guest.sendline('for i in $(seq 1 7); do grep -Fxq tag=alpha /tmp/wl6survive 2>/dev/null && break; sleep 1; done; if kill -0 "$wtp" 2>/dev/null && kill -0 "$wlp" 2>/dev/null && grep -Fxq tag=alpha /tmp/wl6survive 2>/dev/null; then echo WAYLAND_SURVIVOR_PASS; else echo WAYLAND_SURVIVOR_WAIT; fi')
+            survivor=guest.expect([r'\r*\nWAYLAND_SURVIVOR_PASS\r*\n',r'\r*\nWAYLAND_SURVIVOR_WAIT\r*\n'],timeout=40)==0
+            guest.expect(r'# ')
+            if survivor:break
+            desktop_chord(['meta_l','tab'],pace=0.08)
+        if not survivor:
+            raise RuntimeError('surviving original Weston terminal did not receive physical keyboard input after beta exit')
         capture_scanout('wayland-survivor')
         print('PASS: two original Wayland PTYs, physical mouse focus, Super+Tab isolation, clean close and surviving terminal')
         assert protocol_ok,'Wayland client registry lacks wl_compositor or xdg_wm_base'
