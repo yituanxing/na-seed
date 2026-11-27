@@ -37,6 +37,9 @@ base = [
     "virt,acpi=off" if arch == "riscv64" else "virt", "-m", "1024M",
     "-smp", "1", "-display", "none", "-monitor", "none",
     "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
+    # Native NaSeed VirtIO-MMIO deliberately implements modern v2 only.
+    # QEMU virt defaults to legacy v1 otherwise, even for virtio-blk-device.
+    "-global", "virtio-mmio.force-legacy=false",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
     "-drive", f"if=none,id=bootdisk,format=raw,file={image},readonly=on",
     "-device", (
