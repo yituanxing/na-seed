@@ -1450,7 +1450,13 @@ with open(f'{work}/init.log','w') as log:
                 idle_change=sum(initial[i:i+3]!=before[i:i+3]
                                 for i in range(0,len(before),3))
                 assert idle_change<10000, ('native GTK baseline not stable',name,idle_change)
-                guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
+                # Capture syscall chronology at process creation instead of
+                # ptrace-attaching to a running GLib thread (which timed out).
+                # This is diagnostics only; never count traced process liveness
+                # as a window-rendering PASS.
+                tracer=('strace -f -tt -s 96 -o /root/native-gtk-'+name+'.syscalls '
+                        '-e trace=futex,epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat ') if name=='mousepad-no-dbus' else ''
+                guest.sendline(f'{tracer}env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
                 guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
                 delta=0
@@ -1481,6 +1487,10 @@ with open(f'{work}/init.log','w') as log:
                         guest.sendline(f'echo === GTK_OPEN_DESCRIPTORS ===; ls -l /proc/$native_gtk_pid/fd 2>/dev/null; echo === GTK_SESSION_BUS ===; cat /root/native-gtk-bus.log 2>/dev/null; echo NATIVE_GTK_PASSIVE_DIAG_END')
                         guest.expect(r'\r*\nNATIVE_GTK_PASSIVE_DIAG_END\r*\n',timeout=30)
                         print(f'Native GTK {name} passive diagnostics:',guest.before[-12000:])
+                        if tracer:
+                            guest.sendline(f'tail -150 /root/native-gtk-{name}.syscalls 2>/dev/null; echo GTK_SYSCALL_CHRONOLOGY_END')
+                            guest.expect(r'\\r*\\nGTK_SYSCALL_CHRONOLOGY_END\\r*\\n',timeout=45)
+                            print(f'Native GTK {name} syscall chronology:',guest.before[-22000:])
                         raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
                     print(f'PASS: original Alpine GTK {name} on direct Weston DRM, actual central Wayland window pixels={delta}')
                 finally:
