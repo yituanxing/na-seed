@@ -2006,10 +2006,9 @@ DESKTOP_BOOT
 dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
 e2fsck -fn "$work/partition.ext4"
 echo 'PASS: third auto-desktop boot leaves real ext4 consistent'
-if [ -f "$work/legacy-graphics.failed" ]; then
-    echo 'FAIL: legacy Xorg/nested Wayland regression remains red (all independent boot tests completed)' >&2
-    exit 1
-fi
+# The old Xorg/nested Wayland result remains mandatory, but must not prevent
+# the independent round-8 boot and physical-GUI acceptance from running.
+# Keep its failure marker and report it after all independent regressions.
 
 # Round 8: TWO MORE fully independent Alpine boots. Every GUI action below
 # travels through QMP -> VirtIO -> Weston seat -> original Thunar/Mousepad.
@@ -2026,3 +2025,7 @@ e2fsck -fn "$work/partition.ext4"
 debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/gui-note.txt"
 test "$(cat "$work/gui-note.txt")" = 'naseed gui roundtrip'
 echo 'PASS: actual Thunar doubleclick -> Mousepad GUI edit/save -> GUI close -> poweroff -> reboot -> Thunar doubleclick reopen -> clean ext4'
+if [ -f "$work/legacy-graphics.failed" ]; then
+    echo 'FAIL: legacy Xorg/nested Wayland regression remains red (all independent boot tests completed)' >&2
+    exit 1
+fi
