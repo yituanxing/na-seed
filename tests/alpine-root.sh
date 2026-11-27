@@ -1258,7 +1258,13 @@ with open(f'{work}/init.log','w') as log:
             # Weston intentionally does not focus a new toplevel merely
             # because it is mapped. Exercise the real QMP -> VirtIO mouse
             # path and click the terminal before sending keyboard events.
-            move_to(400,300)
+            # QMP relative motion through the genuine VirtIO pointer does
+            # not require an X11 server or xdotool pointer query. Three
+            # bounded steps reach the interior of the mapped terminal from
+            # either the display origin or the compositing seat's center.
+            for _ in range(3):
+                input_events([{'type':'rel','data':{'axis':'x','value':50}},
+                              {'type':'rel','data':{'axis':'y','value':50}}])
             click()
             time.sleep(1)
             capture_scanout('native-weston-terminal-focused')
