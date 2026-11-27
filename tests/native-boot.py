@@ -7,6 +7,7 @@ user-space syscall write, and PID1 exit on the current Git commit.
 """
 import json
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -184,10 +185,10 @@ with log.open("wb") as f:
                     proc.stdin.flush()
                     stage = 3
                 elif (scenario == "desktop" and stage == 3 and
-                      "NASEED_NATIVE_DESKTOP_SESSION_FAILED" in text):
+                      re.search(r"(?m)^NASEED_NATIVE_DESKTOP_SESSION_FAILED\\s*$", text)):
                     break
                 elif (scenario == "desktop" and stage == 3 and
-                      "NASEED_NATIVE_DESKTOP_SESSION_READY" in text):
+                      re.search(r"(?m)^NASEED_NATIVE_DESKTOP_SESSION_READY\\s*$", text)):
                     try:
                         width, height, visible, colors = capture_real_gpu_frame(
                             qmp_socket, log.parent / f"{arch}-desktop-frame.ppm")
