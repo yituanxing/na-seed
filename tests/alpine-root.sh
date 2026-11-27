@@ -1489,7 +1489,7 @@ with open(f'{work}/init.log','w') as log:
                         print(f'Native GTK {name} passive diagnostics:',guest.before[-12000:])
                         if tracer:
                             guest.sendline(f'tail -150 /root/native-gtk-{name}.syscalls 2>/dev/null; echo GTK_SYSCALL_CHRONOLOGY_END')
-                            guest.expect(r'\\r*\\nGTK_SYSCALL_CHRONOLOGY_END\\r*\\n',timeout=45)
+                            guest.expect(r'\r*\nGTK_SYSCALL_CHRONOLOGY_END\r*\n',timeout=45)
                             print(f'Native GTK {name} syscall chronology:',guest.before[-22000:])
                         raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
                     print(f'PASS: original Alpine GTK {name} on direct Weston DRM, actual central Wayland window pixels={delta}')
