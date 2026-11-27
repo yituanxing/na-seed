@@ -1455,14 +1455,16 @@ with open(f'{work}/init.log','w') as log:
                 # This is diagnostics only; never count traced process liveness
                 # as a window-rendering PASS.
                 tracer=('strace -f -tt -s 96 -o /root/native-gtk-'+name+'.syscalls '
-                        '-e trace=futex,epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat,read,write,readv,writev,clock_gettime ') if name=='mousepad-minimal' else ''
+                        '-e trace=epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,connect,ioctl,openat,read,write,readv,writev ') if name=='mousepad-minimal' else ''
                 guest.sendline(f'{tracer}env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm WAYLAND_DEBUG=client XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1 {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
                 guest.expect(r'\r*\nNATIVE_GTK_STARTED\r*\n',timeout=30)
                 guest.expect(r'# ')
                 delta=0
                 try:
-                    for attempt in range(16):
-                        time.sleep(0.8)
+                    # Allow real unmodified GTK startup time under QEMU TCG;
+                    # reaching the protocol registry alone is never a PASS.
+                    for attempt in range(70):
+                        time.sleep(0.85)
                         aw,ah,after=capture_scanout('native-gtk-'+name)
                         assert (aw,ah)==(bw,bh)
                         # Exclude the top desktop clock and the pointer edge.
