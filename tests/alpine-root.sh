@@ -1487,6 +1487,7 @@ with open(f'{work}/init.log','w') as log:
                     guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
                     guest.expect(r'\r*\nNATIVE_GTK_CLIENT_REAPED\r*\n',timeout=45)
                     guest.expect(r'# ')
+            native_gtk_window('mousepad-no-dbus','mousepad --disable-server /root/desktop/documents/note.txt')
             native_gtk_window('mousepad','mousepad /root/desktop/documents/note.txt')
             native_gtk_window('thunar','thunar /root/desktop')
             guest.sendline('kill "$native_gtk_bus_pid" 2>/dev/null; native_gtk_bus_pid=; echo NATIVE_GTK_BUS_CLOSED')
