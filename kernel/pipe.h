@@ -3,12 +3,18 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "fd.h"
 
 /* Bounded anonymous-pipe backend. Only shared open-description slots enter
  * this API; syscall/FD decoding, user copying, SIGPIPE and task scheduling
  * stay in the callers. Two endpoint slots have independent refcounts.
  */
-#define NAS_PIPE_COUNT 32
+/* A live File description can hold a read and a write side of distinct
+ * AF_UNIX stream channels. Socketpairs therefore need up to TWO rings per
+ * File description; the old 32-ring global limit caused ENFILE during real
+ * GTK/Xorg desktop sessions even when unused File slots were available.
+ * Rings are heap-allocated only for live channels, not for this table. */
+#define NAS_PIPE_COUNT (2U * NAS_OPEN_FILE_LIMIT)
 /* Linux PIPE_BUF is independent of the adjustable ring capacity. */
 #define NAS_PIPE_CAP 4096U
 #define NAS_PIPE_MAX_CAP (1024U * 1024U)

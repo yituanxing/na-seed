@@ -389,6 +389,31 @@ os.unlink(path)
 print('original Alpine Python: AF_UNIX MSG_DONTWAIT RX/TX and shared File flags PASS')
 SOCKETCHECK
 }
+unix_channel_capacity() {
+    # Original distribution Python exercises a live IPC graph larger than the
+    # historical 32-ring limit (each AF_UNIX socketpair owns two channels).
+    # Releasing and recreating the graph repeatedly catches lost ring owners.
+    python3 - <<'CHANNELCHECK'
+import socket
+for round_no in range(6):
+    pairs=[]
+    try:
+        for index in range(24):
+            a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+            pairs.append((a,b))
+        for index,(a,b) in enumerate(pairs):
+            payload=bytes([65+index])
+            assert a.send(payload)==1
+            assert b.recv(1)==payload
+            assert b.send(payload)==1
+            assert a.recv(1)==payload
+    finally:
+        for a,b in pairs:
+            a.close()
+            b.close()
+print('original Alpine Python 48 simultaneous AF_UNIX channels + reuse PASS')
+CHANNELCHECK
+}
 unix_scm_credentials() {
     python3 - <<'SCMCHECK'
 import errno,os,socket,struct
@@ -559,6 +584,7 @@ run sqlite database
 run lua lua_runtime
 run python python_runtime
 run unix-msg-dontwait unix_msg_dontwait
+run unix-channel-capacity unix_channel_capacity
 run unix-scm-credentials unix_scm_credentials
 run readonly-shared-mmap readonly_shared_mmap
 run mremap-shared-file mremap_shared_file

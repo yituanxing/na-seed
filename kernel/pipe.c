@@ -17,7 +17,8 @@ struct nas_pipe {
     bool named;
     uint64_t named_mount_id,named_ino;
     /* Allocate the 4 KiB ring only while an actual pipe/FIFO exists.
-     * The table itself is just 32 lightweight capacity/ownership records. */
+     * Ring metadata reserves the File-lifetime-derived upper bound, while
+ * byte buffers are allocated only for channels that really exist. */
     uint8_t *data;
     unsigned capacity;
     unsigned head, count, read_slot, write_slot;
@@ -26,8 +27,10 @@ static struct nas_pipe pipe_table[NAS_PIPE_COUNT];
 /* Socketpair endpoints have one incoming and one outgoing channel, so
  * read/write ownership is tracked independently instead of duplicating the
  * ring implementation or inventing a second IPC lifetime model. */
-static uint8_t pipe_read_owner[NAS_OPEN_FILE_LIMIT];
-static uint8_t pipe_write_owner[NAS_OPEN_FILE_LIMIT];
+/* One-based pipe index; 2 * NAS_OPEN_FILE_LIMIT can exceed UINT8_MAX. */
+_Static_assert(NAS_PIPE_COUNT <= UINT16_MAX, "pipe owner tag must fit");
+static uint16_t pipe_read_owner[NAS_OPEN_FILE_LIMIT];
+static uint16_t pipe_write_owner[NAS_OPEN_FILE_LIMIT];
 static bool socket_read_closed[NAS_OPEN_FILE_LIMIT];
 static bool socket_write_closed[NAS_OPEN_FILE_LIMIT];
 
@@ -139,8 +142,8 @@ int nas_pipe_create(unsigned read_slot, unsigned write_slot) {
     pipe->head = pipe->count = 0;
     pipe->read_slot = read_slot;
     pipe->write_slot = write_slot;
-    pipe_read_owner[read_slot] = (uint8_t)(index + 1);
-    pipe_write_owner[write_slot] = (uint8_t)(index + 1);
+    pipe_read_owner[read_slot] = (uint16_t)(index + 1);
+    pipe_write_owner[write_slot] = (uint16_t)(index + 1);
     return 0;
 }
 int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
@@ -183,8 +186,8 @@ int nas_pipe_named_attach(uint64_t mount_id,uint64_t ino,
         pipe->head=pipe->count=0;
         pipe->read_slot=pipe->write_slot=NAS_OPEN_FILE_LIMIT;
     }
-    if(access!=1U)pipe_read_owner[slot]=(uint8_t)(index+1U);
-    if(access!=0U)pipe_write_owner[slot]=(uint8_t)(index+1U);
+    if(access!=1U)pipe_read_owner[slot]=(uint16_t)(index+1U);
+    if(access!=0U)pipe_write_owner[slot]=(uint16_t)(index+1U);
     return 0;
 }
 int nas_pipe_create_socketpair(unsigned first_slot,unsigned second_slot) {
@@ -223,7 +226,16 @@ static void pipe_release_direction(unsigned slot,bool writing) {
             if(pipe_read_owner[i]==tag || pipe_write_owner[i]==tag) {
                 has_attached=true;break;
             }
-    } else has_attached=pipe_has_reader(pipe)||pipe_has_writer(pipe);
+    } else {
+        /* Ownership tags are authoritative for RECLAIM, including the
+         * allocation-rollback window before any File refcount is published.
+         * Checking refcounts here can free a ring with its peer owner tag
+         * still attached, leaving a stale one-based index behind. */
+        has_attached=(pipe->read_slot<NAS_OPEN_FILE_LIMIT &&
+                      pipe_read_owner[pipe->read_slot]==owner) ||
+                     (pipe->write_slot<NAS_OPEN_FILE_LIMIT &&
+                      pipe_write_owner[pipe->write_slot]==owner);
+    }
     if(pipe->used && !has_attached) {
         /* Last File releases the ring (whether resized or not). Reset
          * identity so a future FIFO incarnation starts from a blank slate. */
