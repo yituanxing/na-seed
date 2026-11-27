@@ -97,8 +97,8 @@ static uint64_t drm_cap(uint64_t user_arg) {
     struct nas_drm_get_cap cap;
     if(!nas_user_read_bytes(user_arg,(uint8_t *)&cap,sizeof(cap)))
         return (uint64_t)-EFAULT;
-    /* Every listed capability is currently unavailable. In particular,
-     * dumb-buffer support cannot be true before GEM allocation exists. */
+    /* Report the actual GEM allocation and completion-clock semantics.
+     * PAGE_FLIP events use the architecture's monotonic nanosecond clock. */
     switch(cap.capability) {
     case 0x01U: /* DRM_CAP_DUMB_BUFFER */
     case 0x02U: /* DRM_CAP_VBLANK_HIGH_CRTC */
@@ -114,7 +114,7 @@ static uint64_t drm_cap(uint64_t user_arg) {
     case 0x12U: /* DRM_CAP_CRTC_IN_VBLANK_EVENT */
     case 0x13U: /* DRM_CAP_SYNCOBJ */
     case 0x14U: /* DRM_CAP_SYNCOBJ_TIMELINE */
-        cap.value=cap.capability==0x01U ? 1U : 0U;
+        cap.value=(cap.capability==0x01U || cap.capability==0x06U) ? 1U : 0U;
         break;
     default:
         return (uint64_t)-EINVAL;
