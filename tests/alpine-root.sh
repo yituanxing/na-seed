@@ -1255,6 +1255,13 @@ with open(f'{work}/init.log','w') as log:
                              r'\r*\nWESTON_DRM_TERMINAL_DEAD\r*\n'],timeout=30):
                 raise RuntimeError('original weston-terminal did not open under native DRM')
             guest.expect(r'# ')
+            # Weston intentionally does not focus a new toplevel merely
+            # because it is mapped. Exercise the real QMP -> VirtIO mouse
+            # path and click the terminal before sending keyboard events.
+            move_to(400,300)
+            click()
+            time.sleep(1)
+            capture_scanout('native-weston-terminal-focused')
             type_keys('echo 57 >/tmp/nativewlkey\n')
             guest.sendline('for i in $(seq 1 15); do test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57 && break; sleep 1; done; if test "$(cat /tmp/nativewlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_FAIL; fi')
             if guest.expect([r'\r*\nWESTON_DRM_KEYBOARD_PASS\r*\n',
