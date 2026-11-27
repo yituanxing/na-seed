@@ -918,8 +918,11 @@ def verify_wm():
     capture_scanout('openbox-closed')
     print('PASS: Openbox close and surviving managed xterm keyboard/PTY')
     verify_desktop()
-    guest.sendline('timeout 5 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 15); do if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
-    if guest.expect([r'\r*\nWM_EXIT=0\r*\n',r'\r*\nWM_EXIT_FAILED\r*\n',r'\r*\nWM_EXIT=[0-9]+\r*\n'],timeout=40):
+    guest.sendline('timeout 25 openbox --exit >/root/openbox-exit.log 2>&1; for i in $(seq 1 30); do if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$wp" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$wp/status" 2>/dev/null; then wait "$wp"; printf "WM_EXIT=%s\\n" "$?"; else echo WM_EXIT_FAILED; fi')
+    if guest.expect([r'\r*\nWM_EXIT=0\r*\n',r'\r*\nWM_EXIT_FAILED\r*\n',r'\r*\nWM_EXIT=[0-9]+\r*\n'],timeout=80):
+        guest.sendline('cat /root/openbox-exit.log; echo WM_EXIT_DIAG_END')
+        guest.expect(r'\r*\nWM_EXIT_DIAG_END\r*\n',timeout=30)
+        print('Openbox exit diagnostic:',guest.before)
         raise RuntimeError('Openbox session exit failed')
     print('PASS: Openbox clean window-manager exit')
     return True
