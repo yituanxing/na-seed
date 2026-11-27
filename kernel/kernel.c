@@ -202,10 +202,16 @@ static bool grow_heap_from_frames(size_t minimum_bytes, void *context) {
 
 #if defined(__riscv) || defined(__aarch64__)
 static bool discover_boot_fdt(void) {
-    if (!dtb_req.response || !dtb_req.response->dtb_ptr) return false;
+    if (!dtb_req.response || !dtb_req.response->dtb_ptr) {
+        nas_print("[FDT DIAG] Limine supplied no native DTB pointer\n");
+        return false;
+    }
     const void *blob = dtb_req.response->dtb_ptr;
     uint64_t va = (uintptr_t)blob, offset = hhdm_req.response->offset;
-    if (va < offset) return false;
+    if (va < offset) {
+        nas_print("[FDT DIAG] DTB pointer lies below HHDM offset\n");
+        return false;
+    }
     uint64_t pa = va - offset;
     size_t extent = 0;
     for (uint64_t i = 0; i < mmap_req.response->entry_count; ++i) {
@@ -219,12 +225,25 @@ static bool discover_boot_fdt(void) {
                  16U * 1024U * 1024U : (size_t)remaining;
         break;
     }
+    if (!extent) {
+        nas_print("[FDT DIAG] DTB physical page not covered by trusted Limine memory map\n");
+        return false;
+    }
 #ifdef __riscv
-    if (!hart_req.response) return false;
-    return nas_fdt_discover(blob, extent, true, hart_req.response->bsp_hartid);
+    if (!hart_req.response) {
+        nas_print("[FDT DIAG] Limine did not supply BSP hart ID\n");
+        return false;
+    }
+    bool valid = nas_fdt_discover(blob, extent, true, hart_req.response->bsp_hartid);
 #else
-    return nas_fdt_discover(blob, extent, false, 0);
+    bool valid = nas_fdt_discover(blob, extent, false, 0);
 #endif
+    if (!valid) {
+        nas_print("[FDT DIAG] DTB present but native FDT hardware validation rejected it; extent=");
+        nas_dec(extent);
+        nas_print("\n");
+    }
+    return valid;
 }
 #endif
 
