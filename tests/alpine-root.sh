@@ -1189,12 +1189,72 @@ with open(f'{work}/init.log','w') as log:
         if guest.match.group(1)!='0':
             raise RuntimeError('Alpine font cache initialization failed')
         guest.expect(r'# ')
-        # Probe original Weston DRM before Xorg: direct KMS/seat/udev.
-        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; SEATD_VTBOUND=0 seatd -g root -l debug >/root/seatd.log 2>&1 & seatd_pid=$!; sleep 1; LIBSEAT_BACKEND=seatd timeout -s TERM 12 strace -f -o /root/weston-drm.strace -e trace=openat,open,readlink,statx,ioctl,sendmsg,recvmsg,connect,bind,getsockopt,fcntl,close weston --backend=drm --renderer=pixman --drm-device=card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1; probe_status=$?; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; printf "WESTON_DRM_PROBE_EXIT=%s\n" "$probe_status"')
-        guest.expect(r'\r*\nWESTON_DRM_PROBE_EXIT=([0-9]+)\r*\n',timeout=65)
-        guest.sendline('cat /root/weston-drm.log /root/seatd.log; echo WESTON_DRM_TRACE_START; tail -100 /root/weston-drm.strace; echo WESTON_DRM_DIAG_END')
-        guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=45)
-        print('Standalone original Weston DRM diagnostic:',guest.before[-15000:])
+        # The original Weston DRM backend must paint and receive native
+        # Wayland clients on VirtIO hardware WITHOUT an Xorg process.
+        guest.sendline('mkdir -p /run/user/0; chmod 700 /run/user/0; export XDG_RUNTIME_DIR=/run/user/0 XKB_CONFIG_ROOT=/usr/share/X11/xkb; unset DISPLAY WAYLAND_DISPLAY; SEATD_VTBOUND=0 seatd -g root -l debug >/root/seatd.log 2>&1 & seatd_pid=$!; sleep 1; LIBSEAT_BACKEND=seatd weston --backend=drm --renderer=pixman --drm-device=card0 --no-config --continue-without-input --idle-time=0 --socket=wayland-drm >/root/weston-drm.log 2>&1 & native_weston_pid=$!; echo WESTON_DRM_LAUNCHED')
+        guest.expect(r'\r*\nWESTON_DRM_LAUNCHED\r*\n',timeout=30)
+        guest.expect(r'# ')
+        native_client_pid=''
+        native_terminal_pid=''
+        native_success=False
+        try:
+            guest.sendline('for i in $(seq 1 40); do test -S /run/user/0/wayland-drm && break; kill -0 "$native_weston_pid" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-drm && kill -0 "$native_weston_pid" 2>/dev/null; then echo WESTON_DRM_SOCKET_READY; else echo WESTON_DRM_SOCKET_MISSING; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_SOCKET_READY\r*\n',
+                             r'\r*\nWESTON_DRM_SOCKET_MISSING\r*\n'],timeout=95):
+                raise RuntimeError('original Weston DRM did not publish native Wayland socket')
+            guest.expect(r'# ')
+            guest.sendline('timeout 18 env WAYLAND_DISPLAY=wayland-drm wayland-info >/root/weston-drm-info.log 2>&1; info_status=$?; if test "$info_status" = 0 && grep -q wl_compositor /root/weston-drm-info.log && grep -q xdg_wm_base /root/weston-drm-info.log; then echo WESTON_DRM_PROTOCOL_PASS; else printf "WESTON_DRM_PROTOCOL_FAIL=%s\n" "$info_status"; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_PROTOCOL_PASS\r*\n',
+                             r'\r*\nWESTON_DRM_PROTOCOL_FAIL=[0-9]+\r*\n'],timeout=65):
+                raise RuntimeError('original wayland-info cannot connect directly to Weston DRM')
+            guest.expect(r'# ')
+            nw,nh,native_before=capture_scanout('native-weston-before')
+            assert (nw,nh)==(800,600)
+            guest.sendline('env WAYLAND_DISPLAY=wayland-drm weston-simple-shm >/root/weston-drm-shm.log 2>&1 & native_client_pid=$!; echo WESTON_DRM_CLIENT_STARTED')
+            guest.expect(r'\r*\nWESTON_DRM_CLIENT_STARTED\r*\n',timeout=30)
+            guest.expect(r'# ')
+            time.sleep(2)
+            guest.sendline('if kill -0 "$native_client_pid" 2>/dev/null; then echo WESTON_DRM_CLIENT_ALIVE; else echo WESTON_DRM_CLIENT_DEAD; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_CLIENT_ALIVE\r*\n',
+                             r'\r*\nWESTON_DRM_CLIENT_DEAD\r*\n'],timeout=30):
+                raise RuntimeError('original weston-simple-shm exited under native DRM')
+            guest.expect(r'# ')
+            changed=0
+            for _ in range(8):
+                nw,nh,native_after=capture_scanout('native-weston-simple-shm')
+                assert (nw,nh)==(800,600)
+                changed=sum(native_before[i:i+3]!=native_after[i:i+3]
+                            for i in range(0,len(native_after),3))
+                if changed>=1000:break
+                time.sleep(0.5)
+            print(f'Native DRM Weston/SHM QEMU pixels changed: {changed}/480000')
+            assert changed>=1000,'original Weston DRM client did not paint actual QEMU scanout'
+            print('PASS: original Weston DRM + Pixman + Wayland SHM renders directly through VirtIO GPU, without Xorg')
+            guest.sendline('env WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal.log 2>&1 & native_terminal_pid=$!; echo WESTON_DRM_TERMINAL_STARTED')
+            guest.expect(r'\r*\nWESTON_DRM_TERMINAL_STARTED\r*\n',timeout=30)
+            guest.expect(r'# ')
+            time.sleep(2)
+            guest.sendline('if kill -0 "$native_terminal_pid" 2>/dev/null; then echo WESTON_DRM_TERMINAL_ALIVE; else echo WESTON_DRM_TERMINAL_DEAD; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_TERMINAL_ALIVE\r*\n',
+                             r'\r*\nWESTON_DRM_TERMINAL_DEAD\r*\n'],timeout=30):
+                raise RuntimeError('original weston-terminal did not open under native DRM')
+            guest.expect(r'# ')
+            type_keys('echo 57 >/tmp/native-wlkey\n')
+            guest.sendline('for i in $(seq 1 15); do test "$(cat /tmp/native-wlkey 2>/dev/null)" = 57 && break; sleep 1; done; if test "$(cat /tmp/native-wlkey 2>/dev/null)" = 57; then echo WESTON_DRM_KEYBOARD_PASS; else echo WESTON_DRM_KEYBOARD_FAIL; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_KEYBOARD_PASS\r*\n',
+                             r'\r*\nWESTON_DRM_KEYBOARD_FAIL\r*\n'],timeout=55):
+                raise RuntimeError('native QMP VirtIO evdev keyboard did not reach Weston terminal PTY')
+            guest.expect(r'# ')
+            capture_scanout('native-weston-terminal')
+            print('PASS: native QMP keyboard -> VirtIO evdev -> Weston DRM seat -> original terminal PTY')
+            native_success=True
+        finally:
+            guest.sendline('kill "$native_terminal_pid" "$native_client_pid" 2>/dev/null; kill "$native_weston_pid" 2>/dev/null; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo WESTON_DRM_DIAG_END')
+            guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=150)
+            native_teardown=guest.before
+            print('Original native Weston DRM diagnostic:',native_teardown[-16000:])
+            if native_success:
+                assert 'WESTON_DRM_STOP=0' in native_teardown,'native Weston DRM did not exit cleanly'
         guest.expect(r'# ')
         guest.sendline('python3 /root/xorg-input.py; printf "INPUT_CONFIG_STATUS=%s\n" "$?"')
         guest.expect(r'\r*\nINPUT_CONFIG_STATUS=([0-9]+)\r*\n',timeout=60)

@@ -54,6 +54,9 @@ jobs:
             build/alpine-root/kms-before.ppm
             build/alpine-root/kms-modetest.ppm
             build/alpine-root/kms-pageflip.ppm
+            build/alpine-root/native-weston-before.ppm
+            build/alpine-root/native-weston-simple-shm.ppm
+            build/alpine-root/native-weston-terminal.ppm
             build/alpine-root/xorg.ppm
             build/alpine-root/x11-apps.ppm
             build/alpine-root/x11-keyboard.ppm
