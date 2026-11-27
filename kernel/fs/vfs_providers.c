@@ -1024,7 +1024,7 @@ static bool sys_input_is_dir(unsigned kind) {
            kind==SI_ID || kind==SI_CAPS;
 }
 static bool sys_input_is_link(unsigned kind) {
-    return kind>=SI_EVENT_SUBSYSTEM && kind<=SI_CHAR_LINK ||
+    return (kind>=SI_EVENT_SUBSYSTEM && kind<=SI_CHAR_LINK) ||
            kind==SI_EVENT_DEVICE_LINK;
 }
 static int sys_append_hex(char dst[256],unsigned *length,uint64_t val,
@@ -1182,10 +1182,8 @@ static int sys_input_read_dir(const struct nas_fs_node *node,
         if(cursor==0)name=".";
         else if(cursor==1) {
             name="..";
-            unsigned parent=kind==SI_EVENT || kind==SI_CAPS || kind==SI_ID?
-                SI_DEVICE:SI_DEVICE;
             ino=kind==SI_DEVICE?SYS_INO_BASE+SYS_VIRTUAL_INPUT:
-                sys_input_inode(index,parent);
+                sys_input_inode(index,SI_DEVICE);
         } else {
             unsigned child;
             if(!sys_input_child_at(index,kind,(unsigned)(cursor-2),
@@ -1245,14 +1243,16 @@ static int sys_input_readdir_static(unsigned id,uint64_t skip,
         } else {
             if(skip--==0) {
                 if(sys_input_name("input",i,name))return -ENAMETOOLONG;
-                return fill_dirent(out,name,sys_input_inode(i,SI_CLASS_DEVICE_LINK),10U);
+                int rc=fill_dirent(out,name,sys_input_inode(i,SI_CLASS_DEVICE_LINK),10U);
+                return rc?rc:1;
             }
             if(skip--!=0)continue;
             if(sys_input_name("event",i,name))return -ENAMETOOLONG;
             kind=SI_CLASS_EVENT_LINK;
         }
-        return fill_dirent(out,name,sys_input_inode(i,kind),
+        int rc=fill_dirent(out,name,sys_input_inode(i,kind),
                            kind==SI_DEVICE?4U:10U);
+        return rc?rc:1;
     }
     return 0;
 }
