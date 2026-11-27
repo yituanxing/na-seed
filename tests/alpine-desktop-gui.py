@@ -186,6 +186,8 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
         # after libinput acceleration of the requested QMP REL movement.
         # Only a changed path entry proves navigation: icon selection alone
         # changed 5666 pixels and caused a false PASS in the previous test.
+        # The real address field is y=121..155, with path glyphs at y=131..154;
+        # x=360..520 covers the added /documents suffix, not the menu row.
         address_change = changed = 0
         for attempt in range(1, 4):
             move_to(330, 230)
@@ -194,7 +196,7 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
             assert (dw, dh) == (w, h)
             changed = pixels_changed(frame, documents)
             address_change = pixels_changed_rect(
-                frame, documents, w, 220, 99, 570, 131)
+                frame, documents, w, 360, 131, 520, 154)
             if address_change > 80:
                 break
             print(f"GUI {phase}: Thunar still shows desktop after real "
