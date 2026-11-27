@@ -52,9 +52,7 @@ if scenario == "root":
         "-drive", f"if=none,id=root,format=raw,file={root_disk}",
         "-device", "virtio-blk-device,drive=root",
     ])
-# Keep the native userspace boot independent of a host-injected guest shell.
-base += [
-]
+# No shell access is injected; every user ELF starts from the real kernel.
 if arch == "aarch64":
     base += ["-cpu", "cortex-a72", "-semihosting-config",
              "enable=on,target=native"]
