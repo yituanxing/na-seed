@@ -20,7 +20,9 @@ docker run --rm -v "$PWD/$root:/target" alpine:3.23 sh -ec "
         add weston weston-backend-drm weston-shell-desktop weston-terminal \\
             libseat seatd eudev thunar mousepad dbus \\
             shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu \\
-            python3 libdrm-tests
+            python3 libdrm-tests \
+            xorg-server xf86-input-evdev xterm \
+            xeyes xcalc openbox xdpyinfo xsetroot xwininfo font-adobe-75dpi
 "
 # Reuse the exact desktop supervisor/service from the x86-64 integration
 # suite. Do not fork an ad-hoc native ISA launcher or substitute fake apps.
@@ -33,6 +35,8 @@ entries = [
     ("DESKTOP_SESSION", "usr/local/sbin/naseed-desktop-session"),
     ("DESKTOP_SERVICE", "etc/init.d/naseed-desktop"),
     ("DRM_PROBE", "root/drm-probe.py"),
+    ("XORG", "root/xorg.conf"),
+    ("INPUT", "root/xorg-input.py"),
 ]
 for marker, relative in entries:
     start_marker = "<<'" + marker + "'\n"
@@ -43,6 +47,22 @@ for marker, relative in entries:
     dest.write_text(source[start:end] + "\n")
     dest.chmod(0o755)
 PY
+# These native QEMU targets have no Limine EFI framebuffer. Xorg's proven
+# x86 fbdev configuration cannot work without /dev/fb0. Use Xorg's upstream
+# CPU-rendered modesetting driver on the REAL DRM/KMS node already qualified
+# by original libdrm/modetest. Do not add an ISA-specific graphics backend.
+sudo python3 - "$root/root/xorg.conf" <<'XORG_NATIVE_DRM'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+source = path.read_text()
+assert 'Driver "fbdev"' in source and 'Option "fbdev" "/dev/fb0"' in source
+source = source.replace('Driver "fbdev"', 'Driver "modesetting"')
+source = source.replace('Option "fbdev" "/dev/fb0"',
+                        'Option "kmsdev" "/dev/dri/card0"\n'
+                        '    Option "AccelMethod" "none"')
+path.write_text(source)
+XORG_NATIVE_DRM
 sudo mkdir -p "$root/etc/runlevels/default" "$root/root/desktop/documents"
 sudo ln -s /etc/init.d/naseed-desktop "$root/etc/runlevels/default/naseed-desktop"
 printf 'original native text\n' |
@@ -87,6 +107,19 @@ e2fsck -fn "$disk"
 debugfs -R 'cat /root/desktop/documents/note.txt' "$disk" > "$base/gui-note.txt"
 test "$(cat "$base/gui-note.txt")" = 'naseed gui roundtrip'
 echo "PASS: $arch GUI persisted across independent QEMU boot; offline ext4 consistent"
+# The same upstream Thunar input/clipboard/rename/delete semantics already
+# passed on x86-64 Round 9. The actual MMIO QMP pointer calibration remains
+# native, while the navigation/observation helpers are byte-equivalent.
+python3 tests/native-gui-roundtrip.py "$arch" fileops
+e2fsck -fn "$disk"
+debugfs -R 'cat /root/desktop/archived.txt' "$disk" > "$base/gui-archive.txt"
+test "$(cat "$base/gui-archive.txt")" = 'naseed gui roundtrip'
+echo "PASS: $arch original Thunar multi-window copy rename permanent-delete; offline ext4 archive"
+python3 tests/native-gui-roundtrip.py "$arch" fileops-reopen
+e2fsck -fn "$disk"
+debugfs -R 'cat /root/desktop/archived.txt' "$disk" > "$base/gui-archive.txt"
+test "$(cat "$base/gui-archive.txt")" = 'naseed gui roundtrip'
+echo "PASS: $arch Round 9 GUI reopened archive, deleted copy still absent after reboot"
 # Deeper architecture-neutral graphics parity. Weston releases the real
 # DRM master via OpenRC; upstream libdrm/GEM and modetest independently
 # verify real KMS modeset and PageFlip completion on this native ISA.

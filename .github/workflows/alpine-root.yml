@@ -2,6 +2,10 @@ name: Alpine distribution acceptance
 on:
   push:
     branches: [refactor/naseed-cleanup-01-20261124]
+    paths-ignore:
+      - "tests/native-*.sh"
+      - "tests/native-*.py"
+      - ".github/workflows/native-boot.yml"
   workflow_dispatch:
 permissions:
   contents: read

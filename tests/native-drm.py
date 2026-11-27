@@ -89,6 +89,76 @@ def verify(guest, command, marker, timeout=100):
     print(f"PASS: {arch} {marker} from real Alpine software", flush=True)
 
 
+def run_original_xorg(guest):
+    """Run unmodified Xorg/modesetting DRM, Openbox and original X11 clients."""
+    verify(guest,
+           'python3 /root/xorg-input.py >/root/xorg-input.log 2>&1; '
+           'status=$?; if test "$status" = 0 && '
+           'grep -q "InputDevice" /root/xorg.conf; then '
+           'echo XORG_EVDEV_PASS; else tail -80 /root/xorg-input.log; '
+           'echo XORG_EVDEV_FAIL; fi',
+           'XORG_EVDEV', timeout=85)
+    guest.sendline(
+        'Xorg :0 vt1 -keeptty -config /root/xorg.conf '
+        '-logfile /root/Xorg.log -nolisten tcp -ac -noreset '
+        '>/root/xorg-console.log 2>&1 & xorg_pid=$!; echo XORG_LAUNCHED')
+    guest.expect(r'\r*\nXORG_LAUNCHED\r*\n', timeout=35)
+    guest.expect(r'# ')
+    verify(guest,
+           'for i in $(seq 1 35); do '
+           'timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 '
+           '&& break; sleep 1; done; '
+           'if kill -0 "$xorg_pid" 2>/dev/null && '
+           'xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1; then '
+           'echo XORG_SERVER_PASS; else tail -100 /root/Xorg.log '
+           '/root/xorg-console.log; echo XORG_SERVER_FAIL; fi',
+           'XORG_SERVER', timeout=140)
+    _, _, before = scanout('xorg-before-root')
+    verify(guest,
+           'if DISPLAY=:0 xsetroot -solid red; then echo XORG_ROOT_PASS; '
+           'else echo XORG_ROOT_FAIL; fi', 'XORG_ROOT', timeout=50)
+    _, _, painted = scanout('xorg-root-red')
+    pixels = changed(before, painted)
+    if pixels < 80000:
+        raise RuntimeError(f'{arch}: Xorg xsetroot did not change real GPU '
+                           f'pixels: {pixels}')
+    print(f'PASS: {arch} original Xorg drew {pixels} real QMP pixels', flush=True)
+    guest.sendline(
+        'DISPLAY=:0 openbox --sm-disable >/root/native-openbox.log 2>&1 & wm=$!; '
+        'sleep 2; DISPLAY=:0 xterm -T NASEED-NATIVE-XTERM '
+        '-geometry 52x12+40+50 -bg white -fg black -fn fixed '
+        '-e /bin/sh -i >/root/native-xterm.log 2>&1 & xt=$!; '
+        'DISPLAY=:0 xeyes -title NASEED-NATIVE-XEYES '
+        '-geometry 150x110+580+350 >/root/native-xeyes.log 2>&1 & xe=$!; '
+        'sleep 3; echo XORG_APPS_LAUNCHED')
+    guest.expect(r'\r*\nXORG_APPS_LAUNCHED\r*\n', timeout=65)
+    guest.expect(r'# ')
+    verify(guest,
+           'DISPLAY=:0 xwininfo -root -tree >/root/xorg-windows.log 2>&1; '
+           'if pidof openbox >/dev/null && pidof xterm >/dev/null && '
+           'pidof xeyes >/dev/null && '
+           'grep -q NASEED-NATIVE-XTERM /root/xorg-windows.log && '
+           'grep -q NASEED-NATIVE-XEYES /root/xorg-windows.log; then '
+           'echo XORG_X11_APPS_PASS; else cat /root/xorg-windows.log; '
+           'tail -40 /root/native-openbox.log /root/native-xterm.log '
+           '/root/native-xeyes.log; echo XORG_X11_APPS_FAIL; fi',
+           'XORG_X11_APPS', timeout=100)
+    _, _, apps = scanout('xorg-openbox-xterm-xeyes')
+    delta = changed(painted, apps)
+    if delta < 20000:
+        raise RuntimeError(f'{arch}: native X11 windows did not change '
+                           f'actual GPU pixels: {delta}')
+    print(f'PASS: {arch} original Xorg/Openbox/xterm/xeyes '
+          f'real GPU pixels changed={delta}', flush=True)
+    verify(guest,
+           'kill "$xe" "$xt" "$wm" "$xorg_pid" 2>/dev/null || :; '
+           'for i in $(seq 1 20); do pidof Xorg >/dev/null || break; '
+           'sleep 1; done; '
+           'if ! pidof Xorg >/dev/null; then echo XORG_CLEAN_PASS; '
+           'else echo XORG_CLEAN_FAIL; fi',
+           'XORG_CLEAN', timeout=90)
+
+
 with (work / "drm-serial.log").open("w") as log:
     guest = pexpect.spawn(f"qemu-system-{arch}", args, encoding="utf-8",
                           codec_errors="replace", timeout=260)
@@ -167,6 +237,7 @@ with (work / "drm-serial.log").open("w") as log:
                                f"actual pixels between active frames: {page_delta}")
         print(f"PASS: {arch} real DRM pageflips completed in original "
               f"modetest; QMP frames changed {page_delta} pixels", flush=True)
+        run_original_xorg(guest)
         guest.sendline("poweroff")
         guest.expect(r"\[LWEXT4 GUEST\] clean upstream unmount and durable flush",
                      timeout=180)
@@ -178,5 +249,5 @@ with (work / "drm-serial.log").open("w") as log:
         guest.close()
 if not ok:
     raise RuntimeError(f"{arch} native DRM/GEM/PageFlip acceptance incomplete")
-print(f"PASS: {arch} original libdrm GEM + native KMS modeset + "
-      "60+ DRM PageFlip completions + real QMP pixels + ext4 shutdown", flush=True)
+print(f"PASS: {arch} original libdrm/GEM, KMS/PageFlip and real Xorg/"
+      "Openbox/xterm/xeyes, real QMP pixels + clean ext4 shutdown", flush=True)
