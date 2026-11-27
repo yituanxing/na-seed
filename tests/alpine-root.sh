@@ -1476,6 +1476,16 @@ with open(f'{work}/init.log','w') as log:
                         guest.sendline(f'echo === NATIVE_GTK_PROC ===; cat /proc/$native_gtk_pid/status /proc/$native_gtk_pid/wchan 2>/dev/null; echo === NATIVE_GTK_WAYLAND_LOG ===; tail -110 /root/native-gtk-{name}.log; echo NATIVE_GTK_ERROR_LOG_END')
                         guest.expect(r'\r*\nNATIVE_GTK_ERROR_LOG_END\r*\n',timeout=45)
                         print(f'Native GTK {name} diagnostics:',guest.before[-18000:])
+                        # A running GTK task without an xdg_toplevel may be
+                        # spinning or blocked on a generic Linux ABI operation.
+                        # Observe its REAL syscalls after recording failure:
+                        # do not patch programs or weaken the framebuffer test.
+                        guest.sendline(f'timeout -s INT 7 strace -f -p "$native_gtk_pid" -s 128 -o /root/native-gtk-{name}.strace -e trace=futex,epoll_wait,epoll_pwait,poll,ppoll,recvmsg,sendmsg,read,write,connect,openat,ioctl,wait4 2>/root/native-gtk-{name}.attach.err; echo NATIVE_GTK_TRACE_DONE')
+                        guest.expect(r'\r*\nNATIVE_GTK_TRACE_DONE\r*\n',timeout=36)
+                        guest.expect(r'# ')
+                        guest.sendline(f'echo === GTK_LAST_SYSCALLS ===; tail -100 /root/native-gtk-{name}.strace 2>/dev/null; echo === GTK_ATTACH_ERRORS ===; cat /root/native-gtk-{name}.attach.err 2>/dev/null; echo === GTK_PROCESS_TREE ===; ps -ef | tail -20; echo NATIVE_GTK_TRACE_REPORT_END')
+                        guest.expect(r'\r*\nNATIVE_GTK_TRACE_REPORT_END\r*\n',timeout=45)
+                        print(f'Native GTK {name} syscall diagnosis:',guest.before[-22000:])
                         raise RuntimeError(f'original Alpine GTK {name} failed visible Wayland-window rendering: live={live} central_pixels={delta}')
                     print(f'PASS: original Alpine GTK {name} on direct Weston DRM, actual central Wayland window pixels={delta}')
                 finally:
