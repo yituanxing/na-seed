@@ -1067,6 +1067,11 @@ def verify_wayland():
         # VirtIO -> evdev -> Xorg -> Weston -> terminal's native Wayland seat.
         move_to(wx+ww//2,wy+wh//2)
         click()
+        # QMP pointer/button injection is asynchronous. The actual QEMU
+        # scanout showed 'ho 47' (lost the initial 'ec') when typing in the
+        # same instant as Wayland focus activation. Let the real focus event
+        # propagate through Xorg -> nested Weston before keyboard events.
+        time.sleep(1)
         type_keys('echo 47 >/tmp/wlkey\n')
         guest.sendline('for i in $(seq 1 12); do test "$(cat /tmp/wlkey 2>/dev/null)" = 47 && break; sleep 1; done; if test "$(cat /tmp/wlkey 2>/dev/null)" = 47; then echo WAYLAND_TERMINAL_INPUT_PASS; else echo WAYLAND_TERMINAL_INPUT_FAIL; fi')
         terminal_input=guest.expect([r'\r*\nWAYLAND_TERMINAL_INPUT_PASS\r*\n',r'\r*\nWAYLAND_TERMINAL_INPUT_FAIL\r*\n'],timeout=45)==0
