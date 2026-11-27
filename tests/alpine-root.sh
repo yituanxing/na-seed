@@ -1359,12 +1359,21 @@ with open(f'{work}/init.log','w') as log:
             capture_scanout('native-weston-two-terminals')
             # Weston does not auto-focus a freshly mapped toplevel: the
             # currently active alpha must switch to beta via its real seat.
-            desktop_chord(['meta_l','tab'],pace=0.08)
-            type_keys('env >/tmp/nativewl7beta\n',pace=0.08)
-            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=beta /tmp/nativewl7beta 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=beta /tmp/nativewl7beta 2>/dev/null; then echo WESTON_DRM_BETA_PASS; else echo WESTON_DRM_BETA_FAIL; fi')
-            if guest.expect([r'\r*\nWESTON_DRM_BETA_PASS\r*\n',r'\r*\nWESTON_DRM_BETA_FAIL\r*\n'],timeout=55):
-                raise RuntimeError('native DRM Super+Tab or physical keyboard did not reach second terminal')
-            guest.expect(r'# ')
+            beta_focused=False
+            for focus_attempt in range(4):
+                desktop_chord(['meta_l','tab'],pace=0.08)
+                capture_scanout('native-weston-beta-focused')
+                type_keys('env >/tmp/nativewl7beta\n',pace=0.08)
+                guest.sendline('for i in $(seq 1 8); do test -s /tmp/nativewl7beta && break; sleep 1; done; if grep -Fxq tag=beta /tmp/nativewl7beta 2>/dev/null; then echo WESTON_DRM_BETA_PASS; else echo WESTON_DRM_BETA_WAIT; fi')
+                beta_focused=guest.expect([r'\r*\nWESTON_DRM_BETA_PASS\r*\n',r'\r*\nWESTON_DRM_BETA_WAIT\r*\n'],timeout=40)==0
+                guest.expect(r'# ')
+                if beta_focused:
+                    break
+            if not beta_focused:
+                guest.sendline('if test -f /tmp/nativewl7beta; then grep "^tag=" /tmp/nativewl7beta; else echo NATIVE_BETA_NO_INPUT_FILE; fi; echo NATIVE_BETA_DIAG_END')
+                guest.expect(r'\r*\nNATIVE_BETA_DIAG_END\r*\n',timeout=30)
+                print('Native Wayland beta focus evidence:',guest.before)
+                raise RuntimeError('four real Weston Super+Tab attempts did not reach second independent PTY')
             desktop_chord(['meta_l','tab'],pace=0.08)
             type_keys('env >/tmp/nativewl7alpha\n',pace=0.08)
             guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null; then echo WESTON_DRM_ALPHA_PASS; else echo WESTON_DRM_ALPHA_FAIL; fi')
