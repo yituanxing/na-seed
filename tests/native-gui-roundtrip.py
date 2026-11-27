@@ -151,6 +151,39 @@ def pixels_changed_rect(a, b, width, x0, y0, x1, y1):
                for y in range(y0, y1) for x in range(x0, x1))
 
 
+def terminal_cover_ratio(frame, width):
+    # Real previous RV64/ARM64 native CI scanouts show Weston's terminal
+    # completely covering Thunar (black area x=38..767, y=116..509).
+    # Only dismiss that foreground terminal via the genuine compositor UI.
+    n = black = 0
+    for y in range(160, 490, 10):
+        for x in range(110, 700, 10):
+            off = (y * width + x) * 3
+            n += 1
+            black += max(frame[off:off+3]) < 20
+    return black / n
+
+
+def expose_thunar():
+    w, h, frame = scanout("before-terminal-focus")
+    if terminal_cover_ratio(frame, w) > 0.83:
+        chord("alt", "f4")
+        time.sleep(1.5)
+        _, _, frame = scanout("terminal-alt-f4")
+        if terminal_cover_ratio(frame, w) > 0.83:
+            # Weston desktop-shell close button, a physical mouse click.
+            move_to(754, 102)
+            click()
+            time.sleep(1.5)
+            _, _, frame = scanout("terminal-close-button")
+        if terminal_cover_ratio(frame, w) > 0.83:
+            raise RuntimeError(
+                f"{arch} terminal covers Thunar after actual GUI close")
+        print(f"PASS: {arch} original terminal dismissed via physical GUI, "
+              "Thunar now exposed", flush=True)
+    return frame
+
+
 def observed(guest, condition, mark, attempts=15):
     # Guest shell is read-only: only GUI QMP input may change the note.
     cmd = (f'for i in $(seq 1 {attempts}); do {condition} && break; '
@@ -203,6 +236,10 @@ with (work / f"gui-{phase}.log").open("w") as outfile:
             last = frame
         if not steady:
             raise RuntimeError(f"{arch} Thunar screen not stable: {visible=} {drift=}")
+        # Both authentic native screenshots show the maximized black
+        # Weston Terminal in front of Thunar; x86 GUI test expects Thunar
+        # to be frontmost. Correct focus only through genuine QMP UI.
+        expose_thunar()
         move_to(520, 340)
         click()
         time.sleep(0.7)
