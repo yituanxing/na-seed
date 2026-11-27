@@ -19,7 +19,7 @@ docker run --rm -v "$PWD/$root:/target" alpine:3.23 sh -ec "
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \\
         add weston weston-backend-drm weston-shell-desktop weston-terminal \\
             libseat seatd eudev thunar mousepad dbus \\
-            shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu \\ 
+            shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu \\
             python3 libdrm-tests
 "
 # Reuse the exact desktop supervisor/service from the x86-64 integration
