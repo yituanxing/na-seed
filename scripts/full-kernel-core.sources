@@ -74,6 +74,7 @@ kernel/fs/netlink_core.c
 kernel/fs/netlink_route.c
 kernel/fs/netlink_filter.c
 kernel/fs/netlink_generic.c
+kernel/fs/netlink_kobject.c
 kernel/fs/packet_socket.c
 kernel/fs/memfd.c
 kernel/fs/file_io.c
