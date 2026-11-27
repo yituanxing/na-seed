@@ -1310,6 +1310,12 @@ with open(f'{work}/init.log','w') as log:
             print(f'Native DRM Weston/SHM QEMU pixels changed: {changed}/480000')
             assert changed>=1000,'original Weston DRM client did not paint actual QEMU scanout'
             print('PASS: original Weston DRM + Pixman + Wayland SHM renders directly through VirtIO GPU, without Xorg')
+            # SHM rendering is already physically verified. Remove this
+            # demonstration toplevel *before* launching the first terminal:
+            # overlapping windows must not steal the physical seat click.
+            guest.sendline('kill "$native_client_pid" 2>/dev/null; wait "$native_client_pid" 2>/dev/null; native_client_pid=; echo WESTON_DRM_SHM_REAPED')
+            guest.expect(r'\r*\nWESTON_DRM_SHM_REAPED\r*\n',timeout=35)
+            guest.expect(r'# ')
             guest.sendline('env tag=alpha WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal.log 2>&1 & native_terminal_pid=$!; echo WESTON_DRM_TERMINAL_STARTED')
             guest.expect(r'\r*\nWESTON_DRM_TERMINAL_STARTED\r*\n',timeout=30)
             guest.expect(r'# ')
@@ -1353,9 +1359,6 @@ with open(f'{work}/init.log','w') as log:
             capture_scanout('native-weston-terminal')
             print('PASS: native QMP keyboard -> VirtIO evdev -> Weston DRM seat -> original terminal PTY')
             # Round 7: two original Alpine DRM/Wayland PTYs without Xorg.
-            guest.sendline('kill "$native_client_pid" 2>/dev/null; wait "$native_client_pid" 2>/dev/null; native_client_pid=; echo WESTON_DRM_SHM_REAPED')
-            guest.expect(r'\r*\nWESTON_DRM_SHM_REAPED\r*\n',timeout=35)
-            guest.expect(r'# ')
             guest.sendline('env tag=beta WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal-second.log 2>&1 & native_terminal2_pid=$!; echo WESTON_DRM_SECOND_STARTED')
             guest.expect(r'\r*\nWESTON_DRM_SECOND_STARTED\r*\n',timeout=30)
             guest.expect(r'# ')

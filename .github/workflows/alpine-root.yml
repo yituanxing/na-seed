@@ -58,6 +58,7 @@ jobs:
             build/alpine-root/native-weston-before.ppm
             build/alpine-root/native-weston-simple-shm.ppm
             build/alpine-root/native-weston-terminal.ppm
+            build/alpine-root/native-weston-terminal-focused.ppm
             build/alpine-root/native-weston-two-terminals.ppm
             build/alpine-root/native-weston-beta-focused.ppm
             build/alpine-root/native-weston-survivor.ppm
