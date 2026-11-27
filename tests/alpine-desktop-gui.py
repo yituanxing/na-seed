@@ -174,23 +174,38 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
                 break
             last = frame
         assert steady, f"original Thunar never painted stable desktop: {visible=}, {drift=}"
-        # The REAL Thunar root window is at (90,55)..(730,573). Its first
-        # icon is 'documents' at (330,230). Enter with two genuine mouse
-        # clicks, not thunar CLI navigation nor filesystem syscalls.
-        move_to(330, 230)
-        double_click()
-        dw, dh, documents = scanout("documents")
-        assert (dw, dh) == (w, h)
-        changed = pixels_changed(frame, documents)
-        # Real navigation changes Thunar's location entry (at 800x600,
-        # x=220..570, y=99..131) from /root/desktop/ to
-        # /root/desktop/documents/. Mere icon selection changes only the
-        # content pane and formerly produced a false PASS (5666 pixels).
-        address_change = pixels_changed_rect(frame, documents, w, 220, 99, 570, 131)
-        assert address_change > 80, (f"Thunar did not navigate into documents: "
-                                     f"screen_delta={changed} address_delta={address_change}")
+        # A newly mapped Weston toplevel is not guaranteed keyboard/mouse
+        # focus. Click empty Thunar content first, *then* double-click the
+        # folder. This remains genuine QMP -> VirtIO -> Weston input.
+        move_to(520, 340)
+        click()
+        time.sleep(0.7)
+        fw, fh, frame = scanout("files-focused")
+        assert (fw, fh) == (w, h)
+        # The actual 800x600 screenshot puts the first icon near (280,230)
+        # after libinput acceleration of the requested QMP REL movement.
+        # Only a changed path entry proves navigation: icon selection alone
+        # changed 5666 pixels and caused a false PASS in the previous test.
+        address_change = changed = 0
+        for attempt in range(1, 4):
+            move_to(330, 230)
+            double_click()
+            dw, dh, documents = scanout(f"documents-attempt-{attempt}")
+            assert (dw, dh) == (w, h)
+            changed = pixels_changed(frame, documents)
+            address_change = pixels_changed_rect(
+                frame, documents, w, 220, 99, 570, 131)
+            if address_change > 80:
+                break
+            print(f"GUI {phase}: Thunar still shows desktop after real "
+                  f"double-click attempt {attempt}, selection_pixels={changed}", flush=True)
+        else:
+            raise RuntimeError(f"Thunar did not navigate into documents after "
+                               f"three physical double-click attempts: "
+                               f"screen_delta={changed} address_delta={address_change}")
         print(f"PASS: GUI {phase}: Thunar really navigated to documents by "
-              f"QMP double-click, screen_pixels={changed} address_pixels={address_change}", flush=True)
+              f"QMP double-click, attempts={attempt} "
+              f"screen_pixels={changed} address_pixels={address_change}", flush=True)
         # note.txt is now the first entry in the same icon cell. Launch
         # its installed MIME handler by physical double click.
         move_to(330, 230)
@@ -209,7 +224,7 @@ with (work / f"gui-{phase}.log").open("w") as logfile:
                               r"\r*\nGUI_MOUSEPAD_MISSING\r*\n"], timeout=35) == 0
         guest.expect(r"# ")
         if not alive or editor is None:
-            guest.sendline('tail -80 /var/log/naseed-desktop/{thunar,weston}.log 2>/dev/null; echo GUI_DIAGNOSTICS_END')
+            guest.sendline('tail -80 /var/log/naseed-desktop/thunar.log /var/log/naseed-desktop/weston.log 2>/dev/null; echo GUI_DIAGNOSTICS_END')
             guest.expect(r"\r*\nGUI_DIAGNOSTICS_END\r*\n", timeout=35)
             raise RuntimeError(f"Thunar doubleclick did not open visible original Mousepad: alive={alive} changed_pixels={delta}")
         print(f"PASS: GUI {phase}: original Mousepad opened via Thunar physical double-click, pixels={delta}", flush=True)
