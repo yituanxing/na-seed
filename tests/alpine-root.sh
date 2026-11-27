@@ -2010,3 +2010,19 @@ if [ -f "$work/legacy-graphics.failed" ]; then
     echo 'FAIL: legacy Xorg/nested Wayland regression remains red (all independent boot tests completed)' >&2
     exit 1
 fi
+
+# Round 8: TWO MORE fully independent Alpine boots. Every GUI action below
+# travels through QMP -> VirtIO -> Weston seat -> original Thunar/Mousepad.
+# Console is observation/poweroff ONLY, never used to launch GUI apps.
+python3 tests/alpine-desktop-gui.py "$work" "$ovmf" "$disk" edit
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/gui-note.txt"
+test "$(cat "$work/gui-note.txt")" = 'naseed gui roundtrip'
+echo 'PASS: physical GUI edit survived real shutdown and offline ext4 verification'
+python3 tests/alpine-desktop-gui.py "$work" "$ovmf" "$disk" reopen
+dd if="$disk" of="$work/partition.ext4" bs=1M skip=2 status=none
+e2fsck -fn "$work/partition.ext4"
+debugfs -R 'cat /root/desktop/documents/note.txt' "$work/partition.ext4" > "$work/gui-note.txt"
+test "$(cat "$work/gui-note.txt")" = 'naseed gui roundtrip'
+echo 'PASS: actual Thunar doubleclick -> Mousepad GUI edit/save -> GUI close -> poweroff -> reboot -> Thunar doubleclick reopen -> clean ext4'
