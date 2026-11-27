@@ -26,7 +26,7 @@ docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add alpine-base openrc git sqlite lua5.4 python3 zstd build-base \
         weston weston-backend-x11 weston-backend-drm libseat seatd-launch eudev libinput-tools weston-shell-desktop weston-clients weston-terminal wayland-utils libdrm-tests \
-        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
+        xorg-server xf86-video-fbdev xf86-input-evdev xkeyboard-config xdpyinfo xsetroot strace xterm xclock xmessage xwininfo xdotool xprop xrandr xinput xset xhost xrdb xmodmap xwd xeyes xcalc openbox pcmanfm mousepad thunar dbus xclip shared-mime-info adwaita-icon-theme font-dejavu font-adobe-75dpi font-adobe-100dpi harfbuzz
 '
 # Configure only the disposable guest. Preserve original executables.
 sudo chroot "$root" /bin/busybox sh -ec '
@@ -1406,9 +1406,51 @@ with open(f'{work}/init.log','w') as log:
             guest.expect(r'# ')
             capture_scanout('native-weston-survivor')
             print('PASS: original DRM Weston dual terminals, physical keyboard focus switching, independent PTYs, exit and survivor')
+            # Run actual unmodified GTK3 Alpine programs on the native
+            # Wayland/DRM seat, not a nested Xorg-backed Weston session.
+            # All dependencies were installed in the HOST-built Alpine
+            # rootfs. GDK_BACKEND=wayland forbids X11 fallback.
+            guest.sendline('kill "$native_terminal_pid" 2>/dev/null; wait "$native_terminal_pid" 2>/dev/null; native_terminal_pid=; echo NATIVE_GTK_SEAT_CLEARED')
+            guest.expect(r'\\r*\\nNATIVE_GTK_SEAT_CLEARED\\r*\\n',timeout=35)
+            guest.expect(r'# ')
+            guest.sendline('dbus-daemon --session --fork --print-address=1 --print-pid=1 >/root/native-gtk-bus.log 2>&1; rc=$?; if test "$rc" = 0; then export DBUS_SESSION_BUS_ADDRESS="$(head -1 /root/native-gtk-bus.log)"; native_gtk_bus_pid="$(tail -1 /root/native-gtk-bus.log)"; echo NATIVE_GTK_BUS_READY; else echo NATIVE_GTK_BUS_FAILED; fi')
+            if guest.expect([r'\\r*\\nNATIVE_GTK_BUS_READY\\r*\\n',r'\\r*\\nNATIVE_GTK_BUS_FAILED\\r*\\n'],timeout=60):
+                raise RuntimeError('native Wayland GTK D-Bus session did not start')
+            guest.expect(r'# ')
+            def native_gtk_window(name,command):
+                bw,bh,before=capture_scanout('native-gtk-'+name+'-before')
+                guest.sendline(f'env GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-drm {command} >/root/native-gtk-{name}.log 2>&1 & native_gtk_pid=$!; echo NATIVE_GTK_STARTED')
+                guest.expect(r'\\r*\\nNATIVE_GTK_STARTED\\r*\\n',timeout=30)
+                guest.expect(r'# ')
+                delta=0
+                try:
+                    for attempt in range(12):
+                        time.sleep(0.75)
+                        aw,ah,after=capture_scanout('native-gtk-'+name)
+                        assert (aw,ah)==(bw,bh)
+                        delta=sum(before[i:i+3]!=after[i:i+3] for i in range(0,len(after),3))
+                        if delta>=1000: break
+                    guest.sendline('if kill -0 "$native_gtk_pid" 2>/dev/null && ! grep -Eq "^State:[[:space:]]*Z" "/proc/$native_gtk_pid/status" 2>/dev/null; then echo NATIVE_GTK_CLIENT_LIVE; else echo NATIVE_GTK_CLIENT_DEAD; fi')
+                    live=guest.expect([r'\\r*\\nNATIVE_GTK_CLIENT_LIVE\\r*\\n',r'\\r*\\nNATIVE_GTK_CLIENT_DEAD\\r*\\n'],timeout=30)==0
+                    guest.expect(r'# ')
+                    if not live or delta<1000:
+                        guest.sendline(f'cat /root/native-gtk-{name}.log; echo NATIVE_GTK_ERROR_LOG_END')
+                        guest.expect(r'\\r*\\nNATIVE_GTK_ERROR_LOG_END\\r*\\n',timeout=30)
+                        print(f'Native GTK {name} diagnostics:',guest.before)
+                        raise RuntimeError(f'original Alpine GTK {name} failed real Wayland surface rendering: live={live} pixels={delta}')
+                    print(f'PASS: original Alpine GTK {name} on direct Weston DRM, GDK Wayland, QEMU changed pixels={delta}')
+                finally:
+                    guest.sendline('kill "$native_gtk_pid" 2>/dev/null; wait "$native_gtk_pid" 2>/dev/null; native_gtk_pid=; echo NATIVE_GTK_CLIENT_REAPED')
+                    guest.expect(r'\\r*\\nNATIVE_GTK_CLIENT_REAPED\\r*\\n',timeout=45)
+                    guest.expect(r'# ')
+            native_gtk_window('mousepad','mousepad /root/desktop/documents/note.txt')
+            native_gtk_window('thunar','thunar /root/desktop')
+            guest.sendline('kill "$native_gtk_bus_pid" 2>/dev/null; native_gtk_bus_pid=; echo NATIVE_GTK_BUS_CLOSED')
+            guest.expect(r'\\r*\\nNATIVE_GTK_BUS_CLOSED\\r*\\n',timeout=30)
+            guest.expect(r'# ')
             native_success=True
         finally:
-            guest.sendline('kill "$native_terminal_pid" "$native_terminal2_pid" "$native_client_pid" 2>/dev/null; weston_pids="$(pidof weston 2>/dev/null)"; if test -n "$weston_pids"; then kill $weston_pids 2>/dev/null; fi; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log /root/weston-drm-terminal-second.log /root/udev-input.log /root/udev-event0.log /root/libinput-devices.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
+            guest.sendline('kill "$native_gtk_pid" "$native_gtk_bus_pid" "$native_terminal_pid" "$native_terminal2_pid" "$native_client_pid" 2>/dev/null; weston_pids="$(pidof weston 2>/dev/null)"; if test -n "$weston_pids"; then kill $weston_pids 2>/dev/null; fi; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log /root/weston-drm-terminal-second.log /root/udev-input.log /root/udev-event0.log /root/libinput-devices.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
             guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=150)
             native_teardown=guest.before
             print('Original native Weston DRM diagnostic:',native_teardown[-16000:])
