@@ -24,7 +24,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld make binutils curl python3 \
             qemu-system-arm qemu-system-misc \
-            qemu-efi-aarch64 qemu-efi-riscv64 \
+            qemu-efi-aarch64 qemu-efi-riscv64 ipxe-qemu \
             dosfstools mtools
       - name: Check boot scripts
         run: |
