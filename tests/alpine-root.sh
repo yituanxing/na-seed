@@ -1145,11 +1145,20 @@ with open(f'{work}/init.log','w') as log:
         # DRM_EVENT_FLIP_COMPLETE records received through libdrm/read/select.
         guest.sendline('(sleep 25 | modetest -M virtio_gpu -s 44@42:800x600 -v) >/root/modetest-flip.log 2>&1 & flip_pid=$!; echo MODETEST_FLIP_STARTED')
         guest.expect(r'\r*\nMODETEST_FLIP_STARTED\r*\n',timeout=30)
-        time.sleep(4)
-        sw,sh,flip_frame=capture_scanout('kms-pageflip')
-        assert (sw,sh)==(800,600)
-        moved=sum(flip_frame[i:i+3]!=after_kms[i:i+3]
-                  for i in range(0,len(flip_frame),3))
+        # A single screenshot can land on the exact same phase of two
+        # alternating framebuffers. Sample multiple distinct intervals,
+        # keeping the first actually different screenshot as evidence.
+        moved=0
+        sw=sh=0
+        for interval in (0.23,0.37,0.61,0.43,0.79,0.31,1.07,
+                         0.47,0.91,0.29,0.73,0.53):
+            time.sleep(interval)
+            sw,sh,flip_frame=capture_scanout('kms-pageflip')
+            assert (sw,sh)==(800,600)
+            moved=sum(flip_frame[i:i+3]!=after_kms[i:i+3]
+                      for i in range(0,len(flip_frame),3))
+            if moved>10000:
+                break
         print(f'DRM page-flip real QEMU pixels changed: {moved}/{sw*sh}')
         guest.sendline('wait "$flip_pid"; printf "MODETEST_FLIP_STATUS=%s\n" "$?"')
         guest.expect(r'\r*\nMODETEST_FLIP_STATUS=([0-9]+)\r*\n',timeout=100)
