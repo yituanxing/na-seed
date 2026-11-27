@@ -15,6 +15,12 @@ mkfs.ext4 -q -F -t ext4 -b 4096 -O '^metadata_csum,^64bit' \
     -d "$base/alpine-root" "$rootdisk"
 e2fsck -fn "$rootdisk"
 cp "$base/alpine-efi.img" "$base/root-efi.img"
+# The previous boot used the baseline kernel. This must boot the newly
+# compiled full feature-profile ELF, not a cached copy inside the FAT ESP.
+full_kernel="build/port-$arch/full/kernel.elf"
+test -s "$full_kernel"
+mcopy -o -i "$base/root-efi.img" "$full_kernel" "::/boot/kernel"
+sha256sum "$full_kernel"
 # Kernel M191 resolves the selected executable *from the mounted block
 # device*. The CPIO module is an immutable rescue archive, not an alternate
 # test executable or a host-supplied stub VFS.
