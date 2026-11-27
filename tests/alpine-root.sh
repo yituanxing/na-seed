@@ -138,10 +138,13 @@ fi
 echo 'DESKTOP_SESSION_WAYLAND_READY=1' >>/var/log/naseed-desktop/session.log
 # Long-lived genuine apps. Their windows remain independent of the test
 # harness, and users can launch arbitrary further Wayland clients.
-thunar /root/desktop >/var/log/naseed-desktop/thunar.log 2>&1 &
-thunar_pid=$!
 weston-terminal --shell=/bin/sh >/var/log/naseed-desktop/terminal.log 2>&1 &
 terminal_pid=$!
+# Establish the terminal first; the file manager is the desktop's visible
+# initial application instead of racing a later full-window terminal.
+sleep 2
+WAYLAND_DEBUG=client thunar /root/desktop >/var/log/naseed-desktop/thunar.log 2>&1 &
+thunar_pid=$!
 echo 'DESKTOP_SESSION_APPS_STARTED=1' >>/var/log/naseed-desktop/session.log
 # Keep the session service alive for the entire compositor lifecycle.
 # If Weston exits unexpectedly, the supervisor exits and cleans up children.
@@ -1921,7 +1924,7 @@ with open(f'{work}/desktop-boot.log','w') as log:
         guest.expect('Password:')
         guest.sendline('naseed-ci-only')
         guest.expect(r'# ')
-        guest.sendline('for i in $(seq 1 110); do test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log 2>/dev/null && break; sleep 1; done; if test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log && test -L /etc/runlevels/default/naseed-desktop && pidof weston >/dev/null && pidof thunar >/dev/null; then echo OPENRC_DESKTOP_AUTOSTART_PASS; else echo OPENRC_DESKTOP_AUTOSTART_FAIL; cat /var/log/naseed-desktop/*.log 2>/dev/null; fi')
+        guest.sendline('for i in $(seq 1 110); do test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log 2>/dev/null && break; sleep 1; done; if test -S /run/user/0/wayland-0 && grep -q DESKTOP_SESSION_APPS_STARTED=1 /var/log/naseed-desktop/session.log && test -L /etc/runlevels/default/naseed-desktop && pidof weston >/dev/null && pidof thunar >/dev/null && pidof weston-terminal >/dev/null; then echo OPENRC_DESKTOP_AUTOSTART_PASS; else echo OPENRC_DESKTOP_AUTOSTART_FAIL; cat /var/log/naseed-desktop/*.log 2>/dev/null; fi')
         if guest.expect([r'\r*\nOPENRC_DESKTOP_AUTOSTART_PASS\r*\n',r'\r*\nOPENRC_DESKTOP_AUTOSTART_FAIL\r*\n'],timeout=240):
             raise RuntimeError('Alpine OpenRC failed to independently autostart real Weston+Thunar desktop')
         guest.expect(r'# ')
@@ -1929,31 +1932,63 @@ with open(f'{work}/desktop-boot.log','w') as log:
         if guest.expect([r'\r*\nOPENRC_DESKTOP_PROTOCOL_PASS\r*\n',r'\r*\nOPENRC_DESKTOP_PROTOCOL_FAIL\r*\n'],timeout=120):
             raise RuntimeError('OpenRC-managed Weston is not reachable by original Alpine wayland-info')
         guest.expect(r'# ')
-        time.sleep(1.5)
-        width,height,before=scanout('desktop-boot-before')
-        guest.sendline('export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1; export DBUS_SESSION_BUS_ADDRESS="$(sed -n 1p /run/naseed-desktop/bus)"; mousepad /root/desktop/documents/note.txt >/root/desktop-boot-mousepad.log 2>&1 & desktop_mousepad_pid=$!; echo OPENRC_DESKTOP_EDITOR_LAUNCHED')
+        # Confirm that ORIGINAL Thunar has actually requested an xdg
+        # toplevel; pidof thunar alone says nothing about mapped windows.
+        # WAYLAND_DEBUG is the upstream Wayland protocol trace, not a
+        # synthetic compositor or modified GTK executable.
+        guest.sendline('for i in $(seq 1 100); do grep -q get_toplevel /var/log/naseed-desktop/thunar.log 2>/dev/null && break; sleep 1; done; if grep -q get_toplevel /var/log/naseed-desktop/thunar.log 2>/dev/null; then echo OPENRC_DESKTOP_THUNAR_TOPLEVEL; else echo OPENRC_DESKTOP_THUNAR_MISSING; tail -80 /var/log/naseed-desktop/thunar.log /var/log/naseed-desktop/weston.log; fi')
+        if guest.expect([r'\r*\nOPENRC_DESKTOP_THUNAR_TOPLEVEL\r*\n',r'\r*\nOPENRC_DESKTOP_THUNAR_MISSING\r*\n'],timeout=200):
+            raise RuntimeError('OpenRC Thunar did not create an original Wayland xdg_toplevel')
+        guest.expect(r'# ')
+        # The previous test falsely passed BLACK FRAME -> terminal render.
+        # Wait for an already-PAINTED and STABLE desktop framebuffer before
+        # launching Mousepad. A clock tick/cursor blink is small (<3000px).
+        stable=False
+        prior=None
+        for attempt in range(75):
+            time.sleep(1.0)
+            width,height,frame=scanout('desktop-boot-before')
+            visible=sum(max(frame[i:i+3])>20 for i in range(0,len(frame),3))
+            drift=(sum(prior[i:i+3]!=frame[i:i+3]
+                       for i in range(0,len(frame),3))
+                   if prior is not None else width*height)
+            if visible>70000 and drift<3000:
+                before=frame
+                stable=True
+                break
+            prior=frame
+        if not stable:
+            guest.sendline('tail -100 /var/log/naseed-desktop/*.log; echo DESKTOP_STABLE_DIAG_END')
+            guest.expect(r'\r*\nDESKTOP_STABLE_DIAG_END\r*\n',timeout=35)
+            raise RuntimeError(f'OpenRC compositor failed to produce stable painted desktop: visible={visible} idle_change={drift}')
+        print(f'PASS: autonomous OpenRC desktop has stable nonblack baseline; visible_pixels={visible}, idle_change={drift}')
+        guest.sendline('export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=wayland-0 GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland NO_AT_BRIDGE=1; export DBUS_SESSION_BUS_ADDRESS="$(sed -n 1p /run/naseed-desktop/bus)"; env WAYLAND_DEBUG=client mousepad /root/desktop/documents/note.txt >/root/desktop-boot-mousepad.log 2>&1 & desktop_mousepad_pid=$!; echo OPENRC_DESKTOP_EDITOR_LAUNCHED')
         guest.expect(r'\r*\nOPENRC_DESKTOP_EDITOR_LAUNCHED\r*\n',timeout=35)
         guest.expect(r'# ')
         delta=0
-        for attempt in range(35):
-            time.sleep(1.0)
+        for attempt in range(100):
+            time.sleep(0.8)
             w,h,after=scanout('desktop-boot-mousepad')
             assert (w,h)==(width,height)
             delta=sum(before[i:i+3]!=after[i:i+3]
                       for i in range(0,len(after),3))
             if delta>15000:break
-        guest.sendline('if kill -0 "$desktop_mousepad_pid" 2>/dev/null && test -S /run/user/0/wayland-0; then echo OPENRC_DESKTOP_EDITOR_ALIVE; else echo OPENRC_DESKTOP_EDITOR_DEAD; fi')
-        alive=guest.expect([r'\r*\nOPENRC_DESKTOP_EDITOR_ALIVE\r*\n',r'\r*\nOPENRC_DESKTOP_EDITOR_DEAD\r*\n'],timeout=30)==0
+        guest.sendline('if kill -0 "$desktop_mousepad_pid" 2>/dev/null && test -S /run/user/0/wayland-0 && grep -q get_toplevel /root/desktop-boot-mousepad.log 2>/dev/null; then echo OPENRC_DESKTOP_EDITOR_TOPLEVEL_LIVE; else echo OPENRC_DESKTOP_EDITOR_TOPLEVEL_MISSING; fi')
+        live=guest.expect([r'\r*\nOPENRC_DESKTOP_EDITOR_TOPLEVEL_LIVE\r*\n',r'\r*\nOPENRC_DESKTOP_EDITOR_TOPLEVEL_MISSING\r*\n'],timeout=35)==0
         guest.expect(r'# ')
-        if not alive or delta<15000:
-            guest.sendline('tail -80 /root/desktop-boot-mousepad.log /var/log/naseed-desktop/*.log 2>/dev/null; echo OPENRC_DESKTOP_DIAG_END')
-            guest.expect(r'\r*\nOPENRC_DESKTOP_DIAG_END\r*\n',timeout=35)
-            print('OpenRC desktop failure logs:',guest.before[-14000:])
-            raise RuntimeError(f'OpenRC desktop original GTK editor failed new visible Wayland window: live={alive}, changed_pixels={delta}')
-        print(f'PASS: autonomous Alpine OpenRC -> Weston DRM -> Thunar; original GTK editor QEMU changed pixels={delta}')
+        if not live or delta<15000:
+            guest.sendline('tail -100 /root/desktop-boot-mousepad.log /var/log/naseed-desktop/*.log 2>/dev/null; echo OPENRC_DESKTOP_DIAG_END')
+            guest.expect(r'\r*\nOPENRC_DESKTOP_DIAG_END\r*\n',timeout=40)
+            print('OpenRC desktop failure logs:',guest.before[-18000:])
+            raise RuntimeError(f'Original Mousepad failed NEW visible xdg_toplevel over stable OpenRC desktop: xdg_live={live}, changed_pixels={delta}')
+        print(f'PASS: autonomous Alpine OpenRC -> Weston DRM -> Thunar; original Mousepad xdg_toplevel visibly changed pixels={delta} over STABLE desktop')
         guest.sendline('kill "$desktop_mousepad_pid" 2>/dev/null; rc-service naseed-desktop stop >/root/desktop-service-stop.log 2>&1; rc=$?; if test "$rc" = 0; then echo OPENRC_DESKTOP_STOP_OK; else cat /root/desktop-service-stop.log; echo OPENRC_DESKTOP_STOP_FAIL; fi')
         if guest.expect([r'\r*\nOPENRC_DESKTOP_STOP_OK\r*\n',r'\r*\nOPENRC_DESKTOP_STOP_FAIL\r*\n'],timeout=150):
             raise RuntimeError('OpenRC cannot stop desktop service cleanly')
+        guest.expect(r'# ')
+        guest.sendline('for i in $(seq 1 30); do if ! pidof weston >/dev/null && ! test -S /run/user/0/wayland-0; then break; fi; sleep 1; done; if ! pidof weston >/dev/null && ! test -S /run/user/0/wayland-0; then echo OPENRC_DESKTOP_TEARDOWN_CLEAN; else echo OPENRC_DESKTOP_TEARDOWN_LEAK; fi')
+        if guest.expect([r'\r*\nOPENRC_DESKTOP_TEARDOWN_CLEAN\r*\n',r'\r*\nOPENRC_DESKTOP_TEARDOWN_LEAK\r*\n'],timeout=90):
+            raise RuntimeError('OpenRC desktop stop left a Weston process or Wayland socket behind')
         guest.expect(r'# ')
         guest.sendline('poweroff')
         guest.expect(pexpect.EOF,timeout=200)
