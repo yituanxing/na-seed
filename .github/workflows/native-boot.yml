@@ -33,6 +33,7 @@ jobs:
           sh -n tests/native-alpine.sh
           sh -n tests/native-root.sh
           sh -n tests/native-openrc.sh
+          sh -n tests/native-desktop.sh
       - name: Build actual full native kernel and user ELF
         run: make ARCH=${{ matrix.arch }} kernel
       - name: Boot original full kernel through Limine and execute native user ELF
@@ -60,6 +61,8 @@ jobs:
         run: make ARCH=${{ matrix.arch }} kernel
       - name: Boot original Alpine OpenRC and physical UART login
         run: sh tests/native-openrc.sh "${{ matrix.arch }}"
+      - name: Boot unmodified Alpine Weston DRM, Thunar and real GPU
+        run: sh tests/native-desktop.sh "${{ matrix.arch }}"
       - name: Preserve real native QEMU serial logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,4 +73,6 @@ jobs:
             build/native-boot/${{ matrix.arch }}/alpine-serial.log
             build/native-boot/${{ matrix.arch }}/root-serial.log
             build/native-boot/${{ matrix.arch }}/openrc-serial.log
+            build/native-boot/${{ matrix.arch }}/desktop-serial.log
+            build/native-boot/${{ matrix.arch }}/*-desktop-frame.ppm
           if-no-files-found: ignore
