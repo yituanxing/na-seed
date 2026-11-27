@@ -1210,6 +1210,16 @@ def verify_wayland():
             'original Wayland client did not paint the nested compositor content',
             (delta,painted))
         print('PASS: original Wayland SHM client renders through Weston -> Xorg -> VirtIO GPU')
+        # The original weston-simple-shm paints an opaque 250x250 surface
+        # in the CENTER of this 600x420 nested compositor. The actual QEMU
+        # failure screenshot showed it covering the terminal click target:
+        # pointer clicks were focusing the demo, not the terminal PTY.
+        # Keep the proven pixel evidence and properly retire that client
+        # before testing independent keyboard input. Do not fake focus.
+        guest.sendline('kill "$wlc" 2>/dev/null; wait "$wlc" 2>/dev/null; wlc=; echo WAYLAND_SHM_CLIENT_RELEASED')
+        guest.expect(r'\r*\nWAYLAND_SHM_CLIENT_RELEASED\r*\n',timeout=40)
+        guest.expect(r'# ')
+        time.sleep(0.8)
         # Exercise a real Wayland PTY terminal and physical keyboard, not
         # only the simple-shm graphics demonstration.
         guest.sendline('env tag=alpha WAYLAND_DISPLAY=wayland-1 weston-terminal --shell=/bin/sh >/root/weston-terminal.log 2>&1 & wtp=$!; echo WAYLAND_TERMINAL_STARTED')
