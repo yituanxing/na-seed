@@ -19,7 +19,8 @@ docker run --rm -v "$PWD/$root:/target" alpine:3.23 sh -ec "
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \\
         add weston weston-backend-drm weston-shell-desktop weston-terminal \\
             libseat seatd eudev thunar mousepad dbus \\
-            shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu
+            shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu \\ 
+            python3 libdrm-tests
 "
 # Reuse the exact desktop supervisor/service from the x86-64 integration
 # suite. Do not fork an ad-hoc native ISA launcher or substitute fake apps.
@@ -31,6 +32,7 @@ root = Path(sys.argv[1])
 entries = [
     ("DESKTOP_SESSION", "usr/local/sbin/naseed-desktop-session"),
     ("DESKTOP_SERVICE", "etc/init.d/naseed-desktop"),
+    ("DRM_PROBE", "root/drm-probe.py"),
 ]
 for marker, relative in entries:
     start_marker = "<<'" + marker + "'\n"
@@ -64,7 +66,7 @@ cp "$base/efi.img" "$base/desktop-efi.img"
 mcopy -o -i "$base/desktop-efi.img" \
     "build/port-$arch/full/kernel.elf" ::/boot/kernel
 mcopy -i "$base/desktop-efi.img" "$base/alpine.cpio" ::/boot/alpine.cpio
-printf 'timeout: 0\n/NaSeed\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: naseed.argv=/sbin/init\n    module_path: boot():/boot/alpine.cpio\n    dtb_path: boot():/boot/qemu-virt.dtb\n' > "$base/desktop-limine.conf"
+printf 'timeout: 0\n/NaSeed\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: naseed.realtime=%s naseed.argv=/sbin/init\n    module_path: boot():/boot/alpine.cpio\n    dtb_path: boot():/boot/qemu-virt.dtb\n' "$(date -u +%s)" > "$base/desktop-limine.conf"
 mcopy -o -i "$base/desktop-efi.img" "$base/desktop-limine.conf" \
     "::/boot/limine/limine.conf"
 python3 tests/native-boot.py "$arch" "$base/desktop-efi.img" \
@@ -85,3 +87,9 @@ e2fsck -fn "$disk"
 debugfs -R 'cat /root/desktop/documents/note.txt' "$disk" > "$base/gui-note.txt"
 test "$(cat "$base/gui-note.txt")" = 'naseed gui roundtrip'
 echo "PASS: $arch GUI persisted across independent QEMU boot; offline ext4 consistent"
+# Deeper architecture-neutral graphics parity. Weston releases the real
+# DRM master via OpenRC; upstream libdrm/GEM and modetest independently
+# verify real KMS modeset and PageFlip completion on this native ISA.
+python3 tests/native-drm.py "$arch"
+e2fsck -fn "$disk"
+echo "PASS: $arch upstream libdrm/GEM and KMS PageFlip verified after GUI roundtrip"
