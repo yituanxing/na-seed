@@ -13,13 +13,13 @@ import time
 if len(sys.argv) not in (4, 5, 6) or sys.argv[1] not in ("riscv64", "aarch64"):
     raise SystemExit(
         "usage: native-boot.py <riscv64|aarch64> <esp.img> "
-        "<serial.log> [hello|alpine|root [root.ext4]]"
+        "<serial.log> [hello|alpine|root|init [root.ext4]]"
     )
 arch, image, logname = sys.argv[1:4]
 scenario = sys.argv[4] if len(sys.argv) >= 5 else "hello"
-if scenario not in ("hello", "alpine", "root") or (
-    scenario == "root" and len(sys.argv) != 6
-) or (scenario != "root" and len(sys.argv) == 6):
+if scenario not in ("hello", "alpine", "root", "init") or (
+    scenario in ("root", "init") and len(sys.argv) != 6
+) or (scenario not in ("root", "init") and len(sys.argv) == 6):
     raise SystemExit(f"invalid native boot arguments/scenario: {sys.argv[1:]}")
 image = str(pathlib.Path(image).resolve())
 log = pathlib.Path(logname)
@@ -43,11 +43,11 @@ base = [
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
     "-drive", f"if=none,id=bootdisk,format=raw,file={image},readonly=on",
     "-device", (
-        "virtio-blk-pci,drive=bootdisk" if scenario == "root"
+        "virtio-blk-pci,drive=bootdisk" if scenario in ("root", "init")
         else "virtio-blk-device,drive=bootdisk"
     ),
 ]
-if scenario == "root":
+if scenario in ("root", "init"):
     root_disk = str(pathlib.Path(sys.argv[5]).resolve())
     if not pathlib.Path(root_disk).is_file():
         raise SystemExit(f"missing original Alpine ext4 image: {root_disk}")
@@ -75,22 +75,49 @@ elif scenario == "alpine":
     required += ("[M5] CPIO executable selected:",
                  f"\nNASEED_ALPINE_{arch}_OK\n", "[EXIT] user status=0",
                  "[PASS] cmdline userspace exit 0")
-else:
+elif scenario == "root":
     required += ("[ROOTFS] physical ext4 root registered at /",
                  "[M191 ROOT] original Alpine PID1 from mounted ext4: /bin/busybox",
                  f"\nNASEED_ALPINE_ROOT_{arch}_OK\n",
                  "[LWEXT4 GUEST] clean upstream unmount and durable flush",
                  "[EXIT] user status=0", "[PASS] cmdline userspace exit 0")
+else:
+    required += ("[ROOTFS] physical ext4 root registered at /",
+                 "[M191 ROOT] original Alpine PID1 from mounted ext4: /sbin/init",
+                 "login:", f"NASEED_NATIVE_OPENRC_{arch}_OK",
+                 "[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount",
+                 "[LWEXT4 GUEST] clean upstream unmount and durable flush",
+                 "[PASS] cmdline userspace exit 0")
 deadline = time.monotonic() + 145
 succeeded = False
 with log.open("wb") as f:
-    proc = subprocess.Popen(base, stdout=f, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(base, stdin=subprocess.PIPE if scenario == "init" else None,
+                            stdout=f, stderr=subprocess.STDOUT)
+    stage = 0
     try:
         while time.monotonic() < deadline:
             time.sleep(0.3)
             text = log.read_bytes().decode("utf-8", errors="replace").replace("\r", "")
             if "[FAIL]" in text:
                 break
+            # Only authentic QEMU UART serial input: login on the real
+            # Alpine getty, type shell commands through its PTY, then use
+            # original BusyBox poweroff/OpenRC. No console syscall injection.
+            if scenario == "init" and proc.stdin:
+                if stage == 0 and "login:" in text:
+                    proc.stdin.write(b"root\n")
+                    proc.stdin.flush()
+                    stage = 1
+                elif stage == 1 and "Password:" in text:
+                    proc.stdin.write(b"naseed-ci-only\n")
+                    proc.stdin.flush()
+                    stage = 2
+                elif stage == 2 and "# " in text[text.rfind("Password:"):]:
+                    proc.stdin.write(
+                        f"echo NASEED_NATIVE_OPENRC_{arch}_OK; poweroff\n".encode()
+                    )
+                    proc.stdin.flush()
+                    stage = 3
             if all(marker in text for marker in required):
                 succeeded = True
                 break
@@ -119,7 +146,10 @@ elif scenario == "alpine":
     print(f"PASS: {arch} official Alpine 3.23 musl/BusyBox ELF from "
           "verified upstream minirootfs, native syscalls and clean exit",
           flush=True)
-else:
+elif scenario == "root":
     print(f"PASS: {arch} official Alpine BusyBox from real writable "
           "VirtIO-MMIO ext4 root, native syscalls, clean lwext4 unmount",
           flush=True)
+else:
+    print(f"PASS: {arch} original Alpine OpenRC PID1, real serial login, "
+          "BusyBox shell and clean ext4 poweroff", flush=True)
