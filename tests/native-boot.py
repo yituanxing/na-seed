@@ -25,7 +25,8 @@ firmware = pathlib.Path(firmwares[arch])
 if not firmware.is_file():
     raise SystemExit(f"FATAL: missing real UEFI firmware {firmware}")
 base = [
-    f"qemu-system-{arch}", "-machine", "virt", "-m", "1024M",
+    f"qemu-system-{arch}", "-machine",
+    "virt,acpi=off" if arch == "riscv64" else "virt", "-m", "1024M",
     "-smp", "1", "-display", "none", "-monitor", "none",
     "-serial", "stdio", "-no-reboot", "-no-shutdown",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
