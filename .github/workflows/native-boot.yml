@@ -25,10 +25,11 @@ jobs:
             clang lld make binutils curl python3 \
             qemu-system-arm qemu-system-misc \
             qemu-efi-aarch64 qemu-efi-riscv64 ipxe-qemu \
-            dosfstools mtools cpio e2fsprogs openssl
+            dosfstools mtools cpio e2fsprogs openssl python3-pexpect
       - name: Check boot scripts
         run: |
           python3 -m py_compile tests/native-boot.py
+          python3 -m py_compile tests/native-gui-roundtrip.py
           sh -n tests/native-boot.sh
           sh -n tests/native-alpine.sh
           sh -n tests/native-root.sh
@@ -75,4 +76,7 @@ jobs:
             build/native-boot/${{ matrix.arch }}/openrc-serial.log
             build/native-boot/${{ matrix.arch }}/desktop-serial.log
             build/native-boot/${{ matrix.arch }}/*-desktop-frame.ppm
+            build/native-boot/${{ matrix.arch }}/gui-*.log
+            build/native-boot/${{ matrix.arch }}/gui-*.ppm
+            build/native-boot/${{ matrix.arch }}/gui-note.txt
           if-no-files-found: ignore
