@@ -1253,6 +1253,7 @@ with open(f'{work}/init.log','w') as log:
         guest.expect(r'# ')
         native_client_pid=''
         native_terminal_pid=''
+        native_terminal2_pid=''
         native_success=False
         try:
             guest.sendline('for i in $(seq 1 40); do test -S /run/user/0/wayland-drm && break; kill -0 "$native_weston_pid" 2>/dev/null || break; sleep 1; done; if test -S /run/user/0/wayland-drm && kill -0 "$native_weston_pid" 2>/dev/null; then echo WESTON_DRM_SOCKET_READY; else echo WESTON_DRM_SOCKET_MISSING; fi')
@@ -1291,7 +1292,7 @@ with open(f'{work}/init.log','w') as log:
             print(f'Native DRM Weston/SHM QEMU pixels changed: {changed}/480000')
             assert changed>=1000,'original Weston DRM client did not paint actual QEMU scanout'
             print('PASS: original Weston DRM + Pixman + Wayland SHM renders directly through VirtIO GPU, without Xorg')
-            guest.sendline('env WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal.log 2>&1 & native_terminal_pid=$!; echo WESTON_DRM_TERMINAL_STARTED')
+            guest.sendline('env tag=alpha WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal.log 2>&1 & native_terminal_pid=$!; echo WESTON_DRM_TERMINAL_STARTED')
             guest.expect(r'\r*\nWESTON_DRM_TERMINAL_STARTED\r*\n',timeout=30)
             guest.expect(r'# ')
             time.sleep(2)
@@ -1321,9 +1322,50 @@ with open(f'{work}/init.log','w') as log:
             guest.expect(r'# ')
             capture_scanout('native-weston-terminal')
             print('PASS: native QMP keyboard -> VirtIO evdev -> Weston DRM seat -> original terminal PTY')
+            # Round 7: two original Alpine DRM/Wayland PTYs without Xorg.
+            guest.sendline('kill "$native_client_pid" 2>/dev/null; wait "$native_client_pid" 2>/dev/null; native_client_pid=; echo WESTON_DRM_SHM_REAPED')
+            guest.expect(r'\r*\nWESTON_DRM_SHM_REAPED\r*\n',timeout=35)
+            guest.expect(r'# ')
+            guest.sendline('env tag=beta WAYLAND_DISPLAY=wayland-drm weston-terminal --shell=/bin/sh >/root/weston-drm-terminal-second.log 2>&1 & native_terminal2_pid=$!; echo WESTON_DRM_SECOND_STARTED')
+            guest.expect(r'\r*\nWESTON_DRM_SECOND_STARTED\r*\n',timeout=30)
+            guest.expect(r'# ')
+            time.sleep(2)
+            guest.sendline('if kill -0 "$native_terminal_pid" 2>/dev/null && kill -0 "$native_terminal2_pid" 2>/dev/null && kill -0 "$native_weston_pid" 2>/dev/null; then echo WESTON_DRM_BOTH_ALIVE; else echo WESTON_DRM_BOTH_DEAD; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_BOTH_ALIVE\r*\n',r'\r*\nWESTON_DRM_BOTH_DEAD\r*\n'],timeout=30):
+                raise RuntimeError('native DRM two original terminal clients did not coexist')
+            guest.expect(r'# ')
+            capture_scanout('native-weston-two-terminals')
+            click()
+            time.sleep(1)
+            type_keys('env >/tmp/nativewl7beta\n')
+            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=beta /tmp/nativewl7beta 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=beta /tmp/nativewl7beta 2>/dev/null; then echo WESTON_DRM_BETA_PASS; else echo WESTON_DRM_BETA_FAIL; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_BETA_PASS\r*\n',r'\r*\nWESTON_DRM_BETA_FAIL\r*\n'],timeout=55):
+                raise RuntimeError('native DRM physical pointer failed to focus second terminal')
+            guest.expect(r'# ')
+            desktop_chord(['meta_l','tab'])
+            type_keys('env >/tmp/nativewl7alpha\n')
+            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null && break; sleep 1; done; if grep -Fxq tag=alpha /tmp/nativewl7alpha 2>/dev/null; then echo WESTON_DRM_ALPHA_PASS; else echo WESTON_DRM_ALPHA_FAIL; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_ALPHA_PASS\r*\n',r'\r*\nWESTON_DRM_ALPHA_FAIL\r*\n'],timeout=55):
+                raise RuntimeError('native Weston Super+Tab did not reach first PTY')
+            guest.expect(r'# ')
+            desktop_chord(['meta_l','tab'])
+            type_keys('exit\n')
+            guest.sendline('for i in $(seq 1 15); do if ! kill -0 "$native_terminal2_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_terminal2_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_terminal2_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_terminal2_pid/status" 2>/dev/null; then wait "$native_terminal2_pid"; printf "WESTON_DRM_SECOND_EXIT=%s\n" "$?"; native_terminal2_pid=; else echo WESTON_DRM_SECOND_STUCK; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_SECOND_EXIT=0\r*\n',r'\r*\nWESTON_DRM_SECOND_STUCK\r*\n',r'\r*\nWESTON_DRM_SECOND_EXIT=[0-9]+\r*\n'],timeout=65):
+                raise RuntimeError('native DRM second terminal did not exit cleanly')
+            guest.expect(r'# ')
+            click()
+            time.sleep(1)
+            type_keys('env >/tmp/nativewl7survive\n')
+            guest.sendline('for i in $(seq 1 15); do grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null && break; sleep 1; done; if kill -0 "$native_terminal_pid" 2>/dev/null && grep -Fxq tag=alpha /tmp/nativewl7survive 2>/dev/null; then echo WESTON_DRM_SURVIVOR_PASS; else echo WESTON_DRM_SURVIVOR_FAIL; fi')
+            if guest.expect([r'\r*\nWESTON_DRM_SURVIVOR_PASS\r*\n',r'\r*\nWESTON_DRM_SURVIVOR_FAIL\r*\n'],timeout=55):
+                raise RuntimeError('native DRM first PTY broke after second terminal exit')
+            guest.expect(r'# ')
+            capture_scanout('native-weston-survivor')
+            print('PASS: original DRM Weston dual terminals, physical focus, independent PTYs, exit and survivor')
             native_success=True
         finally:
-            guest.sendline('kill "$native_terminal_pid" "$native_client_pid" 2>/dev/null; weston_pids="$(pidof weston 2>/dev/null)"; if test -n "$weston_pids"; then kill $weston_pids 2>/dev/null; fi; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log /root/udev-input.log /root/udev-event0.log /root/libinput-devices.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
+            guest.sendline('kill "$native_terminal_pid" "$native_terminal2_pid" "$native_client_pid" 2>/dev/null; weston_pids="$(pidof weston 2>/dev/null)"; if test -n "$weston_pids"; then kill $weston_pids 2>/dev/null; fi; for i in $(seq 1 30); do if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then break; fi; sleep 1; done; if ! kill -0 "$native_weston_pid" 2>/dev/null || grep -Eq "^State:[[:space:]]*Z" "/proc/$native_weston_pid/status" 2>/dev/null; then wait "$native_weston_pid"; printf "WESTON_DRM_STOP=%s\n" "$?"; else echo WESTON_DRM_STOP_FAILED; kill -9 "$native_weston_pid" 2>/dev/null; fi; kill "$seatd_pid" 2>/dev/null; wait "$seatd_pid" 2>/dev/null; for f in /root/weston-drm.log /root/seatd.log /root/weston-drm-info.log /root/weston-drm-shm.log /root/weston-drm-terminal.log /root/weston-drm-terminal-second.log /root/udev-input.log /root/udev-event0.log /root/libinput-devices.log; do echo "=== $f ==="; tail -80 "$f" 2>/dev/null; done; echo === WESTON_NATIVE_SOCKET_TRACE ===; grep -E "AF_NETLINK|NETLINK_KOBJECT|SO_ATTACH|SO_PASSCRED|epoll_ctl|EOPNOTSUPP|ENOSYS|ENOTTY|EPERM|EINVAL" /root/weston-drm.strace | tail -80; echo WESTON_DRM_DIAG_END')
             guest.expect(r'\r*\nWESTON_DRM_DIAG_END\r*\n',timeout=150)
             native_teardown=guest.before
             print('Original native Weston DRM diagnostic:',native_teardown[-16000:])
