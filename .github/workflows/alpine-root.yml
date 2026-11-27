@@ -14,6 +14,10 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Validate acceptance scripts before long QEMU run
+        run: |
+          python3 -m py_compile tests/alpine-desktop-gui.py
+          sh -n tests/alpine-root.sh
       - name: Select weekly apt cache
         id: apt-week
         run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
