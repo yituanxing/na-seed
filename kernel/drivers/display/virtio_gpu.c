@@ -48,6 +48,9 @@ extern void nas_dec(uint64_t);
 #define GPU_CMD_TRANSFER_TO_HOST_2D 0x0105U
 #define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106U
 #define GPU_CMD_GET_CAPSET_INFO 0x0108U
+#define GPU_CMD_CTX_CREATE 0x0200U
+#define GPU_CMD_CTX_DESTROY 0x0201U
+#define GPU_CTX_PROBE_ID 1U
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
 #define GPU_RESP_OK_CAPSET_INFO 0x1102U
@@ -76,6 +79,11 @@ struct gpu_flush {struct gpu_hdr hdr; struct gpu_rect r; uint32_t id, pad;};
 struct gpu_entry {uint64_t address; uint32_t length, padding;};
 /* Linux virtio_gpu.h / VirtIO 1.2 wire layouts, without a second protocol. */
 struct gpu_capset_query {struct gpu_hdr hdr;uint32_t index,padding;};
+struct gpu_ctx_create {
+    struct gpu_hdr hdr;
+    uint32_t nlen,context_init;
+    char debug_name[64];
+};
 struct gpu_capset_reply {
     struct gpu_hdr hdr;
     uint32_t id,max_version,max_size,padding;
@@ -90,6 +98,7 @@ _Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
 _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
 _Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
 _Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
+_Static_assert(sizeof(struct gpu_ctx_create)==96U, "virtio-gpu context create");
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
                          GPU_RUNTIME_FLUSH };
@@ -450,10 +459,9 @@ static const struct nas_display_ops gpu_display_ops={
     .mmap_page=gpu_mmap_page
 };
 
-/* Issue real control-queue GET_CAPSET_INFO commands only if the host
- * advertises and accepts VIRTIO_GPU_F_VIRGL. Bounded scanning cannot
- * overflow the fixed DMA reply buffer. No 3D resource or context is
- * created and the current DRM dumb-buffer path remains unchanged. */
+/* Probe actual host capset info on the single existing VirtIO control queue.
+ * This is only discovery; the optional context lifecycle acceptance below
+ * remains isolated from the production 2D and DRM paths. */
 static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
     if(!(features&GPU_FEATURE_VIRGL))return 0;
     g->virgl_feature=true;
@@ -485,6 +493,32 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
     nas_print(" render_api=not-implemented\n");
     return 0;
 }
+
+/* 3D acceptance-only bootstrap probe. Reuse the existing synchronous
+ * pre-scheduler DMA/control queue and host-fenced response validation;
+ * never allocate a second queue or advertise a user render node here.
+ * Without VIRTIO_GPU_F_CONTEXT_INIT, context_init=0 selects the default
+ * VirGL context, as specified by the VirtIO-GPU protocol. */
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+static int probe_3d_context(struct gpu_device *g) {
+    if(!g->virgl_feature || !g->virgl_capset_id)return -EOPNOTSUPP;
+    struct gpu_ctx_create create={
+        .hdr=command_hdr(g,GPU_CMD_CTX_CREATE),
+        .nlen=little32((uint32_t)(sizeof("naseed-probe")-1U)),
+        .context_init=0,
+        .debug_name="naseed-probe"
+    };
+    create.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    int rc=command_sync(g,&create,sizeof(create),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+    struct gpu_hdr destroy=command_hdr(g,GPU_CMD_CTX_DESTROY);
+    destroy.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&destroy,sizeof(destroy),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+    nas_print("[VIRTIO GPU 3D CONTEXT] create=1 destroy=1 ctx=1 render_api=not-implemented\n");
+    return 0;
+}
+#endif
 
 static int setup_resource(struct gpu_device *g) {
     uint64_t features=0;
@@ -524,6 +558,12 @@ static int setup_resource(struct gpu_device *g) {
     if(rc)return rc;
     rc=discover_3d_capsets(g,features);
     if(rc)return rc;
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+    if(g->virgl_feature && g->virgl_capset_id) {
+        rc=probe_3d_context(g);
+        if(rc)return rc; /* Explicit 3D test build must fail on real host error. */
+    }
+#endif
 
     struct gpu_hdr display_info=command_hdr(g,GPU_CMD_GET_DISPLAY_INFO);
     rc=command_sync(g,&display_info,sizeof(display_info),0,
