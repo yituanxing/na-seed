@@ -567,17 +567,14 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
-    /* Diagnostic only: the same unmodified Alpine Openbox is registered
-     * as EWMH WM on both RV64 and ARM64 yet leaves Xaw MapRequest windows
-     * unmapped. Capture its real entry to blocking Linux syscalls without
-     * requiring /proc/PID/mem or a ptrace attach that stalls guest TCG.
-     * No syscall return, scheduling or signal semantics are changed. */
-    static unsigned openbox_wait_traces;
+    /* Bounded cross-ISA syscall entry trace for the ORIGINAL Alpine
+     * Openbox process. The previous wait-only sample produced no records
+     * despite the WM publishing EWMH, so capture all calls to locate the
+     * actual startup stall. Trace only; never rewrite a return or wait. */
+    static unsigned openbox_call_traces;
     if(nas_current_task && !strcmp(TASK.comm,"openbox") &&
-       (nr==NAS_SC_ppoll || nr==NAS_SC_pselect6 ||
-        nr==NAS_SC_futex || nr==NAS_SC_epoll_pwait ||
-        nr==NAS_SC_epoll_ctl) && openbox_wait_traces++<240U) {
-        nas_print("[OPENBOX WAIT] pid=");nas_dec(TASK.pid);
+       openbox_call_traces++<850U) {
+        nas_print("[OPENBOX CALL] pid=");nas_dec(TASK.pid);
         nas_print(" nr=");nas_dec(raw_nr);
         nas_print(" op=");nas_dec(nr);
         nas_print(" a1=");nas_hex(args[1]);
