@@ -94,8 +94,56 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     assert short.raw == raw[:len(short)], "truncated host capset data differs"
     print("TGOS_ALPINE_GETCAPS_SHORT_BUFFER_PASS", flush=True)
 
-    # This read-only render node must FAIL unknown 3D command submission,
-    # rather than silently claim it succeeded.
+    # Real NONEMPTY userspace EXECBUFFER. The 32-bit zero word is the exact
+    # upstream virglrenderer VIRGL_CMD0(VIRGL_CCMD_NOP, 0, 0) packet.
+    # TGOSKits' original VirtIoGpu::submit_3d must process this via QEMU
+    # and retire a real fence before the ioctl can return successfully.
+    nop = ctypes.create_string_buffer(b"\0\0\0\0")
+    exec_req = struct.pack("=IIQQIiIIIIQQ", 0, 4,
+                           ctypes.addressof(nop), 0, 0, -1,
+                           0, 0, 0, 0, 0, 0)
+    assert len(exec_req) == 64, len(exec_req)
+    fcntl.ioctl(fd, EXECBUFFER, exec_req)
+    print("TGOS_ALPINE_NONEMPTY_EXECBUFFER_FENCE_PASS", flush=True)
+
+    # An independent OpenFile must get a DIFFERENT genuine host context.
+    # dup() is the opposite: it shares the same OpenFile and does not create
+    # or destroy an additional GPU context on descriptor-only close.
+    independent = os.open(RENDER, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        fcntl.ioctl(independent, EXECBUFFER, exec_req)
+        duplicate = os.dup(fd)
+        try:
+            fcntl.ioctl(duplicate, EXECBUFFER, exec_req)
+        finally:
+            os.close(duplicate)
+        fcntl.ioctl(fd, EXECBUFFER, exec_req)
+    finally:
+        os.close(independent)
+    # A closed File slot must be able to create/retire a NEW GPU context.
+    recycled = os.open(RENDER, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        fcntl.ioctl(recycled, EXECBUFFER, exec_req)
+    finally:
+        os.close(recycled)
+    print("TGOS_ALPINE_RENDER_FILE_CONTEXT_LIFETIME_PASS", flush=True)
+
+    # Unknown nonempty 3D payload still requires GEM, BO, fence-fd and
+    # original axdrm resource tracking; it must never be sent unchecked.
+    malformed = ctypes.create_string_buffer(b"\xef\xbe\xad\xde")
+    bad_exec = struct.pack("=IIQQIiIIIIQQ", 0, 4,
+                           ctypes.addressof(malformed), 0, 0, -1,
+                           0, 0, 0, 0, 0, 0)
+    try:
+        fcntl.ioctl(fd, EXECBUFFER, bad_exec)
+    except OSError as exc:
+        assert exc.errno in (errno.ENOTTY, errno.EOPNOTSUPP, errno.EINVAL), exc
+    else:
+        raise AssertionError("invalid VirGL command incorrectly accepted")
+    print("TGOS_ALPINE_NONEMPTY_UNSUPPORTED_REJECT_PASS", flush=True)
+
+    # Unimplemented zero-size/BO 3D submission must fail, not claim Mesa.
+
     try:
         fcntl.ioctl(fd, EXECBUFFER, bytes(64))
     except OSError as exc:
