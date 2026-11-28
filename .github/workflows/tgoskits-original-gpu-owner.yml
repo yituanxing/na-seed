@@ -63,9 +63,9 @@ jobs:
             NAS_EXPERIMENT_TGOS_DRM_FFI=1 NAS_EXPERIMENT_TGOS_GPU_OWNER=1 iso
           xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
             python3 tests/native-virgl-probe.py x86_64
-          grep -Fq '[TGOS ORIGINAL GPU CAPSET PASS]' build/native-boot/x86_64/virgl-probe.log
+          grep -Fq '[TGOS ORIGINAL GPU 3D RESOURCE FENCE PASS]' build/native-boot/x86_64/virgl-probe.log
           grep -Fq '[TGOS ORIGINAL DRM ABI PASS]' build/native-boot/x86_64/virgl-probe.log
-          echo 'PASS: original Rust driver owned QEMU GPU, real GET_CAPSET_INFO response, CTX used-ring completion'
+          echo 'PASS: original Rust driver owned QEMU GPU, real capset data, 3D resource and SUBMIT_3D fence with host rejection audit'
           echo 'NOT a Mesa, DRM render-node or glmark2 PASS.'
       - name: Unmodified non-experimental C GPU owner still builds
         run: |
