@@ -63,8 +63,23 @@ static int check_bridge(void) {
 
     CHECK(nas_vring_queue_init(&q,&transport,0,16)==0);
     CHECK(nas_linux_virtgpu_vq_bind(&bridge,&q)==0);
-    CHECK(nas_linux_virtgpu_vq_submit(&bridge,segs,2,&token1)==0);
+    /* The queue consumes provider-mapped slices (not virtual pointers).
+     * The DMA provider's actual frame pin/unpin is exercised separately
+     * by tests/linux-virtgpu-dma-frames.c against the REAL dma.c. */
+    struct nas_dma_mapped_frame mapped_cmd={
+        .provider=&dma,.frame_pa=0x1000,.bus_address=0x210000,.active=true};
+    struct nas_dma_mapped_frame mapped_resp={
+        .provider=&dma,.frame_pa=0x2000,.bus_address=0x220000,.active=true};
+    struct nas_linux_virtgpu_dma_sg sg[2]={
+        {.map=&mapped_cmd,.offset=32,.length=40,.device_writes=false},
+        {.map=&mapped_resp,.offset=128,.length=24,.device_writes=true}
+    };
+    CHECK(nas_linux_virtgpu_vq_submit_mapped(&bridge,sg,2,&token1)==0);
     head1=q.ring.avail->ring[0];
+    CHECK(q.ring.desc[head1].addr==0x210020U);
+    CHECK(q.ring.desc[head1].len==40U);
+    CHECK(q.ring.desc[q.ring.desc[head1].next].addr==0x220080U);
+    CHECK(q.ring.desc[q.ring.desc[head1].next].flags==VRING_DESC_F_WRITE);
     CHECK(nas_linux_virtgpu_vq_submit(&bridge,segs,2,&token2)==0);
     head2=q.ring.avail->ring[1];
     CHECK(head1!=head2 && q.free_count==12U);
