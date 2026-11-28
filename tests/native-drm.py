@@ -135,13 +135,16 @@ def run_original_xorg(guest):
         guest.sendline(
             "timeout 160 gdb -q -batch -ex 'set pagination off' "
             "-ex 'set confirm off' -ex 'run' "
-            "-ex 'thread apply all bt 14' -ex 'info sharedlibrary' "
+            "-ex 'info registers' -ex 'info proc mappings' "
+            "-ex 'x/12i $pc' -ex 'x/24gx $sp' "
+            "-ex 'x/32bx $pc' -ex 'thread apply all bt 14' "
+            "-ex 'info sharedlibrary' -ex 'info files' "
             "--args /usr/libexec/Xorg :1 vt1 -keeptty "
             "-config /root/xorg.conf -logfile /root/Xorg-gdb.log "
             "-nolisten tcp -ac -noreset -extension GLX -extension DRI3 "
             ">/root/xorg-gdb-backtrace.log 2>&1; "
             "echo XORG_GDB_DIAGNOSTICS_BEGIN; "
-            "tail -180 /root/xorg-gdb-backtrace.log; "
+            "tail -280 /root/xorg-gdb-backtrace.log; "
             "echo XORG_GDB_DIAGNOSTICS_END")
         try:
             guest.expect(r'\r*\nXORG_GDB_DIAGNOSTICS_END\r*\n', timeout=190)
