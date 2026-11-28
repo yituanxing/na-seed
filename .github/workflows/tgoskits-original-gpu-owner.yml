@@ -1,0 +1,82 @@
+name: Original TGOSKits virtio-gpu real-device owner (experimental)
+on:
+  push:
+    branches: [experiment/tgoskits-gpu-owner-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/drivers/display/virtio_gpu.c'
+      - 'tests/native-virgl-probe.py'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-gpu-owner.yml'
+  pull_request:
+    branches: [experiment/tgoskits-drm-ffi-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/drivers/display/virtio_gpu.c'
+      - 'tests/native-virgl-probe.py'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-gpu-owner.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tgos-original-gpu-experiment
+  cancel-in-progress: true
+jobs:
+  original-gpu-actual-qemu-device:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare native C and pinned Rust GPU toolchain
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends clang lld make git binutils curl
+          rustup toolchain install nightly-2026-11-13 --profile minimal --component rust-src --target x86_64-unknown-none
+      - name: Build ORIGINAL upstream DRM and original VirtIoGpu crate unchanged
+        run: |
+          sh -n scripts/build-tgoskits-drm-ffi.sh
+          NAS_EXPERIMENT_TGOS_GPU_OWNER=1 sh scripts/build-tgoskits-drm-ffi.sh
+      - name: Link original VirtIoGpu as exclusive real NaSeed kernel driver
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 \
+            NAS_EXPERIMENT_TGOS_DRM_FFI=1 NAS_EXPERIMENT_TGOS_GPU_OWNER=1 kernel
+          for sym in nas_tgos_original_gpu_probe nas_tgos_original_gpu_shutdown \
+                     nas_tgos_original_gpu_driver_register nas_tgos_gpu_bounce_share; do
+            nm build/kernel.elf | grep -Fq " $sym" || {
+              echo "FAIL missing original GPU ownership symbol $sym"; exit 1;
+            }
+          done
+          echo 'PASS: actual kernel has original TGOSKits virtio-gpu GPU owner'
+      - name: Boot original TGOSKits GPU under QEMU VirGL and require original control commands
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          NAS_EXPERIMENT_TGOS_GPU_OWNER: "1"
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-gui ovmf xorriso \
+            libvirglrenderer1 libgl1-mesa-dri libegl1 xvfb xauth
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 \
+            NAS_EXPERIMENT_TGOS_DRM_FFI=1 NAS_EXPERIMENT_TGOS_GPU_OWNER=1 iso
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
+            python3 tests/native-virgl-probe.py x86_64
+          grep -Fq '[TGOS ORIGINAL GPU CAPSET PASS]' build/native-boot/x86_64/virgl-probe.log
+          grep -Fq '[TGOS ORIGINAL DRM ABI PASS]' build/native-boot/x86_64/virgl-probe.log
+          echo 'PASS: original Rust driver owned QEMU GPU, real GET_CAPSET_INFO response, CTX used-ring completion'
+          echo 'NOT a Mesa, DRM render-node or glmark2 PASS.'
+      - name: Unmodified non-experimental C GPU owner still builds
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 OUT=build/baseline kernel
+          if nm build/baseline/kernel.elf | grep -Eq ' (nas_tgos_original_gpu_probe|nas_tgos_gpu_bounce_share)$'; then
+            echo 'FAIL experimental Rust GPU symbols leaked into default build'; exit 1;
+          fi
+      - name: Upload actual QEMU serial for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-tgos-virtgpu-qemu-x86-serial
+          path: build/native-boot/x86_64/virgl-probe.log
+          if-no-files-found: ignore
