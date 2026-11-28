@@ -23,6 +23,11 @@ int nas_linux_virtgpu_vq_submit(struct nas_linux_virtgpu_vq_bridge *,
  * and -EAGAIN if the device has not completed anything. */
 int nas_linux_virtgpu_vq_reclaim(struct nas_linux_virtgpu_vq_bridge *,
                                 void **cookie, uint32_t *used_bytes);
+/* Only AFTER nas_vring_queue_close() has reset the device, enumerate
+ * abandoned DMA/request owners. A cookie must never be released before reset.
+ * Set *cursor=0 initially; -ENOENT means no tokens remain. */
+int nas_linux_virtgpu_vq_reap_after_reset(struct nas_linux_virtgpu_vq_bridge *,
+                                         unsigned *cursor, void **cookie);
 bool nas_linux_virtgpu_vq_kick_prepare(struct nas_linux_virtgpu_vq_bridge *);
 void nas_linux_virtgpu_vq_notify(struct nas_linux_virtgpu_vq_bridge *);
 void nas_linux_virtgpu_vq_disable_callbacks(struct nas_linux_virtgpu_vq_bridge *);
