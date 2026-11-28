@@ -34,14 +34,23 @@ extern void nas_dec(uint64_t);
 #define GPU_RESOURCE_ID 1U
 #define GPU_FORMAT_B8G8R8X8_UNORM 2U
 #define GPU_FENCE 1U
+/* VirtIO GPU 1.2: feature bit 0 advertises host VirGL command support.
+ * Negotiate it only for discovery; never expose 3D acceleration to
+ * userspace until context/resource submission and the render ABI exist. */
+#define GPU_FEATURE_VIRGL UINT64_C(1)
+#define GPU_CAPSET_VIRGL 1U
+#define GPU_CAPSET_VIRGL2 2U
+#define GPU_CAPSET_PROBE_LIMIT 32U
 #define GPU_CMD_GET_DISPLAY_INFO 0x0100U
 #define GPU_CMD_RESOURCE_CREATE_2D 0x0101U
 #define GPU_CMD_SET_SCANOUT 0x0103U
 #define GPU_CMD_RESOURCE_FLUSH 0x0104U
 #define GPU_CMD_TRANSFER_TO_HOST_2D 0x0105U
 #define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106U
+#define GPU_CMD_GET_CAPSET_INFO 0x0108U
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
+#define GPU_RESP_OK_CAPSET_INFO 0x1102U
 #define GPU_TIMEOUT_NS UINT64_C(3000000000)
 /* A direct MAP_SHARED store cannot call write_at/mark_dirty. While VMAs
  * exist, refresh at a bounded 10 Hz through the existing deferred, IRQ-
@@ -65,6 +74,12 @@ struct gpu_scanout {struct gpu_hdr hdr; struct gpu_rect r; uint32_t scanout, id;
 struct gpu_transfer {struct gpu_hdr hdr; struct gpu_rect r; uint64_t offset; uint32_t id, pad;};
 struct gpu_flush {struct gpu_hdr hdr; struct gpu_rect r; uint32_t id, pad;};
 struct gpu_entry {uint64_t address; uint32_t length, padding;};
+/* Linux virtio_gpu.h / VirtIO 1.2 wire layouts, without a second protocol. */
+struct gpu_capset_query {struct gpu_hdr hdr;uint32_t index,padding;};
+struct gpu_capset_reply {
+    struct gpu_hdr hdr;
+    uint32_t id,max_version,max_size,padding;
+};
 _Static_assert(sizeof(struct gpu_hdr)==24U, "virtio-gpu control header");
 _Static_assert(sizeof(struct gpu_resp_info)==408U, "virtio-gpu display info");
 _Static_assert(sizeof(struct gpu_create)==40U, "virtio-gpu create2d");
@@ -73,6 +88,8 @@ _Static_assert(sizeof(struct gpu_scanout)==48U, "virtio-gpu scanout");
 _Static_assert(sizeof(struct gpu_transfer)==56U, "virtio-gpu transfer");
 _Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
 _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
+_Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
+_Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
                          GPU_RUNTIME_FLUSH };
@@ -93,6 +110,9 @@ struct gpu_device {
     uint64_t dirty_serial, epoch_serial, displayed_serial;
     uint32_t irq_pending;
     uint32_t scanout;
+    /* GPU host capability inventory; NOT a claim that /dev/dri supports 3D. */
+    uint32_t capset_count,virgl_capset_id,virgl_capset_version,virgl_capset_size;
+    bool virgl_feature;
     unsigned pixel_pages, entry_pages;
     uint32_t dirty_y0, dirty_y1;
     uint32_t epoch_first, epoch_last;
@@ -430,9 +450,45 @@ static const struct nas_display_ops gpu_display_ops={
     .mmap_page=gpu_mmap_page
 };
 
+/* Issue real control-queue GET_CAPSET_INFO commands only if the host
+ * advertises and accepts VIRTIO_GPU_F_VIRGL. Bounded scanning cannot
+ * overflow the fixed DMA reply buffer. No 3D resource or context is
+ * created and the current DRM dumb-buffer path remains unchanged. */
+static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
+    if(!(features&GPU_FEATURE_VIRGL))return 0;
+    g->virgl_feature=true;
+    g->capset_count=nas_virtio_config32(&g->transport,12U);
+    const uint32_t count=g->capset_count<GPU_CAPSET_PROBE_LIMIT ?
+                         g->capset_count:GPU_CAPSET_PROBE_LIMIT;
+    for(uint32_t i=0;i<count;i++) {
+        struct gpu_capset_query q={
+            .hdr=command_hdr(g,GPU_CMD_GET_CAPSET_INFO),
+            .index=little32(i)};
+        int rc=command_sync(g,&q,sizeof(q),0,GPU_RESP_OK_CAPSET_INFO);
+        if(rc)return rc;
+        const struct gpu_capset_reply *a=g->response.cpu;
+        uint32_t id=little32(a->id);
+        uint32_t version=little32(a->max_version);
+        uint32_t size=little32(a->max_size);
+        if((id==GPU_CAPSET_VIRGL || id==GPU_CAPSET_VIRGL2) &&
+           version && size && id>g->virgl_capset_id) {
+            g->virgl_capset_id=id;
+            g->virgl_capset_version=version;
+            g->virgl_capset_size=size;
+        }
+    }
+    nas_print("[VIRTIO GPU 3D DISCOVERY] host_virgl=1 capsets=");
+    nas_dec(g->capset_count);
+    nas_print(" virgl_id=");nas_dec(g->virgl_capset_id);
+    nas_print(" version=");nas_dec(g->virgl_capset_version);
+    nas_print(" bytes=");nas_dec(g->virgl_capset_size);
+    nas_print(" render_api=not-implemented\n");
+    return 0;
+}
+
 static int setup_resource(struct gpu_device *g) {
     uint64_t features=0;
-    int rc=nas_virtio_negotiate(&g->transport,0,0,&features);
+    int rc=nas_virtio_negotiate(&g->transport,0,GPU_FEATURE_VIRGL,&features);
     if(rc)return rc;
     if(!nas_virtio_config32(&g->transport,8U))return -ENODEV;
     g->pixels=nas_heap_calloc(GPU_PAGES,sizeof(*g->pixels));
@@ -465,6 +521,8 @@ static int setup_resource(struct gpu_device *g) {
                     nas_virtio_irq_ack_source,&g->transport,irq_notify,g);
     if(rc)return rc;
     rc=nas_virtio_activate(&g->transport);
+    if(rc)return rc;
+    rc=discover_3d_capsets(g,features);
     if(rc)return rc;
 
     struct gpu_hdr display_info=command_hdr(g,GPU_CMD_GET_DISPLAY_INFO);
@@ -591,6 +649,16 @@ void nas_virtio_gpu_get_scanout_state(struct nas_virtio_gpu_scanout_state *out) 
         .displayed_serial=gpu.displayed_serial,
         .busy=gpu.runtime_phase!=GPU_RUNTIME_IDLE,
         .dirty=gpu.dirty,.ready=gpu.claimed && !gpu.stalled
+    };
+}
+void nas_virtio_gpu_get_3d_caps(struct nas_virtio_gpu_3d_caps *out) {
+    if(!out)return;
+    *out=(struct nas_virtio_gpu_3d_caps){
+        .host_virgl=gpu.virgl_feature && gpu.claimed && !gpu.stalled,
+        .capset_count=gpu.capset_count,
+        .virgl_capset_id=gpu.virgl_capset_id,
+        .virgl_capset_version=gpu.virgl_capset_version,
+        .virgl_capset_size=gpu.virgl_capset_size
     };
 }
 void nas_virtio_gpu_get_stats(struct nas_virtio_gpu_stats *out) {
