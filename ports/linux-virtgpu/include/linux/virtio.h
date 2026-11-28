@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Linux v6.14 internal API layout/signatures; NaSeed port subset. */
 #ifndef NASEED_LINUX_VIRTGPU_VIRTIO_PORT_H
 #define NASEED_LINUX_VIRTGPU_VIRTIO_PORT_H
 /* Linux v6.14 virtqueue API surface adapted to NaSeed's real split ring.
