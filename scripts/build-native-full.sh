@@ -21,6 +21,8 @@ esac
 [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LWEXT4=1"
 [ "${NAS_ENABLE_LITTLEFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_LITTLEFS=1"
 [ "${NAS_ENABLE_RAMFS:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_RAMFS=1"
+# Native ISA builds use their own compile flags, not the x86 Makefile CFLAGS.
+[ "${NAS_ENABLE_GPU3D_CONTEXT_PROBE:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_GPU3D_CONTEXT_PROBE=1"
 case "$port" in
     riscv64)
         if [ "${NAS_ENABLE_VIRTIO_BLK:-0}" = 1 ]; then
