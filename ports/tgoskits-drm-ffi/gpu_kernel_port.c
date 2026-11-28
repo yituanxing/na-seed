@@ -3,6 +3,7 @@
  * No hand-written 3D protocol, no second queue owner, no DRM render node.
  * One GPU device is probed exclusively by the imported Rust implementation.
  */
+#include "gpu_pci_identity.h"
 #include "../../kernel/drivers/core/bus.h"
 #include "../../kernel/fs/drm_chrdev.h"
 #include "../../kernel/drivers/virtio/transport.h"
@@ -181,6 +182,29 @@ extern int nas_tgos_original_gpu_shutdown(void);
 static struct nas_bus_device *gpu_owner;
 static bool gpu_claimed;
 unsigned nas_tgos_original_gpu_active(void) { return gpu_claimed?1U:0U; }
+/* Real device ownership and PCI config are borrowed from the common bus.
+ * Never guess QEMU BDF or invent vendor/device IDs to satisfy Mesa.
+ * A pending unbind keeps its owner pinned until all render Files retire. */
+int nas_tgos_original_gpu_pci_identity(struct nas_tgos_gpu_pci_identity *out) {
+    if(!out)return -EINVAL;
+    *out=(struct nas_tgos_gpu_pci_identity){0};
+    if(!gpu_claimed || !gpu_owner || gpu_owner->bus!=NAS_BUS_PCI ||
+       gpu_owner->resource.kind!=NAS_BUS_RESOURCE_PCI)return -ENODEV;
+    const struct nas_bus_resource *r=&gpu_owner->resource;
+    const uint8_t *c=r->view.pci.config;
+    if(!c || r->view.pci.config_bytes<48U)return -ENODEV;
+    *out=(struct nas_tgos_gpu_pci_identity){
+        .domain=0,.bus=r->view.pci.bus,.slot=r->view.pci.slot,
+        .function=r->view.pci.function,
+        .vendor=(uint32_t)c[0] | ((uint32_t)c[1]<<8U),
+        .device=(uint32_t)c[2] | ((uint32_t)c[3]<<8U),
+        .revision=c[8],
+        .subvendor=(uint32_t)c[44] | ((uint32_t)c[45]<<8U),
+        .subdevice=(uint32_t)c[46] | ((uint32_t)c[47]<<8U)
+    };
+    return 0;
+}
+
 
 static bool match(const struct nas_bus_device *dev) {
     return dev && dev->device_id==TGOS_GPU_ID && dev->virtio;
