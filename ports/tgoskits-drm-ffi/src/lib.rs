@@ -5,6 +5,8 @@
 #![no_std]
 #![feature(alloc_error_handler)]
 
+extern crate alloc;
+use alloc::alloc::{alloc, dealloc};
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use drm_kapi::kernel_services::ProviderSlot;
@@ -68,6 +70,32 @@ pub extern "C" fn nas_tgos_original_drm_ffi_selftest() -> i32 {
     // Same Linux UAPI constant as NaSeed's existing DRM primary char device.
     if kdrm_core::uapi_drm_consts::DRM_IOCTL_VERSION != 0xc040_6400 {
         return -5;
+    }
+    // REAL NaSeed TLSF-backed allocations through the Rust GlobalAlloc
+    // callback. These are deliberately *not* GPU DMA buffers: the test
+    // checks C/Rust heap ownership and the 64/4096-byte alignment contract.
+    // Executed from NaSeed's process-context DRM registration, never IRQ.
+    for alignment in [8usize, 16, 64, 4096] {
+        let layout = match Layout::from_size_align(513, alignment) {
+            Ok(layout) => layout,
+            Err(_) => return -6,
+        };
+        // SAFETY: valid layout; non-null pointer comes from the selected
+        // kernel TLSF global allocator. Deallocated once with same layout.
+        let ptr = unsafe { alloc(layout) };
+        if ptr.is_null() {
+            return -7;
+        }
+        if (ptr as usize) & (alignment - 1) != 0 {
+            unsafe { dealloc(ptr, layout) };
+            return -8;
+        }
+        unsafe { core::ptr::write_bytes(ptr, 0xa5, layout.size()) };
+        let last = unsafe { *ptr.add(layout.size() - 1) };
+        unsafe { dealloc(ptr, layout) };
+        if last != 0xa5 {
+            return -9;
+        }
     }
     0
 }
