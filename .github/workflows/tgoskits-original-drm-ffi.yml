@@ -1,5 +1,13 @@
 name: TGOSKits ORIGINAL DRM Rust to NaSeed kernel ABI (experimental)
 on:
+  pull_request:
+    branches: [port/linux-virtgpu-v6.14-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/fs/drm_chrdev.c'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-drm-ffi.yml'
   push:
     branches: [experiment/tgoskits-drm-ffi-20261128]
     paths:
