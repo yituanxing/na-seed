@@ -1,6 +1,7 @@
 /* End-to-end host test of PRODUCTION DMA+GEM+VirtIO queue adapters.
  * Hardware transport and GEM handle lookup are the ONLY emulated interfaces.
- * This is not a VirGL renderer or a real-QEMU graphics acceptance test. */
+ * This models one-shot command payload DMA, NOT persistent GPU resource
+ * backing (which must survive attach command completion until detach). */
 #include "../kernel/drivers/port/dma.h"
 #include "../kernel/fs/drm_gem.h"
 #include "../kernel/errno.h"
