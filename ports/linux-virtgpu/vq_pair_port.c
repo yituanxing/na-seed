@@ -51,6 +51,16 @@ int nas_linux_virtgpu_vq_pair_activate(struct nas_linux_virtgpu_vq_pair *pair) {
        !pair->rings[0].active || !pair->rings[1].active)return -EINVAL;
     return nas_virtio_activate(pair->transport);
 }
+uint32_t nas_linux_virtgpu_vq_pair_irq_ack(
+    struct nas_linux_virtgpu_vq_pair *pair) {
+    if(!pair || !pair->initialized || !pair->transport)return 0U;
+    /* PCI reads and clears its ISR; MMIO reads the status and writes ACK.
+     * Both follow the existing shared NaSeed transport, not invented GPU
+     * interrupt registers. Never invoke dequeue work in the hard IRQ. */
+    uint32_t asserted=nas_virtio_irq_ack(pair->transport);
+    nas_linux_virtgpu_vq_pair_irq_record(pair,asserted);
+    return asserted;
+}
 void nas_linux_virtgpu_vq_pair_irq_record(
     struct nas_linux_virtgpu_vq_pair *pair,uint32_t asserted) {
     if(!pair || !pair->initialized)return;
