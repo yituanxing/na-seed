@@ -1,7 +1,7 @@
 name: Linux VirtIO-GPU v6.14 provenance and UAPI port contract
 on:
-  push:
-    branches: [port/linux-virtgpu-v6.14-20261128]
+  pull_request:
+    branches: [refactor/naseed-cleanup-01-20261124]
     paths:
       - 'third_party/linux-virtgpu/**'
       - 'ports/linux-virtgpu/**'
