@@ -80,8 +80,8 @@ if gpu_owner:
     # It means a REAL QEMU capset reply and original CTX used-ring drain,
     # NOT a render node or Mesa/glmark2 result.
     capset = re.compile(
-        r"\[TGOS ORIGINAL GPU CAPSET PASS\] capset_id=([12]) "
-        r"original-ctx-create/destroy-used=1 render-node=absent"
+        r"\[TGOS ORIGINAL GPU 3D RESOURCE FENCE PASS\] capset_id=([12]) "
+        r"original-res3d-submit3d-fence=1 render-node=absent"
     )
     ready_marker = "[TGOS ORIGINAL DRM ABI PASS]"
 else:
@@ -107,8 +107,8 @@ with log.open("wb") as stream:
                 if gpu_owner:
                     print(
                         f"PASS: {arch} original TGOSKits VirtIoGpu owns real "
-                        f"QEMU device, capset_id={m[1]}, CTX_CREATE/DESTROY "
-                        "used-ring complete; NOT Mesa 3D", flush=True
+                        f"QEMU device, capset_id={m[1]}, original RES3D + "
+                        "fenced SUBMIT_3D host-accepted; NOT Mesa rendering", flush=True
                     )
                 else:
                     print(
