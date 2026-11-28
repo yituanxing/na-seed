@@ -51,6 +51,11 @@ int nas_vring_queue_submit_deferred(struct nas_vring_queue *,
 /* Match Linux virtqueue_kick_prepare / virtqueue_notify ordering. */
 bool nas_vring_queue_kick_prepare(struct nas_vring_queue *);
 void nas_vring_queue_notify(struct nas_vring_queue *);
+/* Linux virtqueue_disable_cb / enable_cb without EVENT_IDX. Enable returns
+ * false if a completion raced with re-arming: the owner must drain again.
+ * Hard IRQ does not drain or allocate; the queue caller owns serialization. */
+void nas_vring_queue_disable_callbacks(struct nas_vring_queue *);
+bool nas_vring_queue_enable_callbacks(struct nas_vring_queue *);
 /* -EAGAIN: no completion; 0: completed, descriptor chain reclaimed;
  * -EIO: corrupt completion, device marked failed. */
 int nas_vring_queue_poll(struct nas_vring_queue *, uint16_t *head,
