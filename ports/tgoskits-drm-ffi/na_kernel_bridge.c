@@ -11,13 +11,6 @@
 
 static const uintptr_t nas_tgos_cookie=(uintptr_t)UINT64_C(0x44524d54474f534b);
 
-/* Temporary, serial-only failure localization; no allocations or fake APIs. */
-void nas_tgos_probe_stage(uint32_t stage) {
-    nas_print("[TGOS ABI STAGE] ");
-    nas_dec(stage);
-    nas_print("\n");
-}
-
 void nas_tgos_panic_report(uint32_t kind) {
     nas_print("[TGOS RUST PANIC/OOM] ");
     nas_dec(kind);
@@ -47,31 +40,13 @@ void *nas_tgos_alloc_aligned(size_t bytes,size_t alignment) {
     return (void *)aligned;
 }
 void nas_tgos_free_aligned(void *buffer) {
-    if(!buffer)return;
-    nas_tgos_probe_stage(201);
+    if (!buffer)return;
     uintptr_t p=(uintptr_t)buffer;
-    if(p<2U*sizeof(uintptr_t)){
-        nas_tgos_probe_stage(241);
-        __builtin_trap();
-    }
+    if (p<2U*sizeof(uintptr_t))__builtin_trap();
     uintptr_t *head=(uintptr_t *)buffer;
-    nas_tgos_probe_stage(202);
-    if(head[-1]!=(nas_tgos_cookie^p)){
-        nas_tgos_probe_stage(242);
-        nas_print("[TGOS FREE] cookie mismatch buf=");nas_hex(p);
-        nas_print(" cookie=");nas_hex(head[-1]);nas_print("\n");
-        __builtin_trap();
-    }
-    nas_tgos_probe_stage(203);
+    if (head[-1]!=(nas_tgos_cookie^p))__builtin_trap();
     void *base=(void *)head[-2];
-    nas_print("[TGOS FREE] buf=");nas_hex(p);
-    nas_print(" raw=");nas_hex((uintptr_t)base);nas_print("\n");
-    nas_tgos_probe_stage(204);
-    if(!nas_heap_free(base)){
-        nas_tgos_probe_stage(243);
-        __builtin_trap();
-    }
-    nas_tgos_probe_stage(205);
+    if (!nas_heap_free(base))__builtin_trap();
 }
 extern int nas_tgos_original_drm_ffi_selftest(void);
 /* Actual upstream Rust functions are public extern "C" no_mangle symbols.
@@ -89,18 +64,13 @@ extern const struct nas_tgos_drm_format_prefix *drm_format_info(uint32_t);
 
 int nas_tgos_drm_check_original_abi(void) {
     /* An ABI mismatch MUST refuse the original /dev/dri/card0 endpoint. */
-    nas_tgos_probe_stage(1U);
     uint32_t fmt=drm_mode_legacy_fb_format(32U,24U);
-    nas_tgos_probe_stage(2U);
     if(fmt!=UINT32_C(0x34325258))return -EINVAL;
     const struct nas_tgos_drm_format_prefix *info=drm_format_info(fmt);
-    nas_tgos_probe_stage(3U);
     if(!info || info->format!=fmt || info->depth!=24U ||
        info->num_planes!=1U)return -EINVAL;
 
     /* Real upstream Rust KAPI/provider-slot and ioctl contract also run. */
-    nas_tgos_probe_stage(4U);
     int result=nas_tgos_original_drm_ffi_selftest();
-    nas_tgos_probe_stage(5U);
     return result==0 ? 0 : -EINVAL;
 }
