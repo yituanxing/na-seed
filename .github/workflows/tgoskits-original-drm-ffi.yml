@@ -57,7 +57,7 @@ jobs:
       - name: Validate freestanding Rust GOT relocation resolved by true high-half kernel linker
         run: |
           echo '=== Rust GOT must exist in a loadable native kernel section ==='
-          readelf -W -S build/kernel.elf | grep -Eq '[[:space:]]\\.got[[:space:]]' || {
+          readelf -W -S build/kernel.elf | grep -Fq ' .got ' || {
             echo 'HARD FAIL: original Rust GOTPCREL calls could dereference address zero'
             exit 1
           }
