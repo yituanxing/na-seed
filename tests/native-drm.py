@@ -185,6 +185,19 @@ def run_original_xorg(guest):
     _, _, apps = scanout('xorg-openbox-xterm-xeyes')
     delta = changed(painted, apps)
     if delta < 20000:
+        # Keep the original hardware-pixel acceptance strict. An X11
+        # window listed by xwininfo need not be mapped or visible; collect
+        # the real Map State, geometry and Xorg driver logs before failing.
+        guest.sendline(
+            'echo XORG_WINDOW_DIAGNOSTICS_BEGIN; '
+            'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XTERM -stats 2>&1; '
+            'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XEYES -stats 2>&1; '
+            'tail -110 /root/Xorg.log 2>&1; '
+            'tail -35 /root/native-openbox.log /root/native-xterm.log '
+            '/root/native-xeyes.log 2>&1; '
+            'echo XORG_WINDOW_DIAGNOSTICS_END')
+        guest.expect(r'\\r*\\nXORG_WINDOW_DIAGNOSTICS_END\\r*\\n', timeout=50)
+        guest.expect(r'# ', timeout=30)
         raise RuntimeError(f'{arch}: native X11 windows did not change '
                            f'actual GPU pixels: {delta}')
     print(f'PASS: {arch} original Xorg/Openbox/xterm/xeyes '
