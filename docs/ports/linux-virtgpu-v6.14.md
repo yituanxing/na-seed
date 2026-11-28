@@ -88,6 +88,46 @@ drop-in implementation of `struct virtqueue`. Next: map Linux SG to
 existing NaSeed DMA provider without inventing a new VirtIO-GPU engine;
 then resolve dequeue-work lifecycle and `virtio_find_vqs` wiring.
 
+## Real borrowed GEM page DMA mapping (next port boundary)
+
+The real NaSeed DMA provider now exposes optional `map_frame/unmap_frame`
+operations for a **borrowed, reference-counted, PMM-managed frame**. An
+IOMMU-safe provider returns its **device bus address**, never a guessed
+physical address. Only the existing QEMU coherent identity-DMA provider
+implements those operations currently. Missing/noncoherent providers are
+rejected explicitly; this is NOT a general hardware DMA implementation.
+
+`ports/linux-virtgpu/gem_dma_port.[ch]` reuses the existing NaSeed
+`nas_drm_gem_map_offset / nas_drm_gem_mmap_pin / nas_vm_device.page`
+contract. A mapped page owns **two references**: the GEM object owner pin
+and the DMA provider's independent physical-frame pin. Only after a
+verified GPU completion or device reset may the caller unmap DMA and
+then release the GEM owner. Failed unmap preserves both references.
+
+`ports/linux-virtgpu/virtqueue_bridge.c` now accepts mapped-page
+scatter/gather slices, converts them through the provider's checked
+bus addresses, and publishes them through the real Unikraft queue.
+The original 2D GPU path and all existing block/input queue semantics
+remain unchanged.
+
+The native GPU build links both adapters on x86-64/RV64/AArch64.
+`scripts/check-linux-virtgpu-vq-bridge.sh` now tests real
+`dma.c` mapping (including nonidentity device addresses, pin
+refcounts, unmap failures, overflow rollback), the GEM pin lifecycle,
+and a fully linked host **GEM pin → provider DMA bus mapping →
+split-ring submission → USED completion → safe release** sequence.
+That host test emulates the external transport and GEM lookup only.
+**It is not a real QEMU run, upstream Linux driver link, or VirGL 3D
+test.** The final-head CI must pass before treating this increment
+as verified.
+
+The next missing boundary remains the **original Linux**
+`struct scatterlist`/`virtqueue_add_sgs` interface (including
+allocators and workqueue callbacks) and full Linux DRM
+`drm_gem_shmem_object`/`dma_resv`/fence ownership. A working
+NaSeed GEM DMA mapping does NOT make the original Linux
+`virtgpu_vq.c` object linkable by itself.
+
 ## Port acceptance sequence (non-negotiable)
 
 1. **Source authenticity / live UAPI bridge**: upstream blob checks, exact UAPI cross-compilation, and live NaSeed 2D GPU build on 3 ISAs — the current step.
