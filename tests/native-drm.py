@@ -103,8 +103,12 @@ def run_original_xorg(guest):
            'echo XORG_EVDEV_FAIL; fi',
            'XORG_EVDEV', timeout=85)
     guest.sendline(
+        # The ARM64/RV64 backend is intentionally unaccelerated 2D KMS.
+        # Alpine's optional GLX swrast provider is absent, and loading it
+        # emits AIGLX errors. X11/Render/MIT-SHM do not require GLX/DRI3.
         'Xorg :0 vt1 -keeptty -config /root/xorg.conf '
         '-logfile /root/Xorg.log -nolisten tcp -ac -noreset '
+        '-extension GLX -extension DRI3 '
         '>/root/xorg-console.log 2>&1 & xorg_pid=$!; echo XORG_LAUNCHED')
     guest.expect(r'\r*\nXORG_LAUNCHED\r*\n', timeout=35)
     guest.expect(r'# ')
@@ -114,8 +118,14 @@ def run_original_xorg(guest):
            '&& break; sleep 1; done; '
            'if kill -0 "$xorg_pid" 2>/dev/null && '
            'xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1; then '
-           'echo XORG_SERVER_PASS; else tail -100 /root/Xorg.log '
-           '/root/xorg-console.log; echo XORG_SERVER_FAIL; fi',
+           'echo XORG_SERVER_PASS; else '
+           'echo XORG_SERVER_DIAGNOSTICS_BEGIN; '
+           'cat /root/xdpyinfo.log 2>/dev/null; '
+           'ls -ld /tmp/.X11-unix /tmp/.X11-unix/* 2>&1; '
+           'ps -ef 2>&1 | grep -E "Xorg|xdpyinfo"; '
+           'tail -140 /root/Xorg.log /root/xorg-console.log; '
+           'echo XORG_SERVER_DIAGNOSTICS_END; '
+           'echo XORG_SERVER_FAIL; fi',
            'XORG_SERVER', timeout=140)
     _, _, before = scanout('xorg-before-root')
     verify(guest,
