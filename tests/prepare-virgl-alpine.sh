@@ -27,6 +27,11 @@ docker run --rm -v "$PWD/$work/alpine-root:/target" alpine:3.23 sh -ec "
         add python3
 "
 test -e "$work/alpine-root/usr/bin/python3"
+# apk writes root-owned files from the host container. Restore ONLY staging
+# ownership before unprivileged CPIO. --owner=0:0 below still writes the
+# canonical root:root identities into the guest archive.
+sudo rm -f "$work/alpine-root/lib/apk/db/lock"
+sudo chown -R "$(id -u):$(id -g)" "$work/alpine-root"
 cp tests/virtgpu-capset-abi.py "$work/alpine-root/root/virtgpu-capset-abi.py"
 # Preserve upstream ELF bytes; only package their verified minirootfs into
 # the existing Limine CPIO module transport used by NaSeed distro CI.
