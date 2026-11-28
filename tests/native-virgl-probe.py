@@ -105,8 +105,8 @@ with log.open("wb") as stream:
                 break
             m = capset.search(output)
             if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output) and runtime.search(output):
-                if "[M177 VIRTIO GPU READY]" not in output or
-                   "[M1] entering actual ring 3" not in output:
+                if ("[M177 VIRTIO GPU READY]" not in output or
+                    "[M1] entering actual ring 3" not in output):
                     continue
                 print(
                     f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
