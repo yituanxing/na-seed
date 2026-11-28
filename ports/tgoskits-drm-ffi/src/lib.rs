@@ -6,6 +6,9 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
+
+#[cfg(feature = "gpu-owner")]
+mod gpu;
 use alloc::alloc::{alloc, dealloc};
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
