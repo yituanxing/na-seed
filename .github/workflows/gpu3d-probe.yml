@@ -1,10 +1,14 @@
 name: VirtIO-GPU VirGL host protocol acceptance
 on:
   push:
-    branches: [refactor/naseed-cleanup-01-20261124]
+    branches: [refactor/naseed-cleanup-01-20261124, port/linux-virtgpu-v6.14-20261128]
     paths:
       - "kernel/drivers/display/virtio_gpu.c"
       - "kernel/drivers/display/virtio_gpu.h"
+      - "third_party/linux-virtgpu/include/uapi/linux/virtio_gpu.h"
+      - "ports/linux-virtgpu/include/**"
+      - "Makefile"
+      - "scripts/build-native-full.sh"
       - "tests/native-virgl-probe.py"
       - ".github/workflows/gpu3d-probe.yml"
   workflow_dispatch:
