@@ -4,6 +4,7 @@
  * One GPU device is probed exclusively by the imported Rust implementation.
  */
 #include "../../kernel/drivers/core/bus.h"
+#include "../../kernel/fs/drm_chrdev.h"
 #include "../../kernel/drivers/virtio/transport.h"
 #include "../../kernel/drivers/port/dma.h"
 #include "../../kernel/mm/frame.h"
@@ -179,6 +180,7 @@ extern int nas_tgos_original_gpu_probe(const void *,uint32_t *);
 extern int nas_tgos_original_gpu_shutdown(void);
 static struct nas_bus_device *gpu_owner;
 static bool gpu_claimed;
+unsigned nas_tgos_original_gpu_active(void) { return gpu_claimed?1U:0U; }
 
 static bool match(const struct nas_bus_device *dev) {
     return dev && dev->device_id==TGOS_GPU_ID && dev->virtio;
@@ -200,11 +202,12 @@ static int probe(struct nas_bus_device *dev) {
     gpu_claimed=true;
     nas_print("[TGOS ORIGINAL GPU 3D RESOURCE FENCE PASS] capset_id=");
     nas_dec(capset_id);
-    nas_print(" original-res3d-submit3d-fence=1 render-node=absent\n");
+    nas_print(" original-res3d-submit3d-fence=1 render-node=caps-only\n");
     return 0;
 }
 static int remove_gpu(struct nas_bus_device *dev) {
     if(!gpu_claimed || gpu_owner!=dev)return -ENODEV;
+    if(nas_drm_tgos_render_busy())return -EBUSY;
     int rc=nas_tgos_original_gpu_shutdown();
     if(rc)return rc;
     gpu_owner=NULL;gpu_claimed=false;
