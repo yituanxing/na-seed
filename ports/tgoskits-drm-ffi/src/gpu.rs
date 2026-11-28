@@ -7,14 +7,15 @@ use core::{
     ffi::c_void,
     mem::{size_of, MaybeUninit},
     ptr::{self, NonNull},
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 use virtio_drivers::{
     BufferDirection, Error as VirtIoError, Hal,
     transport::{DeviceStatus, DeviceType, InterruptStatus, Transport},
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes};
-use virtio_gpu::VirtIoGpu;
+use virtio_gpu::{VirtIoGpu, ResourceCreate3d};
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 unsafe extern "C" {
     fn nas_tgos_gpu_dma_alloc(pages: usize, out_pa: *mut u64, out_va: *mut *mut u8) -> i32;
@@ -39,6 +40,26 @@ unsafe extern "C" {
 // Rust heap requests. A direct virtual-to-physical cast is WRONG for TLSF
 // (including its boot .bss arena), so every shared region uses an owned bounce
 // mapping, copied back only after its used-ring completion.
+// The original upstream ControlQueue logs an asynchronous device-side error
+// without returning it from wait_idle()/wait_fence(). This experiment MUST
+// observe those logs or it would falsely call host-rejected 3D commands PASS.
+static GPU_ASYNC_ERRORS: AtomicU32 = AtomicU32::new(0);
+struct GpuAuditLogger;
+static GPU_AUDIT_LOGGER: GpuAuditLogger = GpuAuditLogger;
+impl Log for GpuAuditLogger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= Level::Warn && metadata.target().starts_with("virtio_gpu")
+    }
+    fn log(&self, record: &Record<'_>) {
+        if self.enabled(record.metadata()) {
+            GPU_ASYNC_ERRORS.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    fn flush(&self) {}
+}
+fn gpu_async_ok() -> bool {
+    GPU_ASYNC_ERRORS.load(Ordering::Acquire) == 0
+}
 struct NaSeedHal;
 fn direction_code(d: BufferDirection) -> u32 {
     match d {
@@ -173,6 +194,12 @@ pub extern "C" fn nas_tgos_original_gpu_probe(raw: *const c_void,
     if raw.is_null() || capset_id.is_null() { return -22; }
     if !DEVICE.load(Ordering::Acquire).is_null() { return -16; }
     BAD_QUEUE.store(false, Ordering::Release);
+    // A missing async error sink is a HARD FAILURE, not a quiet pass.
+    if log::set_logger(&GPU_AUDIT_LOGGER).is_err() {
+        return -16;
+    }
+    log::set_max_level(LevelFilter::Warn);
+    GPU_ASYNC_ERRORS.store(0, Ordering::Release);
     let transport = NaTransport { raw, queue_set: false };
     let mut gpu = match VirtIoGpu::<NaSeedHal, _>::new(transport, clock) {
         Ok(gpu) => gpu,
@@ -196,31 +223,90 @@ pub extern "C" fn nas_tgos_original_gpu_probe(raw: *const c_void,
             return -5;
         }
     };
-    // Exercise the upstream 3D context submission path. This verifies used
-    // ring completion, NOT full rendering or a successful Mesa EXECBUFFER.
+    // Upstream blocking GET_CAPSET validates the original QEMU response type
+    // and used length. Mere feature advertisement is not enough for Mesa.
+    let capset_blob = match gpu.get_capset(
+        capset.capset_id, capset.max_version, capset.max_size,
+    ) {
+        Ok(blob) if !blob.is_empty()
+            && blob.len() <= capset.max_size as usize
+            && blob.iter().any(|byte| *byte != 0) => blob,
+        _ => {
+            gpu.reset();
+            unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
+            return -5;
+        }
+    };
+    // The resource shape uses Mesa Gallium PIPE_TEXTURE_2D=2,
+    // PIPE_FORMAT_B8G8R8A8_UNORM=1 and PIPE_BIND_RENDER_TARGET=(1<<1).
+    // It is passed unchanged into the pinned upstream VirtIoGpu API.
+    // A 0-byte SUBMIT_3D is a REAL fenced host command but draws no pixels:
+    // this is not a claim of Mesa render output.
     let ctx: u32 = 0x4e534544;
-    if gpu.ctx_create(ctx, "naseed-gpu-import", 0).is_err() {
-        gpu.reset();
-        unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
-        return -5;
+    let res: u32 = 0x4e530001;
+    let resource = ResourceCreate3d {
+        ctx_id: 0,
+        resource_id: res,
+        target: 2,
+        format: 1,
+        bind: 1 << 1,
+        width: 64,
+        height: 64,
+        depth: 1,
+        array_size: 1,
+        last_level: 0,
+        nr_samples: 0,
+        flags: 0,
+    };
+    macro_rules! fail_after_reset {
+        () => {{
+            gpu.reset();
+            unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
+            return -5;
+        }};
+    }
+    if gpu.ctx_create(ctx, "naseed-gpu-import", 0).is_err()
+        || gpu.resource_create_3d(resource).is_err()
+        || gpu.ctx_attach_resource(ctx, res).is_err()
+    {
+        fail_after_reset!();
     }
     gpu.ctrl_notify();
-    if gpu.wait_idle().is_err() {
-        gpu.reset();
-        unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
-        return -5;
+    if gpu.wait_idle().is_err() || !gpu_async_ok() {
+        fail_after_reset!();
     }
-    if gpu.ctx_destroy(ctx).is_err() {
-        gpu.reset();
-        unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
-        return -5;
+    let fence = match gpu.submit_3d(ctx, &[]) {
+        Ok(fence) if fence != 0 => fence,
+        _ => fail_after_reset!(),
+    };
+    gpu.ctrl_notify();
+    if gpu.wait_fence(fence).is_err()
+        || !gpu.fence_completed(fence)
+        || !gpu_async_ok()
+    {
+        fail_after_reset!();
+    }
+    if gpu.ctx_detach_resource(ctx, res).is_err() {
+        fail_after_reset!();
+    }
+    let release_fence = match gpu.resource_unref(res) {
+        Ok(fence) if fence != 0 => fence,
+        _ => fail_after_reset!(),
+    };
+    if gpu.wait_fence(release_fence).is_err()
+        || !gpu.fence_completed(release_fence)
+        || !gpu_async_ok()
+        || gpu.ctx_destroy(ctx).is_err()
+    {
+        fail_after_reset!();
     }
     gpu.ctrl_notify();
-    if gpu.wait_idle().is_err() {
-        gpu.reset();
-        unsafe { nas_tgos_gpu_bounce_reap_after_reset(); }
-        return -5;
+    if gpu.wait_idle().is_err() || !gpu_async_ok() {
+        fail_after_reset!();
     }
+    // Keep this explicit for runtime auditing; loading real nonzero caps
+    // must precede any user-mode Mesa GEM/EXECBUFFER work.
+    let _validated_capset_bytes = capset_blob.len();
     let owned = Box::into_raw(Box::new(gpu));
     if DEVICE.compare_exchange(ptr::null_mut(), owned,
         Ordering::AcqRel, Ordering::Acquire).is_err() {
