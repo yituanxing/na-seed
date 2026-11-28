@@ -611,7 +611,7 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
             .id=little32(id),.version=little32(version)
         };
         uint32_t used=0;
-        int rc=command_sync_with_reply(g,&query,sizeof(query),0,
+        rc=command_sync_with_reply(g,&query,sizeof(query),0,
                                        GPU_RESP_OK_CAPSET,&used);
         if(rc)return rc;
         if(used<sizeof(struct gpu_hdr) ||
