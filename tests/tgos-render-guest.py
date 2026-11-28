@@ -15,6 +15,36 @@ RENDER = "/dev/dri/renderD128"
 GETPARAM = 0xC0106443
 GET_CAPS = 0xC0186449
 EXECBUFFER = 0xC0406442
+RESOURCE_CREATE = 0xC0386444
+RESOURCE_INFO = 0xC0106445
+GEM_CLOSE = 0x40086409
+
+def create_gpu_resource(fd):
+    # Real upstream VirtGPU RESOURCE_CREATE: 64x64 RGBA render target,
+    # identical shape as the earlier boot-proven resource. No fake GEM mmap.
+    values = [2, 1, 2, 64, 64, 1, 1, 0, 0, 0, 0, 0, 16384, 256]
+    request = bytearray(struct.pack("=14I", *values))
+    assert len(request) == 56
+    fcntl.ioctl(fd, RESOURCE_CREATE, request, True)
+    response = struct.unpack("=14I", request)
+    handle, resource_id = response[10], response[11]
+    assert handle and resource_id and response[12] == 16384
+    info = bytearray(struct.pack("=4I", handle, 0, 0, 0))
+    fcntl.ioctl(fd, RESOURCE_INFO, info, True)
+    found = struct.unpack("=4I", info)
+    assert found == (handle, resource_id, 16384, 0), found
+    return handle, resource_id
+
+def close_gpu_resource(fd, handle):
+    fcntl.ioctl(fd, GEM_CLOSE, struct.pack("=II", handle, 0))
+
+def exec_with_bo(fd, command_ptr, handle):
+    buffer_handles = (ctypes.c_uint32 * 1)(handle)
+    request = struct.pack("=IIQQIiIIIIQQ", 0, 4, command_ptr,
+                           ctypes.addressof(buffer_handles), 1, -1,
+                           0, 0, 0, 0, 0, 0)
+    fcntl.ioctl(fd, EXECBUFFER, request)
+
 
 
 class DrmVersion(ctypes.Structure):
@@ -105,6 +135,45 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     assert len(exec_req) == 64, len(exec_req)
     fcntl.ioctl(fd, EXECBUFFER, exec_req)
     print("TGOS_ALPINE_NONEMPTY_EXECBUFFER_FENCE_PASS", flush=True)
+
+    # Actual guest 3D resource creation + original GPU host attachment.
+    # Every BO identifier must be returned through Linux VirtGPU UAPI, and
+    # a SUBMIT_3D with BO handles must survive real host fence completion.
+    bo1, res1 = create_gpu_resource(fd)
+    bo2, res2 = create_gpu_resource(fd)
+    assert bo1 != bo2 and res1 != res2
+    exec_with_bo(fd, ctypes.addressof(nop), bo1)
+    exec_with_bo(fd, ctypes.addressof(nop), bo2)
+    print("TGOS_ALPINE_REAL_RESOURCE_CREATE_INFO_EXEC_PASS", flush=True)
+
+    # A second file's handle table must not expose the first file's BO.
+    foreign = os.open(RENDER, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        probe = bytearray(struct.pack("=4I", bo1, 0, 0, 0))
+        try:
+            fcntl.ioctl(foreign, RESOURCE_INFO, probe, True)
+        except OSError as exc:
+            assert exc.errno in (errno.ENOENT, errno.EINVAL), exc
+        else:
+            raise AssertionError("cross-file GPU BO capability leak")
+        foreign_bo, foreign_res = create_gpu_resource(foreign)
+        assert foreign_res not in (res1, res2)
+        exec_with_bo(foreign, ctypes.addressof(nop), foreign_bo)
+        # Deliberately leave it open: final-close must free host resource.
+    finally:
+        os.close(foreign)
+    print("TGOS_ALPINE_RESOURCE_FILE_ISOLATION_PASS", flush=True)
+
+    close_gpu_resource(fd, bo1)
+    closed_info = bytearray(struct.pack("=4I", bo1, 0, 0, 0))
+    try:
+        fcntl.ioctl(fd, RESOURCE_INFO, closed_info, True)
+    except OSError as exc:
+        assert exc.errno in (errno.ENOENT, errno.EINVAL), exc
+    else:
+        raise AssertionError("GEM_CLOSE did not retire host resource")
+    close_gpu_resource(fd, bo2)
+    print("TGOS_ALPINE_GEM_CLOSE_DEVICE_RELEASE_PASS", flush=True)
 
     # An independent OpenFile must get a DIFFERENT genuine host context.
     # dup() is the opposite: it shares the same OpenFile and does not create
