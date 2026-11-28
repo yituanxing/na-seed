@@ -55,7 +55,7 @@ __attribute__((noreturn)) void _start(void) {
     struct getparam p={.param=1,.value=(uint64_t)(uintptr_t)&feature.value};
     // Linux's ioctl returns *int*, not u64; check both ABI and true status.
     if(call3(__NR_ioctl,fd,UINT32_C(0xc0106443),
-             (long)(uintptr_t)&p)!=0 || feature.value!=0 ||
+             (long)(uintptr_t)&p)!=0 || feature.value!=1 ||
        feature.guard!=UINT32_C(0xa5b4c3d2))goto close_fail;
     uint32_t mask=0;
     p.param=7;p.value=(uint64_t)(uintptr_t)&mask;
