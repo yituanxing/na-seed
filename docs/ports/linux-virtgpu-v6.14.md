@@ -29,8 +29,17 @@ and ioctl command numbers on x86-64, RV64 and AArch64.
 
 This contract does **not** build `virtgpu_vq.c` or `virtgpu_ioctl.c` as NaSeed
 kernel objects. It does **not** create `/dev/dri/renderD128` or enable VirGL
-rendering. NaSeed's existing 2D `virtio_gpu.c`/KMS path and firmware/PCI/MMIO
-support remain untouched so that all three kernel baseline tests can continue.
+rendering. **The LIVE 2D NaSeed driver `kernel/drivers/display/virtio_gpu.c`
+now includes the unmodified upstream Linux `linux/virtio_gpu.h` and uses its
+original command IDs, feature bits, pixel format, response types and compile-time
+wire layout assertions**, replacing those locally duplicated numeric constants.
+The original 2D queue/IRQ/scanout logic is deliberately retained until the
+whole upstream Linux DRM/GEM/fence dependency stack can be linked.
+
+The port CI explicitly compiles `NAS_ENABLE_VIRTIO_GPU=1` on x86-64, RV64
+and AArch64; the existing QEMU VirGL host capability probe is also required
+to catch any live PCI/MMIO protocol regression. Passing this is **not** the
+same thing as having linked Linux's complete 3D driver.
 
 ## Upstream interfaces to satisfy, in dependency order
 
@@ -45,7 +54,7 @@ support remain untouched so that all three kernel baseline tests can continue.
 
 ## Port acceptance sequence (non-negotiable)
 
-1. **Source authenticity**: upstream blob checks, exact UAPI cross-compilation on 3 ISAs — the current step.
+1. **Source authenticity / live UAPI bridge**: upstream blob checks, exact UAPI cross-compilation, and live NaSeed 2D GPU build on 3 ISAs — the current step.
 2. **Native Linux driver unit linkage**: implement legitimate compatibility interfaces for the *upstream source*, not a parallel rewritten GPU implementation. Fail builds for missing Linux DRM features; never add success stubs.
 3. **Real 3-ISA GPU device**: use QEMU's VirGL-capable PCI/MMIO devices and verify command completion plus DMA lifetime under original driver source. Existing 2D regression must stay green.
 4. **Real Mesa**: unchanged Alpine Mesa opens real DRM render node, obtains capsets, allocates resources, submits EXECBUFFER, waits for fences, performs GL pixel readback.
