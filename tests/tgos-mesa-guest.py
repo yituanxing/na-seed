@@ -10,9 +10,9 @@ import sys
 
 os.environ["LIBGL_ALWAYS_SOFTWARE"] = "0"
 os.environ["EGL_PLATFORM"] = "gbm"
-# NaSeed has a real Linux DRM render node but /sys/dev/char/226:128 is not
-# yet implemented. This is Mesa's documented driver-selection override,
-# NOT a software fallback; the actual guest renderer must still be VIRGL.
+# The real NaSeed PCI/sysfs device tree is now implemented. Keep Mesa's
+# upstream driver-selection override for repeatable VirGL troubleshooting,
+# NOT as a software fallback; GL_RENDERER is checked independently.
 os.environ["MESA_LOADER_DRIVER_OVERRIDE"] = "virtio_gpu"
 os.environ["LIBGL_DEBUG"] = "verbose"
 
@@ -64,6 +64,12 @@ egl.eglInitialize.argtypes = [C.c_void_p, C.POINTER(C.c_int), C.POINTER(C.c_int)
 egl.eglInitialize.restype = C.c_uint
 egl.eglChooseConfig.argtypes = [C.c_void_p, C.POINTER(C.c_int), C.POINTER(C.c_void_p), C.c_int, C.POINTER(C.c_int)]
 egl.eglChooseConfig.restype = C.c_uint
+egl.eglGetConfigs.argtypes = [C.c_void_p, C.POINTER(C.c_void_p), C.c_int, C.POINTER(C.c_int)]
+egl.eglGetConfigs.restype = C.c_uint
+egl.eglGetConfigAttrib.argtypes = [C.c_void_p, C.c_void_p, C.c_int, C.POINTER(C.c_int)]
+egl.eglGetConfigAttrib.restype = C.c_uint
+egl.eglQueryString.argtypes = [C.c_void_p, C.c_int]
+egl.eglQueryString.restype = C.c_char_p
 egl.eglBindAPI.argtypes = [C.c_uint]
 egl.eglBindAPI.restype = C.c_uint
 egl.eglCreateContext.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.POINTER(C.c_int)]
@@ -88,39 +94,107 @@ assert egl.eglInitialize(dpy, C.byref(major), C.byref(minor)), (
 )
 print(f"TGOS_MESA_EGL_INITIALIZE_PASS {major.value}.{minor.value}", flush=True)
 
-# EGL window-system-independent pbuffer; display scanout is not required.
+# EGL platform discovery is not a request to fabricate a config. A GBM
+# render node may expose EGL_WINDOW_BIT only, or surfaceless contexts. Query
+# the REAL unmodified Alpine Mesa implementation before choosing the path.
+exts = (egl.eglQueryString(dpy, 0x3055) or b"").decode(errors="replace")
+client_apis = (egl.eglQueryString(dpy, 0x308D) or b"").decode(errors="replace")
+vendor = (egl.eglQueryString(dpy, 0x3053) or b"").decode(errors="replace")
+print("TGOS_MESA_EGL_VENDOR: " + vendor, flush=True)
+print("TGOS_MESA_EGL_APIS: " + client_apis, flush=True)
+print("TGOS_MESA_EGL_EXTENSIONS: " + exts, flush=True)
+EGL_NONE = 0x3038
 EGL_SURFACE_TYPE = 0x3033
 EGL_PBUFFER_BIT = 0x0001
 EGL_RENDERABLE_TYPE = 0x3040
 EGL_OPENGL_ES2_BIT = 0x0004
 EGL_RED_SIZE, EGL_GREEN_SIZE, EGL_BLUE_SIZE, EGL_ALPHA_SIZE = 0x3024, 0x3023, 0x3022, 0x3021
-config_attribs = (C.c_int * 13)(
-    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-    EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
-    EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE,
+num_configs = C.c_int()
+assert egl.eglGetConfigs(dpy, None, 0, C.byref(num_configs)), (
+    f"eglGetConfigs query failed: {egl.eglGetError():#x}"
 )
-cfg = C.c_void_p()
-num_cfg = C.c_int()
-assert egl.eglChooseConfig(dpy, config_attribs, C.byref(cfg), 1, C.byref(num_cfg)) and num_cfg.value, (
-    f"unmodified Mesa did not expose RGBA8 GLES2 pbuffer: {egl.eglGetError():#x}"
-)
+print(f"TGOS_MESA_EGL_CONFIG_COUNT: {num_configs.value}", flush=True)
+all_configs = (C.c_void_p * min(512, max(1, num_configs.value)))()
+cfg_count = C.c_int()
+if num_configs.value:
+    assert egl.eglGetConfigs(dpy, all_configs, len(all_configs), C.byref(cfg_count)), (
+        f"eglGetConfigs enumeration failed: {egl.eglGetError():#x}"
+    )
+
+def config_attr(config, attribute):
+    value = C.c_int()
+    if not egl.eglGetConfigAttrib(dpy, config, attribute, C.byref(value)):
+        raise RuntimeError(f"eglGetConfigAttrib({attribute:#x}) failed: {egl.eglGetError():#x}")
+    return value.value
+
+# Require real ES2 support, prefer RGBA8 and a native pbuffer when possible.
+# A surfaceless ES2+FBO path is legitimate original GLES rendering and avoids
+# assuming QEMU's render node also offers KMS/window surfaces.
+choice = None
+have_pbuffer = False
+for i in range(cfg_count.value):
+    config = all_configs[i]
+    surf = config_attr(config, EGL_SURFACE_TYPE)
+    rend = config_attr(config, EGL_RENDERABLE_TYPE)
+    red = config_attr(config, EGL_RED_SIZE)
+    green = config_attr(config, EGL_GREEN_SIZE)
+    blue = config_attr(config, EGL_BLUE_SIZE)
+    alpha = config_attr(config, EGL_ALPHA_SIZE)
+    if i < 10:
+        print(f"TGOS_MESA_EGL_CONFIG_{i} surf={surf:#x} render={rend:#x} "
+              f"rgba={red}/{green}/{blue}/{alpha}", flush=True)
+    if not (rend & EGL_OPENGL_ES2_BIT) or min(red,green,blue) < 8:
+        continue
+    candidate_pbuffer = bool(surf & EGL_PBUFFER_BIT)
+    if choice is None or (candidate_pbuffer and not have_pbuffer):
+        choice = config
+        have_pbuffer = candidate_pbuffer
+
+extensions = set(exts.split())
+if choice is None:
+    assert "EGL_KHR_no_config_context" in extensions or "EGL_MESA_configless_context" in extensions, (
+        "No original EGL GLES2 configs and no EGL_KHR_no_config_context "
+        "(renderer not ready; see config/APIs diagnostics above)"
+    )
+    print("TGOS_MESA_EGL_NO_CONFIG_CONTEXT", flush=True)
+    choice = C.c_void_p()
 assert egl.eglBindAPI(0x30A0), "EGL_OPENGL_ES_API unavailable"
 context_attribs = (C.c_int * 3)(0x3098, 2, EGL_NONE)
-ctx = egl.eglCreateContext(dpy, cfg, None, context_attribs)
-assert ctx, f"eglCreateContext failed: {egl.eglGetError():#x}"
-surface_attribs = (C.c_int * 5)(0x3057, 64, 0x3056, 64, EGL_NONE)
-surface = egl.eglCreatePbufferSurface(dpy, cfg, surface_attribs)
-assert surface, f"eglCreatePbufferSurface failed: {egl.eglGetError():#x}"
+ctx = egl.eglCreateContext(dpy, choice, None, context_attribs)
+assert ctx, f"real Mesa eglCreateContext failed: {egl.eglGetError():#x}"
+surface = C.c_void_p()
+if have_pbuffer:
+    surface_attribs = (C.c_int * 5)(0x3057, 64, 0x3056, 64, EGL_NONE)
+    surface = egl.eglCreatePbufferSurface(dpy, choice, surface_attribs)
+    assert surface, f"real Mesa eglCreatePbufferSurface failed: {egl.eglGetError():#x}"
+    print("TGOS_MESA_EGL_PBUFFER_PATH", flush=True)
+else:
+    assert "EGL_KHR_surfaceless_context" in extensions, (
+        "Mesa has no pbuffer and no EGL_KHR_surfaceless_context"
+    )
+    print("TGOS_MESA_EGL_SURFACELESS_PATH", flush=True)
 assert egl.eglMakeCurrent(dpy, surface, surface, ctx), (
-    f"eglMakeCurrent failed: {egl.eglGetError():#x}"
+    f"real Mesa eglMakeCurrent failed: {egl.eglGetError():#x}"
 )
+print("TGOS_MESA_REAL_GLES2_CONTEXT_PASS", flush=True)
 
 gles = C.CDLL("libGLESv2.so.2")
 gles.glGetString.argtypes = [C.c_uint]
 gles.glGetString.restype = C.c_char_p
 gles.glClearColor.argtypes = [C.c_float, C.c_float, C.c_float, C.c_float]
 gles.glClear.argtypes = [C.c_uint]
+gles.glFinish.argtypes = []
+gles.glFinish.restype = None
+gles.glViewport.argtypes = [C.c_int, C.c_int, C.c_int, C.c_int]
+gles.glGenTextures.argtypes = [C.c_int, C.POINTER(C.c_uint)]
+gles.glBindTexture.argtypes = [C.c_uint, C.c_uint]
+gles.glTexParameteri.argtypes = [C.c_uint, C.c_uint, C.c_int]
+gles.glTexImage2D.argtypes = [C.c_uint, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint, C.c_uint, C.c_void_p]
+gles.glGenFramebuffers.argtypes = [C.c_int, C.POINTER(C.c_uint)]
+gles.glBindFramebuffer.argtypes = [C.c_uint, C.c_uint]
+gles.glFramebufferTexture2D.argtypes = [C.c_uint, C.c_uint, C.c_uint, C.c_uint, C.c_int]
+gles.glCheckFramebufferStatus.argtypes = [C.c_uint]
+gles.glCheckFramebufferStatus.restype = C.c_uint
 gles.glReadPixels.argtypes = [C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint, C.c_uint, C.c_void_p]
 gles.glGetError.restype = C.c_uint
 
@@ -134,8 +208,27 @@ assert "virgl" in lowered and "llvmpipe" not in lowered.split("virgl")[0], (
 )
 print("TGOS_MESA_VIRGL_RENDERER_PASS", flush=True)
 
-# Original Mesa emits the real nonempty 3D commands, not a hand-built VirGL
-# packet. Read actual pixels through GLES2 (on top of QEMU virglrenderer).
+# Render to an actual GLES2 texture/FBO instead of relying on window-system
+# scanout. The real Mesa VirGL Gallium driver emits all resource and drawing
+# commands. No manually encoded VirGL commands, no synthesized pixel results.
+GL_TEXTURE_2D, GL_FRAMEBUFFER = 0x0DE1, 0x8D40
+GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_COMPLETE = 0x8CE0, 0x8CD5
+GL_RGBA, GL_UNSIGNED_BYTE = 0x1908, 0x1401
+tex = C.c_uint()
+gles.glGenTextures(1, C.byref(tex))
+assert tex.value != 0, "Mesa failed to allocate a real GLES2 texture"
+gles.glBindTexture(GL_TEXTURE_2D, tex.value)
+gles.glTexParameteri(GL_TEXTURE_2D, 0x2801, 0x2600)  # MIN_FILTER NEAREST
+gles.glTexParameteri(GL_TEXTURE_2D, 0x2800, 0x2600)  # MAG_FILTER NEAREST
+gles.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+fbo = C.c_uint()
+gles.glGenFramebuffers(1, C.byref(fbo))
+gles.glBindFramebuffer(GL_FRAMEBUFFER, fbo.value)
+gles.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex.value, 0)
+status = gles.glCheckFramebufferStatus(GL_FRAMEBUFFER)
+assert status == GL_FRAMEBUFFER_COMPLETE, f"real Mesa FBO incomplete: {status:#x}"
+gles.glViewport(0, 0, 64, 64)
+print("TGOS_MESA_REAL_GLES2_FBO_PASS", flush=True)
 gles.glClearColor(C.c_float(0.25), C.c_float(0.5), C.c_float(0.75), C.c_float(1.0))
 gles.glClear(0x4000)  # GL_COLOR_BUFFER_BIT
 gles.glFinish()
