@@ -101,6 +101,9 @@ struct kms_dirty {
     uint32_t fb_id,flags,color,count_clips;
     uint64_t clips;
 };
+/* Linux DRM_MODE_DIRTYFB cliprect UAPI, not a kernel-specific wire format. */
+struct kms_clip_rect {uint16_t x1,y1,x2,y2;};
+_Static_assert(sizeof(struct kms_clip_rect)==8U,"Linux DRM cliprect");
 struct kms_client_cap {uint64_t capability,value;};
 struct kms_page_flip {
     uint32_t crtc_id,fb_id,flags,reserved;
@@ -432,7 +435,25 @@ static uint64_t set_crtc(unsigned slot,uint64_t arg) {
 static uint64_t dirty_fb(unsigned slot,uint64_t arg) {
     struct kms_dirty cmd;int rc=copyin(&cmd,arg,sizeof(cmd));
     if(rc)return (uint64_t)(int64_t)rc;
-    if(cmd.flags || cmd.count_clips)return (uint64_t)-EOPNOTSUPP;
+    /* Linux DRM_MODE_DIRTYFB delivers Xorg's actual damage cliprects.
+     * The underlying VirtIO 2D staging path currently uploads a complete
+     * XRGB8888 buffer; that is a correct conservative superset of any clip.
+     * Validate the user pointers and ranges before committing a real frame. */
+    if(cmd.flags)return (uint64_t)-EOPNOTSUPP;
+    if(cmd.count_clips) {
+        if(!cmd.clips || cmd.count_clips>65536U ||
+           cmd.clips>UINT64_MAX-(uint64_t)cmd.count_clips*8U)
+            return (uint64_t)-EINVAL;
+        for(uint32_t i=0;i<cmd.count_clips;i++) {
+            struct kms_clip_rect clip;
+            rc=copyin(&clip,cmd.clips+(uint64_t)i*sizeof(clip),
+                      sizeof(clip));
+            if(rc)return (uint64_t)(int64_t)rc;
+            if(clip.x1>clip.x2 || clip.y1>clip.y2 ||
+               clip.x2>KMS_WIDTH || clip.y2>KMS_HEIGHT)
+                return (uint64_t)-EINVAL;
+        }
+    }
     struct kms_framebuffer *fb=find_fb(cmd.fb_id);
     if(!fb || fb->owner_slot!=slot)return (uint64_t)-ENOENT;
     if(!crtc_enabled || current_fb!=fb->id)return 0;
