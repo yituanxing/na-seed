@@ -23,9 +23,16 @@ int nas_linux_virtgpu_vq_submit(struct nas_linux_virtgpu_vq_bridge *b,
     if (q->free_count &&
         (q->free_head>=NAS_VRING_MAX_DESC || b->cookies[q->free_head]))
         return -EIO;
-    uint16_t head=0;
+    uint16_t head=UINT16_MAX;
     int rc=nas_vring_queue_submit_deferred(q,segs,n,&head);
-    if (rc)return rc;
+    if (rc) {
+        /* Post-publication sync failures leave descriptors owned by device.
+         * Retain cookie through transport reset; no premature free on -EIO. */
+        if (q->poisoned && head<NAS_VRING_MAX_DESC &&
+            q->pending[head] && !b->cookies[head])
+            b->cookies[head]=cookie;
+        return rc;
+    }
     if (head>=NAS_VRING_MAX_DESC || b->cookies[head]) {
         /* A published chain may still DMA: poison, never free its owner. */
         q->poisoned=true;
@@ -52,6 +59,23 @@ int nas_linux_virtgpu_vq_reclaim(struct nas_linux_virtgpu_vq_bridge *b,
     *cookie=b->cookies[head];
     b->cookies[head]=NULL;
     return 0;
+}
+int nas_linux_virtgpu_vq_reap_after_reset(struct nas_linux_virtgpu_vq_bridge *b,
+                                         unsigned *cursor, void **cookie) {
+    if (!b || !b->queue || !cursor || !cookie ||
+        *cursor>NAS_VRING_MAX_DESC)return -EINVAL;
+    *cookie=NULL;
+    /* Closing the queue resets the device before retiring its DMA ring.
+     * Never hand a request back while any device DMA may still be live. */
+    if (b->queue->active || b->queue->dma_page.cpu)return -EBUSY;
+    for (unsigned i=*cursor;i<NAS_VRING_MAX_DESC;i++) {
+        if (!b->cookies[i])continue;
+        *cookie=b->cookies[i];
+        b->cookies[i]=NULL;
+        *cursor=i+1U;
+        return 0;
+    }
+    return -ENOENT;
 }
 bool nas_linux_virtgpu_vq_kick_prepare(struct nas_linux_virtgpu_vq_bridge *b) {
     return b && b->queue && nas_vring_queue_kick_prepare(b->queue);
