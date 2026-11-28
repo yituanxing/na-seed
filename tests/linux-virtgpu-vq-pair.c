@@ -14,6 +14,7 @@ static unsigned char ring_pages[2][NAS_DMA_PAGE_BYTES]
 static unsigned alloc_count,released,notifies,resets;
 static unsigned callbacks_control,callbacks_cursor;
 static uint32_t status;
+static uint32_t irq_status;
 static bool fail_cursor_queue;
 static uint64_t feature_mask=NAS_VIRTIO_F_VERSION_1|1U;
 static void hw_reset(void *ctx) {(void)ctx;status=0U;resets++;}
@@ -39,6 +40,12 @@ static void hw_notify(void *ctx,unsigned id) {
 }
 static uint32_t hw_read_config32(void *ctx,uint32_t offset) {
     (void)ctx;(void)offset;return 1U;
+}
+static uint32_t hw_ack_irq(void *ctx) {
+    (void)ctx;
+    uint32_t bits=irq_status;
+    irq_status=0U; /* PCI ISR read or MMIO InterruptACK. */
+    return bits;
 }
 static unsigned char provider_dummy;
 static int dma_allocate(void *ctx,struct nas_dma_page *p) {
@@ -84,7 +91,8 @@ int main(void) {
         .reset=hw_reset,.read_status=hw_status,
         .write_status=hw_set_status,.read_features=hw_read_features,
         .write_features=hw_write_features,.setup_queue=hw_setup_queue,
-        .notify_queue=hw_notify,.read_config32=hw_read_config32};
+        .notify_queue=hw_notify,.read_config32=hw_read_config32,
+        .read_ack_irq=hw_ack_irq};
     const struct nas_virtio_transport transport={
         .context=&status,.ops=&ops,.dma=&dma};
     struct nas_linux_virtgpu_vq_pair pair={0};
@@ -103,7 +111,9 @@ int main(void) {
     CHECK(nas_linux_virtgpu_vq_pair_activate(&pair)==0);
     CHECK(status & NAS_VIRTIO_STATUS_DRIVER_OK);
     CHECK(nas_linux_virtgpu_vq_pair_service(&pair)==0);
-    nas_linux_virtgpu_vq_pair_irq_record(&pair,NAS_VIRTIO_IRQ_CONFIG_CHANGE);
+    irq_status=NAS_VIRTIO_IRQ_CONFIG_CHANGE;
+    CHECK(nas_linux_virtgpu_vq_pair_irq_ack(&pair)==NAS_VIRTIO_IRQ_CONFIG_CHANGE);
+    CHECK(nas_linux_virtgpu_vq_pair_irq_ack(&pair)==0U);
     CHECK(nas_linux_virtgpu_vq_pair_service(&pair)==0);
     CHECK(callbacks_control==0U && callbacks_cursor==0U);
 
@@ -123,7 +133,8 @@ int main(void) {
     pair.rings[0].ring.used->ring[0].id=ctrl_head;
     pair.rings[0].ring.used->ring[0].len=9U;
     pair.rings[0].ring.used->idx=1U;
-    nas_linux_virtgpu_vq_pair_irq_record(&pair,NAS_VIRTIO_IRQ_USED_BUFFER);
+    irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
+    CHECK(nas_linux_virtgpu_vq_pair_irq_ack(&pair)==NAS_VIRTIO_IRQ_USED_BUFFER);
     CHECK(callbacks_control==0U); /* Hard IRQ must never call Linux work. */
     CHECK(nas_linux_virtgpu_vq_pair_service(&pair)==1);
     CHECK(callbacks_control==1U && callbacks_cursor==0U);
@@ -141,7 +152,8 @@ int main(void) {
     pair.rings[1].ring.used->ring[0].id=cursor_head;
     pair.rings[1].ring.used->ring[0].len=0U;
     pair.rings[1].ring.used->idx=1U;
-    nas_linux_virtgpu_vq_pair_irq_record(&pair,NAS_VIRTIO_IRQ_USED_BUFFER);
+    irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
+    CHECK(nas_linux_virtgpu_vq_pair_irq_ack(&pair)==NAS_VIRTIO_IRQ_USED_BUFFER);
     CHECK(nas_linux_virtgpu_vq_pair_service(&pair)==1);
     CHECK(callbacks_control==1U && callbacks_cursor==1U);
     CHECK(virtqueue_get_buf(&pair.vqs[1].linux_vq,&len)==&cursor_cookie);
