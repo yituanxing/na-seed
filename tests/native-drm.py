@@ -215,25 +215,34 @@ def run_original_xorg(guest):
            'exec 8>&-; '
            'else echo DEVPTS_METADATA_FAIL; fi',
            'DEVPTS_METADATA', timeout=65)
-    # An EWMH manager must actually own the root session before we
-    # diagnose its MapRequest/reparent flow. A process ID alone is not proof.
+    # Upstream Openbox publishes EWMH in screen_startup() BEFORE finishing
+    # menu/focus/client setup and BEFORE xqueue_listen()/g_main_loop_run().
+    # EWMH alone is not readiness; launching Xaw clients at that point can
+    # strand MapRequest until the original WM finishes its own initialization.
+    # --startup is upstream Openbox's documented post-initialization callback:
+    # it runs after xqueue_listen/window_manage_all, without patching Openbox.
     guest.sendline(
-        'DISPLAY=:0 openbox --sm-disable >/root/native-openbox.log 2>&1 & '
+        'rm -f /root/naseed-openbox-ready; '
+        'DISPLAY=:0 openbox --sm-disable '
+        '--startup "touch /root/naseed-openbox-ready" '
+        '>/root/native-openbox.log 2>&1 & '
         'wm=$!; echo XORG_WM_LAUNCHED')
     guest.expect(r'\r*\nXORG_WM_LAUNCHED\r*\n', timeout=35)
     guest.expect(r'# ')
     verify(guest,
-           'for i in $(seq 1 45); do '
+           'for i in $(seq 1 120); do '
+           '[ -f /root/naseed-openbox-ready ] && break; '
+           'sleep 2; done; '
            'DISPLAY=:0 xprop -root _NET_SUPPORTING_WM_CHECK '
            '>/root/native-wm-property.log 2>&1; '
-           'grep -q "window id" /root/native-wm-property.log && break; '
-           'sleep 2; done; '
-           'if grep -q "window id" /root/native-wm-property.log; '
+           'if [ -f /root/naseed-openbox-ready ] && '
+           'pidof openbox >/dev/null && '
+           'grep -q "window id" /root/native-wm-property.log; '
            'then echo XORG_WM_READY_PASS; else '
            'cat /root/native-wm-property.log; '
-           'tail -50 /root/native-openbox.log; '
+           'tail -80 /root/native-openbox.log; '
            'echo XORG_WM_READY_FAIL; fi',
-           'XORG_WM_READY', timeout=210)
+           'XORG_WM_READY', timeout=320)
     # Keep PTY/xterm out of this first test: Openbox must map an ordinary
     # X11 Xaw application before terminal ownership semantics are examined.
     guest.sendline(
