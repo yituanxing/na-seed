@@ -72,7 +72,7 @@ fail:
     return rc;
 }
 
-int nas_vring_queue_submit(struct nas_vring_queue *q,
+int nas_vring_queue_submit_deferred(struct nas_vring_queue *q,
                            const struct nas_vring_segment *segs, unsigned n,
                            uint16_t *out_head) {
     if (!q || !q->active || !segs || !out_head || !n)
@@ -101,15 +101,72 @@ int nas_vring_queue_submit(struct nas_vring_queue *q,
     r->avail->ring[av_idx % r->num]=head;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     r->avail->idx=(uint16_t)(av_idx+1U);
+    /* Once published, even a later DMA-sync failure transfers ownership
+     * to the queue until reset; expose that head on the failure path too. */
+    *out_head=head;
     int rc=nas_dma_sync(q->transport->dma, &q->dma_page, 0,
                         q->dma_page.bytes, NAS_DMA_TO_DEVICE);
     /* A failed DMA sync cannot be retried by the caller: the submitted
      * chain already belongs to the device. Mark it failed and reset on
      * close, never free live descriptors here. */
     if (rc) { broken(q); return rc; }
-    if (!(r->used->flags & VRING_USED_F_NO_NOTIFY))
+    /* Descriptor publication completed; a separate kick may batch more. */
+    q->kick_pending=true;
+    return 0;
+}
+
+
+/* The Linux virtqueue driver only kicks after releasing the queue lock.
+ * Preserve that semantics while retaining NaSeed's original eager-submit API.
+ * Coherent split-ring memory is required by queue_init; EVENT_IDX is not used. */
+bool nas_vring_queue_kick_prepare(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned || !q->kick_pending)
+        return false;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    q->kick_pending=false;
+    return !(q->ring.used->flags & VRING_USED_F_NO_NOTIFY);
+}
+void nas_vring_queue_notify(struct nas_vring_queue *q) {
+    if (q && q->active && !q->poisoned)
         nas_virtio_notify(q->transport, q->queue_id);
-    *out_head=head;
+}
+/* Linux's dequeue loop suppresses callbacks while draining and re-arms
+ * them with a used-index recheck, so a completion cannot be lost between
+ * a final empty poll and enabling interrupts. This queue is coherent only;
+ * callback suppression uses the legacy split-ring avail flags (no EVENT_IDX).
+ */
+void nas_vring_queue_disable_callbacks(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned)return;
+    q->ring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_TO_DEVICE))
+        broken(q);
+}
+bool nas_vring_queue_enable_callbacks(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned)return false;
+    q->ring.avail->flags &= (uint16_t)~VRING_AVAIL_F_NO_INTERRUPT;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_TO_DEVICE)) {
+        broken(q);
+        return false;
+    }
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_FROM_DEVICE)) {
+        broken(q);
+        return false;
+    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return q->ring.used->idx == q->last_used;
+}
+int nas_vring_queue_submit(struct nas_vring_queue *q,
+                            const struct nas_vring_segment *segs, unsigned n,
+                            uint16_t *out_head) {
+    int rc=nas_vring_queue_submit_deferred(q,segs,n,out_head);
+    if (rc)return rc;
+    if (nas_vring_queue_kick_prepare(q))
+        nas_vring_queue_notify(q);
     return 0;
 }
 

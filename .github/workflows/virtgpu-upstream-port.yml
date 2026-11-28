@@ -1,0 +1,73 @@
+name: Linux VirtIO-GPU v6.14 provenance and UAPI port contract
+on:
+  pull_request:
+    branches: [refactor/naseed-cleanup-01-20261124]
+    paths:
+      - 'third_party/linux-virtgpu/**'
+      - 'ports/linux-virtgpu/**'
+      - 'kernel/drivers/port/dma.c'
+      - 'kernel/drivers/port/dma.h'
+      - 'ports/unikraft/split_queue.c'
+      - 'ports/unikraft/split_queue.h'
+      - 'tests/linux-virtgpu-vq-bridge.c'
+      - 'tests/linux-virtgpu-virtqueue-api.c'
+      - 'tests/linux-virtgpu-vq-pair.c'
+      - 'tests/linux-virtgpu-dma-frames.c'
+      - 'tests/linux-virtgpu-gem-queue-e2e.c'
+      - 'scripts/check-linux-virtgpu-vq-bridge.sh'
+      - 'scripts/probe-linux-virtgpu-vq-native.sh'
+      - 'scripts/linux-virtgpu-v6.14.blobs'
+      - 'scripts/verify-linux-virtgpu-v6.14.sh'
+      - 'scripts/check-linux-virtgpu-uapi.sh'
+      - 'tests/linux-virtgpu-v6.14-abi.c'
+      - 'kernel/drivers/display/virtio_gpu.c'
+      - 'Makefile'
+      - 'scripts/build-native-full.sh'
+      - 'docs/ports/linux-virtgpu-v6.14.md'
+      - '.github/workflows/virtgpu-upstream-port.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-virtgpu-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  source-and-wire-abi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify unmodified Linux v6.14 source blobs and copyright
+        run: |
+          sh -n scripts/verify-linux-virtgpu-v6.14.sh
+          sh scripts/verify-linux-virtgpu-v6.14.sh
+      - name: Compile canonical Linux VirtIO GPU/DRM UAPI for three architectures
+        run: |
+          clang --version
+          sh -n scripts/check-linux-virtgpu-uapi.sh
+          sh scripts/check-linux-virtgpu-uapi.sh
+      - name: Diagnose ORIGINAL Linux virtgpu_vq.c native compile (informational; never marks port ready)
+        run: |
+          sh -n scripts/probe-linux-virtgpu-vq-native.sh
+          sh scripts/probe-linux-virtgpu-vq-native.sh
+      - name: Check real split queue Linux-style deferred submission and completion bridge
+        run: |
+          sh -n scripts/check-linux-virtgpu-vq-bridge.sh
+          sh scripts/check-linux-virtgpu-vq-bridge.sh
+  compile-real-gpu-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, riscv64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the native NaSeed kernel build toolchain
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends clang lld binutils curl make
+      - name: Cross-build ACTUAL NaSeed 2D VirtIO GPU against canonical Linux UAPI
+        run: |
+          sh scripts/verify-linux-virtgpu-v6.14.sh
+          make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
