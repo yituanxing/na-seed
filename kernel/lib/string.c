@@ -1,8 +1,5 @@
 #include "string.h"
 #include <stdint.h>
-#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER) && defined(__x86_64__)
-#include "../drivers/serial.h"
-#endif
 
 /* These baseline implementations intentionally do not depend on any libc
  * function or platform assembly. Volatile byte access for copy/fill prevents
@@ -46,14 +43,6 @@ int memcmp(const void *lhs, const void *rhs, size_t n) {
 }
 
 size_t strlen(const char *s) {
-#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER) && defined(__x86_64__)
-    if (!s) {
-        nas_print("[TGOS NULL STRLEN CALLER] ");
-        nas_hex((uint64_t)(uintptr_t)__builtin_return_address(0));
-        nas_print("\n");
-        __builtin_trap();
-    }
-#endif
     size_t n = 0;
     while (s[n]) n++;
     return n;
