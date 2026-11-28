@@ -134,7 +134,12 @@ _Static_assert(sizeof(struct gpu_submit_3d)==32U, "virtio-gpu submit 3d");
 #endif
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
-                         GPU_RUNTIME_FLUSH };
+                         GPU_RUNTIME_FLUSH
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+                         ,GPU_RUNTIME_3D_CTX_CREATE,
+                         GPU_RUNTIME_3D_CTX_DESTROY
+#endif
+};
 
 struct gpu_device {
     struct nas_virtio_transport transport;
@@ -165,6 +170,9 @@ struct gpu_device {
     uint16_t runtime_head;
     uint64_t runtime_fence, runtime_deadline;
     uint64_t next_mmap_refresh;
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+    bool runtime_3d_started, runtime_3d_completed;
+#endif
     enum gpu_runtime_phase runtime_phase;
     bool dirty, claimed, reported, stalled, teardown_pending;
 };
@@ -423,7 +431,10 @@ static int runtime_poison(struct gpu_device *g,int rc) {
     /* Host DMA may still own the command, reply and pixel backing. Never
      * reuse or release them before transport reset, even after timeout. */
     g->stalled=true;
-    mark_dirty(g,g->epoch_first,g->epoch_last);
+    /* A 3D failure must not forge a dirty 2D epoch or free DMA early. */
+    if(g->runtime_phase==GPU_RUNTIME_TRANSFER ||
+       g->runtime_phase==GPU_RUNTIME_FLUSH)
+        mark_dirty(g,g->epoch_first,g->epoch_last);
     return rc;
 }
 static int runtime_complete(struct gpu_device *g) {
@@ -443,6 +454,21 @@ static int runtime_complete(struct gpu_device *g) {
     const struct gpu_hdr expected={.fence_id=g->runtime_fence};
     rc=command_response(g,&expected,GPU_RESP_OK_NODATA,bytes);
     if(rc)return runtime_poison(g,rc);
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+    if(g->runtime_phase==GPU_RUNTIME_3D_CTX_CREATE) {
+        struct gpu_hdr destroy=command_hdr(g,GPU_CMD_CTX_DESTROY);
+        destroy.ctx_id=little32(GPU_CTX_PROBE_ID);
+        rc=runtime_submit(g,&destroy,sizeof(destroy),GPU_RUNTIME_3D_CTX_DESTROY);
+        return rc ? runtime_poison(g,rc) : 0;
+    }
+    if(g->runtime_phase==GPU_RUNTIME_3D_CTX_DESTROY) {
+        g->runtime_phase=GPU_RUNTIME_IDLE;
+        g->runtime_3d_completed=true;
+        nas_print("[VIRTIO GPU 3D RUNTIME] ctx_create=1 ctx_destroy=1 "
+                  "irq_fence=1 deferred=1\n");
+        return 0;
+    }
+#endif
     if(g->runtime_phase==GPU_RUNTIME_TRANSFER) {
         ++g->transfers;
         struct gpu_rect rect={0,little32(g->epoch_first),little32(GPU_WIDTH),
@@ -459,6 +485,21 @@ static int runtime_complete(struct gpu_device *g) {
     return 0;
 }
 
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+/* Run the real 3D control traffic AFTER boot on the scheduler's deferred
+ * GPU service, sharing the same DMA and queue as 2D transfer/flush.
+ * No additional polling loop, queue or userspace render ABI is introduced. */
+static int runtime_start_3d_context(struct gpu_device *g) {
+    struct gpu_ctx_create create={
+        .hdr=command_hdr(g,GPU_CMD_CTX_CREATE),
+        .nlen=little32((uint32_t)(sizeof("naseed-runtime")-1U)),
+        .context_init=0,.debug_name="naseed-runtime"
+    };
+    create.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    return runtime_submit(g,&create,sizeof(create),GPU_RUNTIME_3D_CTX_CREATE);
+}
+#endif
+
 static int gpu_present(struct nas_display_device *display) {
     struct gpu_device *g=display->backend;
     if(!g || !g->claimed)return -ENODEV;
@@ -473,7 +514,17 @@ static int gpu_present(struct nas_display_device *display) {
                 now,GPU_MMAP_REFRESH_NS);
         }
     }else g->next_mmap_refresh=0;
-    if(!g->dirty)return 0;
+    if(!g->dirty) {
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+        if(g->virgl_feature && g->virgl_capset_id &&
+           !g->runtime_3d_started) {
+            g->runtime_3d_started=true;
+            rc=runtime_start_3d_context(g);
+            return rc ? runtime_poison(g,rc) : 0;
+        }
+#endif
+        return 0;
+    }
     const uint32_t first=g->dirty_y0,last=g->dirty_y1;
     if(last>GPU_HEIGHT || last<=first)return -EINVAL;
     for(unsigned i=first*GPU_PITCH/NAS_DMA_PAGE_BYTES;
