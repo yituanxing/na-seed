@@ -543,6 +543,15 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
  * Without VIRTIO_GPU_F_CONTEXT_INIT, context_init=0 selects the default
  * VirGL context, as specified by the VirtIO-GPU protocol. */
 #if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+static bool probe_pixel_matches(const uint8_t *pixel) {
+    /* VirGL writes PIPE_FORMAT_B8G8R8A8_UNORM, not a fabricated status. */
+    static const uint8_t expected[4]={153U,102U,51U,204U};
+    for(unsigned i=0;i<4;i++) {
+        int delta=(int)pixel[i]-(int)expected[i];
+        if(delta<(-16) || delta>16)return false;
+    }
+    return true;
+}
 static int probe_3d_context(struct gpu_device *g) {
     if(!g->virgl_feature || !g->virgl_capset_id)return -EOPNOTSUPP;
     struct gpu_ctx_create create={
@@ -554,11 +563,124 @@ static int probe_3d_context(struct gpu_device *g) {
     create.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
     int rc=command_sync(g,&create,sizeof(create),0,GPU_RESP_OK_NODATA);
     if(rc)return rc;
+
+    /* 16x16 BGRA8 render-target resource, following the known-good VirGL
+     * protocol sequence from rCore virtio-drivers and the VirtIO GPU UAPI. */
+    struct gpu_create_3d resource={
+        .hdr=command_hdr(g,GPU_CMD_RESOURCE_CREATE_3D),
+        .id=little32(GPU_PROBE_RESOURCE_ID),
+        .target=little32(2U), /* PIPE_TEXTURE_2D */
+        .format=little32(1U), /* PIPE_FORMAT_B8G8R8A8_UNORM */
+        .bind=little32(2U),   /* PIPE_BIND_RENDER_TARGET */
+        .width=little32(GPU_PROBE_SIDE),
+        .height=little32(GPU_PROBE_SIDE),
+        .depth=little32(1U),.array_size=little32(1U),
+        .flags=little32(1U)   /* VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP */
+    };
+    resource.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&resource,sizeof(resource),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+
+    struct gpu_ctx_resource attach={
+        .hdr=command_hdr(g,GPU_CMD_CTX_ATTACH_RESOURCE),
+        .id=little32(GPU_PROBE_RESOURCE_ID)
+    };
+    attach.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&attach,sizeof(attach),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+
+    /* This DMA page remains device-owned until host resource detach/unref,
+     * or transport reset in release_dma() after any failed command. */
+    rc=nas_dma_alloc_page(g->transport.dma,&g->probe_pixels);
+    if(rc)return rc;
+    memset(g->probe_pixels.cpu,0,GPU_PROBE_BYTES);
+    rc=nas_dma_sync(g->transport.dma,&g->probe_pixels,0,
+                    GPU_PROBE_BYTES,NAS_DMA_TO_DEVICE);
+    if(rc)return rc;
+    const struct gpu_entry entry={
+        .address=little64(g->probe_pixels.bus_address),
+        .length=little32(GPU_PROBE_BYTES)
+    };
+    memcpy(g->entries[0].cpu,&entry,sizeof(entry));
+    struct gpu_attach backing={
+        .hdr=command_hdr(g,GPU_CMD_RESOURCE_ATTACH_BACKING),
+        .id=little32(GPU_PROBE_RESOURCE_ID),.count=little32(1U)
+    };
+    rc=command_sync(g,&backing,sizeof(backing),sizeof(entry),GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+
+    /* 19 dwords: CREATE_OBJECT(SURFACE) -> SET_FRAMEBUFFER_STATE -> CLEAR.
+     * A standalone CLEAR would operate on an incomplete framebuffer. */
+    const uint32_t stream[19]={
+        (5U<<16)|(8U<<8)|1U, GPU_PROBE_SURFACE_ID,GPU_PROBE_RESOURCE_ID,1U,0U,0U,
+        (3U<<16)|5U, 1U,0U,GPU_PROBE_SURFACE_ID,
+        (8U<<16)|7U, 1U,
+        UINT32_C(0x3e4ccccd),UINT32_C(0x3ecccccd),
+        UINT32_C(0x3f19999a),UINT32_C(0x3f4ccccd),
+        0U,UINT32_C(0x3ff00000),0U
+    };
+    uint32_t *cmds=g->entries[0].cpu;
+    for(unsigned i=0;i<19U;i++)cmds[i]=little32(stream[i]);
+    struct gpu_submit_3d submit={
+        .hdr=command_hdr(g,GPU_CMD_SUBMIT_3D),
+        .size=little32(sizeof(stream))
+    };
+    submit.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&submit,sizeof(submit),sizeof(stream),GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+
+    struct gpu_transfer_3d download={
+        .hdr=command_hdr(g,GPU_CMD_TRANSFER_FROM_HOST_3D),
+        .box={.w=little32(GPU_PROBE_SIDE),.h=little32(GPU_PROBE_SIDE),
+              .d=little32(1U)},
+        .id=little32(GPU_PROBE_RESOURCE_ID),
+        .stride=little32(GPU_PROBE_SIDE*4U)
+    };
+    download.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&download,sizeof(download),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+    rc=nas_dma_sync(g->transport.dma,&g->probe_pixels,0,
+                    GPU_PROBE_BYTES,NAS_DMA_FROM_DEVICE);
+    if(rc)return rc;
+    const uint8_t *pixels=g->probe_pixels.cpu;
+    const uint8_t *center=pixels+((GPU_PROBE_SIDE/2U)*GPU_PROBE_SIDE+
+                                   GPU_PROBE_SIDE/2U)*4U;
+    if(!probe_pixel_matches(pixels) || !probe_pixel_matches(center)) {
+        nas_print("[VIRTIO GPU 3D PIXEL ERROR] B=");
+        nas_dec(center[0]);nas_print(" G=");nas_dec(center[1]);
+        nas_print(" R=");nas_dec(center[2]);
+        nas_print(" A=");nas_dec(center[3]);nas_print("\n");
+        return -EIO;
+    }
+
+    struct gpu_ctx_resource detach={
+        .hdr=command_hdr(g,GPU_CMD_CTX_DETACH_RESOURCE),
+        .id=little32(GPU_PROBE_RESOURCE_ID)
+    };
+    detach.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
+    rc=command_sync(g,&detach,sizeof(detach),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+    struct gpu_ctx_resource detach_backing={
+        .hdr=command_hdr(g,GPU_CMD_RESOURCE_DETACH_BACKING),
+        .id=little32(GPU_PROBE_RESOURCE_ID)
+    };
+    rc=command_sync(g,&detach_backing,sizeof(detach_backing),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
+    struct gpu_ctx_resource unref={
+        .hdr=command_hdr(g,GPU_CMD_RESOURCE_UNREF),
+        .id=little32(GPU_PROBE_RESOURCE_ID)
+    };
+    rc=command_sync(g,&unref,sizeof(unref),0,GPU_RESP_OK_NODATA);
+    if(rc)return rc;
     struct gpu_hdr destroy=command_hdr(g,GPU_CMD_CTX_DESTROY);
     destroy.ctx_id=little32(GPU_CTX_PROBE_ID);
     rc=command_sync(g,&destroy,sizeof(destroy),0,GPU_RESP_OK_NODATA);
     if(rc)return rc;
+    rc=nas_dma_free_page(g->transport.dma,&g->probe_pixels);
+    if(rc)return rc;
     nas_print("[VIRTIO GPU 3D CONTEXT] create=1 destroy=1 ctx=1 render_api=not-implemented\n");
+    nas_print("[VIRTIO GPU 3D PIXEL] submit=1 readback=1 color=verified \
+size=16x16\n");
     return 0;
 }
 #endif
