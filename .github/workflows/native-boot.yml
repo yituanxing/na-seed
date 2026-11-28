@@ -36,6 +36,7 @@ jobs:
           sh -n tests/native-root.sh
           sh -n tests/native-openrc.sh
           sh -n tests/native-desktop.sh
+          sh -n tests/native-xorg.sh
       - name: Build actual full native kernel and user ELF
         run: make ARCH=${{ matrix.arch }} kernel
       - name: Boot original full kernel through Limine and execute native user ELF
@@ -82,4 +83,7 @@ jobs:
             build/native-boot/${{ matrix.arch }}/gui-note.txt
             build/native-boot/${{ matrix.arch }}/drm-serial.log
             build/native-boot/${{ matrix.arch }}/drm-*.ppm
+            build/native-boot/${{ matrix.arch }}/xorg-serial.log
+            build/native-boot/${{ matrix.arch }}/drm-xorg-*.ppm
+            build/native-boot/${{ matrix.arch }}/gui-archive.txt
           if-no-files-found: ignore
