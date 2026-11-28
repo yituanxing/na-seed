@@ -54,6 +54,54 @@ jobs:
           done
           echo 'PASS: original upstream DRM Rust objects are linked into the real NaSeed kernel'
           echo 'PASS: direct original DRM code symbols retained in real NaSeed kernel.'
+      - name: Locate previous real QEMU fault PC in the unchanged linked kernel
+        run: |
+          echo '=== QEMU #PF RIP 0xffffffff80095500 mapped to native ELF ==='
+          addr2line -C -f -i -e build/kernel.elf 0xffffffff80095500
+          echo '=== Native kernel machine instructions around fault ==='
+          objdump -d --start-address=0xffffffff80095490 --stop-address=0xffffffff80095580 build/kernel.elf
+          echo '=== Native memset and Rust allocator exports ==='
+          nm -n build/kernel.elf | grep -E ' (memset|__rust_alloc|__rust_dealloc|nas_tgos_free_aligned|nas_tgos_original_drm_ffi_selftest)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-gui ovmf xorriso \
+            libvirglrenderer1 libgl1-mesa-dri libegl1 xvfb xauth
+      - name: Boot TRUE NaSeed kernel and prove it actually executes original TGOSKits DRM Rust functions
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 NAS_EXPERIMENT_TGOS_DRM_FFI=1 iso
+          # This opt-in trace records REAL x86_64 CPU faults after the
+          # last emitted Rust ABI stage; never count a timed-out boot as pass.
+          if ! NAS_EXPERIMENT_TGOS_QEMU_TRACE=1 sh tests/boot-smoke.sh build/naseed.iso; then
+            echo '=== QEMU actual CPU exception/PC trace tail ==='
+            if [ -s build/tgos-qemu-exceptions.log ]; then
+              tail -n 135 build/tgos-qemu-exceptions.log
+            else
+              echo 'no QEMU fault log was recorded'
+            fi
+            exit 1
+          fi
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
+            python3 tests/native-virgl-probe.py x86_64
+          grep -Fq '[TGOS ORIGINAL DRM ABI PASS]' build/native-boot/x86_64/virgl-probe.log || {
+            echo 'HARD FAIL: imported upstream Rust DRM ABI never EXECUTED inside QEMU NaSeed kernel'
+            tail -n 110 build/native-boot/x86_64/virgl-probe.log
+            exit 1
+          }
+          echo 'PASS: original TGOSKits DRM executes INSIDE real NaSeed QEMU x86-64 kernel'
+          echo 'This is only the Rust/C DRM ABI link-and-boot gate, NOT VirGL EXECBUFFER / Mesa 3D.'
+      - name: Upload real QEMU guest serial for audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgos-original-ffi-x86_64-serial
+          path: |
+            build/native-boot/x86_64/virgl-probe.log
+            build/tgos-qemu-exceptions.log
+          if-no-files-found: ignore
+ || true
       - name: Install real x86-64 UEFI QEMU and VirGL host for executable-ABI boot acceptance
         run: |
           sudo apt-get install -y --no-install-recommends \
