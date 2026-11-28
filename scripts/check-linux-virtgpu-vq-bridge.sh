@@ -32,3 +32,12 @@ cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
     -o "$temp/dma-frame-test"
 "$temp/dma-frame-test"
 echo "PASS: real DMA page pins, map/unmap, nonidentity IOMMU and error rollback"
+cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
+    tests/linux-virtgpu-gem-queue-e2e.c \
+    kernel/drivers/port/dma.c \
+    ports/unikraft/split_queue.c \
+    ports/linux-virtgpu/virtqueue_bridge.c \
+    ports/linux-virtgpu/gem_dma_port.c \
+    -o "$temp/gem-queue-e2e"
+"$temp/gem-queue-e2e"
+echo "PASS: production GEM pin -> DMA mapped scatterlist -> VirtIO used-ring -> safe release"
