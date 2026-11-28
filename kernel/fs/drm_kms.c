@@ -445,7 +445,7 @@ static uint64_t dirty_fb(unsigned slot,uint64_t arg) {
         nas_print(" crtc=");nas_dec(crtc_enabled?1U:0U);
         nas_print(" clips=");nas_dec(cmd.count_clips);
         nas_print(" flags=");nas_dec(cmd.flags);
-        nas_print("\\n");
+        nas_print("\n");
     }
     /* Linux DRM_MODE_DIRTYFB delivers Xorg's actual damage cliprects.
      * The underlying VirtIO 2D staging path currently uploads a complete
