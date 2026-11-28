@@ -1427,6 +1427,12 @@ static void sys_fill(unsigned id,struct nas_fs_node *out) {
         .mode=dir?0040555U:link?0120777U:0100444U,
         .size=entry->contents?strlen(entry->contents):0,
         .is_dir=dir,.is_symlink=link};
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id>=SYS_GPU_PCI_VENDOR && id<=SYS_GPU_PCI_UEVENT) {
+        char text[256];
+        if(!sys_gpu_pci_text(id,text))out->size=strlen(text);
+    }
+#endif
 }
 static int sys_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -1469,12 +1475,22 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
         sys_memory_fill(block,kind,out);
         return 0;
     }
-    for(unsigned i=1;i<SYS_NODE_COUNT;i++)
-        if(sys_entry_visible(i) && sys_entries[i].parent==(unsigned)id &&
-           !strcmp(name,sys_entries[i].name)) {
+    for(unsigned i=1;i<SYS_NODE_COUNT;i++) {
+        if(!sys_entry_visible(i) || sys_entries[i].parent!=(unsigned)id)
+            continue;
+        const char *candidate=sys_entries[i].name;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+        char dynamic[256];
+        if(sys_gpu_dynamic(i)) {
+            if(sys_gpu_pci_name(i,dynamic))continue;
+            candidate=dynamic;
+        }
+#endif
+        if(!strcmp(name,candidate)) {
             sys_fill(i,out);
             return 0;
         }
+    }
     if(id==SYS_MEMORY) {
         uint64_t block;
         if(sys_memory_parse(name,&block) && nas_memory_block_present(block)) {
@@ -1579,6 +1595,13 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                 if(skip--!=0)continue;
                 child=i;
                 name=sys_entries[i].name;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+                if(sys_gpu_dynamic(i)) {
+                    if(sys_gpu_pci_name(i,generated_name))
+                        return -ESTALE;
+                    name=generated_name;
+                }
+#endif
                 found=true;
                 break;
             }
@@ -1668,6 +1691,18 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     } else {
         if(sys_entries[id].type==SYS_DIR)return -EISDIR;
         if(sys_entry_link((unsigned)id))return -EINVAL;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+        if(id>=SYS_GPU_PCI_VENDOR && id<=SYS_GPU_PCI_UEVENT) {
+            char buffer[256];
+            int rc=sys_gpu_pci_text((unsigned)id,buffer);
+            if(rc)return rc;
+            uint64_t available=strlen(buffer);
+            if(offset>=available)return 0;
+            if(length>available-offset)length=available-offset;
+            memcpy(dst,buffer+offset,(size_t)length);
+            return (int64_t)length;
+        }
+#endif
         content=sys_entries[id].contents;
     }
     if(!content)return -EIO;
@@ -1679,6 +1714,11 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
 }
 static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
     int id=sys_id(node);
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id==SYS_GPU_CLASS_LINK || id==SYS_GPU_CHAR_LINK ||
+       id==SYS_GPU_BUS_PCI_LINK)
+        return sys_gpu_link((unsigned)id,target);
+#endif
     if(id>=0 && sys_entry_link((unsigned)id)) {
         if(!sys_entry_visible((unsigned)id))return -ESTALE;
         const char *link=sys_entries[id].contents;
