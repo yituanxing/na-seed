@@ -18,6 +18,12 @@ void nas_tgos_probe_stage(uint32_t stage) {
     nas_print("\n");
 }
 
+void nas_tgos_panic_report(uint32_t kind) {
+    nas_print("[TGOS RUST PANIC/OOM] ");
+    nas_dec(kind);
+    nas_print("\n");
+}
+
 void *nas_tgos_alloc_aligned(size_t bytes,size_t alignment) {
     /* Rust layout alignment may exceed C max_align_t; never silently
      * return an under-aligned pointer. This heap is process-context only. */
