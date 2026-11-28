@@ -6,7 +6,7 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
-use alloc::alloc::alloc;
+use alloc::alloc::{alloc, dealloc};
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use drm_kapi::kernel_services::ProviderSlot;
@@ -67,16 +67,13 @@ fn check_alignment(alignment: usize, stage: u32) -> i32 {
     unsafe { nas_tgos_probe_stage(stage + 2) };
     if ptr.is_null() { return -7; }
     if (ptr as usize) & (alignment - 1) != 0 {
-        unsafe { ALLOC.dealloc(ptr, layout) };
+        unsafe { dealloc(ptr, layout) };
         return -8;
     }
     unsafe { core::ptr::write_bytes(ptr, 0xa5, layout.size()) };
     let last = unsafe { *ptr.add(layout.size() - 1) };
     unsafe { nas_tgos_probe_stage(stage + 3) };
-    // DIAGNOSTIC ONLY: bypass the compiler-generated __rust_dealloc shim to
-    // determine whether the existing NaSeed TLSF provider can free safely.
-    // Before completing this experiment, ordinary Rust dealloc MUST pass.
-    unsafe { ALLOC.dealloc(ptr, layout) };
+    unsafe { dealloc(ptr, layout) };
     unsafe { nas_tgos_probe_stage(stage + 4) };
     if last != 0xa5 { return -9; }
     0
