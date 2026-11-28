@@ -24,13 +24,22 @@ docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec "
 # Restore the same upstream bitmap-font indexes used by the x86-64 desktop
 # acceptance. Otherwise Xorg drops every misc/75dpi/100dpi FontPath.
 docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec '
-    apk add --no-cache mkfontscale >/dev/null
+    apk add --no-cache mkfontscale fontconfig >/dev/null
     for dir in /target/usr/share/fonts/*; do
         [ -d "$dir" ] || continue
         [ "${dir##*/}" != encodings ] || continue
         mkfontdir "$dir"
         mkfontscale "$dir"
     done
+    # Cross-root fontconfig caches use the original Alpine package version
+    # and the common 64-bit little-endian le64 cache ABI. The --no-scripts
+    # package install skipped fc-cache triggers. Without these, original
+    # Pango/Openbox repeatedly parses bitmap fonts during startup instead
+    # of reaching its X11 MapRequest event loop in native QEMU.
+    mkdir -p /target/var/cache/fontconfig
+    fc-cache -f -s --sysroot=/target
+    find /target/var/cache/fontconfig -type f -name "*-le64.cache-*" |
+        grep -q .
 '
 test -s "$xroot/usr/share/fonts/misc/fonts.dir"
 test -s "$xroot/usr/share/fonts/75dpi/fonts.dir"
