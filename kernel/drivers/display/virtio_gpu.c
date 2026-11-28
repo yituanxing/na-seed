@@ -679,8 +679,8 @@ static int probe_3d_context(struct gpu_device *g) {
     rc=nas_dma_free_page(g->transport.dma,&g->probe_pixels);
     if(rc)return rc;
     nas_print("[VIRTIO GPU 3D CONTEXT] create=1 destroy=1 ctx=1 render_api=not-implemented\n");
-    nas_print("[VIRTIO GPU 3D PIXEL] submit=1 readback=1 color=verified \
-size=16x16\n");
+    nas_print("[VIRTIO GPU 3D PIXEL] submit=1 readback=1 "
+              "color=verified size=16x16\n");
     return 0;
 }
 #endif
