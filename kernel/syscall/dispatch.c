@@ -567,20 +567,23 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
-    /* Bounded cross-ISA syscall entry trace for the ORIGINAL Alpine
-     * Openbox process. The previous wait-only sample produced no records
-     * despite the WM publishing EWMH, so capture all calls to locate the
-     * actual startup stall. Trace only; never rewrite a return or wait. */
-    static unsigned openbox_call_traces;
-    if(nas_current_task && !strcmp(TASK.comm,"openbox") &&
-       openbox_call_traces++<850U) {
-        nas_print("[OPENBOX CALL] pid=");nas_dec(TASK.pid);
-        nas_print(" nr=");nas_dec(raw_nr);
-        nas_print(" op=");nas_dec(nr);
-        nas_print(" a1=");nas_hex(args[1]);
-        nas_print(" a2=");nas_hex(args[2]);
-        nas_print(" a3=");nas_hex(args[3]);
-        nas_print("\n");
+    /* Low-frequency Openbox syscall sampling across the full original X11
+     * session. Its startup already exceeds 850 calls before MapRequest.
+     * Sample every 128th entry (and first 100), retaining exact order and
+     * real args without perturbing scheduling or creating fake user events. */
+    static uint64_t openbox_call_index;
+    if(nas_current_task && !strcmp(TASK.comm,"openbox")) {
+        uint64_t idx=++openbox_call_index;
+        if(idx<=100U || (idx<=200000U && (idx%128U)==0U)) {
+            nas_print("[OPENBOX CALL] index=");nas_dec(idx);
+            nas_print(" pid=");nas_dec(TASK.pid);
+            nas_print(" nr=");nas_dec(raw_nr);
+            nas_print(" op=");nas_dec(nr);
+            nas_print(" a1=");nas_hex(args[1]);
+            nas_print(" a2=");nas_hex(args[2]);
+            nas_print(" a3=");nas_hex(args[3]);
+            nas_print("\n");
+        }
     }
 #ifdef NASEED_SYSCALL_TRACE
     /* M110 diagnostic: log the actual rejected Linux clone ABI on all three
