@@ -67,7 +67,7 @@ extern void nas_dec(uint64_t);
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
 #define GPU_RESP_OK_CAPSET_INFO 0x1102U
 #define GPU_RESP_OK_CAPSET 0x1103U
-#define GPU_CAPSET_CACHE_SLOTS 2U
+#define GPU_CAPSET_CACHE_SLOTS 4U
 #define GPU_CAPSET_DATA_MAX (NAS_DMA_PAGE_BYTES - sizeof(struct gpu_hdr))
 #define GPU_TIMEOUT_NS UINT64_C(3000000000)
 /* A direct MAP_SHARED store cannot call write_at/mark_dirty. While VMAs
@@ -604,24 +604,30 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
         uint32_t size=little32(a->max_size);
         if((id!=GPU_CAPSET_VIRGL && id!=GPU_CAPSET_VIRGL2) ||
            !version || !size || size>GPU_CAPSET_DATA_MAX)continue;
-        struct gpu_cached_capset *saved=&g->capsets[id-1U];
-        if(saved->id && version<=saved->version)continue;
-        const struct gpu_get_capset query={
-            .hdr=command_hdr(g,GPU_CMD_GET_CAPSET),
-            .id=little32(id),.version=little32(version)
-        };
-        uint32_t used=0;
-        rc=command_sync_with_reply(g,&query,sizeof(query),0,
+        /* Mesa's VirGL DRM winsys intentionally requests cap_set_ver=0,
+         * even when the host advertises max_version=2. Query both actual
+         * versions. Never substitute a higher-version blob for version 0. */
+        for(unsigned variant=0;variant<2U;variant++) {
+            uint32_t requested=variant ? version : 0U;
+            struct gpu_cached_capset *saved=
+                &g->capsets[(id-1U)*2U+variant];
+            if(saved->id && saved->version==requested)continue;
+            const struct gpu_get_capset query={
+                .hdr=command_hdr(g,GPU_CMD_GET_CAPSET),
+                .id=little32(id),.version=little32(requested)
+            };
+            uint32_t used=0;
+            rc=command_sync_with_reply(g,&query,sizeof(query),0,
                                        GPU_RESP_OK_CAPSET,&used);
-        if(rc)return rc;
-        if(used<sizeof(struct gpu_hdr) ||
-           used-sizeof(struct gpu_hdr)<size)return -EIO;
-        /* Preserve unmodified host VirGL payload, not a synthesized ABI. */
-        memcpy(saved->payload,(const uint8_t *)g->response.cpu+
-               sizeof(struct gpu_hdr),size);
-        saved->id=id;
-        saved->version=version;
-        saved->bytes=size;
+            if(rc)return rc;
+            if(used<sizeof(struct gpu_hdr) ||
+               used-sizeof(struct gpu_hdr)<size)return -EIO;
+            memcpy(saved->payload,(const uint8_t *)g->response.cpu+
+                   sizeof(struct gpu_hdr),size);
+            saved->id=id;
+            saved->version=requested;
+            saved->bytes=size;
+        }
         if(id>g->virgl_capset_id) {
             g->virgl_capset_id=id;
             g->virgl_capset_version=version;
