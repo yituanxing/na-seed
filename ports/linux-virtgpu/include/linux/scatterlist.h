@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Linux v6.14 internal API layout/signatures; NaSeed port subset. */
 #ifndef NASEED_LINUX_VIRTGPU_SCATTERLIST_PORT_H
 #define NASEED_LINUX_VIRTGPU_SCATTERLIST_PORT_H
 /* Freestanding subset of Linux v6.14 scatterlist ABI.
