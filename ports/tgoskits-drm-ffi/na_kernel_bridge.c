@@ -65,13 +65,18 @@ extern const struct nas_tgos_drm_format_prefix *drm_format_info(uint32_t);
 
 int nas_tgos_drm_check_original_abi(void) {
     /* An ABI mismatch MUST refuse the original /dev/dri/card0 endpoint. */
+    nas_tgos_probe_stage(1U);
     uint32_t fmt=drm_mode_legacy_fb_format(32U,24U);
+    nas_tgos_probe_stage(2U);
     if(fmt!=UINT32_C(0x34325258))return -EINVAL;
     const struct nas_tgos_drm_format_prefix *info=drm_format_info(fmt);
+    nas_tgos_probe_stage(3U);
     if(!info || info->format!=fmt || info->depth!=24U ||
        info->num_planes!=1U)return -EINVAL;
 
     /* Real upstream Rust KAPI/provider-slot and ioctl contract also run. */
+    nas_tgos_probe_stage(4U);
     int result=nas_tgos_original_drm_ffi_selftest();
+    nas_tgos_probe_stage(5U);
     return result==0 ? 0 : -EINVAL;
 }
