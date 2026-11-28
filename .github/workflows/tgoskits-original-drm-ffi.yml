@@ -6,6 +6,7 @@ on:
       - 'ports/tgoskits-drm-ffi/**'
       - 'scripts/build-tgoskits-drm-ffi.sh'
       - 'kernel/fs/drm_chrdev.c'
+      - 'kernel/init/main.c'
       - 'Makefile'
       - '.github/workflows/tgoskits-original-drm-ffi.yml'
   push:
@@ -14,6 +15,7 @@ on:
       - 'ports/tgoskits-drm-ffi/**'
       - 'scripts/build-tgoskits-drm-ffi.sh'
       - 'kernel/fs/drm_chrdev.c'
+      - 'kernel/init/main.c'
       - 'Makefile'
       - '.github/workflows/tgoskits-original-drm-ffi.yml'
   workflow_dispatch:
