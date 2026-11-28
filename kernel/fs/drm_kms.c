@@ -12,6 +12,7 @@
 #include "drm_gem.h"
 #include "../drivers/display/display.h"
 #include "../drivers/display/virtio_gpu.h"
+#include "../drivers/serial.h"
 #include "../arch/arch.h"
 #include "../mm/device_backing.h"
 #include "../mm/usercopy.h"
@@ -435,6 +436,17 @@ static uint64_t set_crtc(unsigned slot,uint64_t arg) {
 static uint64_t dirty_fb(unsigned slot,uint64_t arg) {
     struct kms_dirty cmd;int rc=copyin(&cmd,arg,sizeof(cmd));
     if(rc)return (uint64_t)(int64_t)rc;
+    /* Bounded diagnostic for the upstream Xorg software-shadow path.
+     * Distinguish X damage events from a missing KMS presentation. */
+    static unsigned trace_count;
+    if(trace_count++<48U) {
+        nas_print("[DRM DIRTY] fb=");nas_dec(cmd.fb_id);
+        nas_print(" current=");nas_dec(current_fb);
+        nas_print(" crtc=");nas_dec(crtc_enabled?1U:0U);
+        nas_print(" clips=");nas_dec(cmd.count_clips);
+        nas_print(" flags=");nas_dec(cmd.flags);
+        nas_print("\\n");
+    }
     /* Linux DRM_MODE_DIRTYFB delivers Xorg's actual damage cliprects.
      * The underlying VirtIO 2D staging path currently uploads a complete
      * XRGB8888 buffer; that is a correct conservative superset of any clip.
