@@ -37,7 +37,7 @@ args = [
     qemu,
     "-machine", "virt,acpi=off" if arch == "riscv64" else "virt",
     "-m", "1024M", "-smp", "1",
-    "-display", "gtk,gl=on", "-monitor", "none",
+    "-display", "sdl,gl=on", "-monitor", "none",
     "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
     "-global", "virtio-mmio.force-legacy=false",
     "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
