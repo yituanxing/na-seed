@@ -73,6 +73,10 @@ python3 tests/native-boot.py "$arch" "$base/desktop-efi.img" \
     "$base/desktop-serial.log" desktop "$disk"
 e2fsck -fn "$disk"
 echo "PASS: $arch original Alpine OpenRC -> Weston DRM -> Thunar GTK compositor and clean poweroff"
+# Isolate original X11 packages in a DIFFERENT authentic Alpine image.
+# CPU-emulated ARM64/RV64 startup of the large Xorg font/module set must not
+# affect the already-proven Weston's startup and physical Thunar GUI tests.
+sh tests/native-xorg.sh "$arch"
 # Original GUI, no test-side file mutation: x86-like physical QMP input
 # drives the actual guest's native MMIO VirtIO keyboard and mouse.
 python3 tests/native-gui-roundtrip.py "$arch" edit
@@ -106,7 +110,3 @@ echo "PASS: $arch Round 9 GUI reopened archive, deleted copy still absent after 
 python3 tests/native-drm.py "$arch"
 e2fsck -fn "$disk"
 echo "PASS: $arch upstream libdrm/GEM and KMS PageFlip verified after GUI roundtrip"
-# Isolate original X11 packages in a DIFFERENT authentic Alpine image.
-# CPU-emulated ARM64/RV64 startup of the large Xorg font/module set must not
-# affect the already-proven Weston's startup and physical Thunar GUI tests.
-sh tests/native-xorg.sh "$arch"
