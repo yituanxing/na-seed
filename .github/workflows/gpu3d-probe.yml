@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [riscv64, aarch64]
+        arch: [x86_64, riscv64, aarch64]
     steps:
       - uses: actions/checkout@v4
       - name: Install unmodified QEMU VirGL host, software GL and native firmware
@@ -28,14 +28,22 @@ jobs:
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
             clang lld make binutils curl python3 \
-            qemu-system-arm qemu-system-misc qemu-system-gui \
-            qemu-efi-aarch64 qemu-efi-riscv64 \
+            qemu-system-arm qemu-system-misc qemu-system-x86 qemu-system-gui \
+            qemu-efi-aarch64 qemu-efi-riscv64 ovmf xorriso \
             libvirglrenderer1 libgl1-mesa-dri libegl1 \
             xvfb xauth dosfstools mtools
-      - name: Build the actual three-arch shared GPU driver for this native ISA
+      - name: Build native shared GPU driver for RV64 and AArch64
+        if: matrix.arch != 'x86_64'
         run: make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
-      - name: Prepare and smoke-boot genuine Limine and NaSeed
+      - name: Build real x86-64 UEFI ISO with modern VirtIO GPU class
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 iso
+      - name: Smoke-boot real native Limine and NaSeed
+        if: matrix.arch != 'x86_64'
         run: sh tests/native-boot.sh ${{ matrix.arch }}
+      - name: Smoke-boot real x86-64 UEFI ISO
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 smoke
       - name: Verify real VirGL feature and GET_CAPSET_INFO on QEMU GPU
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
