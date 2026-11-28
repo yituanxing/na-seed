@@ -17,8 +17,8 @@ if len(sys.argv) != 2 or sys.argv[1] not in ("x86_64", "riscv64", "aarch64"):
 arch = sys.argv[1]
 work = pathlib.Path("build/native-boot") / arch
 work.mkdir(parents=True, exist_ok=True)
-esp = (pathlib.Path("build/naseed.iso") if arch == "x86_64"
-       else work / "efi.img").resolve()
+esp = (work / ("virgl-alpine.iso" if arch == "x86_64"
+               else "virgl-alpine-efi.img")).resolve()
 log = work / "virgl-probe.log"
 if arch == "x86_64":
     firmware = next(
@@ -105,18 +105,19 @@ with log.open("wb") as stream:
                 break
             m = capset.search(output)
             if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output) and runtime.search(output):
-                if "[M177 VIRTIO GPU READY]" not in output:
+                if "[M177 VIRTIO GPU READY]" not in output or
+                   "[M1] entering actual ring 3" not in output:
                     continue
                 print(
                     f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
                     f"count={m[1]} id={m[2]} version={m[3]} bytes={m[4]}; "
-                    "VirGL CLEAR/pixel and IRQ-driven runtime context verified; Mesa pending", flush=True
+                    "original Alpine userland + VirGL pixels + deferred IRQ context OK; Mesa pending", flush=True
                 )
                 break
         else:
             raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output:
-            raise RuntimeError(f"{arch}: missing real VirGL capset, context lifecycle or pixel readback")
+        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output or "[M1] entering actual ring 3" not in output:
+            raise RuntimeError(f"{arch}: missing original user entry, VirGL pixels or runtime IRQ completion")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
         print(log.read_text(errors="replace")[-10000:], file=sys.stderr)
