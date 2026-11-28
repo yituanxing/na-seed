@@ -20,9 +20,7 @@ docker run --rm -v "$PWD/$root:/target" alpine:3.23 sh -ec "
         add weston weston-backend-drm weston-shell-desktop weston-terminal \\
             libseat seatd eudev thunar mousepad dbus \\
             shared-mime-info xkeyboard-config adwaita-icon-theme font-dejavu \\
-            python3 libdrm-tests \
-            xorg-server xf86-input-evdev xterm \
-            xeyes xcalc openbox xdpyinfo xsetroot xwininfo font-adobe-75dpi
+            python3 libdrm-tests
 "
 # Reuse the exact desktop supervisor/service from the x86-64 integration
 # suite. Do not fork an ad-hoc native ISA launcher or substitute fake apps.
@@ -35,8 +33,6 @@ entries = [
     ("DESKTOP_SESSION", "usr/local/sbin/naseed-desktop-session"),
     ("DESKTOP_SERVICE", "etc/init.d/naseed-desktop"),
     ("DRM_PROBE", "root/drm-probe.py"),
-    ("XORG", "root/xorg.conf"),
-    ("INPUT", "root/xorg-input.py"),
 ]
 for marker, relative in entries:
     start_marker = "<<'" + marker + "'\n"
@@ -47,22 +43,6 @@ for marker, relative in entries:
     dest.write_text(source[start:end] + "\n")
     dest.chmod(0o755)
 PY
-# These native QEMU targets have no Limine EFI framebuffer. Xorg's proven
-# x86 fbdev configuration cannot work without /dev/fb0. Use Xorg's upstream
-# CPU-rendered modesetting driver on the REAL DRM/KMS node already qualified
-# by original libdrm/modetest. Do not add an ISA-specific graphics backend.
-sudo python3 - "$root/root/xorg.conf" <<'XORG_NATIVE_DRM'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-source = path.read_text()
-assert 'Driver "fbdev"' in source and 'Option "fbdev" "/dev/fb0"' in source
-source = source.replace('Driver "fbdev"', 'Driver "modesetting"')
-source = source.replace('Option "fbdev" "/dev/fb0"',
-                        'Option "kmsdev" "/dev/dri/card0"\n'
-                        '    Option "AccelMethod" "none"')
-path.write_text(source)
-XORG_NATIVE_DRM
 sudo mkdir -p "$root/etc/runlevels/default" "$root/root/desktop/documents"
 sudo ln -s /etc/init.d/naseed-desktop "$root/etc/runlevels/default/naseed-desktop"
 printf 'original native text\n' |
@@ -126,3 +106,7 @@ echo "PASS: $arch Round 9 GUI reopened archive, deleted copy still absent after 
 python3 tests/native-drm.py "$arch"
 e2fsck -fn "$disk"
 echo "PASS: $arch upstream libdrm/GEM and KMS PageFlip verified after GUI roundtrip"
+# Isolate original X11 packages in a DIFFERENT authentic Alpine image.
+# CPU-emulated ARM64/RV64 startup of the large Xorg font/module set must not
+# affect the already-proven Weston's startup and physical Thunar GUI tests.
+sh tests/native-xorg.sh "$arch"

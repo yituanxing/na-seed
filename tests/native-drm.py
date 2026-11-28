@@ -13,13 +13,17 @@ import socket
 import sys
 import time
 
-if len(sys.argv) != 2 or sys.argv[1] not in ("riscv64", "aarch64"):
-    raise SystemExit("usage: native-drm.py <riscv64|aarch64>")
+if len(sys.argv) not in (2, 3) or sys.argv[1] not in ("riscv64", "aarch64"):
+    raise SystemExit("usage: native-drm.py <riscv64|aarch64> [xorg]")
 arch = sys.argv[1]
+mode = sys.argv[2] if len(sys.argv) == 3 else "drm"
+if mode not in ("drm", "xorg"):
+    raise SystemExit("invalid native graphic profile: " + mode)
 work = pathlib.Path("build/native-boot") / arch
-efi, disk = work / "desktop-efi.img", work / "desktop.ext4"
+efi = work / "desktop-efi.img"
+disk = work / ("xorg.ext4" if mode == "xorg" else "desktop.ext4")
 assert efi.is_file() and disk.is_file()
-qmp_path = str((work / "native-drm-qmp.sock").resolve())
+qmp_path = str((work / f"native-{mode}-qmp.sock").resolve())
 firmware = {
     "riscv64": "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
     "aarch64": "/usr/share/AAVMF/AAVMF_CODE.fd",
@@ -159,7 +163,7 @@ def run_original_xorg(guest):
            'XORG_CLEAN', timeout=90)
 
 
-with (work / "drm-serial.log").open("w") as log:
+with (work / f"{mode}-serial.log").open("w") as log:
     guest = pexpect.spawn(f"qemu-system-{arch}", args, encoding="utf-8",
                           codec_errors="replace", timeout=260)
     guest.logfile_read = log
@@ -170,74 +174,82 @@ with (work / "drm-serial.log").open("w") as log:
         guest.expect("Password:")
         guest.sendline("naseed-ci-only")
         guest.expect(r"# ")
-        # Reuse NaSeed's documented trusted UTC boot metadata, NOT a fake
-        # monotonic epoch. The RV64 QEMU firmware can supply stale RTC.
-        verify(guest,
-               "now=$(date -u +%s); "
-               "if test \"$now\" -ge 1700000000; then "
-               "echo NATIVE_REALTIME_PASS; else echo NATIVE_REALTIME_FAIL; fi",
-               "NATIVE_REALTIME", timeout=40)
-        verify(guest,
-               "rc-service naseed-desktop stop >/root/drm-stop.log 2>&1; "
-               "for i in $(seq 1 30); do pidof weston >/dev/null || break; sleep 1; done; "
-               "if ! pidof weston >/dev/null; then echo DRM_MASTER_FREE_PASS; "
-               "else tail -80 /root/drm-stop.log; echo DRM_MASTER_FREE_FAIL; fi",
-               "DRM_MASTER_FREE", timeout=110)
-        # Byte-identical upstream x86 libdrm/GEM syscall acceptance, not a
-        # hand-written alternative ioctl implementation for native ISAs.
-        verify(guest,
-               "python3 /root/drm-probe.py >/root/drm-gem.log 2>&1; result=$?; "
-               "if test \"$result\" = 0 && "
-               "grep -Fxq DRM_GEM_FINAL_CLOSE_PASS /root/drm-gem.log && "
-               "grep -Fxq DRM_KMS_DISCOVERY_PASS /root/drm-gem.log; then "
-               "echo DRM_GEM_NATIVE_PASS; else tail -100 /root/drm-gem.log; "
-               "echo DRM_GEM_NATIVE_FAIL; fi",
-               "DRM_GEM_NATIVE", timeout=95)
-        verify(guest,
-               "modetest -M virtio_gpu -c -e -p >/root/drm-enum.log 2>&1; result=$?; "
-               "if test \"$result\" = 0 && grep -q connected /root/drm-enum.log; "
-               "then echo DRM_MODE_ENUM_PASS; else tail -80 /root/drm-enum.log; "
-               "echo DRM_MODE_ENUM_FAIL; fi",
-               "DRM_MODE_ENUM", timeout=85)
-        width, height, before = scanout("before-modeset")
-        verify(guest,
-               "modetest -M virtio_gpu -s 44@42:800x600 </dev/null "
-               ">/root/drm-modeset.log 2>&1; result=$?; "
-               "if test \"$result\" = 0; then echo DRM_MODE_SET_PASS; "
-               "else tail -80 /root/drm-modeset.log; echo DRM_MODE_SET_FAIL; fi",
-               "DRM_MODE_SET", timeout=90)
-        w, h, after = scanout("actual-modeset")
-        delta = changed(before, after)
-        if (width, height) != (800, 600) or (w, h) != (800, 600) or delta < 80000:
-            raise RuntimeError(f"{arch}: modetest did not change actual QMP "
-                               f"GPU scanout: {delta} pixels")
-        print(f"PASS: {arch} unmodified modetest KMS modeset changed "
-              f"{delta} real VirtIO-GPU pixels", flush=True)
+        if mode == "xorg":
+            verify(guest,
+                   'rc-service naseed-desktop stop >/root/drm-stop.log 2>&1; '
+                   'for i in $(seq 1 30); do pidof weston >/dev/null || break; sleep 1; done; '
+                   'if ! pidof weston >/dev/null; then echo DRM_MASTER_FREE_PASS; '
+                   'else tail -80 /root/drm-stop.log; echo DRM_MASTER_FREE_FAIL; fi',
+                   "DRM_MASTER_FREE", timeout=110)
+            run_original_xorg(guest)
+        else:
+            # Reuse NaSeed's documented trusted UTC boot metadata, NOT a fake
+            # monotonic epoch. The RV64 QEMU firmware can supply stale RTC.
+            verify(guest,
+                   "now=$(date -u +%s); "
+                   "if test \"$now\" -ge 1700000000; then "
+                   "echo NATIVE_REALTIME_PASS; else echo NATIVE_REALTIME_FAIL; fi",
+                   "NATIVE_REALTIME", timeout=40)
+            verify(guest,
+                   "rc-service naseed-desktop stop >/root/drm-stop.log 2>&1; "
+                   "for i in $(seq 1 30); do pidof weston >/dev/null || break; sleep 1; done; "
+                   "if ! pidof weston >/dev/null; then echo DRM_MASTER_FREE_PASS; "
+                   "else tail -80 /root/drm-stop.log; echo DRM_MASTER_FREE_FAIL; fi",
+                   "DRM_MASTER_FREE", timeout=110)
+            # Byte-identical upstream x86 libdrm/GEM syscall acceptance, not a
+            # hand-written alternative ioctl implementation for native ISAs.
+            verify(guest,
+                   "python3 /root/drm-probe.py >/root/drm-gem.log 2>&1; result=$?; "
+                   "if test \"$result\" = 0 && "
+                   "grep -Fxq DRM_GEM_FINAL_CLOSE_PASS /root/drm-gem.log && "
+                   "grep -Fxq DRM_KMS_DISCOVERY_PASS /root/drm-gem.log; then "
+                   "echo DRM_GEM_NATIVE_PASS; else tail -100 /root/drm-gem.log; "
+                   "echo DRM_GEM_NATIVE_FAIL; fi",
+                   "DRM_GEM_NATIVE", timeout=95)
+            verify(guest,
+                   "modetest -M virtio_gpu -c -e -p >/root/drm-enum.log 2>&1; result=$?; "
+                   "if test \"$result\" = 0 && grep -q connected /root/drm-enum.log; "
+                   "then echo DRM_MODE_ENUM_PASS; else tail -80 /root/drm-enum.log; "
+                   "echo DRM_MODE_ENUM_FAIL; fi",
+                   "DRM_MODE_ENUM", timeout=85)
+            width, height, before = scanout("before-modeset")
+            verify(guest,
+                   "modetest -M virtio_gpu -s 44@42:800x600 </dev/null "
+                   ">/root/drm-modeset.log 2>&1; result=$?; "
+                   "if test \"$result\" = 0; then echo DRM_MODE_SET_PASS; "
+                   "else tail -80 /root/drm-modeset.log; echo DRM_MODE_SET_FAIL; fi",
+                   "DRM_MODE_SET", timeout=90)
+            w, h, after = scanout("actual-modeset")
+            delta = changed(before, after)
+            if (width, height) != (800, 600) or (w, h) != (800, 600) or delta < 80000:
+                raise RuntimeError(f"{arch}: modetest did not change actual QMP "
+                                   f"GPU scanout: {delta} pixels")
+            print(f"PASS: {arch} unmodified modetest KMS modeset changed "
+                  f"{delta} real VirtIO-GPU pixels", flush=True)
 
-        guest.sendline("(sleep 25 | modetest -M virtio_gpu -s 44@42:800x600 -v) "
-                       ">/root/drm-pageflip.log 2>&1 & flip_pid=$!; "
-                       "echo DRM_PAGEFLIP_STARTED")
-        guest.expect(r"\r*\nDRM_PAGEFLIP_STARTED\r*\n", timeout=45)
-        guest.expect(r"# ")
-        time.sleep(8)
-        _, _, flip_a = scanout("pageflip-active-a")
-        time.sleep(9)
-        _, _, flip_b = scanout("pageflip-active-b")
-        page_delta = changed(flip_a, flip_b)
-        verify(guest,
-               "wait \"$flip_pid\"; result=$?; "
-               "if test \"$result\" = 0 && "
-               "grep -Eq 'freq: [1-9][0-9]*' /root/drm-pageflip.log; "
-               "then echo DRM_PAGEFLIP_EVENTS_PASS; "
-               "else tail -100 /root/drm-pageflip.log; "
-               "echo DRM_PAGEFLIP_EVENTS_FAIL; fi",
-               "DRM_PAGEFLIP_EVENTS", timeout=100)
-        if page_delta < 10000:
-            raise RuntimeError(f"{arch}: KMS page flipping did not change "
-                               f"actual pixels between active frames: {page_delta}")
-        print(f"PASS: {arch} real DRM pageflips completed in original "
-              f"modetest; QMP frames changed {page_delta} pixels", flush=True)
-        run_original_xorg(guest)
+            guest.sendline("(sleep 25 | modetest -M virtio_gpu -s 44@42:800x600 -v) "
+                           ">/root/drm-pageflip.log 2>&1 & flip_pid=$!; "
+                           "echo DRM_PAGEFLIP_STARTED")
+            guest.expect(r"\r*\nDRM_PAGEFLIP_STARTED\r*\n", timeout=45)
+            guest.expect(r"# ")
+            time.sleep(8)
+            _, _, flip_a = scanout("pageflip-active-a")
+            time.sleep(9)
+            _, _, flip_b = scanout("pageflip-active-b")
+            page_delta = changed(flip_a, flip_b)
+            verify(guest,
+                   "wait \"$flip_pid\"; result=$?; "
+                   "if test \"$result\" = 0 && "
+                   "grep -Eq 'freq: [1-9][0-9]*' /root/drm-pageflip.log; "
+                   "then echo DRM_PAGEFLIP_EVENTS_PASS; "
+                   "else tail -100 /root/drm-pageflip.log; "
+                   "echo DRM_PAGEFLIP_EVENTS_FAIL; fi",
+                   "DRM_PAGEFLIP_EVENTS", timeout=100)
+            if page_delta < 10000:
+                raise RuntimeError(f"{arch}: KMS page flipping did not change "
+                                   f"actual pixels between active frames: {page_delta}")
+            print(f"PASS: {arch} real DRM pageflips completed in original "
+                  f"modetest; QMP frames changed {page_delta} pixels", flush=True)
         guest.sendline("poweroff")
         guest.expect(r"\[LWEXT4 GUEST\] clean upstream unmount and durable flush",
                      timeout=180)
@@ -249,5 +261,9 @@ with (work / "drm-serial.log").open("w") as log:
         guest.close()
 if not ok:
     raise RuntimeError(f"{arch} native DRM/GEM/PageFlip acceptance incomplete")
-print(f"PASS: {arch} original libdrm/GEM, KMS/PageFlip and real Xorg/"
-      "Openbox/xterm/xeyes, real QMP pixels + clean ext4 shutdown", flush=True)
+if mode == "xorg":
+    print(f"PASS: {arch} original Alpine Xorg modesetting / Openbox / "
+          "xterm / xeyes, QMP GPU pixels and clean ext4 shutdown", flush=True)
+else:
+    print(f"PASS: {arch} original libdrm/GEM + KMS/PageFlip events + "
+          "real QMP pixels and clean ext4 shutdown", flush=True)
