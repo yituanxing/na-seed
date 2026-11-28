@@ -67,9 +67,9 @@ static int check_bridge(void) {
      * The DMA provider's actual frame pin/unpin is exercised separately
      * by tests/linux-virtgpu-dma-frames.c against the REAL dma.c. */
     struct nas_dma_mapped_frame mapped_cmd={
-        .provider=&dma,.frame_pa=0x1000,.bus_address=0x210000,.active=true};
+        .provider=&dma,.frame_pa=0x1000,.bus_address=0x210000,.active=true,.usable=true};
     struct nas_dma_mapped_frame mapped_resp={
-        .provider=&dma,.frame_pa=0x2000,.bus_address=0x220000,.active=true};
+        .provider=&dma,.frame_pa=0x2000,.bus_address=0x220000,.active=true,.usable=true};
     struct nas_linux_virtgpu_dma_sg sg[2]={
         {.map=&mapped_cmd,.offset=32,.length=40,.device_writes=false},
         {.map=&mapped_resp,.offset=128,.length=24,.device_writes=true}
