@@ -162,6 +162,44 @@ def run_original_xorg(guest):
         raise RuntimeError(f'{arch}: Xorg xsetroot did not change real GPU '
                            f'pixels: {pixels}')
     print(f'PASS: {arch} original Xorg drew {pixels} real QMP pixels', flush=True)
+
+    # Separate basic X11 MapWindow/Expose from Openbox reparenting. This is
+    # unmodified Alpine xeyes and real QEMU scanout, not a synthetic client.
+    guest.sendline(
+        'DISPLAY=:0 xeyes -title NASEED-DIRECT-XEYES '
+        '-geometry 150x110+570+340 >/root/native-direct-xeyes.log 2>&1 & '
+        'direct_xe=$!; echo XORG_DIRECT_LAUNCHED')
+    guest.expect(r'\r*\nXORG_DIRECT_LAUNCHED\r*\n', timeout=40)
+    guest.expect(r'# ', timeout=20)
+    verify(guest,
+           'for i in $(seq 1 20); do '
+           'DISPLAY=:0 xwininfo -name NASEED-DIRECT-XEYES -stats '
+           '>/root/native-direct-window.log 2>&1 && '
+           'grep -q "Map State: IsViewable" /root/native-direct-window.log '
+           '&& break; sleep 1; done; '
+           'if grep -q "Map State: IsViewable" /root/native-direct-window.log; '
+           'then echo XORG_DIRECT_MAP_PASS; else '
+           'cat /root/native-direct-window.log; '
+           'tail -30 /root/native-direct-xeyes.log; '
+           'echo XORG_DIRECT_MAP_FAIL; fi',
+           'XORG_DIRECT_MAP', timeout=90)
+    direct_delta = 0
+    for _ in range(15):
+        _, _, direct_frame = scanout('xorg-direct-xeyes')
+        direct_delta = changed(painted, direct_frame)
+        if direct_delta >= 5000:
+            break
+        time.sleep(2)
+    if direct_delta < 5000:
+        raise RuntimeError(f'{arch}: directly mapped Alpine xeyes '
+                           f'not visible on real VirtIO-GPU: {direct_delta}')
+    print(f'PASS: {arch} direct X11 xeyes mapped and rendered '
+          f'{direct_delta} genuine QMP pixels', flush=True)
+    verify(guest,
+           'kill "$direct_xe" 2>/dev/null || :; '
+           'DISPLAY=:0 xsetroot -solid red >/dev/null 2>&1; '
+           'echo XORG_DIRECT_CLEAN_PASS',
+           'XORG_DIRECT_CLEAN', timeout=45)
     guest.sendline(
         'DISPLAY=:0 openbox --sm-disable >/root/native-openbox.log 2>&1 & wm=$!; '
         'sleep 2; DISPLAY=:0 xterm -T NASEED-NATIVE-XTERM '
@@ -196,7 +234,7 @@ def run_original_xorg(guest):
             'tail -35 /root/native-openbox.log /root/native-xterm.log '
             '/root/native-xeyes.log 2>&1; '
             'echo XORG_WINDOW_DIAGNOSTICS_END')
-        guest.expect(r'\\r*\\nXORG_WINDOW_DIAGNOSTICS_END\\r*\\n', timeout=50)
+        guest.expect(r'\r*\nXORG_WINDOW_DIAGNOSTICS_END\r*\n', timeout=50)
         guest.expect(r'# ', timeout=30)
         raise RuntimeError(f'{arch}: native X11 windows did not change '
                            f'actual GPU pixels: {delta}')
