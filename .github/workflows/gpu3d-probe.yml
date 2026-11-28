@@ -1,11 +1,13 @@
 name: VirtIO-GPU VirGL host protocol acceptance
 on:
   push:
-    branches: [refactor/naseed-cleanup-01-20261124]
+    branches: [refactor/naseed-cleanup-01-20261124, feat/gpu3d-context-probe-20261128]
     paths:
       - "kernel/drivers/display/virtio_gpu.c"
       - "kernel/drivers/display/virtio_gpu.h"
       - "tests/native-virgl-probe.py"
+      - "Makefile"
+      - "scripts/build-native-full.sh"
       - ".github/workflows/gpu3d-probe.yml"
   workflow_dispatch:
 permissions:
@@ -34,17 +36,17 @@ jobs:
             xvfb xauth dosfstools mtools
       - name: Build native shared GPU driver for RV64 and AArch64
         if: matrix.arch != 'x86_64'
-        run: make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
+        run: NAS_ENABLE_GPU3D_CONTEXT_PROBE=1 make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
       - name: Build real x86-64 UEFI ISO with modern VirtIO GPU class
         if: matrix.arch == 'x86_64'
-        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 iso
+        run: NAS_ENABLE_GPU3D_CONTEXT_PROBE=1 make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 iso
       - name: Smoke-boot real native Limine and NaSeed
         if: matrix.arch != 'x86_64'
         run: sh tests/native-boot.sh ${{ matrix.arch }}
       - name: Smoke-boot real x86-64 UEFI ISO
         if: matrix.arch == 'x86_64'
-        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 smoke
-      - name: Verify real VirGL feature and GET_CAPSET_INFO on QEMU GPU
+        run: NAS_ENABLE_GPU3D_CONTEXT_PROBE=1 make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 smoke
+      - name: Verify real VirGL capsets and host-ACKed 3D context create/destroy
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
