@@ -3,21 +3,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Linux sg_init_one() does not establish a DMA mapping by itself. An
- * allocator/provider must first pin the real NaSeed physical page and
- * prepare this SG with its mapped device address. Never virt_to_phys()
- * arbitrary DRM heap memory or guess identity DMA here. */
-int nas_linux_virtgpu_sg_map(struct scatterlist *sg,
+/* A real DMA pin is registered per SG pointer in the NaSeed queue owner.
+ * Never extend/modify Linux's struct scatterlist ABI with private fields.
+ * Registrations are scoped to one subsequent virtqueue_add_sgs() call. */
+int nas_linux_virtgpu_sg_map(struct nas_linux_virtgpu_virtqueue_port *port,
+                            struct scatterlist *sg,
                             const struct nas_dma_mapped_frame *map,
                             uint32_t offset,uint32_t length) {
-    if (!sg || (sg->page_link & SG_CHAIN))return -EINVAL;
+    if (!port || !port->bridge.queue || !sg ||
+        (sg->page_link & SG_CHAIN) ||
+        !map || !map->active || !map->usable ||
+        map->provider!=port->bridge.queue->transport->dma)return -EINVAL;
+    if(port->sg_count>=NAS_VRING_MAX_DESC)return -ENOSPC;
+    for(unsigned i=0;i<port->sg_count;i++)
+        if(port->sg_maps[i].sg==sg)return -EBUSY;
     uint64_t bus=0;
     int rc=nas_dma_mapped_slice(map,offset,length,&bus);
     if(rc)return rc;
     sg->offset=offset;
     sg->length=length;
     sg->dma_address=bus;
-    sg->nas_dma_owner=map;
+    port->sg_maps[port->sg_count++]=(struct nas_linux_virtgpu_sg_registration){
+        .sg=sg,.map=map};
     return 0;
 }
 int nas_linux_virtgpu_virtqueue_bind(
@@ -30,6 +37,7 @@ int nas_linux_virtgpu_virtqueue_bind(
     port->linux_vq=(struct virtqueue){
         .vdev=vdev,.index=index,.num_free=queue->free_count,
         .num_max=queue->ring.num,.priv=port};
+    port->sg_count=0;
     return 0;
 }
 static struct nas_linux_virtgpu_virtqueue_port *get_port(
@@ -42,45 +50,51 @@ static struct nas_linux_virtgpu_virtqueue_port *get_port(
 int virtqueue_add_sgs(struct virtqueue *vq,struct scatterlist *sgs[],
                       unsigned int out_sgs,unsigned int in_sgs,
                       void *data,gfp_t gfp) {
-    (void)gfp; /* No allocation in this split-ring submission. */
+    (void)gfp; /* Submission itself makes no allocations. */
     struct nas_linux_virtgpu_virtqueue_port *port=get_port(vq);
-    if(!port || !sgs || !data || !out_sgs || out_sgs>NAS_VRING_MAX_DESC ||
-       in_sgs>NAS_VRING_MAX_DESC-out_sgs)return -EINVAL;
+    if(!port)return -EINVAL;
     struct nas_vring_queue *queue=port->bridge.queue;
-    if(!queue->active || queue->poisoned)return -EIO;
+    int rc=-EINVAL;
+    if(!sgs || !data || !out_sgs || out_sgs>NAS_VRING_MAX_DESC ||
+       in_sgs>NAS_VRING_MAX_DESC-out_sgs)goto done;
+    if(!queue->active || queue->poisoned){rc=-EIO;goto done;}
     struct nas_linux_virtgpu_dma_sg mapped[NAS_VRING_MAX_DESC];
     unsigned n=0;
     const unsigned list_count=out_sgs+in_sgs;
-    /* Linux's list count is NOT its descriptor count: an SG list can
-     * contain many entries. The Linux SG_END and SG_CHAIN markers govern
-     * sg_next(); a full chain must fit in the negotiated direct ring.
-     * Indirect descriptors are deliberately not advertised or fabricated. */
+    /* Each sg list may include MANY descriptors. Traverse canonical Linux
+     * SG_END/SG_CHAIN links and validate every registered DMA page owner
+     * before publishing a single device-visible descriptor. */
     for(unsigned i=0;i<list_count;i++) {
         struct scatterlist *sg=sgs[i];
-        if(!sg)return -EINVAL;
+        if(!sg)goto done;
         while(sg) {
-            if(n>=NAS_VRING_MAX_DESC)return -ENOSPC;
-            if((sg->page_link & SG_CHAIN) || !sg->nas_dma_owner ||
-               !sg->nas_dma_owner->active || !sg->nas_dma_owner->usable ||
-               sg->nas_dma_owner->provider!=queue->transport->dma)
-                return -EINVAL;
-            uint64_t expected_bus=0;
-            if(nas_dma_mapped_slice(sg->nas_dma_owner,sg->offset,
-                                    sg->length,&expected_bus) ||
-               sg->dma_address!=expected_bus)return -EINVAL;
+            if(n>=NAS_VRING_MAX_DESC){rc=-ENOSPC;goto done;}
+            if(sg->page_link & SG_CHAIN)goto done;
+            const struct nas_dma_mapped_frame *map=NULL;
+            for(unsigned j=0;j<port->sg_count;j++)
+                if(port->sg_maps[j].sg==sg) {
+                    map=port->sg_maps[j].map;
+                    break;
+                }
+            if(!map || !map->active || !map->usable ||
+               map->provider!=queue->transport->dma)goto done;
+            uint64_t bus=0;
+            if(nas_dma_mapped_slice(map,sg->offset,sg->length,&bus) ||
+               sg->dma_address!=bus)goto done;
             mapped[n++]=(struct nas_linux_virtgpu_dma_sg){
-                .map=sg->nas_dma_owner,.offset=sg->offset,
-                .length=sg->length,.device_writes=(i>=out_sgs)};
+                .map=map,.offset=sg->offset,.length=sg->length,
+                .device_writes=(i>=out_sgs)};
             sg=sg_next(sg);
         }
     }
-    if(n>queue->free_count) {
-        vq->num_free=queue->free_count;
-        return -ENOSPC;
-    }
-    int rc=nas_linux_virtgpu_vq_submit_mapped(&port->bridge,mapped,n,data);
-    /* Even a post-publication DMA-sync failure can consume descriptors.
-     * Linux's num_free must track the REAL queue state on every return. */
+    if(n>queue->free_count){rc=-ENOSPC;goto done;}
+    rc=nas_linux_virtgpu_vq_submit_mapped(&port->bridge,mapped,n,data);
+done:
+    /* The next submission must REGISTER its own DMA ownership, so a
+     * stale stack-allocated Linux SG can never inherit an earlier mapping.
+     * A failed attempt must re-register before retrying. */
+    port->sg_count=0;
+    /* Even a failed post-publication DMA sync may consume descriptors. */
     vq->num_free=queue->free_count;
     return rc;
 }
