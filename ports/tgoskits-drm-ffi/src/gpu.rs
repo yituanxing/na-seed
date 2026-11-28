@@ -187,6 +187,97 @@ fn clock() -> u64 { unsafe { nas_arch_monotonic_ns() } }
 // remove callback owns shutdown, including transport reset before DMA release.
 static DEVICE: AtomicPtr<VirtIoGpu<NaSeedHal, NaTransport>> =
     AtomicPtr::new(ptr::null_mut());
+// The real GPU runtime has one mutable queue. Serialize every user-origin
+// hardware query with teardown. Busy failure is explicit, not a spin while a
+// queue operation may itself need deferred servicing.
+static DEVICE_BUSY: AtomicBool = AtomicBool::new(false);
+fn with_device<T>(f: impl FnOnce(&mut VirtIoGpu<NaSeedHal, NaTransport>) -> Result<T, i32>)
+    -> Result<T, i32> {
+    if DEVICE_BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err(-16); // EBUSY
+    }
+    struct Release;
+    impl Drop for Release {
+        fn drop(&mut self) { DEVICE_BUSY.store(false, Ordering::Release); }
+    }
+    let _guard = Release;
+    let ptr = DEVICE.load(Ordering::Acquire);
+    if ptr.is_null() { return Err(-19); } // ENODEV
+    // SAFETY: DEVICE is published only after initialization, removed only
+    // while DEVICE_BUSY is held, and this lock ensures unique mutable access.
+    f(unsafe { &mut *ptr })
+}
+
+/// A user ioctl reads original QEMU GPU capset metadata and bytes through
+/// upstream VirtIoGpu; no guest-supplied pointer is dereferenced in Rust.
+/// The C VFS layer validates user addresses, bounds and the per-File owner.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_get_caps(
+    id: u32, version: u32, dst: *mut u8, capacity: usize, written: *mut usize,
+) -> i32 {
+    if dst.is_null() || written.is_null() || capacity == 0 || capacity > 65536 {
+        return -22;
+    }
+    let result = with_device(|gpu| {
+        if !gpu.has_virgl() { return Err(-95); }
+        let mut found = None;
+        for index in 0..64 {
+            let Ok(info) = gpu.get_capset_info(index) else { break; };
+            if info.capset_id == id {
+                found = Some(info);
+                break;
+            }
+        }
+        let info = found.ok_or(-22)?;
+        if version > info.max_version || info.max_size as usize > capacity {
+            return Err(-22);
+        }
+        let bytes = gpu.get_capset(id, version, info.max_size).map_err(|_| -5)?;
+        if bytes.is_empty() || bytes.len() > capacity { return Err(-5); }
+        // SAFETY: caller promises capacity bytes writable in kernel memory.
+        // VFS passes a private heap buffer, never an unchecked user pointer.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            *written = bytes.len();
+        }
+        Ok(())
+    });
+    match result { Ok(()) => 0, Err(e) => e }
+}
+
+/// Query only truthful, user-visible capabilities. The host has 3D support,
+/// but this early render-node stage DOES NOT expose GEM/EXECBUFFER to Mesa,
+/// so DRM_VIRTGPU_PARAM_3D_FEATURES must remain 0 until that ABI works.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_get_param(param: u64, value: *mut u64) -> i32 {
+    if value.is_null() { return -22; }
+    let result = with_device(|gpu| {
+        let answer = match param {
+            1 => 0,  // 3D_FEATURES: not yet usable from unmodified Mesa
+            2 => 1,  // CAPSET_QUERY_FIX: GET_CAPS returns the correct byte length
+            3 => 0,  // RESOURCE_BLOB: no userspace GEM backing yet
+            4 => 0,  // HOST_VISIBLE: not mapped to userspace
+            5 => 0,  // CROSS_DEVICE: PRIME path absent
+            6 => 0,  // CONTEXT_INIT: no user ioctl yet
+            7 => {
+                let mut mask = 0u64;
+                for index in 0..64 {
+                    let Ok(info) = gpu.get_capset_info(index) else { break; };
+                    if (1..64).contains(&info.capset_id) {
+                        mask |= 1u64 << info.capset_id;
+                    }
+                }
+                mask
+            }
+            _ => return Err(-22),
+        };
+        // SAFETY: caller passes an aligned kernel-owned stack out parameter.
+        unsafe { *value = answer; }
+        Ok(())
+    });
+    match result { Ok(()) => 0, Err(e) => e }
+}
+
 
 #[unsafe(no_mangle)]
 pub extern "C" fn nas_tgos_original_gpu_probe(raw: *const c_void,
@@ -319,10 +410,17 @@ pub extern "C" fn nas_tgos_original_gpu_probe(raw: *const c_void,
 
 #[unsafe(no_mangle)]
 pub extern "C" fn nas_tgos_original_gpu_shutdown() -> i32 {
+    if DEVICE_BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return -16;
+    }
     let ptr = DEVICE.swap(ptr::null_mut(), Ordering::AcqRel);
-    if ptr.is_null() { return -19; }
+    if ptr.is_null() {
+        DEVICE_BUSY.store(false, Ordering::Release);
+        return -19;
+    }
     // Drop invokes the original VirtIoGpu::reset BEFORE its DMA pages and
-    // queued command buffers can be destroyed; no concurrent users exist.
+    // queued command buffers can be destroyed. New ioctls cannot enter.
     unsafe { drop(Box::from_raw(ptr)); nas_tgos_gpu_bounce_reap_after_reset(); }
+    DEVICE_BUSY.store(false, Ordering::Release);
     0
 }
