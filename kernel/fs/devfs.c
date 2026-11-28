@@ -27,6 +27,7 @@ static void device_inode(const struct nas_chrdev_node *node,
     *out=(struct nas_fs_node){
         .inode=node,.ino=node->devfs_ino,.rdev=node->info.rdev,
         .mode=(uint32_t)node->info.mode,.size=node->info.size,
+        .uid=node->info.uid,.gid=node->info.gid,
         .nlink=1,.is_dir=false
     };
 }
@@ -142,6 +143,39 @@ static int getattr(const struct nas_fs_node *node,struct nas_fs_node *out) {
     /* Preserve mount/incarnation, but read mutable metadata from owner. */
     out->mode=(uint32_t)device->info.mode;
     out->size=device->info.size;
+    out->uid=device->info.uid;
+    out->gid=device->info.gid;
+    return 0;
+}
+/* Device inodes have an owned, registered metadata backing separate from
+ * the immutable rdev and class driver. Permit normal privileged chmod/
+ * chown with observable stat changes; do not claim success for directories
+ * or block nodes that lack mutable devfs metadata. */
+static int metadata_device(const struct nas_fs_node *node,
+                           struct nas_chrdev_node **out) {
+    int rc=validate_inode(node);
+    if(rc)return rc;
+    if(dir_number(node)!=DEV_DIR_COUNT ||
+       (node->mode&0170000U)!=0020000U)return -EOPNOTSUPP;
+    struct nas_chrdev_node *d=(struct nas_chrdev_node *)(uintptr_t)node->inode;
+    if(d->present && !d->present(d->info.unit))return -ENODEV;
+    *out=d;
+    return 0;
+}
+static int device_chmod(const struct nas_fs_node *node,uint64_t mode) {
+    struct nas_chrdev_node *d=NULL;
+    int rc=metadata_device(node,&d);
+    if(rc)return rc;
+    d->info.mode=(d->info.mode&~07777ULL)|(mode&07777ULL);
+    return 0;
+}
+static int device_chown(const struct nas_fs_node *node,uint32_t uid,
+                        uint32_t gid) {
+    struct nas_chrdev_node *d=NULL;
+    int rc=metadata_device(node,&d);
+    if(rc)return rc;
+    if(uid!=UINT32_MAX)d->info.uid=uid;
+    if(gid!=UINT32_MAX)d->info.gid=gid;
     return 0;
 }
 static int dirent(struct nas_vfs_dirent *out,const char *name,
@@ -209,5 +243,6 @@ const struct nas_vfs_type nas_devfs_type={
     .root=root,.lookup_child=lookup_child,.read_dir=read_dir,
     .getattr=getattr,.validate_inode=validate_inode,
     .first_inode_pin=first_inode_pin,.last_inode_unpin=last_inode_unpin,
-    .statfs=statfs,.read_only=true
+    .chmod=device_chmod,.chown=device_chown,
+    .statfs=statfs,.read_only=false
 };
