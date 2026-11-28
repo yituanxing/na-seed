@@ -48,6 +48,7 @@ extern void nas_dec(uint64_t);
 #define GPU_CMD_TRANSFER_TO_HOST_2D 0x0105U
 #define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106U
 #define GPU_CMD_GET_CAPSET_INFO 0x0108U
+#define GPU_CMD_GET_CAPSET 0x0109U
 #define GPU_CMD_CTX_CREATE 0x0200U
 #define GPU_CMD_CTX_DESTROY 0x0201U
 #define GPU_CMD_CTX_ATTACH_RESOURCE 0x0202U
@@ -65,6 +66,9 @@ extern void nas_dec(uint64_t);
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
 #define GPU_RESP_OK_CAPSET_INFO 0x1102U
+#define GPU_RESP_OK_CAPSET 0x1103U
+#define GPU_CAPSET_CACHE_SLOTS 2U
+#define GPU_CAPSET_DATA_MAX (NAS_DMA_PAGE_BYTES - sizeof(struct gpu_hdr))
 #define GPU_TIMEOUT_NS UINT64_C(3000000000)
 /* A direct MAP_SHARED store cannot call write_at/mark_dirty. While VMAs
  * exist, refresh at a bounded 10 Hz through the existing deferred, IRQ-
@@ -90,6 +94,12 @@ struct gpu_flush {struct gpu_hdr hdr; struct gpu_rect r; uint32_t id, pad;};
 struct gpu_entry {uint64_t address; uint32_t length, padding;};
 /* Linux virtio_gpu.h / VirtIO 1.2 wire layouts, without a second protocol. */
 struct gpu_capset_query {struct gpu_hdr hdr;uint32_t index,padding;};
+struct gpu_get_capset {struct gpu_hdr hdr;uint32_t id,version;};
+/* Immutable post-bootstrap UAPI snapshot. User ioctls never busy-poll GPU. */
+struct gpu_cached_capset {
+    uint32_t id,version,bytes;
+    uint8_t payload[GPU_CAPSET_DATA_MAX];
+};
 struct gpu_ctx_create {
     struct gpu_hdr hdr;
     uint32_t nlen,context_init;
@@ -125,6 +135,8 @@ _Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
 _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
 _Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
 _Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
+_Static_assert(sizeof(struct gpu_get_capset)==32U, "virtio-gpu capset request");
+_Static_assert(GPU_CAPSET_DATA_MAX>=1384U, "VirGL2 capset fits DMA response");
 _Static_assert(sizeof(struct gpu_ctx_create)==96U, "virtio-gpu context create");
 #if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
 _Static_assert(sizeof(struct gpu_ctx_resource)==32U, "virtio-gpu context resource");
@@ -163,6 +175,7 @@ struct gpu_device {
     uint32_t scanout;
     /* GPU host capability inventory; NOT a claim that /dev/dri supports 3D. */
     uint32_t capset_count,virgl_capset_id,virgl_capset_version,virgl_capset_size;
+    struct gpu_cached_capset capsets[GPU_CAPSET_CACHE_SLOTS];
     bool virgl_feature;
     unsigned pixel_pages, entry_pages;
     uint32_t dirty_y0, dirty_y1;
@@ -237,10 +250,15 @@ static int command_submit(struct gpu_device *g,const void *request,
                                                 bytes,false};
         entry_bytes-=bytes;
     }
+    /* A real GET_CAPSET payload (e.g. VirGL2=1384B) exceeds display-info.
+     * The reply DMA page is private to the sole outstanding request. */
+    const struct gpu_hdr *hdr=request;
+    const uint32_t reply_capacity=little32(hdr->type)==GPU_CMD_GET_CAPSET ?
+                     NAS_DMA_PAGE_BYTES : (uint32_t)sizeof(struct gpu_resp_info);
     segments[n++]=(struct nas_vring_segment){g->response.bus_address,
-                              sizeof(struct gpu_resp_info),true};
+                                             reply_capacity,true};
     rc=nas_dma_sync(g->transport.dma,&g->response,0,
-                    sizeof(struct gpu_resp_info),NAS_DMA_FROM_DEVICE);
+                    reply_capacity,NAS_DMA_FROM_DEVICE);
     if(rc)return rc;
     rc=nas_vring_queue_submit(&g->control,segments,n,submitted_head);
     if(rc)return rc;
@@ -250,8 +268,10 @@ static int command_submit(struct gpu_device *g,const void *request,
 
 static int command_response(struct gpu_device *g,const struct gpu_hdr *question,
                             uint32_t expected_response,uint32_t response_bytes) {
-    if(response_bytes<sizeof(struct gpu_hdr) ||
-       response_bytes>sizeof(struct gpu_resp_info))return -EIO;
+    const uint32_t limit=expected_response==GPU_RESP_OK_CAPSET ?
+                         NAS_DMA_PAGE_BYTES : (uint32_t)sizeof(struct gpu_resp_info);
+    if(response_bytes<sizeof(struct gpu_hdr) || response_bytes>limit)
+        return -EIO;
     int rc=nas_dma_sync(g->transport.dma,&g->response,0,response_bytes,
                         NAS_DMA_FROM_DEVICE);
     if(rc)return rc;
@@ -261,15 +281,18 @@ static int command_response(struct gpu_device *g,const struct gpu_hdr *question,
        answer->fence_id!=question->fence_id)return -EIO;
     if(expected_response==GPU_RESP_OK_DISPLAY_INFO &&
        response_bytes<sizeof(struct gpu_resp_info))return -EIO;
+    if(expected_response==GPU_RESP_OK_CAPSET_INFO &&
+       response_bytes<sizeof(struct gpu_capset_reply))return -EIO;
     ++g->completed;
     return 0;
 }
 
 /* Only the four pre-userspace initialization commands may busy-wait: no
  * native Task or kernel worker is yet able to consume device completion. */
-static int command_sync(struct gpu_device *g,const void *request,
-                        uint32_t request_bytes,uint32_t entry_bytes,
-                        uint32_t expected_response) {
+static int command_sync_with_reply(struct gpu_device *g,const void *request,
+                                   uint32_t request_bytes,uint32_t entry_bytes,
+                                   uint32_t expected_response,
+                                   uint32_t *used_bytes) {
     uint16_t submitted_head=0;
     int rc=command_submit(g,request,request_bytes,entry_bytes,&submitted_head);
     if(rc)return rc;
@@ -287,6 +310,7 @@ static int command_sync(struct gpu_device *g,const void *request,
     if(completed_head!=submitted_head) {rc=-EIO;goto poisoned;}
     rc=command_response(g,request,expected_response,response_bytes);
     if(rc)goto poisoned;
+    if(used_bytes)*used_bytes=response_bytes;
     return 0;
 poisoned:
     /* A timed-out/invalid used entry may still reference these DMA pages.
@@ -294,6 +318,12 @@ poisoned:
      * completion. Keep their lifetime pinned until transport reset/unbind. */
     g->stalled=true;
     return rc;
+}
+static int command_sync(struct gpu_device *g,const void *request,
+                        uint32_t request_bytes,uint32_t entry_bytes,
+                        uint32_t expected_response) {
+    return command_sync_with_reply(g,request,request_bytes,entry_bytes,
+                                   expected_response,NULL);
 }
 
 /* One ownership unwind for probe failure and a later retry. An unsuccessful
@@ -572,8 +602,27 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
         uint32_t id=little32(a->id);
         uint32_t version=little32(a->max_version);
         uint32_t size=little32(a->max_size);
-        if((id==GPU_CAPSET_VIRGL || id==GPU_CAPSET_VIRGL2) &&
-           version && size && id>g->virgl_capset_id) {
+        if((id!=GPU_CAPSET_VIRGL && id!=GPU_CAPSET_VIRGL2) ||
+           !version || !size || size>GPU_CAPSET_DATA_MAX)continue;
+        struct gpu_cached_capset *saved=&g->capsets[id-1U];
+        if(saved->id && version<=saved->version)continue;
+        const struct gpu_get_capset query={
+            .hdr=command_hdr(g,GPU_CMD_GET_CAPSET),
+            .id=little32(id),.version=little32(version)
+        };
+        uint32_t used=0;
+        int rc=command_sync_with_reply(g,&query,sizeof(query),0,
+                                       GPU_RESP_OK_CAPSET,&used);
+        if(rc)return rc;
+        if(used<sizeof(struct gpu_hdr) ||
+           used-sizeof(struct gpu_hdr)<size)return -EIO;
+        /* Preserve unmodified host VirGL payload, not a synthesized ABI. */
+        memcpy(saved->payload,(const uint8_t *)g->response.cpu+
+               sizeof(struct gpu_hdr),size);
+        saved->id=id;
+        saved->version=version;
+        saved->bytes=size;
+        if(id>g->virgl_capset_id) {
             g->virgl_capset_id=id;
             g->virgl_capset_version=version;
             g->virgl_capset_size=size;
@@ -906,6 +955,28 @@ void nas_virtio_gpu_get_scanout_state(struct nas_virtio_gpu_scanout_state *out) 
         .busy=gpu.runtime_phase!=GPU_RUNTIME_IDLE,
         .dirty=gpu.dirty,.ready=gpu.claimed && !gpu.stalled
     };
+}
+int nas_virtio_gpu_capset_snapshot(uint32_t id,uint32_t version,
+                                   const uint8_t **payload,uint32_t *bytes) {
+    if(!payload || !bytes)return -EINVAL;
+    *payload=NULL;*bytes=0;
+    if(!gpu.claimed || gpu.stalled)return -ENODEV;
+    for(unsigned i=0;i<GPU_CAPSET_CACHE_SLOTS;i++) {
+        const struct gpu_cached_capset *c=&gpu.capsets[i];
+        if(c->id==id && c->version==version && c->bytes) {
+            *payload=c->payload;
+            *bytes=c->bytes;
+            return 0;
+        }
+    }
+    return -EINVAL; /* Do not substitute another capset version. */
+}
+uint64_t nas_virtio_gpu_capset_mask(void) {
+    if(!gpu.claimed || gpu.stalled)return 0;
+    uint64_t mask=0;
+    for(unsigned i=0;i<GPU_CAPSET_CACHE_SLOTS;i++)
+        if(gpu.capsets[i].id)mask|=UINT64_C(1)<<gpu.capsets[i].id;
+    return mask;
 }
 void nas_virtio_gpu_get_3d_caps(struct nas_virtio_gpu_3d_caps *out) {
     if(!out)return;
