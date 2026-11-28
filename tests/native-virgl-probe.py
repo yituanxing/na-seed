@@ -12,14 +12,17 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 2 or sys.argv[1] not in ("x86_64", "riscv64", "aarch64"):
-    raise SystemExit("usage: native-virgl-probe.py <x86_64|riscv64|aarch64>")
+if (len(sys.argv) not in (2, 3) or
+        sys.argv[1] not in ("x86_64", "riscv64", "aarch64") or
+        (len(sys.argv) == 3 and sys.argv[2] != "caps")):
+    raise SystemExit("usage: native-virgl-probe.py <x86_64|riscv64|aarch64> [caps]")
 arch = sys.argv[1]
+mode = "caps" if len(sys.argv) == 3 else "runtime"
 work = pathlib.Path("build/native-boot") / arch
 work.mkdir(parents=True, exist_ok=True)
-esp = (work / ("virgl-alpine.iso" if arch == "x86_64"
-               else "virgl-alpine-efi.img")).resolve()
-log = work / "virgl-probe.log"
+image = ("virgl-caps" if mode == "caps" else "virgl-alpine")
+esp = (work / (image + (".iso" if arch == "x86_64" else "-efi.img"))).resolve()
+log = work / ("virgl-caps-probe.log" if mode == "caps" else "virgl-probe.log")
 if arch == "x86_64":
     firmware = next(
         (pathlib.Path(p) for p in (
@@ -90,6 +93,18 @@ runtime = re.compile(
     r"\[VIRTIO GPU 3D RUNTIME\] ctx_create=1 ctx_destroy=1 "
     r"irq_fence=1 deferred=1"
 )
+user_marker = ("NASEED_VIRGL_CAPS_USER_PASS id=2 version=2 bytes=1384"
+               if mode == "caps" else
+               "[M4] real Alpine busybox via musl interpreter in ring 3")
+
+def completed(output):
+    m = capset.search(output)
+    return (m is not None and all(int(n) > 0 for n in m.groups()) and
+            context.search(output) is not None and
+            pixel.search(output) is not None and
+            "[M177 VIRTIO GPU READY]" in output and user_marker in output and
+            (mode == "caps" or runtime.search(output) is not None))
+
 deadline = time.monotonic() + 150
 with log.open("wb") as stream:
     proc = subprocess.Popen(args, stdout=stream, stderr=subprocess.STDOUT)
@@ -101,25 +116,25 @@ with log.open("wb") as stream:
                 raise RuntimeError(f"{arch}: actual VirGL pixel readback mismatch")
             if "[VIRTIO PCI FAIL]" in output:
                 raise RuntimeError(f"{arch}: guest GPU probe failed during PCI binding")
-            if "[PASS] userspace exit 0" in output and not runtime.search(output):
-                raise RuntimeError(f"{arch}: upstream Alpine exited before async GPU context completion")
-            if proc.poll() is not None and not (capset.search(output) and context.search(output) and pixel.search(output) and runtime.search(output)):
+            if "[PASS] userspace exit 0" in output and not completed(output):
+                raise RuntimeError(f"{arch}: original Alpine exited without {mode} acceptance")
+            if proc.poll() is not None and not completed(output):
                 break
-            m = capset.search(output)
-            if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output) and runtime.search(output):
-                if ("[M177 VIRTIO GPU READY]" not in output or
-                    "[M4] real Alpine busybox via musl interpreter in ring 3" not in output):
-                    continue
+            if completed(output):
+                m = capset.search(output)
                 print(
-                    f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
+                    f"PASS: {arch} real QEMU VirGL capset: "
                     f"count={m[1]} id={m[2]} version={m[3]} bytes={m[4]}; "
-                    "original Alpine userland + VirGL pixels + deferred IRQ context OK; Mesa pending", flush=True
+                    + ("original Alpine Python DRM GETPARAM/GET_CAPS ABI verified"
+                       if mode == "caps" else
+                       "original Alpine userland + VirGL pixels + deferred IRQ context OK"),
+                    flush=True
                 )
                 break
         else:
-            raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output or "[M4] real Alpine busybox via musl interpreter in ring 3" not in output:
-            raise RuntimeError(f"{arch}: missing original user entry, VirGL pixels or runtime IRQ completion")
+            raise RuntimeError(f"{arch}: timed out waiting for {mode} acceptance")
+        if not completed(output):
+            raise RuntimeError(f"{arch}: missing real VirGL or original Alpine {mode} evidence")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
         print(log.read_text(errors="replace")[-10000:], file=sys.stderr)
