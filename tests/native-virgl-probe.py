@@ -92,6 +92,10 @@ with log.open("wb") as stream:
         while time.monotonic() < deadline:
             time.sleep(0.4)
             output = log.read_bytes().decode("utf-8", errors="replace").replace("\r", "")
+            if "[VIRTIO GPU 3D PIXEL ERROR]" in output:
+                raise RuntimeError(f"{arch}: actual VirGL pixel readback mismatch")
+            if "[VIRTIO PCI FAIL]" in output:
+                raise RuntimeError(f"{arch}: guest GPU probe failed during PCI binding")
             if proc.poll() is not None and not (capset.search(output) and context.search(output) and pixel.search(output)):
                 break
             m = capset.search(output)
