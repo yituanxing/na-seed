@@ -19,9 +19,6 @@
 #define NAS_DRM_IOCTL_VERSION UINT32_C(0xc0406400)
 #define NAS_DRM_IOCTL_GET_CAP UINT32_C(0xc010640c)
 #define NAS_DRM_IOCTL_GEM_CLOSE UINT32_C(0x40086409)
-/* Linux include/uapi/drm/virtgpu_drm.h: DRM_COMMAND_BASE=0x40. */
-#define NAS_DRM_IOCTL_VIRTGPU_GETPARAM UINT32_C(0xc0106443)
-#define NAS_DRM_IOCTL_VIRTGPU_GET_CAPS UINT32_C(0xc0186449)
 #define NAS_DRM_IOCTL_MODE_CREATE_DUMB UINT32_C(0xc02064b2)
 #define NAS_DRM_IOCTL_MODE_MAP_DUMB UINT32_C(0xc01064b3)
 #define NAS_DRM_IOCTL_MODE_DESTROY_DUMB UINT32_C(0xc00464b4)
@@ -40,20 +37,12 @@ struct nas_drm_mode_create_dumb {
 struct nas_drm_mode_map_dumb {uint32_t handle,pad;uint64_t offset;};
 struct nas_drm_mode_destroy_dumb {uint32_t handle;};
 struct nas_drm_gem_close {uint32_t handle,pad;};
-struct nas_drm_virtgpu_getparam {uint64_t param,value;};
-struct nas_drm_virtgpu_get_caps {
-    uint32_t capset_id,capset_version;
-    uint64_t addr;
-    uint32_t size,pad;
-};
 _Static_assert(sizeof(struct nas_drm_version)==64U,"DRM LP64 version");
 _Static_assert(sizeof(struct nas_drm_get_cap)==16U,"DRM get_cap");
 _Static_assert(sizeof(struct nas_drm_mode_create_dumb)==32U,"DRM dumb create");
 _Static_assert(sizeof(struct nas_drm_mode_map_dumb)==16U,"DRM dumb map");
 _Static_assert(sizeof(struct nas_drm_mode_destroy_dumb)==4U,"DRM dumb destroy");
 _Static_assert(sizeof(struct nas_drm_gem_close)==8U,"DRM GEM close");
-_Static_assert(sizeof(struct nas_drm_virtgpu_getparam)==16U,"VIRTGPU GETPARAM LP64");
-_Static_assert(sizeof(struct nas_drm_virtgpu_get_caps)==24U,"VIRTGPU GET_CAPS LP64");
 
 static bool drm_present(unsigned unit) {
     return unit==0U && nas_virtio_gpu_count()!=0U;
@@ -140,56 +129,6 @@ static uint64_t drm_cap(uint64_t user_arg) {
     return nas_user_write_bytes(user_arg,(const uint8_t *)&cap,
                                 sizeof(cap))?0:(uint64_t)-EFAULT;
 }
-/* The card0 primary node exposes only two READ-ONLY, authentic VirtGPU
- * discovery ioctls so libdrm can examine real host data. In particular,
- * VIRTGPU_PARAM_3D_FEATURES remains zero until render contexts, BOs,
- * EXECBUFFER and WAIT are truly available to user code. Never advertise a
- * fake renderD128 or confuse host VirGL support with guest acceleration. */
-static uint64_t virtgpu_getparam(uint64_t arg) {
-    struct nas_drm_virtgpu_getparam req;
-    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
-        return (uint64_t)-EFAULT;
-    if(!req.value)return (uint64_t)-EFAULT;
-    uint64_t result=0;
-    switch(req.param) {
-    case 1U: /* VIRTGPU_PARAM_3D_FEATURES — userspace 3D not enabled yet */
-    case 3U: /* RESOURCE_BLOB — no runtime blob resource API */
-    case 4U: /* HOST_VISIBLE */
-    case 5U: /* CROSS_DEVICE */
-    case 6U: /* CONTEXT_INIT — feature bit not negotiated */
-    case 8U: /* EXPLICIT_DEBUG_NAME */
-    case 9U: /* BLOB_ALIGNMENT — feature bit not negotiated */
-        break;
-    case 2U: /* VIRTGPU_PARAM_CAPSET_QUERY_FIX */
-        result=1U;
-        break;
-    case 7U: /* VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs */
-        result=nas_virtio_gpu_capset_mask();
-        break;
-    default:
-        return (uint64_t)-EINVAL;
-    }
-    if(!nas_user_prepare_write(req.value,sizeof(result)))
-        return (uint64_t)-EFAULT;
-    return nas_user_write_bytes(req.value,(const uint8_t *)&result,
-                                sizeof(result))?0:(uint64_t)-EFAULT;
-}
-static uint64_t virtgpu_get_caps(uint64_t arg) {
-    struct nas_drm_virtgpu_get_caps req;
-    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
-        return (uint64_t)-EFAULT;
-    if(!req.addr || !req.size || req.pad)return (uint64_t)-EINVAL;
-    const uint8_t *payload=NULL;
-    uint32_t payload_bytes=0;
-    int rc=nas_virtio_gpu_capset_snapshot(req.capset_id,
-                req.capset_version,&payload,&payload_bytes);
-    if(rc)return (uint64_t)(int64_t)rc;
-    uint32_t copied=req.size<payload_bytes?req.size:payload_bytes;
-    if(!nas_user_prepare_write(req.addr,copied))return (uint64_t)-EFAULT;
-    return nas_user_write_bytes(req.addr,payload,copied)?
-           0:(uint64_t)-EFAULT;
-}
-
 static uint64_t dumb_create(unsigned slot,uint64_t arg) {
     struct nas_drm_mode_create_dumb req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
@@ -262,10 +201,6 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
     unsigned slot=nas_current_task->fds->entries[fd].slot;
     if(request==NAS_DRM_IOCTL_VERSION)return drm_version(user_arg);
     if(request==NAS_DRM_IOCTL_GET_CAP)return drm_cap(user_arg);
-    if(request==NAS_DRM_IOCTL_VIRTGPU_GETPARAM)
-        return virtgpu_getparam(user_arg);
-    if(request==NAS_DRM_IOCTL_VIRTGPU_GET_CAPS)
-        return virtgpu_get_caps(user_arg);
     if(request==NAS_DRM_IOCTL_MODE_CREATE_DUMB)
         return dumb_create(slot,user_arg);
     if(request==NAS_DRM_IOCTL_MODE_MAP_DUMB)
