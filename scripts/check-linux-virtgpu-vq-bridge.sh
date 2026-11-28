@@ -13,7 +13,7 @@ for arch in x86_64 riscv64 aarch64; do
         riscv64) target=riscv64-unknown-elf ;;
         aarch64) target=aarch64-none-elf ;;
     esac
-    for src in kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/gem_dma_port.c ports/linux-virtgpu/vbuf_dma_port.c; do
+    for src in kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/vq_pair_port.c ports/linux-virtgpu/gem_dma_port.c ports/linux-virtgpu/vbuf_dma_port.c; do
         clang --target="$target" -std=c11 -ffreestanding -fno-builtin \
             -Wall -Wextra -Werror $inc -c "$src" \
             -o "$temp/${arch}-$(basename "$src" .c).o"
@@ -51,3 +51,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
     -o "$temp/linux-virtqueue-api-test"
 "$temp/linux-virtqueue-api-test"
 echo "PASS: original Linux virtqueue_* SG API backed by real NaSeed split ring"
+cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
+    tests/linux-virtgpu-vq-pair.c \
+    kernel/drivers/virtio/transport.c \
+    ports/unikraft/split_queue.c \
+    ports/linux-virtgpu/virtqueue_bridge.c \
+    ports/linux-virtgpu/virtqueue_api_port.c \
+    ports/linux-virtgpu/vq_pair_port.c \
+    -o "$temp/real-two-vqs"
+"$temp/real-two-vqs"
+echo "PASS: real transport two GPU queues / deferred control+cursor IRQ / reset-only cookie release"
