@@ -787,7 +787,8 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
     ,[SYS_GPU_PCI_SUBDEVICE]={SYS_GPU_PCI_DEVICE,"subsystem_device",0,SYS_FILE}
     ,[SYS_GPU_PCI_REVISION]={SYS_GPU_PCI_DEVICE,"revision",0,SYS_FILE}
     ,[SYS_GPU_PCI_UEVENT]={SYS_GPU_PCI_DEVICE,"uevent",0,SYS_FILE}
-    ,[SYS_GPU_PCI_SUBSYSTEM]={SYS_GPU_PCI_DEVICE,"subsystem",0,SYS_LINK}
+    ,[SYS_GPU_PCI_SUBSYSTEM]={SYS_GPU_PCI_DEVICE,"subsystem",
+        "../../../bus/pci",SYS_LINK}
     ,[SYS_GPU_DRM_DIR]={SYS_GPU_PCI_DEVICE,"drm",0,SYS_DIR}
     ,[SYS_GPU_RENDER_DIR]={SYS_GPU_DRM_DIR,"renderD128",0,SYS_DIR}
     ,[SYS_GPU_RENDER_DEV]={SYS_GPU_RENDER_DIR,"dev","226:128\n",SYS_FILE}
@@ -1722,6 +1723,9 @@ static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
     if(id>=0 && sys_entry_link((unsigned)id)) {
         if(!sys_entry_visible((unsigned)id))return -ESTALE;
         const char *link=sys_entries[id].contents;
+        /* A malformed sysfs link must NEVER panic the kernel. The absent
+         * target is a provider error, not a valid user-controlled pointer. */
+        if(!link)return -EIO;
         size_t n=strlen(link);
         memcpy(target,link,n+1);
         return (int)n;
