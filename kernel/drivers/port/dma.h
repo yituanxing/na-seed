@@ -77,8 +77,17 @@ int nas_dma_sync(const struct nas_dma_provider *, struct nas_dma_page *,
 int nas_dma_map_borrowed_frame(const struct nas_dma_provider *, uint64_t frame_pa,
                                struct nas_dma_mapped_frame *);
 int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *);
-int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *, uint32_t offset,
-                         uint32_t length, uint64_t *bus_address);
+/* Slice a live provider-owned pin into an SG descriptor; all offsets are
+ * checked before a queue may publish the device-visible address. */
+static inline int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *map,
+                                      uint32_t offset,uint32_t length,
+                                      uint64_t *bus_address) {
+    if (!map || !map->active || !map->provider || !bus_address ||
+        !length || offset>=NAS_DMA_PAGE_BYTES ||
+        length>NAS_DMA_PAGE_BYTES-offset)return -22; /* -EINVAL */
+    *bus_address=map->bus_address+offset;
+    return 0;
+}
 /* QEMU virt direct DMA identity mapping + coherent emulated guest RAM.
  * Do not use as an implementation for real non-coherent physical hardware. */
 extern const struct nas_dma_provider nas_dma_qemu_coherent;
