@@ -42,11 +42,28 @@ void nas_tgos_free_aligned(void *buffer) {
     if(!nas_heap_free(base))__builtin_trap();
 }
 extern int nas_tgos_original_drm_ffi_selftest(void);
+/* Actual upstream Rust functions are public extern "C" no_mangle symbols.
+ * Resolve BOTH from NaSeed C code as well, so LTO cannot make the whole
+ * test pass by inlining them and discarding the original export. */
+extern uint32_t drm_mode_legacy_fb_format(uint32_t bpp,uint32_t depth);
+/* This is the ABI-visible PREFIX of the original Linux DrmFormatInfo.
+ * Rust upstream has compile-time assertions of the full 24-byte layout;
+ * NaSeed reads only these first three fields, not a guessed C substitute. */
+struct nas_tgos_drm_format_prefix {
+    uint32_t format;
+    uint8_t depth,num_planes;
+};
+extern const struct nas_tgos_drm_format_prefix *drm_format_info(uint32_t);
 
 int nas_tgos_drm_check_original_abi(void) {
-    /* This actual upstream call is required during opt-in DRM node init.
-     * An incompatible module *blocks* node registration, never pretends
-     * accelerated GPU ioctls succeeded. */
+    /* An ABI mismatch MUST refuse the original /dev/dri/card0 endpoint. */
+    uint32_t fmt=drm_mode_legacy_fb_format(32U,24U);
+    if(fmt!=UINT32_C(0x34325258))return -EINVAL;
+    const struct nas_tgos_drm_format_prefix *info=drm_format_info(fmt);
+    if(!info || info->format!=fmt || info->depth!=24U ||
+       info->num_planes!=1U)return -EINVAL;
+
+    /* Real upstream Rust KAPI/provider-slot and ioctl contract also run. */
     int result=nas_tgos_original_drm_ffi_selftest();
     return result==0 ? 0 : -EINVAL;
 }
