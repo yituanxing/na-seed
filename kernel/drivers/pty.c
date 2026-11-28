@@ -112,6 +112,11 @@ int nas_pty_new(unsigned slot) {
         p->winsize[0]=24;p->winsize[1]=80;
         nas_termios_defaults(&p->termios,NAS_TERMIOS_CONSOLE_CFLAG);
         nas_ldisc_reset(&p->input);
+        /* A reused /dev/pts/N is a NEW PTY incarnation. Never leak the
+         * previous owner's chmod/chown metadata into this allocation. */
+        pts_nodes[i].info.uid=0;
+        pts_nodes[i].info.gid=0;
+        pts_nodes[i].info.mode=0020620U;
         ptys[i]=p;
         slot_device[slot]=(uint8_t)(i+1);
         slot_is_master[slot]=1;
