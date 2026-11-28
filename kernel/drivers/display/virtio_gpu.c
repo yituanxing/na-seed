@@ -50,7 +50,18 @@ extern void nas_dec(uint64_t);
 #define GPU_CMD_GET_CAPSET_INFO 0x0108U
 #define GPU_CMD_CTX_CREATE 0x0200U
 #define GPU_CMD_CTX_DESTROY 0x0201U
+#define GPU_CMD_CTX_ATTACH_RESOURCE 0x0202U
+#define GPU_CMD_CTX_DETACH_RESOURCE 0x0203U
+#define GPU_CMD_RESOURCE_CREATE_3D 0x0204U
+#define GPU_CMD_TRANSFER_FROM_HOST_3D 0x0206U
+#define GPU_CMD_SUBMIT_3D 0x0207U
+#define GPU_CMD_RESOURCE_DETACH_BACKING 0x0107U
+#define GPU_CMD_RESOURCE_UNREF 0x0102U
 #define GPU_CTX_PROBE_ID 1U
+#define GPU_PROBE_RESOURCE_ID 100U
+#define GPU_PROBE_SURFACE_ID 200U
+#define GPU_PROBE_SIDE 16U
+#define GPU_PROBE_BYTES (GPU_PROBE_SIDE * GPU_PROBE_SIDE * 4U)
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
 #define GPU_RESP_OK_CAPSET_INFO 0x1102U
@@ -84,6 +95,22 @@ struct gpu_ctx_create {
     uint32_t nlen,context_init;
     char debug_name[64];
 };
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+struct gpu_ctx_resource {struct gpu_hdr hdr;uint32_t id,padding;};
+struct gpu_create_3d {
+    struct gpu_hdr hdr;
+    uint32_t id,target,format,bind,width,height,depth,array_size;
+    uint32_t last_level,nr_samples,flags,padding;
+};
+struct gpu_box {uint32_t x,y,z,w,h,d;};
+struct gpu_transfer_3d {
+    struct gpu_hdr hdr;
+    struct gpu_box box;
+    uint64_t offset;
+    uint32_t id,level,stride,layer_stride;
+};
+struct gpu_submit_3d {struct gpu_hdr hdr;uint32_t size,padding;};
+#endif
 struct gpu_capset_reply {
     struct gpu_hdr hdr;
     uint32_t id,max_version,max_size,padding;
@@ -99,6 +126,12 @@ _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry"
 _Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
 _Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
 _Static_assert(sizeof(struct gpu_ctx_create)==96U, "virtio-gpu context create");
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+_Static_assert(sizeof(struct gpu_ctx_resource)==32U, "virtio-gpu context resource");
+_Static_assert(sizeof(struct gpu_create_3d)==72U, "virtio-gpu create 3d");
+_Static_assert(sizeof(struct gpu_transfer_3d)==72U, "virtio-gpu transfer 3d");
+_Static_assert(sizeof(struct gpu_submit_3d)==32U, "virtio-gpu submit 3d");
+#endif
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
                          GPU_RUNTIME_FLUSH };
@@ -110,6 +143,10 @@ struct gpu_device {
     struct nas_irq_action irq;
     struct nas_dma_page command, response;
     struct nas_dma_page entries[GPU_ENTRY_PAGES];
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+    /* Stable DMA owner even after a failed/timeout 3D probe. */
+    struct nas_dma_page probe_pixels;
+#endif
     /* Descriptors are live only while this GPU has allocated backing.
      * Their DMA pages remain individually provider-owned until quiescence. */
     struct nas_dma_page *pixels;
@@ -272,6 +309,12 @@ static int release_dma(struct gpu_device *g) {
             rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
             if(rc)return rc;
         }
+#if defined(NAS_ENABLE_GPU3D_CONTEXT_PROBE) && NAS_ENABLE_GPU3D_CONTEXT_PROBE
+    if(g->probe_pixels.cpu) {
+        rc=nas_dma_free_page(g->transport.dma,&g->probe_pixels);
+        if(rc)return rc;
+    }
+#endif
     for(unsigned i=0;i<GPU_ENTRY_PAGES;i++)if(g->entries[i].cpu) {
         rc=nas_dma_free_page(g->transport.dma,&g->entries[i]);
         if(rc)return rc;
