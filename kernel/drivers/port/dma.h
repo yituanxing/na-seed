@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "../../errno.h"
 /* PAGE-size device-accessible allocation. bus_address is NOT necessarily
  * a CPU physical address: IOMMU-capable providers are allowed later.
  * The provider owns mapping/coherency, drivers own queue lifetimes.
@@ -84,7 +85,7 @@ static inline int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *map,
                                       uint64_t *bus_address) {
     if (!map || !map->active || !map->provider || !bus_address ||
         !length || offset>=NAS_DMA_PAGE_BYTES ||
-        length>NAS_DMA_PAGE_BYTES-offset)return -22; /* -EINVAL */
+        length>NAS_DMA_PAGE_BYTES-offset)return -EINVAL;
     *bus_address=map->bus_address+offset;
     return 0;
 }
