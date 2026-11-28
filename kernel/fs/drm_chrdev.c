@@ -28,10 +28,15 @@ extern int nas_tgos_drm_check_original_abi(void);
 /* Exact Linux UAPI ioctl numbers: /uapi/drm/virtgpu_drm.h.
  * Only original GPU capset discovery is implemented. There is deliberately
  * no fake GEM, EXECBUFFER, KMS or OpenGL 3D advertising. */
+#define NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER UINT32_C(0xc0406442)
 #define NAS_DRM_IOCTL_VIRTGPU_GETPARAM UINT32_C(0xc0106443)
 #define NAS_DRM_IOCTL_VIRTGPU_GET_CAPS UINT32_C(0xc0186449)
 #define NAS_TGOS_MAX_CAPSET_BYTES 65536U
 extern unsigned nas_tgos_original_gpu_active(void);
+extern int nas_tgos_original_gpu_render_open(uint32_t slot);
+extern int nas_tgos_original_gpu_render_close(uint32_t slot);
+extern int nas_tgos_original_gpu_render_exec_nop(uint32_t slot,
+                                                 const uint8_t *command,size_t bytes);
 extern int nas_tgos_original_gpu_get_param(uint64_t param,uint64_t *value);
 extern int nas_tgos_original_gpu_get_caps(uint32_t id,uint32_t version,
                                           uint8_t *out,size_t size,size_t *written);
@@ -50,6 +55,17 @@ struct nas_drm_version {
 };
 struct nas_drm_get_cap {uint64_t capability,value;};
 #if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+/* Exact pinned TGOSKits axdrm VirtGPU UAPI field order and LP64 size. */
+struct nas_drm_virtgpu_execbuffer {
+    uint32_t flags,size;
+    uint64_t command,bo_handles;
+    uint32_t num_bo_handles;
+    int32_t fence_fd;
+    uint32_t ring_idx,syncobj_stride,num_in_syncobjs,num_out_syncobjs;
+    uint64_t in_syncobjs,out_syncobjs;
+};
+_Static_assert(sizeof(struct nas_drm_virtgpu_execbuffer)==64U,
+               "Linux virtgpu EXECBUFFER LP64 ABI");
 struct nas_drm_virtgpu_getparam {uint64_t param,value;};
 struct nas_drm_virtgpu_get_caps {
     uint32_t cap_set_id,cap_set_ver;
@@ -85,7 +101,8 @@ static bool drm_present(unsigned unit) {
 static int drm_file_open(unsigned slot,unsigned unit) {
     if(!drm_present(unit))return -ENODEV;
 #if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
-    if(unit==128U)return 0; /* Render File owns no old 2D KMS state. */
+    if(unit==128U)
+        return nas_tgos_original_gpu_render_open((uint32_t)slot);
 #endif
     return nas_drm_kms_open(slot);
 }
@@ -236,6 +253,30 @@ static uint64_t render_getparam(uint64_t arg) {
     return nas_user_write_bytes(req.value,(const uint8_t *)&value,
                                 sizeof(value))?0:(uint64_t)-EFAULT;
 }
+/* First non-empty submit gate: user-provided VIRGL_CCMD_NOP (4 bytes)
+ * goes through the ORIGINAL upstream VirtIoGpu::submit_3d + real host fence.
+ * No GEM/BO/syncobj/fence-fd ownership exists yet. Reject everything else.
+ * The same File slot owns a distinct GPU context across dup and fork.
+ */
+static uint64_t render_execbuffer(unsigned slot,uint64_t arg) {
+    struct nas_drm_virtgpu_execbuffer req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    if(req.flags || req.num_bo_handles || req.bo_handles ||
+       req.ring_idx || req.syncobj_stride ||
+       req.num_in_syncobjs || req.num_out_syncobjs ||
+       req.in_syncobjs || req.out_syncobjs)
+        return (uint64_t)-EOPNOTSUPP;
+    if(req.size!=sizeof(uint32_t) || !req.command)
+        return (uint64_t)-EOPNOTSUPP;
+    uint32_t nop_header=UINT32_MAX;
+    if(!nas_user_read_bytes(req.command,(uint8_t *)&nop_header,
+                            sizeof(nop_header)))
+        return (uint64_t)-EFAULT;
+    return (uint64_t)(int64_t)
+        nas_tgos_original_gpu_render_exec_nop((uint32_t)slot,
+               (const uint8_t *)&nop_header,sizeof(nop_header));
+}
 static uint64_t render_getcaps(uint64_t arg) {
     struct nas_drm_virtgpu_get_caps req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
@@ -322,7 +363,14 @@ int nas_drm_chrdev_mmap_pin(unsigned slot,uint64_t offset,
 }
 void nas_drm_chrdev_release(unsigned slot) {
 #if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
-    if(render_file(slot))return; /* Owns no KMS/GEM allocations yet. */
+    if(render_file(slot)) {
+        int rc=nas_tgos_original_gpu_render_close((uint32_t)slot);
+        if(rc) {
+            nas_print("[TGOS RENDER CONTEXT RETIRE FAIL] code=");
+            nas_dec((uint64_t)(-(int64_t)rc));nas_print("\n");
+        }
+        return; /* Owns no KMS/GEM allocations yet. */
+    }
 #endif
     nas_drm_kms_release(slot);
     nas_drm_gem_file_release(slot);
@@ -337,6 +385,8 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
         if(!drm_present(128U))return (uint64_t)-ENODEV;
         if(request==NAS_DRM_IOCTL_VERSION)return drm_version(user_arg,true);
         if(request==NAS_DRM_IOCTL_GET_CAP)return drm_cap(user_arg,true);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER)
+            return render_execbuffer(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_GETPARAM)
             return render_getparam(user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_GET_CAPS)
