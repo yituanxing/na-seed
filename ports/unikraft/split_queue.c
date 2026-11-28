@@ -101,6 +101,9 @@ int nas_vring_queue_submit_deferred(struct nas_vring_queue *q,
     r->avail->ring[av_idx % r->num]=head;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     r->avail->idx=(uint16_t)(av_idx+1U);
+    /* Once published, even a later DMA-sync failure transfers ownership
+     * to the queue until reset; expose that head on the failure path too. */
+    *out_head=head;
     int rc=nas_dma_sync(q->transport->dma, &q->dma_page, 0,
                         q->dma_page.bytes, NAS_DMA_TO_DEVICE);
     /* A failed DMA sync cannot be retried by the caller: the submitted
@@ -109,7 +112,6 @@ int nas_vring_queue_submit_deferred(struct nas_vring_queue *q,
     if (rc) { broken(q); return rc; }
     /* Descriptor publication completed; a separate kick may batch more. */
     q->kick_pending=true;
-    *out_head=head;
     return 0;
 }
 
