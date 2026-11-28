@@ -22,6 +22,7 @@ RESOURCE_INFO = 0xC0106445
 TRANSFER_FROM_HOST = 0xC02C6446
 TRANSFER_TO_HOST = 0xC02C6447
 GEM_CLOSE = 0x40086409
+WAIT = 0xC0086448
 
 def create_gpu_resource(fd):
     # Real upstream VirtGPU RESOURCE_CREATE: 64x64 RGBA render target,
@@ -62,12 +63,22 @@ def gpu_full_layer_transfer(fd, handle, to_host, stride=256):
 def close_gpu_resource(fd, handle):
     fcntl.ioctl(fd, GEM_CLOSE, struct.pack("=II", handle, 0))
 
-def exec_with_bo(fd, command_ptr, handle):
-    buffer_handles = (ctypes.c_uint32 * 1)(handle)
-    request = struct.pack("=IIQQIiIIIIQQ", 0, 4, command_ptr,
-                           ctypes.addressof(buffer_handles), 1, -1,
-                           0, 0, 0, 0, 0, 0)
+def exec_many(fd, command_ptr, command_size, handles=()):
+    if handles:
+        buffer_handles = (ctypes.c_uint32 * len(handles))(*handles)
+        handles_ptr = ctypes.addressof(buffer_handles)
+    else:
+        handles_ptr = 0
+    request = struct.pack("=IIQQIiIIIIQQ", 0, command_size, command_ptr,
+                           handles_ptr, len(handles), -1, 0, 0, 0, 0, 0, 0)
     fcntl.ioctl(fd, EXECBUFFER, request)
+
+def exec_with_bo(fd, command_ptr, handle):
+    exec_many(fd, command_ptr, 4, (handle,))
+
+def wait_bo(fd, handle):
+    fcntl.ioctl(fd, WAIT, struct.pack("=II", handle, 1))
+    fcntl.ioctl(fd, WAIT, struct.pack("=II", handle, 0))
 
 
 
@@ -199,6 +210,24 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
 
     exec_with_bo(fd, ctypes.addressof(nop), bo1)
     exec_with_bo(fd, ctypes.addressof(nop), bo2)
+    # Two NOP packets are a valid original VirGL command stream, NOT a fake
+    # four-byte shortcut; both BOs must be checked and the actual fence
+    # must retire before Linux VIRTGPU_WAIT reports completion.
+    nop_pair = ctypes.create_string_buffer(b"\0" * 8)
+    exec_many(fd, ctypes.addressof(nop_pair), 8, (bo1, bo2))
+    wait_bo(fd, bo1)
+    wait_bo(fd, bo2)
+    bogus = (ctypes.c_uint32 * 2)(bo1, 0xFFFFFFFF)
+    bad = struct.pack("=IIQQIiIIIIQQ", 0, 8,
+                      ctypes.addressof(nop_pair), ctypes.addressof(bogus),
+                      2, -1, 0, 0, 0, 0, 0, 0)
+    try:
+        fcntl.ioctl(fd, EXECBUFFER, bad)
+    except OSError as exc:
+        assert exc.errno in (errno.ENOENT, errno.EINVAL), exc
+    else:
+        raise AssertionError("foreign or stale BO passed original GPU submit")
+    print("TGOS_ALPINE_MULTI_BO_FENCED_EXECBUFFER_PASS", flush=True)
     print("TGOS_ALPINE_REAL_RESOURCE_CREATE_INFO_EXEC_PASS", flush=True)
 
     # A second file's handle table must not expose the first file's BO.
@@ -259,8 +288,8 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
         os.close(recycled)
     print("TGOS_ALPINE_RENDER_FILE_CONTEXT_LIFETIME_PASS", flush=True)
 
-    # Unknown nonempty 3D payload still requires GEM, BO, fence-fd and
-    # original axdrm resource tracking; it must never be sent unchecked.
+    # Incomplete one-word packet cannot be a Mesa command and is rejected
+    # BEFORE reaching original QEMU virglrenderer (avoids poisoning host log).
     malformed = ctypes.create_string_buffer(b"\xef\xbe\xad\xde")
     bad_exec = struct.pack("=IIQQIiIIIIQQ", 0, 4,
                            ctypes.addressof(malformed), 0, 0, -1,
@@ -273,14 +302,14 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
         raise AssertionError("invalid VirGL command incorrectly accepted")
     print("TGOS_ALPINE_NONEMPTY_UNSUPPORTED_REJECT_PASS", flush=True)
 
-    # Unimplemented zero-size/BO 3D submission must fail, not claim Mesa.
+    # Zero-length 3D submission remains invalid (no Venus ring support).
 
     try:
         fcntl.ioctl(fd, EXECBUFFER, bytes(64))
     except OSError as exc:
         assert exc.errno in (errno.ENOTTY, errno.EOPNOTSUPP, errno.EINVAL), exc
     else:
-        raise AssertionError("unimplemented 3D EXECBUFFER falsely succeeded")
-    print("TGOS_ALPINE_EXECBUFFER_NOT_READY_CONFIRMED", flush=True)
+        raise AssertionError("zero-sized 3D EXECBUFFER falsely succeeded")
+    print("TGOS_ALPINE_EXECBUFFER_ZERO_SIZE_REJECT_PASS", flush=True)
 
 print("TGOS_ALPINE_RENDER_USERSPACE_PASS", flush=True)
