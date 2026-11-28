@@ -526,13 +526,13 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
                 if(!name[i])break;
             }
             nas_print("[OPENBOX FD6] open path=");nas_print(name);
-            nas_print("\\n");
+            nas_print("\n");
         }
         if(args[0]==63U && args[1]==6U &&
            (fd6_reads++<25U || (fd6_reads%128U)==0U)) {
             nas_print("[OPENBOX FD6] read asked=");nas_dec(args[3]);
             nas_print(" returned=");nas_dec((uint64_t)(int64_t)result);
-            nas_print("\\n");
+            nas_print("\n");
         }
     }
     /* ptrace fork/exec event logic has already emitted its required
