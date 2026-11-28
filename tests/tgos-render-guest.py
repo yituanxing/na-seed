@@ -7,6 +7,7 @@ UAPI. It does not claim Mesa/GEM/EXECBUFFER support or GPU rendering.
 import ctypes
 import errno
 import fcntl
+import mmap
 import os
 import stat
 import struct
@@ -15,6 +16,7 @@ RENDER = "/dev/dri/renderD128"
 GETPARAM = 0xC0106443
 GET_CAPS = 0xC0186449
 EXECBUFFER = 0xC0406442
+MAP = 0xC0106441
 RESOURCE_CREATE = 0xC0386444
 RESOURCE_INFO = 0xC0106445
 GEM_CLOSE = 0x40086409
@@ -34,6 +36,17 @@ def create_gpu_resource(fd):
     found = struct.unpack("=4I", info)
     assert found == (handle, resource_id, 16384, 0), found
     return handle, resource_id
+
+def map_gpu_resource(fd, handle, bytes_count=16384):
+    # Standard VirtGPU MAP ioctl returns GEM fake mmap offset, NOT a physical
+    # address. NaSeed VMA machinery owns refs across GEM_CLOSE.
+    req = bytearray(struct.pack("=QII", 0, handle, 0))
+    fcntl.ioctl(fd, MAP, req, True)
+    offset, echoed, pad = struct.unpack("=QII", req)
+    assert offset >= 0x10000000 and offset % 4096 == 0
+    assert echoed == handle and pad == 0
+    return mmap.mmap(fd, bytes_count, flags=mmap.MAP_SHARED,
+                     prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=offset)
 
 def close_gpu_resource(fd, handle):
     fcntl.ioctl(fd, GEM_CLOSE, struct.pack("=II", handle, 0))
@@ -142,6 +155,15 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     bo1, res1 = create_gpu_resource(fd)
     bo2, res2 = create_gpu_resource(fd)
     assert bo1 != bo2 and res1 != res2
+    mapped1 = map_gpu_resource(fd, bo1)
+    mapped2 = map_gpu_resource(fd, bo2)
+    sentinel = b"NaSeed-GPU-DMA-1"
+    mapped1[:len(sentinel)] = sentinel
+    assert mapped1[:len(sentinel)] == sentinel
+    assert mapped2[:len(sentinel)] != sentinel
+    mapped2[:len(sentinel)] = b"NaSeed-GPU-DMA-2"
+    assert mapped1[:len(sentinel)] == sentinel
+    print("TGOS_ALPINE_REAL_BO_MMAP_PAGE_ISOLATION_PASS", flush=True)
     exec_with_bo(fd, ctypes.addressof(nop), bo1)
     exec_with_bo(fd, ctypes.addressof(nop), bo2)
     print("TGOS_ALPINE_REAL_RESOURCE_CREATE_INFO_EXEC_PASS", flush=True)
@@ -165,6 +187,10 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     print("TGOS_ALPINE_RESOURCE_FILE_ISOLATION_PASS", flush=True)
 
     close_gpu_resource(fd, bo1)
+    # The original GPU owner has detached and fenced host DMA, but this VMA
+    # must continue owning the physical pages until last munmap.
+    assert mapped1[:len(sentinel)] == sentinel
+    mapped1.close()
     closed_info = bytearray(struct.pack("=4I", bo1, 0, 0, 0))
     try:
         fcntl.ioctl(fd, RESOURCE_INFO, closed_info, True)
@@ -173,7 +199,10 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     else:
         raise AssertionError("GEM_CLOSE did not retire host resource")
     close_gpu_resource(fd, bo2)
+    assert mapped2[:len(sentinel)] == b"NaSeed-GPU-DMA-2"
+    mapped2.close()
     print("TGOS_ALPINE_GEM_CLOSE_DEVICE_RELEASE_PASS", flush=True)
+    print("TGOS_ALPINE_GEM_CLOSE_LIVE_VMA_PASS", flush=True)
 
     # An independent OpenFile must get a DIFFERENT genuine host context.
     # dup() is the opposite: it shares the same OpenFile and does not create
