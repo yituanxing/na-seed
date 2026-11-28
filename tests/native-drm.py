@@ -200,6 +200,21 @@ def run_original_xorg(guest):
            'DISPLAY=:0 xsetroot -solid red >/dev/null 2>&1; '
            'echo XORG_DIRECT_CLEAN_PASS',
            'XORG_DIRECT_CLEAN', timeout=45)
+    # Real Linux devpts semantics: a pty slave has mutable owner/mode,
+    # stat must observe both changes, and reallocation must reset metadata.
+    # This exercises the original Alpine chown/chmod/stat implementations.
+    verify(guest,
+           'if exec 8<>/dev/ptmx && chown 123:5 /dev/pts/0 && '
+           'chmod 0620 /dev/pts/0 && '
+           '[ "$(stat -c %u:%g:%a /dev/pts/0)" = 123:5:620 ]; then '
+           'exec 8>&-; '
+           'if exec 8<>/dev/ptmx && '
+           '[ "$(stat -c %u:%g:%a /dev/pts/0)" = 0:0:620 ]; then '
+           'echo DEVPTS_METADATA_PASS; '
+           'else echo DEVPTS_METADATA_FAIL; fi; '
+           'exec 8>&-; '
+           'else echo DEVPTS_METADATA_FAIL; fi',
+           'DEVPTS_METADATA', timeout=65)
     # An EWMH manager must actually own the root session before we
     # diagnose its MapRequest/reparent flow. A process ID alone is not proof.
     guest.sendline(
