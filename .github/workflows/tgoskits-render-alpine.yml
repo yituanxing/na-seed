@@ -1,0 +1,47 @@
+name: Real Alpine libdrm on original TGOSKits render node (experimental)
+on:
+  push:
+    branches: [experiment/tgoskits-gpu-owner-20261128]
+    paths:
+      - "ports/tgoskits-drm-ffi/**"
+      - "kernel/fs/drm_chrdev.c"
+      - "kernel/fs/devfs.c"
+      - "tests/tgos-render-*.sh"
+      - "tests/tgos-render-*.py"
+      - "Makefile"
+      - ".github/workflows/tgoskits-render-alpine.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tgos-original-real-alpine
+  cancel-in-progress: true
+jobs:
+  original-alpine-userspace-to-original-rust-gpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare original Linux distro / QEMU / pinned upstream Rust
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            clang lld make binutils curl cpio xorriso ovmf \
+            qemu-system-x86 qemu-system-gui libvirglrenderer1 \
+            libegl1 libgl1-mesa-dri xvfb xauth
+          rustup toolchain install nightly-2026-11-13 --profile minimal \
+            --component rust-src --target x86_64-unknown-none
+          docker info >/dev/null
+      - name: Validate real guest/host acceptance scripts
+        run: |
+          sh -n tests/tgos-render-alpine.sh
+          python3 -m py_compile tests/tgos-render-guest.py
+      - name: Run unchanged Alpine libdrm against actual GPU device under QEMU
+        run: sh tests/tgos-render-alpine.sh
+      - name: Preserve original userspace and guest serial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgos-original-alpine-renderd128
+          path: build/tgos-render-alpine/serial.log
+          if-no-files-found: ignore
