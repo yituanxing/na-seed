@@ -8,7 +8,7 @@ temp=$(mktemp -d)
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
 for arch in x86_64 riscv64 aarch64; do
     clang --target="$arch-unknown-none-elf" \
-        -std=c11 -ffreestanding -fno-builtin -Wall -Wextra -Werror \
+        -std=c11 -ffreestanding -fno-builtin -D__linux__=1 -Wall -Wextra -Werror \
         -Iports/linux-virtgpu/include \
         -Ithird_party/linux-virtgpu/include/uapi \
         -Ithird_party/linux-virtgpu/include/uapi/drm \
