@@ -601,6 +601,12 @@ pub extern "C" fn nas_tgos_original_gpu_render_exec(
     } else {
         unsafe { core::slice::from_raw_parts(handles, handle_count) }
     };
+    // The valid one-word VirGL NOP has the all-zero header. A different
+    // one-word payload cannot be a complete encoded Mesa command; reject
+    // it here so a malformed negative test cannot poison QEMU's persistent
+    // host-error audit log. Larger command streams belong to the original
+    // upstream VirGL decoder, not a NaSeed implementation.
+    if size == 4 && bytes != [0, 0, 0, 0] { return -95; }
     match with_device(|gpu| {
         if !gpu_async_ok() { return Err(-5); }
         // The per-File BO table is pinned while DEVICE_BUSY is held.
