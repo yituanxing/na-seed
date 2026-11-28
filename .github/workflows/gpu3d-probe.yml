@@ -6,6 +6,7 @@ on:
       - "kernel/drivers/display/virtio_gpu.c"
       - "kernel/drivers/display/virtio_gpu.h"
       - "tests/native-virgl-probe.py"
+      - "tests/prepare-virgl-alpine.sh"
       - "Makefile"
       - "scripts/build-native-full.sh"
       - ".github/workflows/gpu3d-probe.yml"
@@ -29,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
-            clang lld make binutils curl python3 \
+            clang lld make binutils curl cpio python3 \
             qemu-system-arm qemu-system-misc qemu-system-x86 qemu-system-gui \
             qemu-efi-aarch64 qemu-efi-riscv64 ovmf xorriso \
             libvirglrenderer1 libgl1-mesa-dri libegl1 \
@@ -46,7 +47,11 @@ jobs:
       - name: Smoke-boot real x86-64 UEFI ISO
         if: matrix.arch == 'x86_64'
         run: NAS_ENABLE_GPU3D_CONTEXT_PROBE=1 make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 smoke
-      - name: Verify real VirGL capsets and host-ACKed 3D context create/destroy
+      - name: Stage verified original Alpine BusyBox for live GPU scheduler acceptance
+        run: |
+          sh -n tests/prepare-virgl-alpine.sh
+          sh tests/prepare-virgl-alpine.sh ${{ matrix.arch }}
+      - name: Verify real VirGL pixels and deferred IRQ-driven context on Alpine
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
@@ -62,4 +67,5 @@ jobs:
           path: |
             build/native-boot/${{ matrix.arch }}/virgl-probe.log
             build/native-boot/${{ matrix.arch }}/serial.log
+            build/native-boot/${{ matrix.arch }}/alpine-serial.log
           if-no-files-found: ignore
