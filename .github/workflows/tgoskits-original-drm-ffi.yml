@@ -85,6 +85,16 @@ jobs:
           }
           echo 'PASS: original TGOSKits DRM executes INSIDE real NaSeed QEMU x86-64 kernel'
           echo 'This is only the Rust/C DRM ABI link-and-boot gate, NOT VirGL EXECBUFFER / Mesa 3D.'
+      - name: Non-experimental x86-64 GPU build and native UEFI smoke must remain unchanged
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 OUT=build/baseline iso
+          test -s build/baseline/kernel.elf
+          if nm build/baseline/kernel.elf | grep -Eq ' (nas_tgos_original_drm_ffi_selftest|nas_tgos_alloc_aligned)$'; then
+            echo 'HARD FAIL: experimental Rust FFI leaked into default C GPU kernel'
+            exit 1
+          fi
+          sh tests/boot-smoke.sh build/baseline/naseed.iso
+          echo 'PASS: normal GPU 2D x86-64 C kernel and userland boot independently, with no Rust FFI'
       - name: Upload real QEMU guest serial for audit
         if: always()
         uses: actions/upload-artifact@v4
