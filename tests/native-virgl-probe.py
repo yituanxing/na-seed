@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Real QEMU VirGL capset + guest context-lifecycle acceptance.
 
-Actual guest-side VirGL 3D render/transfer acceptance, not yet a Mesa PASS.
-Requires host-fenced context, resource creation, command submission and
-BGRA pixel readback from the real QEMU backend, plus unchanged 2D scanout.
+Guest-side VirGL rendering and AFTER-BOOT asynchronous context acceptance.
+Requires host-fenced bootstrap render/readback and a second context lifecycle
+completed in the scheduler's existing IRQ-driven 2D control-queue service.
+This is NOT a Mesa or accelerated Weston acceptance.
 """
 import pathlib
 import re
@@ -85,6 +86,10 @@ pixel = re.compile(
     r"\[VIRTIO GPU 3D PIXEL\] submit=1 readback=1 "
     r"color=verified size=16x16"
 )
+runtime = re.compile(
+    r"\[VIRTIO GPU 3D RUNTIME\] ctx_create=1 ctx_destroy=1 "
+    r"irq_fence=1 deferred=1"
+)
 deadline = time.monotonic() + 150
 with log.open("wb") as stream:
     proc = subprocess.Popen(args, stdout=stream, stderr=subprocess.STDOUT)
@@ -96,21 +101,21 @@ with log.open("wb") as stream:
                 raise RuntimeError(f"{arch}: actual VirGL pixel readback mismatch")
             if "[VIRTIO PCI FAIL]" in output:
                 raise RuntimeError(f"{arch}: guest GPU probe failed during PCI binding")
-            if proc.poll() is not None and not (capset.search(output) and context.search(output) and pixel.search(output)):
+            if proc.poll() is not None and not (capset.search(output) and context.search(output) and pixel.search(output) and runtime.search(output)):
                 break
             m = capset.search(output)
-            if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output):
+            if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output) and runtime.search(output):
                 if "[M177 VIRTIO GPU READY]" not in output:
                     continue
                 print(
                     f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
                     f"count={m[1]} id={m[2]} version={m[3]} bytes={m[4]}; "
-                    "real VirGL CLEAR + pixel readback verified; Mesa not implemented", flush=True
+                    "VirGL CLEAR/pixel and IRQ-driven runtime context verified; Mesa pending", flush=True
                 )
                 break
         else:
             raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or not context.search(output) or not pixel.search(output) or "[M177 VIRTIO GPU READY]" not in output:
+        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output:
             raise RuntimeError(f"{arch}: missing real VirGL capset, context lifecycle or pixel readback")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
