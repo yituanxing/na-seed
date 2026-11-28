@@ -208,6 +208,102 @@ fn with_device<T>(f: impl FnOnce(&mut VirtIoGpu<NaSeedHal, NaTransport>) -> Resu
     f(unsafe { &mut *ptr })
 }
 
+// First genuine non-empty user-supplied SUBMIT_3D gate. File ownership lives
+// in NaSeed's shared OpenFile slot; this mirrors upstream axdrm's per-DrmFile
+// context but intentionally does not pretend that GEM/BO/Fence FD exist.
+// The context's kernel-owned ID is disjoint from the probe's temporary ID.
+const RENDER_SLOTS: usize = 128;
+static RENDER_CONTEXTS: [AtomicBool; RENDER_SLOTS] =
+    [const { AtomicBool::new(false) }; RENDER_SLOTS];
+
+fn render_ctx_id(slot: usize) -> u32 {
+    0x4e53_1000 + slot as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_open(slot: u32) -> i32 {
+    let index = slot as usize;
+    if index >= RENDER_SLOTS { return -22; }
+    if RENDER_CONTEXTS[index].swap(true, Ordering::AcqRel) {
+        return -16;
+    }
+    let result = with_device(|gpu| {
+        if !gpu.has_virgl() { return Err(-95); }
+        gpu.ctx_create(render_ctx_id(index), "naseed-alpine-render", 0)
+            .map_err(|_| -5)?;
+        gpu.ctrl_notify();
+        gpu.wait_idle().map_err(|_| -5)?;
+        if !gpu_async_ok() { return Err(-5); }
+        Ok(())
+    });
+    if let Err(e) = result {
+        // A timed-out asynchronous CTX_CREATE may still reach the host:
+        // don't let a reused File slot alias the same GPU context ID.
+        // The experimental driver fails closed until a device reset.
+        if e != -5 {
+            RENDER_CONTEXTS[index].store(false, Ordering::Release);
+        }
+        return e;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_close(slot: u32) -> i32 {
+    let index = slot as usize;
+    if index >= RENDER_SLOTS || !RENDER_CONTEXTS[index].load(Ordering::Acquire) {
+        return -22;
+    }
+    let result = with_device(|gpu| {
+        gpu.ctx_destroy(render_ctx_id(index)).map_err(|_| -5)?;
+        gpu.ctrl_notify();
+        gpu.wait_idle().map_err(|_| -5)?;
+        if !gpu_async_ok() { return Err(-5); }
+        Ok(())
+    });
+    match result {
+        Ok(()) => {
+            RENDER_CONTEXTS[index].store(false, Ordering::Release);
+            0
+        }
+        // A failed retirement must NOT release the context ID for reuse.
+        Err(e) => e,
+    }
+}
+
+// Use the upstream TGOSKits VirtIoGpu queue implementation unchanged.
+// The first admitted user command is VIRGL_CCMD_NOP: non-empty 4-byte
+// VirGL protocol command, accepted by original virglrenderer decoder.
+// Nothing here claims a Mesa render, GL surface or pixel output.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_exec_nop(
+    slot: u32, command: *const u8, size: usize,
+) -> i32 {
+    let index = slot as usize;
+    if index >= RENDER_SLOTS ||
+       !RENDER_CONTEXTS[index].load(Ordering::Acquire) { return -9; }
+    if command.is_null() || size != size_of::<u32>() { return -22; }
+    // SAFETY: NaSeed C usercopy provided a private, kernel-owned buffer.
+    let bytes = unsafe { core::slice::from_raw_parts(command, size) };
+    // VIRGL_CMD0(VIRGL_CCMD_NOP=0, VIRGL_OBJECT_NULL=0, len=0).
+    // Other commands need full DRM GEM/context/fence resource tracking.
+    if bytes != [0, 0, 0, 0] { return -95; }
+    match with_device(|gpu| {
+        if !gpu_async_ok() { return Err(-5); }
+        let fence = gpu.submit_3d(render_ctx_id(index), bytes).map_err(|_| -5)?;
+        if fence == 0 { return Err(-5); }
+        gpu.ctrl_notify();
+        gpu.wait_fence(fence).map_err(|_| -5)?;
+        if !gpu.fence_completed(fence) || !gpu_async_ok() {
+            return Err(-5);
+        }
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
 /// A user ioctl reads original QEMU GPU capset metadata and bytes through
 /// upstream VirtIoGpu; no guest-supplied pointer is dereferenced in Rust.
 /// The C VFS layer validates user addresses, bounds and the per-File owner.
