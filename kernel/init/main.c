@@ -554,13 +554,25 @@ void nas_init_process_deferred_exit_service(void) {
 
 void nas_init_userspace(void) {
     nas_print("[INIT] creating common task/VM and architecture user entry\n");
+#ifdef NAS_EXPERIMENT_TGOS_DRM_FFI
+    nas_print("[TGOS INIT STAGE] before task bootstrap\n");
+#endif
     nas_task_boot_init();
+#ifdef NAS_EXPERIMENT_TGOS_DRM_FFI
+    nas_print("[TGOS INIT STAGE] after task bootstrap\n");
+#endif
     /* Character class publication is independent of a mounted /dev.
      * The VFS namei path still wins whenever a real inode exists. */
     if(nas_misc_chrdev_init() || nas_tty_chrdev_init() ||
        nas_pty_chrdev_init() || nas_fbdev_chrdev_init())
         nas_fail("base character-device publication failed");
+#ifdef NAS_EXPERIMENT_TGOS_DRM_FFI
+    nas_print("[TGOS INIT STAGE] after base character devices\n");
+#endif
 #ifdef NAS_ENABLE_VIRTIO_GPU
+#ifdef NAS_EXPERIMENT_TGOS_DRM_FFI
+    nas_print("[TGOS INIT STAGE] before DRM original ABI\n");
+#endif
     if(nas_drm_chrdev_init())
         nas_fail("DRM character-device publication failed");
 #endif
