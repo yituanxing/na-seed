@@ -251,6 +251,14 @@ endif
 CFLAGS += -DNAS_ENABLE_LWIP=1 -I ports/lwip/include -I third_party/lwip/src/include
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
  -z noexecstack -T kernel/arch/$(ARCH)/linker.ld
+# The upstream DRM archive contains many ORIGINAL but currently unreachable
+# Linux DRM helpers. They refer to OTHER DRM modules that NaSeed has not
+# enabled. Collect only reachable function sections in this optional ABI
+# experiment; any unresolved symbol on the executed ABI path still fails.
+# The normal kernel remains unchanged and never uses this linker option.
+ifeq ($(NAS_EXPERIMENT_TGOS_DRM_FFI),1)
+LDFLAGS += --gc-sections
+endif
 
 H0_HW_OBJS :=
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
