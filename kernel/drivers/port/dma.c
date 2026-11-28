@@ -18,8 +18,26 @@ static int qemu_free(void *ctx, struct nas_dma_page *page) {
     (void)ctx;
     return nas_frame_put(page->frame_pa) ? 0 : -EIO;
 }
+/* This mapping is ONLY valid for coherent QEMU identity DMA, never for
+ * physical hardware or an IOMMU. Pin the caller's GEM-owned frame, so
+ * destroying its handle cannot release memory while the GPU may DMA. */
+static int qemu_map_frame(void *ctx, uint64_t frame_pa, uint64_t *bus) {
+    (void)ctx;
+    if (!bus || !frame_pa || (frame_pa & (NAS_DMA_PAGE_BYTES-1U)))
+        return -EINVAL;
+    if (!nas_frame_get(frame_pa))return -EINVAL;
+    *bus=frame_pa;
+    return 0;
+}
+static int qemu_unmap_frame(void *ctx, uint64_t frame_pa, uint64_t bus) {
+    (void)ctx;
+    if (!frame_pa || (frame_pa & (NAS_DMA_PAGE_BYTES-1U)) ||
+        bus!=frame_pa)return -EINVAL;
+    return nas_frame_put(frame_pa) ? 0 : -EIO;
+}
 const struct nas_dma_provider nas_dma_qemu_coherent = {
-    .coherent = true, .alloc_page = qemu_alloc, .release_page = qemu_free
+    .coherent = true, .alloc_page = qemu_alloc, .release_page = qemu_free,
+    .map_frame = qemu_map_frame, .unmap_frame = qemu_unmap_frame
 };
 int nas_dma_alloc_page(const struct nas_dma_provider *provider,
                        struct nas_dma_page *page) {
@@ -73,6 +91,55 @@ int nas_dma_sync(const struct nas_dma_provider *provider,
     }
     if (!provider->sync) return -EOPNOTSUPP;
     return provider->sync(provider->context, page, offset, bytes, direction);
+}
+
+/* The original Linux VirtIO GPU GEM backend maps resident shmem pages to
+ * the virtqueue DMA address space. NaSeed's explicit provider callback plays
+ * that role for already-allocated, individually pinned physical frames. */
+int nas_dma_map_borrowed_frame(const struct nas_dma_provider *provider,
+                               uint64_t frame_pa,
+                               struct nas_dma_mapped_frame *map) {
+    if (!provider || !map ||
+        !frame_pa || (frame_pa & (NAS_DMA_PAGE_BYTES-1U)))
+        return -EINVAL;
+    if (map->active || map->provider)return -EBUSY;
+    /* Noncoherent imported pages still need a per-range sync contract.
+     * Refuse instead of silently treating such hardware as QEMU coherent. */
+    if (!provider->coherent || !provider->map_frame ||
+        !provider->unmap_frame)return -EOPNOTSUPP;
+    uint64_t bus=0;
+    int rc=provider->map_frame(provider->context,frame_pa,&bus);
+    if (rc)return rc;
+    if (bus > UINT64_MAX - (NAS_DMA_PAGE_BYTES-1U)) {
+        /* Keep the pin if unmap fails; the caller must retry. */
+        *map=(struct nas_dma_mapped_frame){
+            .provider=provider,.frame_pa=frame_pa,
+            .bus_address=bus,.active=true};
+        if (nas_dma_unmap_borrowed_frame(map))return -EIO;
+        return -EOVERFLOW;
+    }
+    *map=(struct nas_dma_mapped_frame){
+        .provider=provider,.frame_pa=frame_pa,
+        .bus_address=bus,.active=true};
+    return 0;
+}
+int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *map) {
+    if (!map || !map->active || !map->provider ||
+        !map->provider->unmap_frame)return -EINVAL;
+    int rc=map->provider->unmap_frame(map->provider->context,
+                                      map->frame_pa,map->bus_address);
+    if (rc)return rc; /* Failed unmap remains caller-owned for retry. */
+    *map=(struct nas_dma_mapped_frame){0};
+    return 0;
+}
+int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *map,
+                         uint32_t offset,uint32_t length,
+                         uint64_t *bus_address) {
+    if (!map || !map->active || !map->provider || !bus_address ||
+        !length || offset>=NAS_DMA_PAGE_BYTES ||
+        length>NAS_DMA_PAGE_BYTES-offset)return -EINVAL;
+    *bus_address=map->bus_address+offset;
+    return 0;
 }
 
 /* Keep queue pages attributed to exactly one device session, independently
