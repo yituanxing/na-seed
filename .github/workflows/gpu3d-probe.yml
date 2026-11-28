@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: virgl-host-${{ github.ref }}
+  group: virgl-capset-abi-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   virgl:
