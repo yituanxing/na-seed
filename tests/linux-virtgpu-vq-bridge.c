@@ -11,6 +11,7 @@
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 static unsigned char dma_memory[NAS_DMA_PAGE_BYTES] __attribute__((aligned(4096)));
 static unsigned notifications, resets, failures, dma_releases;
+static bool fail_next_sync;
 
 int nas_dma_alloc_page(const struct nas_dma_provider *p,struct nas_dma_page *page) {
     (void)p;
@@ -27,6 +28,7 @@ int nas_dma_free_page(const struct nas_dma_provider *p,struct nas_dma_page *page
 int nas_dma_sync(const struct nas_dma_provider *p,struct nas_dma_page *page,
                  uint32_t offset,uint32_t bytes,enum nas_dma_direction direction) {
     (void)p;(void)direction;
+    if (fail_next_sync) { fail_next_sync=false; return -EIO; }
     return page && page->cpu && offset<=page->bytes &&
            bytes<=page->bytes-offset ? 0:-EIO;
 }
@@ -119,6 +121,28 @@ static int check_bridge(void) {
     CHECK(completed==head3 && used==7U && q.free_count==16U);
     CHECK(nas_vring_queue_close(&q)==0);
     CHECK(resets==1U && dma_releases==1U && failures==0U);
+
+    /* A postpublish DMA-sync failure is NOT a cancelled request.
+     * Cookie must survive until the queue has explicitly reset the device. */
+    CHECK(nas_vring_queue_init(&q,&transport,0,16)==0);
+    CHECK(nas_linux_virtgpu_vq_bind(&bridge,&q)==0);
+    unsigned cursor=0U;
+    CHECK(nas_linux_virtgpu_vq_reap_after_reset(&bridge,&cursor,&returned)
+          ==-EBUSY);
+    uint16_t abandoned_head=q.free_head;
+    fail_next_sync=true;
+    CHECK(nas_linux_virtgpu_vq_submit(&bridge,segs,2,&token1)==-EIO);
+    CHECK(q.poisoned && q.pending[abandoned_head]);
+    CHECK(bridge.cookies[abandoned_head]==&token1);
+    CHECK(nas_linux_virtgpu_vq_reap_after_reset(&bridge,&cursor,&returned)
+          ==-EBUSY);
+    CHECK(nas_vring_queue_close(&q)==0);
+    cursor=0U;
+    CHECK(nas_linux_virtgpu_vq_reap_after_reset(&bridge,&cursor,&returned)==0);
+    CHECK(returned==&token1);
+    CHECK(nas_linux_virtgpu_vq_reap_after_reset(&bridge,&cursor,&returned)
+          ==-ENOENT);
+    CHECK(resets==2U && dma_releases==2U && failures==1U);
     return 0;
 }
 int main(void) { return check_bridge(); }
