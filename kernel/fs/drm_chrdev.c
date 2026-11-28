@@ -108,8 +108,6 @@ static uint64_t drm_cap(uint64_t user_arg) {
     case 0x05U: /* DRM_CAP_PRIME */
     case 0x06U: /* DRM_CAP_TIMESTAMP_MONOTONIC */
     case 0x07U: /* DRM_CAP_ASYNC_PAGE_FLIP */
-    case 0x08U: /* DRM_CAP_CURSOR_WIDTH */
-    case 0x09U: /* DRM_CAP_CURSOR_HEIGHT */
     case 0x10U: /* DRM_CAP_ADDFB2_MODIFIERS */
     case 0x11U: /* DRM_CAP_PAGE_FLIP_TARGET */
     case 0x12U: /* DRM_CAP_CRTC_IN_VBLANK_EVENT */
@@ -117,6 +115,14 @@ static uint64_t drm_cap(uint64_t user_arg) {
     case 0x14U: /* DRM_CAP_SYNCOBJ_TIMELINE */
         cap.value=(cap.capability==0x01U || cap.capability==0x06U) ? 1U : 0U;
         break;
+    case 0x08U: /* DRM_CAP_CURSOR_WIDTH */
+    case 0x09U: /* DRM_CAP_CURSOR_HEIGHT */
+        /* The native DRM facade does not expose hardware-cursor ioctls.
+         * Reporting successful capabilities with zero-size cursors makes
+         * upstream Xorg allocate a zero-byte cursor BO and dereference NULL
+         * during drmmode_map_cursor_bos. Unsupported caps must fail, so
+         * libdrm/Xorg retain their standard fallback dimensions. */
+        return (uint64_t)-EINVAL;
     default:
         return (uint64_t)-EINVAL;
     }
