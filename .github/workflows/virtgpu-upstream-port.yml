@@ -11,6 +11,7 @@ on:
       - 'ports/unikraft/split_queue.h'
       - 'tests/linux-virtgpu-vq-bridge.c'
       - 'tests/linux-virtgpu-dma-frames.c'
+      - 'tests/linux-virtgpu-gem-queue-e2e.c'
       - 'scripts/check-linux-virtgpu-vq-bridge.sh'
       - 'scripts/linux-virtgpu-v6.14.blobs'
       - 'scripts/verify-linux-virtgpu-v6.14.sh'
