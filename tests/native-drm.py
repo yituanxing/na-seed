@@ -211,17 +211,33 @@ def run_original_xorg(guest):
     guest.expect(r'\r*\nXORG_APPS_LAUNCHED\r*\n', timeout=65)
     guest.expect(r'# ')
     verify(guest,
+           'for i in $(seq 1 45); do '
+           'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XTERM -stats '
+           '>/root/native-xterm-window.log 2>&1; '
+           'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XEYES -stats '
+           '>/root/native-xeyes-window.log 2>&1; '
+           'if grep -q "Map State: IsViewable" /root/native-xterm-window.log '
+           '&& grep -q "Map State: IsViewable" /root/native-xeyes-window.log; '
+           'then break; fi; sleep 2; done; '
            'DISPLAY=:0 xwininfo -root -tree >/root/xorg-windows.log 2>&1; '
            'if pidof openbox >/dev/null && pidof xterm >/dev/null && '
            'pidof xeyes >/dev/null && '
            'grep -q NASEED-NATIVE-XTERM /root/xorg-windows.log && '
-           'grep -q NASEED-NATIVE-XEYES /root/xorg-windows.log; then '
-           'echo XORG_X11_APPS_PASS; else cat /root/xorg-windows.log; '
+           'grep -q NASEED-NATIVE-XEYES /root/xorg-windows.log && '
+           'grep -q "Map State: IsViewable" /root/native-xterm-window.log '
+           '&& grep -q "Map State: IsViewable" /root/native-xeyes-window.log; '
+           'then echo XORG_X11_APPS_PASS; else '
+           'cat /root/native-xterm-window.log /root/native-xeyes-window.log; '
            'tail -40 /root/native-openbox.log /root/native-xterm.log '
            '/root/native-xeyes.log; echo XORG_X11_APPS_FAIL; fi',
-           'XORG_X11_APPS', timeout=100)
-    _, _, apps = scanout('xorg-openbox-xterm-xeyes')
-    delta = changed(painted, apps)
+           'XORG_X11_APPS', timeout=210)
+    delta = 0
+    for _ in range(15):
+        _, _, apps = scanout('xorg-openbox-xterm-xeyes')
+        delta = changed(painted, apps)
+        if delta >= 20000:
+            break
+        time.sleep(2)
     if delta < 20000:
         # Keep the original hardware-pixel acceptance strict. An X11
         # window listed by xwininfo need not be mapped or visible; collect
