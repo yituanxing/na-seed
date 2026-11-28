@@ -4,6 +4,37 @@
 >
 > **证据级别区分**：源码核读 / 项目作者自报实际设备验收 / 官方手册功能界定 / 未见真实 3D 证据。不得将作者报告当作 NaSeed 自己的 CI。
 
+## NaOS 历史溯源纠偏（直接逐提交、按旧版本源码核对）
+
+> **此节覆盖并修正此前仅依据 NaOS 最新代码的判断。** 当前 `na-kernel` Rust GPU ioctl 只具备精简的同步 3D 能力，**不等于** NaOS 过去没有实现过更完整的 3D/同步/Blob 路径。仓库历史经历过“上游 Rust 通用驱动 → C VirtIO-GPU → 大型 C 异步 VirGL/DRM → 缩减版 C → 重新实现 Rust”。驱动选择必须审查所有历史分支与删除提交，不能只看 HEAD。
+
+| 日期 | 可复核 Git 历史 | 当时真实源码/变更 | 可用性判断 |
+|---|---|---|---|
+| 2025-08-24 | [`b6f92e7`](https://github.com/aether-os-studio/na-kernel/commit/b6f92e7ee2bd1fc935bddcfbca5fd585388b9d91) | 删除整份 `kernel/crates/virtio-drivers` 上游 Rust crate；删除文件 `src/device/gpu.rs` 518 行，该历史版本**只见 2D/resource 与 capset，没有 SUBMIT_3D/RESOURCE_CREATE_3D/CTX_CREATE**。提交说明明确要改成 C VirtIO 驱动。 | **曾经直接集成已有上游源码**，但这份旧 GPU 并非可恢复的完整 VirGL 3D 驱动；现在 rcore 上游新版本有 3D，不能拿旧版欠缺否定新版。 |
+| 2025-09-19 | [`b7ae4b86`](https://github.com/aether-os-studio/na-kernel/commit/b7ae4b86b75856be75ce359e6f877d6aba1e6447) | 新增 C `modules/virtio/gpu.c` 688 行 + `gpu.h` 224 行。 | NaOS 开始自己的 C GPU 路线，而非沿用被删的 Rust crate。 |
+| 2025-09-19、2026-02 至 03 | [`74596bfa`](https://github.com/aether-os-studio/na-kernel/commit/74596bfafb94ae93856d1687f3273d4e1ddcb)、[`472dc953`](https://github.com/aether-os-studio/na-kernel/commit/472dc953c579e3879a1e4d596b84f5fe4f13f8e8)、[`baee214b`](https://github.com/aether-os-studio/na-kernel/commit/baee214b6f4ad02115803268a590db2aad13918d) | 试过 `nvidia_open`：构建脚本从 `aether-os-studio/nvidia-open` 拉取源码，`git am ...0001-Add-managarm-support.patch`，以 `__managarm__` 编译；README 明确补丁来自 **managarm**。2026-02-07 曾以“删除半成品”提交 [`b7f10363`](https://github.com/aether-os-studio/na-kernel/commit/b7f10363ab72) 移除过。 | **这是复用第三方成熟 GPU 上游源码 + 外部 OS 兼容补丁的实际尝试**，但提交标题/代码不构成 NaOS 真正跑过 NVIDIA 3D 程序的可核验证据。需注意源码归属和驱动版本、许可。 |
+| 2026-02-22 至 23 | [`ea4b08d4`](https://github.com/aether-os-studio/na-kernel/commit/ea4b08d40c99e5a6375a5083887744a170c6d0c4) → [`771ebcb2`](https://github.com/aether-os-studio/na-kernel/commit/771ebcb26ba53ef81ae71a99881f1e1e0a66c082) | C `modules/virtio/gpu.c` 加入经典 VirGL Context/Resource/SUBMIT_3D 和 Linux DRM 私有 ioctl；随后与 render node/DRM 接合。最初提交题名为“**可能**实现了 virtio_gpu 3D 加速”，作者自己仍保留不确定性。 | 真实上游协议+自有 C 驱动；**不是**从 Linux 原样导入 3D driver，也不是原版 Mesa 渲染通过的证据。 |
+| 2026-03-18 | [`10989ccd`](https://github.com/aether-os-studio/na-kernel/commit/10989ccdfe49f252386c1d80f83030267c5982a3) | 该提交时的 C `gpu.c` **4541 行**。源码明确存在 `virtio_gpu_send_command_async_nodata`、每条 descriptor `pending_submit` 的独立 command/response buffer 所有权、`virtio_gpu_reap_available_locked`、`virtio_gpu_wait_pending_submits`（NOWAIT 返回 EBUSY）、`DRM_IOCTL_VIRTGPU_EXECBUFFER` 的 `FENCE_FD_IN/OUT`、`RESOURCE_CREATE_BLOB`、host-visible map、PRIME 和 per-file BO ownership。 | 比 HEAD 的 Rust 驱动**功能范围更广**：有真正的异步命令/读回后清理路径。但 `WAIT` 是等待队列所有待完成提交，不是 BO-specific Fence；输出 FD 以 eventfd 实现，不等同标准 Linux sync_file。**仍需正确性审查，不可称成熟上游驱动**。 |
+| 2026-06-11 | [`51ac34d4`](https://github.com/aether-os-studio/na-kernel/commit/51ac34d4f66f4b2cef2d299fca880e997a87a563) | 在 `modules/drivers/virtio/gpu.c` 重建约 **2156 行 C 驱动**；已包含 3D SUBMIT 等命令，但未保留此前异步命令/FD fence/Blob 等完整路径。 | 重构中失去部分上个阶段已实现的语义。 |
+| 2026-07-24 | [`806cc1f1`](https://github.com/aether-os-studio/na-kernel/commit/806cc1f1b737d27f00b9e1a8828903e81a719a23) | C GPU 驱动约 **2290 行**，`DRM_IOCTL_VIRTGPU_WAIT` 仅校验文件对象/handle 后返回 0；`RESOURCE_CREATE_BLOB` 返回 `-ENOSYS`；`EXECBUFFER` 拒绝 `FENCE_FD_OUT`。 | **确认 3 月有的关键语义到 7 月已消失**。需要追查是哪一轮清理/重建引入的退化，不能拿 HEAD 判断历史水平。 |
+| 2026-08-07 | [`c9974031`](https://github.com/aether-os-studio/na-kernel/commit/c997403103fb33ca98b4fc23ddd2dcf5548e5c78) | 标题“使用 rust 重写 virtio-gpu 驱动”，删除 C `modules/drivers/drm/virtio-gpu/gpu.c` 约 **2434 行** + `gpu.h` 约 520 行，新增 `#![no_std]` Rust GPU 模块、`na-std` C ABI 层。**同一提交还删掉 `modules/lcompat` Git 子模块**。 | 最新模块是自主 Rust 实现，与最初移入的上游 `virtio-drivers` 已不是同一份；它是简化后的功能演化，不能代表 2026-03 完整路径。 |
+| 2026-08-16 → 08-24 | [`0b20be59`](https://github.com/aether-os-studio/na-kernel/commit/0b20be5932c1d3e4c5bfd37d577e135b5fe2008e)、[`76053349`](https://github.com/aether-os-studio/na-kernel/commit/76053349a093)、[`2c456491`](https://github.com/aether-os-studio/na-kernel/commit/2c45649144afa3dd2e32147d7029e354dc9fc518) | **独立真实 AMD GPU 尝试**：Rust `astra`，完整拆成 IP/SMU/PSP/GMC/GFX/SDMA/DCN/BIOS 等；`build.rs` 锁定 **Linux 7.1.8** AMD DRM 参考源码并提取寄存器/微码数据，`ioctl.rs` 一度超过 2500 行；8 月 24 日大提交又删除全部 Astra 代码。 | 说明 NaOS **确实尝试借助 Linux 成熟内核实现**，但 Rust 代码是参照 Linux 行为的重写，而非上游 amdgpu.c 原样链接；**面向真实 AMD PCI GPU，不可拿来代替 QEMU VirtIO-GPU**。目前未验证其硬件加速验收。 |
+
+**实际功能退化比较（基于旧 C 源文件与最新 Rust `ioctl.rs` 全文）：**
+
+| 用户态语义 | 2026-03 C 驱动 | 2026-07 C / 2026-08 Rust |
+|---|---|---|
+| Context / Resource / SUBMIT_3D | 已有实现 | 仍存在 |
+| 不阻塞提交、used-ring 后回收 | descriptor-owned async buffer / pending slots | 同步提交、同步等待 used |
+| `VIRTGPU_WAIT` | 实际轮询并等待 pending，NOWAIT 可报 EBUSY（但为整队列，不是 per-BO） | 只检查 handle/文件是否存在 |
+| `FENCE_FD_IN/OUT` | 有 input FD 等待 / eventfd output / 完成时通知 | output FD 明确拒绝 |
+| `RESOURCE_CREATE_BLOB` | 根据协商支持 guest/host3D 的路径 | C 版 ENOSYS、Rust 版 Unsupported |
+| PRIMEs / host-visible | 旧版有专门导出/导入、host-visible Blob 处理 | 简化 DRM 路径，需重新检验用户态 |
+
+**重要结论（修正此前只看 HEAD 的偏差）：** NaOS **不是一直只有自写、低功能 3D 驱动**；它曾引入上游 `virtio-drivers`，真实尝试 NVIDIA Open+managarm patch 与 Linux AMDGPU 派生的硬件移植，并在 2026-03 的自写 C VirGL 驱动中实现了比最新 Rust 版**更完整的 3D/异步/Blob/FD 兼容功能**。但这些阶段的“实现存在”仍不构成 **原版 Mesa `glmark2` 真正渲染通过**的证据；新版和旧版都需分别验证。
+
+NaSeed 的正确借鉴方式：**先查这份历史能力谱系和被删除的真实源文件/提交，再审 NVIDIA/AMDGPU 的许可证与环境；以 FreeBSD/TGOSKits 已有真实 Mesa 验收为交叉证明，而不是复制 NaOS 旧 C GPU 自写代码或只按其 HEAD 决策。** 不修改 NaSeed 当前 2D 驱动，也不恢复历史代码。
+
 ## 需求与判定边界
 
 - 目标：复用他人**已验证过的**虚拟 GPU 3D 实现，而不是重写 GPU 3D 命令和伪造驱动；x86-64 / RV64 / AArch64；保持 NaSeed 原来的 VirtIO 2D 正确性。
@@ -88,7 +119,7 @@
 
 ### NaOS / na-kernel：C 核心 + Rust `no_std` GPU 模块（源码实审）
 
-**代码来源与归属：** [aether-os-studio/na-kernel](https://github.com/aether-os-studio/na-kernel) 是实际内核和模块源码；[aether-os-studio/naos](https://github.com/aether-os-studio/naos) 是父构建、rootfs 与运行脚本。前者仓库根目录 **LICENSE = GPL-3.0**（2026-11-28 查实）。项目结构不是 FreeBSD 式的“Linux VirtIO-GPU 驱动原样搬运”，而是项目自行实现 Linux 风格 DRM 与 VirtIO-GPU 协议，**不可当成经过上游逐项验证的驱动源码直接引进 NaSeed**。
+**代码来源与归属（以下只描述 2026-08-07 之后当前 Rust 版；历史另见上面的逐提交溯源）：** [aether-os-studio/na-kernel](https://github.com/aether-os-studio/na-kernel) 是实际内核和模块源码；[aether-os-studio/naos](https://github.com/aether-os-studio/naos) 是父构建、rootfs 与运行脚本。前者仓库根目录 **LICENSE = GPL-3.0**（2026-11-28 查实）。项目结构不是 FreeBSD 式的“Linux VirtIO-GPU 驱动原样搬运”，而是项目自行实现 Linux 风格 DRM 与 VirtIO-GPU 协议，**不可当成经过上游逐项验证的驱动源码直接引进 NaSeed**。
 
 **源码级真实调用链，均已读取：**
 
