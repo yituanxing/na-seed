@@ -4,6 +4,9 @@
 #include "../tmpfs.h"
 #include "procfs.h"
 #include "devfs.h"
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+#include "../../ports/tgoskits-drm-ffi/gpu_pci_identity.h"
+#endif
 #include "../errno.h"
 #include "../mm/frame.h"
 #include "../block/device.h"
@@ -682,6 +685,16 @@ enum {
     SYS_DRM_DEV, SYS_DRM_UEVENT, SYS_DRM_SUBSYSTEM,
     SYS_DEV_CHAR, SYS_DEV_CHAR_DRM_LINK,
     SYS_CLASS_INPUT, SYS_VIRTUAL_INPUT,
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    SYS_GPU_BUS, SYS_GPU_BUS_PCI, SYS_GPU_BUS_PCI_DEVICES,
+    SYS_GPU_BUS_PCI_LINK, SYS_GPU_PCI_ROOT, SYS_GPU_PCI_DEVICE,
+    SYS_GPU_PCI_VENDOR, SYS_GPU_PCI_DEVICE_ID,
+    SYS_GPU_PCI_SUBVENDOR, SYS_GPU_PCI_SUBDEVICE,
+    SYS_GPU_PCI_REVISION, SYS_GPU_PCI_UEVENT, SYS_GPU_PCI_SUBSYSTEM,
+    SYS_GPU_DRM_DIR, SYS_GPU_RENDER_DIR, SYS_GPU_RENDER_DEV,
+    SYS_GPU_RENDER_UEVENT, SYS_GPU_RENDER_DEVICE,
+    SYS_GPU_RENDER_SUBSYSTEM, SYS_GPU_CLASS_LINK, SYS_GPU_CHAR_LINK,
+#endif
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -758,6 +771,35 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
                              "../../devices/virtual/drm/card0",SYS_LINK},
     [SYS_CLASS_INPUT]={SYS_CLASS,"input",0,SYS_DIR},
     [SYS_VIRTUAL_INPUT]={SYS_VIRTUAL,"input",0,SYS_DIR}
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    /* A projection of the EXISTING registered bus device, not a fabricated
+     * Mesa-only filesystem. Render, class, /dev/char and PCI attrs refer
+     * to one actual PCI owner and vanish on driver unregistration. */
+    ,[SYS_GPU_BUS]={SYS_ROOT,"bus",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI]={SYS_GPU_BUS,"pci",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI_DEVICES]={SYS_GPU_BUS_PCI,"devices",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI_LINK]={SYS_GPU_BUS_PCI_DEVICES,"",0,SYS_LINK}
+    ,[SYS_GPU_PCI_ROOT]={SYS_DEVICES,"",0,SYS_DIR}
+    ,[SYS_GPU_PCI_DEVICE]={SYS_GPU_PCI_ROOT,"",0,SYS_DIR}
+    ,[SYS_GPU_PCI_VENDOR]={SYS_GPU_PCI_DEVICE,"vendor",0,SYS_FILE}
+    ,[SYS_GPU_PCI_DEVICE_ID]={SYS_GPU_PCI_DEVICE,"device",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBVENDOR]={SYS_GPU_PCI_DEVICE,"subsystem_vendor",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBDEVICE]={SYS_GPU_PCI_DEVICE,"subsystem_device",0,SYS_FILE}
+    ,[SYS_GPU_PCI_REVISION]={SYS_GPU_PCI_DEVICE,"revision",0,SYS_FILE}
+    ,[SYS_GPU_PCI_UEVENT]={SYS_GPU_PCI_DEVICE,"uevent",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBSYSTEM]={SYS_GPU_PCI_DEVICE,"subsystem",
+        "../../../bus/pci",SYS_LINK}
+    ,[SYS_GPU_DRM_DIR]={SYS_GPU_PCI_DEVICE,"drm",0,SYS_DIR}
+    ,[SYS_GPU_RENDER_DIR]={SYS_GPU_DRM_DIR,"renderD128",0,SYS_DIR}
+    ,[SYS_GPU_RENDER_DEV]={SYS_GPU_RENDER_DIR,"dev","226:128\n",SYS_FILE}
+    ,[SYS_GPU_RENDER_UEVENT]={SYS_GPU_RENDER_DIR,"uevent",
+      "MAJOR=226\nMINOR=128\nDEVNAME=dri/renderD128\nDEVTYPE=drm_minor\n",SYS_FILE}
+    ,[SYS_GPU_RENDER_DEVICE]={SYS_GPU_RENDER_DIR,"device","../..",SYS_LINK}
+    ,[SYS_GPU_RENDER_SUBSYSTEM]={SYS_GPU_RENDER_DIR,"subsystem",
+        "../../../../../class/drm",SYS_LINK}
+    ,[SYS_GPU_CLASS_LINK]={SYS_CLASS_DRM,"renderD128",0,SYS_LINK}
+    ,[SYS_GPU_CHAR_LINK]={SYS_DEV_CHAR,"226:128",0,SYS_LINK}
+#endif
 };
 /* The registered DisplayDevice is the owner of the fbdev endpoint,
  * not a second PCI device. Represent its class and the fbdev consumer
@@ -766,6 +808,16 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
 static bool sys_entry_visible(unsigned id) {
     if(id>=SYS_CLASS_GRAPHICS && id<=SYS_DISPLAY_SUBSYSTEM)
         return nas_display_primary()!=NULL;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id>=SYS_GPU_BUS && id<=SYS_GPU_CHAR_LINK) {
+        struct nas_tgos_gpu_pci_identity identity;
+        return nas_tgos_original_gpu_pci_identity(&identity)==0;
+    }
+    if(id==SYS_CLASS_DRM || id==SYS_DEV_CHAR) {
+        struct nas_tgos_gpu_pci_identity identity;
+        return nas_tgos_original_gpu_pci_identity(&identity)==0;
+    }
+#endif
     if(id>=SYS_CLASS_DRM && id<=SYS_DEV_CHAR_DRM_LINK) {
 #ifdef NAS_ENABLE_VIRTIO_GPU
         return nas_virtio_gpu_count()!=0U;
@@ -1038,6 +1090,87 @@ static int sys_append_hex(char dst[256],unsigned *length,uint64_t val,
     dst[*length]=0;
     return 0;
 }
+
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+/* Native sysfs device projection: read current original GPU owner PCI data
+ * from the already-registered bus, NOT from a static QEMU test assumption.
+ * Use exactly the Linux paths and attrs consumed by libdrm drmGetDevice2. */
+static int sys_gpu_pci_name(unsigned id,char out[256]) {
+    struct nas_tgos_gpu_pci_identity pci;
+    if(nas_tgos_original_gpu_pci_identity(&pci))return -ESTALE;
+    unsigned n=0;out[0]=0;
+    if(id==SYS_GPU_PCI_ROOT) {
+        if(sys_append(out,&n,"pci") ||
+           sys_append_hex(out,&n,pci.domain,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.bus,2))return -ENAMETOOLONG;
+        return 0;
+    }
+    if(id!=SYS_GPU_PCI_DEVICE && id!=SYS_GPU_BUS_PCI_LINK)return -EINVAL;
+    if(sys_append_hex(out,&n,pci.domain,4) ||
+       sys_append(out,&n,":") ||
+       sys_append_hex(out,&n,pci.bus,2) ||
+       sys_append(out,&n,":") ||
+       sys_append_hex(out,&n,pci.slot,2) ||
+       sys_append(out,&n,".") ||
+       sys_append_uint(out,&n,pci.function))
+        return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_gpu_pci_text(unsigned id,char out[256]) {
+    struct nas_tgos_gpu_pci_identity pci;
+    if(nas_tgos_original_gpu_pci_identity(&pci))return -ESTALE;
+    unsigned n=0;out[0]=0;uint32_t value;
+    switch(id) {
+    case SYS_GPU_PCI_VENDOR:value=pci.vendor;break;
+    case SYS_GPU_PCI_DEVICE_ID:value=pci.device;break;
+    case SYS_GPU_PCI_SUBVENDOR:value=pci.subvendor;break;
+    case SYS_GPU_PCI_SUBDEVICE:value=pci.subdevice;break;
+    case SYS_GPU_PCI_REVISION:value=pci.revision;break;
+    case SYS_GPU_PCI_UEVENT: {
+        char bdf[256];
+        if(sys_gpu_pci_name(SYS_GPU_PCI_DEVICE,bdf) ||
+           sys_append(out,&n,"PCI_ID=") ||
+           sys_append_hex(out,&n,pci.vendor,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.device,4) ||
+           sys_append(out,&n,"\nPCI_SUBSYS_ID=") ||
+           sys_append_hex(out,&n,pci.subvendor,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.subdevice,4) ||
+           sys_append(out,&n,"\nPCI_SLOT_NAME=") ||
+           sys_append(out,&n,bdf) ||
+           sys_append(out,&n,"\n"))return -ENAMETOOLONG;
+        return 0;
+    }
+    default:return -EINVAL;
+    }
+    if(sys_append(out,&n,"0x") ||
+       sys_append_hex(out,&n,value,id==SYS_GPU_PCI_REVISION?2:4) ||
+       sys_append(out,&n,"\n"))return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_gpu_link(unsigned id,char target[256]) {
+    unsigned n=0;target[0]=0;
+    if(id!=SYS_GPU_CLASS_LINK && id!=SYS_GPU_CHAR_LINK &&
+       id!=SYS_GPU_BUS_PCI_LINK)return -EINVAL;
+    char root[256],bdf[256];
+    if(sys_gpu_pci_name(SYS_GPU_PCI_ROOT,root) ||
+       sys_gpu_pci_name(SYS_GPU_PCI_DEVICE,bdf))return -ESTALE;
+    if(sys_append(target,&n,id==SYS_GPU_BUS_PCI_LINK?
+                  "../../../devices/":"../../devices/") ||
+       sys_append(target,&n,root) ||
+       sys_append(target,&n,"/") ||
+       sys_append(target,&n,bdf))return -ENAMETOOLONG;
+    if(id!=SYS_GPU_BUS_PCI_LINK &&
+       sys_append(target,&n,"/drm/renderD128"))return -ENAMETOOLONG;
+    return (int)n;
+}
+static bool sys_gpu_dynamic(unsigned id) {
+    return id==SYS_GPU_PCI_ROOT || id==SYS_GPU_PCI_DEVICE ||
+           id==SYS_GPU_BUS_PCI_LINK;
+}
+#endif
 static int sys_input_name(const char *prefix,unsigned index,char out[256]) {
     unsigned n=0;out[0]=0;
     return sys_append(out,&n,prefix) || sys_append_uint(out,&n,index)?
@@ -1295,6 +1428,12 @@ static void sys_fill(unsigned id,struct nas_fs_node *out) {
         .mode=dir?0040555U:link?0120777U:0100444U,
         .size=entry->contents?strlen(entry->contents):0,
         .is_dir=dir,.is_symlink=link};
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id>=SYS_GPU_PCI_VENDOR && id<=SYS_GPU_PCI_UEVENT) {
+        char text[256];
+        if(!sys_gpu_pci_text(id,text))out->size=strlen(text);
+    }
+#endif
 }
 static int sys_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -1337,12 +1476,22 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
         sys_memory_fill(block,kind,out);
         return 0;
     }
-    for(unsigned i=1;i<SYS_NODE_COUNT;i++)
-        if(sys_entry_visible(i) && sys_entries[i].parent==(unsigned)id &&
-           !strcmp(name,sys_entries[i].name)) {
+    for(unsigned i=1;i<SYS_NODE_COUNT;i++) {
+        if(!sys_entry_visible(i) || sys_entries[i].parent!=(unsigned)id)
+            continue;
+        const char *candidate=sys_entries[i].name;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+        char dynamic[256];
+        if(sys_gpu_dynamic(i)) {
+            if(sys_gpu_pci_name(i,dynamic))continue;
+            candidate=dynamic;
+        }
+#endif
+        if(!strcmp(name,candidate)) {
             sys_fill(i,out);
             return 0;
         }
+    }
     if(id==SYS_MEMORY) {
         uint64_t block;
         if(sys_memory_parse(name,&block) && nas_memory_block_present(block)) {
@@ -1447,6 +1596,13 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                 if(skip--!=0)continue;
                 child=i;
                 name=sys_entries[i].name;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+                if(sys_gpu_dynamic(i)) {
+                    if(sys_gpu_pci_name(i,generated_name))
+                        return -ESTALE;
+                    name=generated_name;
+                }
+#endif
                 found=true;
                 break;
             }
@@ -1536,6 +1692,18 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     } else {
         if(sys_entries[id].type==SYS_DIR)return -EISDIR;
         if(sys_entry_link((unsigned)id))return -EINVAL;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+        if(id>=SYS_GPU_PCI_VENDOR && id<=SYS_GPU_PCI_UEVENT) {
+            char buffer[256];
+            int rc=sys_gpu_pci_text((unsigned)id,buffer);
+            if(rc)return rc;
+            uint64_t available=strlen(buffer);
+            if(offset>=available)return 0;
+            if(length>available-offset)length=available-offset;
+            memcpy(dst,buffer+offset,(size_t)length);
+            return (int64_t)length;
+        }
+#endif
         content=sys_entries[id].contents;
     }
     if(!content)return -EIO;
@@ -1547,9 +1715,17 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
 }
 static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
     int id=sys_id(node);
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id==SYS_GPU_CLASS_LINK || id==SYS_GPU_CHAR_LINK ||
+       id==SYS_GPU_BUS_PCI_LINK)
+        return sys_gpu_link((unsigned)id,target);
+#endif
     if(id>=0 && sys_entry_link((unsigned)id)) {
         if(!sys_entry_visible((unsigned)id))return -ESTALE;
         const char *link=sys_entries[id].contents;
+        /* A malformed sysfs link must NEVER panic the kernel. The absent
+         * target is a provider error, not a valid user-controlled pointer. */
+        if(!link)return -EIO;
         size_t n=strlen(link);
         memcpy(target,link,n+1);
         return (int)n;

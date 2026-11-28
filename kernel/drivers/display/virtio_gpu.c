@@ -610,6 +610,15 @@ static const struct nas_bus_driver gpu_driver={
     .match=match,.probe=probe,.remove=remove_device
 };
 int nas_virtio_gpu_driver_register(void) {
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    /* The original TGOSKits Rust driver is FIRST and exclusively takes
+     * hardware ownership. A real probe failure is fatal; never silently
+     * fall back to the old NaSeed queue on the same device. Only ENOSYS
+     * means the experimental registration API was intentionally absent. */
+    extern int nas_tgos_original_gpu_driver_register(void);
+    int rc=nas_tgos_original_gpu_driver_register();
+    if(rc!=-ENOSYS)return rc;
+#endif
     return nas_bus_driver_register(&gpu_driver);
 }
 unsigned nas_virtio_gpu_count(void) {return gpu.claimed?1U:0U;}

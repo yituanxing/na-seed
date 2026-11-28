@@ -352,6 +352,14 @@ with (work / f"{mode}-serial.log").open("w") as log:
         guest.expect("Password:")
         guest.sendline("naseed-ci-only")
         guest.expect(r"# ")
+        # Real BusyBox ls uses getdents64. Reject a fake /dev/dri directory
+        # that stats successfully but returns ENOTDIR when libdrm enumerates.
+        verify(guest,
+               "if ls -1 /dev/dri >/root/drm-node-list.log 2>&1 && "
+               "grep -Fxq card0 /root/drm-node-list.log; then "
+               "echo DRI_READDIR_PASS; else cat /root/drm-node-list.log; "
+               "echo DRI_READDIR_FAIL; fi",
+               "DRI_READDIR", timeout=45)
         if mode == "xorg":
             verify(guest,
                    'rc-service naseed-desktop stop >/root/drm-stop.log 2>&1; '

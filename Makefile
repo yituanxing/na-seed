@@ -206,6 +206,14 @@ endif
 CFLAGS += -DNAS_EXPERIMENT_TGOS_DRM_FFI=1
 TGOS_FFI_ARCHIVE := build/tgos-rust-target/x86_64-unknown-none/release/libnaseed_tgoskits_drm_ffi.a
 endif
+# A SEPARATE real-device experiment: original TGOSKits Rust virtio-gpu owns
+# the single QEMU GPU transport; the original NaSeed 2D owner is not bound.
+ifeq ($(NAS_EXPERIMENT_TGOS_GPU_OWNER),1)
+ifneq ($(NAS_EXPERIMENT_TGOS_DRM_FFI),1)
+$(error TGOS original GPU owner requires the validated Rust DRM FFI experiment)
+endif
+CFLAGS += -DNAS_EXPERIMENT_TGOS_GPU_OWNER=1
+endif
 ifeq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
 CFLAGS += -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1
 endif
@@ -356,6 +364,9 @@ ifeq ($(NAS_ENABLE_VIRTIO_GPU),1)
 VIRTIO_X86_SRCS += kernel/drivers/display/virtio_gpu.c kernel/fs/drm_chrdev.c kernel/fs/drm_gem.c kernel/fs/drm_kms.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/vq_pair_port.c ports/linux-virtgpu/gem_dma_port.c ports/linux-virtgpu/vbuf_dma_port.c
 ifeq ($(NAS_EXPERIMENT_TGOS_DRM_FFI),1)
 VIRTIO_X86_SRCS += ports/tgoskits-drm-ffi/na_kernel_bridge.c
+ifeq ($(NAS_EXPERIMENT_TGOS_GPU_OWNER),1)
+VIRTIO_X86_SRCS += ports/tgoskits-drm-ffi/gpu_kernel_port.c
+endif
 endif
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
@@ -868,7 +879,7 @@ $(KERNEL): $(OUT)/driver_bus.o $(OUT)/driver_irq.o $(OUT)/driver_chrdev.o $(OUT)
 # A native Rust library is mandatory for this experiment; build errors
 # are not skipped and a missing upstream symbol fails the *real* kernel link.
 ifeq ($(NAS_EXPERIMENT_TGOS_DRM_FFI),1)
-$(TGOS_FFI_ARCHIVE): scripts/build-tgoskits-drm-ffi.sh ports/tgoskits-drm-ffi/src/lib.rs ports/tgoskits-drm-ffi/Cargo.toml
+$(TGOS_FFI_ARCHIVE): scripts/build-tgoskits-drm-ffi.sh ports/tgoskits-drm-ffi/src/lib.rs ports/tgoskits-drm-ffi/Cargo.toml ports/tgoskits-drm-ffi/src/gpu.rs
 	sh scripts/build-tgoskits-drm-ffi.sh
 $(KERNEL): $(TGOS_FFI_ARCHIVE)
 endif

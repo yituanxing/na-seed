@@ -123,6 +123,42 @@ int nas_drm_gem_create(unsigned slot,uint32_t width,uint32_t height,
     };
     return 0;
 }
+/* Experimental original-TGOSKits GPU backing reuses the EXISTING GEM
+ * page/VMA ownership rather than introducing a second memory allocator.
+ * The GPU BO handle is chosen by its File-local upstream VirtGPU bridge;
+ * the existing GEM cookie/mmap and VMA refcount apply unchanged.
+ */
+int nas_drm_gem_tgos_backing_create(unsigned slot,uint32_t handle,uint32_t bytes) {
+    if(!handle || !bytes || bytes>GEM_MAX_BYTES ||
+       slot>=NAS_OPEN_FILE_LIMIT || find_handle(slot,handle))
+        return -EINVAL;
+    /* Reuse the already-proven page allocator with 8 bits per byte and
+     * one row. Bytes must be dword-aligned, as required by DRM pitches. */
+    if(bytes&3U)return -EINVAL;
+    struct nas_drm_gem_created created={0};
+    int rc=nas_drm_gem_create(slot,bytes,1U,8U,0U,&created);
+    if(rc)return rc;
+    struct gem_object *o=find_handle(slot,created.handle);
+    if(!o || o->size!=bytes || o->pitch!=bytes)__builtin_trap();
+    o->handle=handle;
+    return 0;
+}
+int nas_drm_gem_tgos_backing_count(unsigned slot,uint32_t handle,
+                                   uint32_t *out_count) {
+    if(!out_count)return -EINVAL;
+    struct gem_object *o=find_handle(slot,handle);
+    if(!o)return -ENOENT;
+    *out_count=o->pages;
+    return 0;
+}
+int nas_drm_gem_tgos_backing_page(unsigned slot,uint32_t handle,
+                                  uint32_t page,uint64_t *out_pa) {
+    if(!out_pa)return -EINVAL;
+    struct gem_object *o=find_handle(slot,handle);
+    if(!o || page>=o->pages || !o->frames[page])return -ENOENT;
+    *out_pa=o->frames[page];
+    return 0;
+}
 int nas_drm_gem_map_offset(unsigned slot,uint32_t handle,uint64_t *out) {
     if(!out || slot>=NAS_OPEN_FILE_LIMIT)return -EINVAL;
     *out=0;
