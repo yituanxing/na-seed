@@ -572,27 +572,42 @@ pub extern "C" fn nas_tgos_original_gpu_render_transfer(
     match outcome { Ok(()) => 0, Err(e) => e }
 }
 
-// Use the upstream TGOSKits VirtIoGpu queue implementation unchanged.
-// The first admitted user command is VIRGL_CCMD_NOP: non-empty 4-byte
-// VirGL protocol command, accepted by original virglrenderer decoder.
-// Nothing here claims a Mesa render, GL surface or pixel output.
+// Upstream axdrm's EXECBUFFER model: the caller hands us an encoded Mesa
+// VirGL command stream and a list of file-owned BO handles. The ORIGINAL
+// pinned VirtIoGpu::submit_3d serializes the bytes and retires its real fence.
+// Do not implement another VirGL protocol encoder/decoder in NaSeed.
+// Restrict this experimental QEMU-only owner to a bounded command buffer and
+// synchronous real-fence completion until dma_resv/syncobj land.
+const MAX_RENDER_COMMAND: usize = 1 << 20;
 #[unsafe(no_mangle)]
-pub extern "C" fn nas_tgos_original_gpu_render_exec_nop(
-    slot: u32, command: *const u8, size: usize, bo_handle: u32,
+pub extern "C" fn nas_tgos_original_gpu_render_exec(
+    slot: u32, command: *const u8, size: usize,
+    handles: *const u32, handle_count: usize,
 ) -> i32 {
     let index = slot as usize;
     if index >= RENDER_SLOTS ||
        !RENDER_CONTEXTS[index].load(Ordering::Acquire) { return -9; }
-    if command.is_null() || size != size_of::<u32>() { return -22; }
-    // SAFETY: NaSeed C usercopy provided a private, kernel-owned buffer.
+    if command.is_null() || size == 0 ||
+       size > MAX_RENDER_COMMAND || size % size_of::<u32>() != 0 ||
+       handle_count > BO_PER_FILE ||
+       (handle_count != 0 && handles.is_null()) {
+        return -22;
+    }
+    // SAFETY: C usercopy has already captured the complete untrusted
+    // userspace command/handle arrays into private, kernel-owned storage.
     let bytes = unsafe { core::slice::from_raw_parts(command, size) };
-    // VIRGL_CMD0(VIRGL_CCMD_NOP=0, VIRGL_OBJECT_NULL=0, len=0).
-    // Other commands need full DRM GEM/context/fence resource tracking.
-    if bytes != [0, 0, 0, 0] { return -95; }
+    let bos = if handle_count == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(handles, handle_count) }
+    };
     match with_device(|gpu| {
         if !gpu_async_ok() { return Err(-5); }
-        if bo_handle != 0 {
-            let idx = bo_index(index, bo_handle)?;
+        // The per-File BO table is pinned while DEVICE_BUSY is held.
+        // A handle belonging to another File (or closed GEM) fails before
+        // sending ANY untrusted GPU bytes to QEMU.
+        for &handle in bos {
+            let idx = bo_index(index, handle)?;
             if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 {
                 return Err(-2);
             }
@@ -604,6 +619,28 @@ pub extern "C" fn nas_tgos_original_gpu_render_exec_nop(
         if !gpu.fence_completed(fence) || !gpu_async_ok() {
             return Err(-5);
         }
+        Ok(())
+    }) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+// Synchronous submit retires the real host fence before returning, so any
+// live BO has no outstanding device use when userspace asks WAIT. Follow the
+// original axdrm's handle lookup and NOWAIT parameter contract.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_wait(
+    slot: u32, handle: u32, flags: u32,
+) -> i32 {
+    let file = slot as usize;
+    if flags & !1 != 0 { return -22; }
+    match with_device(|_| {
+        if !RENDER_CONTEXTS.get(file).is_some_and(|c|
+            c.load(Ordering::Acquire)) { return Err(-9); }
+        let idx = bo_index(file, handle)?;
+        if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 { return Err(-2); }
+        if !gpu_async_ok() { return Err(-5); }
         Ok(())
     }) {
         Ok(()) => 0,
