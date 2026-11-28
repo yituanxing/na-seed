@@ -47,10 +47,13 @@ with os.fdopen(os.open("/dev/dri/card0", os.O_RDWR), "rb", closefd=True) as open
     supported = getparam(fd, 7)
     assert supported & (1 << 2), f"VirGL2 missing: {supported:#x}"
 
-    # QEMU in the pinned CI advertises capset 2, version 2, 1384 bytes.
-    # 2 separate requests must read exactly the same HOST-sourced payload.
-    first = get_caps(fd, 2, 2)
-    second = get_caps(fd, 2, 2)
+    # Actual Mesa winsys zero-initializes cap_set_ver and requests id 2,
+    # version 0. Do not replace it with invented version-2 capability data.
+    # Query both: each must be a real host-specific GET_CAPSET response.
+    first = get_caps(fd, 2, 0)
+    second = get_caps(fd, 2, 0)
+    newest = get_caps(fd, 2, 2)
+    assert any(newest[:1384]), "host max-version capset all-zero"
     assert first == second, "unstable host capset snapshot"
     assert any(first[:1384]), "host capset unexpectedly all-zero"
     assert first[1384:] == bytes(2048 - 1384), "capset copy overrun"
@@ -63,4 +66,4 @@ with os.fdopen(os.open("/dev/dri/card0", os.O_RDWR), "rb", closefd=True) as open
     else:
         raise AssertionError("uncached capset version accepted")
 
-print(f"NASEED_VIRGL_CAPS_USER_PASS id=2 version=2 bytes=1384 mask={supported:#x}", flush=True)
+print(f"NASEED_VIRGL_CAPS_USER_PASS id=2 version=0 bytes=1384 mask={supported:#x}", flush=True)
