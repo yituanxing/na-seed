@@ -28,7 +28,9 @@ unsafe impl GlobalAlloc for NaSeedHeap {
         unsafe { nas_tgos_alloc_aligned(layout.size(), layout.align()) }
     }
     unsafe fn dealloc(&self, p: *mut u8, _layout: Layout) {
-        unsafe { nas_tgos_free_aligned(p) }
+        unsafe { nas_tgos_probe_stage(191) };
+        unsafe { nas_tgos_free_aligned(p) };
+        unsafe { nas_tgos_probe_stage(192) };
     }
 }
 
