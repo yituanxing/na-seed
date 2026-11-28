@@ -2,7 +2,7 @@
 // ORIGINAL TGOSKits virtio-gpu (pinned upstream) driven through NaSeed's
 // QEMU-only transport/DMA providers. This is a REAL device-owner experiment,
 // not a second protocol implementation or a render-node/DRM ioctl emulation.
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     ffi::c_void,
     mem::{size_of, MaybeUninit},
@@ -14,7 +14,7 @@ use virtio_drivers::{
     transport::{DeviceStatus, DeviceType, InterruptStatus, Transport},
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes};
-use virtio_gpu::{VirtIoGpu, ResourceCreate3d};
+use virtio_gpu::{BlobMemory, VirtIoGpu, ResourceCreate3d};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 unsafe extern "C" {
@@ -34,6 +34,12 @@ unsafe extern "C" {
     fn nas_tgos_gpu_vt_write(t: *const c_void, off: u32, src: *const c_void, len: u32) -> i32;
     fn nas_tgos_gpu_vt_irq_ack(t: *const c_void) -> u32;
     fn nas_arch_monotonic_ns() -> u64;
+    // Existing NaSeed GEM supplies reference-counted PMM pages and VMA pins.
+    // The Rust GPU owner must retire host DMA BEFORE the GEM handle is dropped.
+    fn nas_drm_gem_tgos_backing_create(slot: u32, handle: u32, bytes: u32) -> i32;
+    fn nas_drm_gem_tgos_backing_count(slot: u32, handle: u32, count: *mut u32) -> i32;
+    fn nas_drm_gem_tgos_backing_page(slot: u32, handle: u32, page: u32, pa: *mut u64) -> i32;
+    fn nas_drm_gem_destroy(slot: u32, handle: u32) -> i32;
 }
 
 // Unmodified virtio-drivers 0.13.0 requires a contiguous DMA address even for
@@ -239,6 +245,30 @@ fn bo_resource_id(file: usize, handle: u32) -> u32 {
     0x5000_0000 | ((file as u32) << 8) | handle
 }
 
+// Physical pages come from NaSeed's EXISTING refcounted GEM implementation.
+// Collect all backing entries before ANY GPU command is enqueued. An invalid
+// or disappeared backing object must never be advertised as DMA-safe.
+fn backing_segments(file: u32, handle: u32) -> Result<Vec<BlobMemory>, i32> {
+    let mut count = 0u32;
+    let rc = unsafe {
+        nas_drm_gem_tgos_backing_count(file, handle, &mut count)
+    };
+    if rc != 0 { return Err(rc); }
+    if count == 0 || count > 8192 { return Err(-22); }
+    let mut segments = Vec::new();
+    segments.try_reserve_exact(count as usize).map_err(|_| -12)?;
+    for page in 0..count {
+        let mut pa = 0u64;
+        let rc = unsafe {
+            nas_drm_gem_tgos_backing_page(file, handle, page, &mut pa)
+        };
+        if rc != 0 || pa == 0 || pa % 4096 != 0 { return Err(-5); }
+        segments.push(BlobMemory { paddr: pa, length: 4096 });
+    }
+    Ok(segments)
+}
+
+
 
 fn render_ctx_id(slot: usize) -> u32 {
     0x4e53_1000 + slot as u32
@@ -285,13 +315,19 @@ pub extern "C" fn nas_tgos_original_gpu_render_close(slot: u32) -> i32 {
         for handle in 1..=BO_PER_FILE as u32 {
             let idx = bo_index(index, handle)?;
             if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 { continue; }
-            gpu.ctx_detach_resource(render_ctx_id(index), bo_resource_id(index, handle))
+            let resource = bo_resource_id(index, handle);
+            gpu.ctx_detach_resource(render_ctx_id(index), resource)
                 .map_err(|_| -5)?;
-            let fence = gpu.resource_unref(bo_resource_id(index, handle))
-                .map_err(|_| -5)?;
+            gpu.resource_detach_backing(resource).map_err(|_| -5)?;
+            let fence = gpu.resource_unref(resource).map_err(|_| -5)?;
             gpu.ctrl_notify();
             gpu.wait_fence(fence).map_err(|_| -5)?;
             if !gpu.fence_completed(fence) || !gpu_async_ok() {
+                return Err(-5);
+            }
+            // Host has retired all DMA commands; only NOW can GEM drop its
+            // handle pin. Live mmaps retain their own VM references.
+            if unsafe { nas_drm_gem_destroy(slot, handle) } != 0 {
                 return Err(-5);
             }
             RENDER_BO_SIZE[idx].store(0, Ordering::Release);
@@ -329,7 +365,8 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_create(
     }
     let req = unsafe { &*request };
     if req.width == 0 || req.height == 0 || req.depth == 0 ||
-       req.array_size == 0 || req.size == 0 || req.size > 64*1024*1024 ||
+       req.array_size == 0 || req.size == 0 || req.size > 32*1024*1024 ||
+       req.size % 4 != 0 ||
        req.width > 8192 || req.height > 8192 || req.depth > 8192 {
         return -22;
     }
@@ -341,6 +378,21 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_create(
             // Reserve before the first async host command. A failed host
             // operation is fail-closed: BO and ID stay pinned for teardown.
             RENDER_BO_SIZE[idx].store(req.size, Ordering::Release);
+            let rc = unsafe {
+                nas_drm_gem_tgos_backing_create(slot, handle, req.size)
+            };
+            if rc != 0 {
+                RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+                return Err(rc);
+            }
+            let segments = match backing_segments(slot, handle) {
+                Ok(segments) => segments,
+                Err(error) => {
+                    let _ = unsafe { nas_drm_gem_destroy(slot, handle) };
+                    RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+                    return Err(error);
+                }
+            };
             let id = bo_resource_id(file, handle);
             gpu.resource_create_3d(ResourceCreate3d {
                 ctx_id: 0, resource_id: id, target: req.target,
@@ -349,6 +401,11 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_create(
                 last_level: req.last_level, nr_samples: req.nr_samples,
                 flags: req.flags,
             }).map_err(|_| -5)?;
+            // Original upstream virtio-gpu code owns the actual wire format
+            // of RESOURCE_ATTACH_BACKING. Pages outlive all QEMU DMA.
+            unsafe {
+                gpu.resource_attach_backing_segments(id, &segments)
+            }.map_err(|_| -5)?;
             gpu.ctx_attach_resource(render_ctx_id(file), id).map_err(|_| -5)?;
             gpu.ctrl_notify();
             gpu.wait_idle().map_err(|_| -5)?;
@@ -400,10 +457,14 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_close(
         if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 { return Err(-2); }
         let id = bo_resource_id(file, handle);
         gpu.ctx_detach_resource(render_ctx_id(file), id).map_err(|_| -5)?;
+        gpu.resource_detach_backing(id).map_err(|_| -5)?;
         let fence = gpu.resource_unref(id).map_err(|_| -5)?;
         gpu.ctrl_notify();
         gpu.wait_fence(fence).map_err(|_| -5)?;
         if !gpu.fence_completed(fence) || !gpu_async_ok() {
+            return Err(-5);
+        }
+        if unsafe { nas_drm_gem_destroy(slot, handle) } != 0 {
             return Err(-5);
         }
         RENDER_BO_SIZE[idx].store(0, Ordering::Release);
