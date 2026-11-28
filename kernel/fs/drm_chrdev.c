@@ -104,13 +104,14 @@ static struct nas_chrdev_node render_node={
     .present=drm_present,.provider=&drm_provider
 };
 static bool render_file(unsigned slot) {
-    return nas_file_slot_live(slot) &&
+    return slot<NAS_OPEN_FILE_LIMIT &&
            nas_open_files[slot].chrdev_node==&render_node;
 }
 bool nas_drm_tgos_render_busy(void) {
     return render_node.pins!=0U;
 }
 #endif
+#if !defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
 static struct nas_chrdev_node drm_node={
     .path="/dev/dri/card0",
     .info={
@@ -119,6 +120,7 @@ static struct nas_chrdev_node drm_node={
     },
     .present=drm_present,.provider=&drm_provider
 };
+#endif
 int nas_drm_chrdev_init(void) {
 #if defined(NAS_EXPERIMENT_TGOS_DRM_FFI)
     /* This opt-in experiment must execute real original upstream Rust
