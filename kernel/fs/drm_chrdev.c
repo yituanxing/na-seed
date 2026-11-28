@@ -29,6 +29,8 @@ extern int nas_tgos_drm_check_original_abi(void);
  * Only original GPU capset discovery is implemented. There is deliberately
  * no fake GEM, EXECBUFFER, KMS or OpenGL 3D advertising. */
 #define NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER UINT32_C(0xc0406442)
+#define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_CREATE UINT32_C(0xc0386444)
+#define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO UINT32_C(0xc0106445)
 #define NAS_DRM_IOCTL_VIRTGPU_GETPARAM UINT32_C(0xc0106443)
 #define NAS_DRM_IOCTL_VIRTGPU_GET_CAPS UINT32_C(0xc0186449)
 #define NAS_TGOS_MAX_CAPSET_BYTES 65536U
@@ -36,7 +38,15 @@ extern unsigned nas_tgos_original_gpu_active(void);
 extern int nas_tgos_original_gpu_render_open(uint32_t slot);
 extern int nas_tgos_original_gpu_render_close(uint32_t slot);
 extern int nas_tgos_original_gpu_render_exec_nop(uint32_t slot,
-                                                 const uint8_t *command,size_t bytes);
+                                    const uint8_t *command,size_t bytes,
+                                    uint32_t bo_handle);
+struct nas_drm_virtgpu_resource_create;
+extern int nas_tgos_original_gpu_render_resource_create(uint32_t slot,
+                  const struct nas_drm_virtgpu_resource_create *request,
+                  uint32_t *handle,uint32_t *resource);
+extern int nas_tgos_original_gpu_render_resource_info(uint32_t slot,
+                   uint32_t handle,uint32_t *resource,uint32_t *size);
+extern int nas_tgos_original_gpu_render_resource_close(uint32_t slot,uint32_t handle);
 extern int nas_tgos_original_gpu_get_param(uint64_t param,uint64_t *value);
 extern int nas_tgos_original_gpu_get_caps(uint32_t id,uint32_t version,
                                           uint8_t *out,size_t size,size_t *written);
@@ -66,6 +76,17 @@ struct nas_drm_virtgpu_execbuffer {
 };
 _Static_assert(sizeof(struct nas_drm_virtgpu_execbuffer)==64U,
                "Linux virtgpu EXECBUFFER LP64 ABI");
+struct nas_drm_virtgpu_resource_create {
+    uint32_t target,format,bind,width,height,depth,array_size,last_level;
+    uint32_t nr_samples,flags,bo_handle,res_handle,size,stride;
+};
+struct nas_drm_virtgpu_resource_info {
+    uint32_t bo_handle,res_handle,size,blob_mem;
+};
+_Static_assert(sizeof(struct nas_drm_virtgpu_resource_create)==56U,
+               "Linux VirtGPU RESOURCE_CREATE LP64 ABI");
+_Static_assert(sizeof(struct nas_drm_virtgpu_resource_info)==16U,
+               "Linux VirtGPU RESOURCE_INFO LP64 ABI");
 struct nas_drm_virtgpu_getparam {uint64_t param,value;};
 struct nas_drm_virtgpu_get_caps {
     uint32_t cap_set_id,cap_set_ver;
@@ -253,16 +274,16 @@ static uint64_t render_getparam(uint64_t arg) {
     return nas_user_write_bytes(req.value,(const uint8_t *)&value,
                                 sizeof(value))?0:(uint64_t)-EFAULT;
 }
-/* First non-empty submit gate: user-provided VIRGL_CCMD_NOP (4 bytes)
- * goes through the ORIGINAL upstream VirtIoGpu::submit_3d + real host fence.
- * No GEM/BO/syncobj/fence-fd ownership exists yet. Reject everything else.
- * The same File slot owns a distinct GPU context across dup and fork.
- */
+/* Original VirtIoGpu handles actual nonempty user command submission. The
+ * limited gate now validates a single file-owned BO handle; arbitrary VirGL
+ * command streams, mmap and syncobj/fence-fd still require upstream axdrm. */
 static uint64_t render_execbuffer(unsigned slot,uint64_t arg) {
     struct nas_drm_virtgpu_execbuffer req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
         return (uint64_t)-EFAULT;
-    if(req.flags || req.num_bo_handles || req.bo_handles ||
+    if(req.flags || req.num_bo_handles>1U ||
+       (req.num_bo_handles==0U && req.bo_handles!=0) ||
+       (req.num_bo_handles==1U && req.bo_handles==0) ||
        req.ring_idx || req.syncobj_stride ||
        req.num_in_syncobjs || req.num_out_syncobjs ||
        req.in_syncobjs || req.out_syncobjs)
@@ -273,9 +294,60 @@ static uint64_t render_execbuffer(unsigned slot,uint64_t arg) {
     if(!nas_user_read_bytes(req.command,(uint8_t *)&nop_header,
                             sizeof(nop_header)))
         return (uint64_t)-EFAULT;
+    uint32_t bo_handle=0;
+    if(req.num_bo_handles==1U &&
+       !nas_user_read_bytes(req.bo_handles,(uint8_t *)&bo_handle,
+                            sizeof(bo_handle)))
+        return (uint64_t)-EFAULT;
     return (uint64_t)(int64_t)
         nas_tgos_original_gpu_render_exec_nop((uint32_t)slot,
-               (const uint8_t *)&nop_header,sizeof(nop_header));
+               (const uint8_t *)&nop_header,sizeof(nop_header),bo_handle);
+}
+/* Linux VirtGPU resource ioctls. The NaSeed VFS side only validates and
+ * copies user pointers; ALL real GPU commands go through pinned TGOSKits.
+ * This is a host 3D-object gate, not completed mmap-backed GEM or Mesa.
+ */
+static uint64_t render_resource_create(unsigned slot,uint64_t arg) {
+    struct nas_drm_virtgpu_resource_create req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    if(!nas_user_prepare_write(arg,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    uint32_t handle=0,resource=0;
+    int rc=nas_tgos_original_gpu_render_resource_create((uint32_t)slot,
+                                                    &req,&handle,&resource);
+    if(rc)return (uint64_t)(int64_t)rc;
+    req.bo_handle=handle;
+    req.res_handle=resource;
+    if(nas_user_write_bytes(arg,(const uint8_t *)&req,sizeof(req)))return 0;
+    /* User mappings can disappear under concurrent unmap; rollback the BO. */
+    (void)nas_tgos_original_gpu_render_resource_close((uint32_t)slot,handle);
+    return (uint64_t)-EFAULT;
+}
+static uint64_t render_resource_info(unsigned slot,uint64_t arg) {
+    struct nas_drm_virtgpu_resource_info req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    if(!nas_user_prepare_write(arg,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    uint32_t res=0,size=0;
+    int rc=nas_tgos_original_gpu_render_resource_info((uint32_t)slot,
+                                                req.bo_handle,&res,&size);
+    if(rc)return (uint64_t)(int64_t)rc;
+    req.res_handle=res;
+    req.size=size;
+    req.blob_mem=0;
+    return nas_user_write_bytes(arg,(const uint8_t *)&req,sizeof(req))?
+           0:(uint64_t)-EFAULT;
+}
+static uint64_t render_gem_close(unsigned slot,uint64_t arg) {
+    struct nas_drm_gem_close req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    if(req.pad)return (uint64_t)-EINVAL;
+    return (uint64_t)(int64_t)
+        nas_tgos_original_gpu_render_resource_close((uint32_t)slot,
+                                                     req.handle);
 }
 static uint64_t render_getcaps(uint64_t arg) {
     struct nas_drm_virtgpu_get_caps req;
@@ -387,6 +459,12 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
         if(request==NAS_DRM_IOCTL_GET_CAP)return drm_cap(user_arg,true);
         if(request==NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER)
             return render_execbuffer(slot,user_arg);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_RESOURCE_CREATE)
+            return render_resource_create(slot,user_arg);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO)
+            return render_resource_info(slot,user_arg);
+        if(request==NAS_DRM_IOCTL_GEM_CLOSE)
+            return render_gem_close(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_GETPARAM)
             return render_getparam(user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_GET_CAPS)
