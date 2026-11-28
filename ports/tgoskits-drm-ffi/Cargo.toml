@@ -11,9 +11,17 @@ crate-type = ["staticlib"]
 # This is a system-boundary adapter, not a rewrite of the upstream DRM.
 # Both upstream crates are fetched at an exact commit by
 # scripts/build-tgoskits-drm-ffi.sh and remain UNMODIFIED.
+[features]
+default = []
+gpu-owner = ["dep:virtio-gpu", "dep:virtio-drivers", "dep:zerocopy"]
+
 [dependencies]
 kdrm-core = { path = "../../build/tgos-upstream/components/kdrm-core" }
 drm-kapi = { path = "../../build/tgos-upstream/components/drm-kapi" }
+# ORIGINAL unmodified pinned TGOSKits driver, not another protocol rewrite.
+virtio-gpu = { path = "../../build/tgos-upstream/drivers/gpu/virtio-gpu", optional = true }
+virtio-drivers = { version = "=0.13.0", default-features = false, features = ["alloc"], optional = true }
+zerocopy = { version = "0.8", default-features = false, optional = true }
 
 [profile.release]
 panic = "abort"
