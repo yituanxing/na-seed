@@ -6,6 +6,7 @@ on:
       - "ports/tgoskits-drm-ffi/**"
       - "kernel/fs/drm_chrdev.c"
       - "kernel/fs/drm_gem.c"
+      - "kernel/fs/vfs_providers.c"
       - "tests/tgos-mesa-guest.py"
       - "tests/tgos-render-alpine.sh"
       - "tests/tgos-render-guest.py"
@@ -40,6 +41,20 @@ jobs:
           python3 -m py_compile tests/tgos-render-guest.py
       - name: Run ORIGINAL Alpine Mesa/EGL/GLES2 and compare GL-read pixels
         run: TGOS_MESA_PROBE=1 sh tests/tgos-render-alpine.sh
+      - name: Symbolize any real NaSeed kernel exception against exact ELF
+        if: failure()
+        run: |
+          elf=build/tgos-mesa-alpine/kernel/kernel.elf
+          serial=build/tgos-mesa-alpine/serial.log
+          if [ -s "$elf" ] && [ -s "$serial" ]; then
+            rip=$(grep -oE 'rip=0x[0-9a-f]+' "$serial" | tail -1 | cut -d= -f2 || :)
+            if [ -n "$rip" ]; then
+              echo "Kernel fault source at $rip:"
+              addr2line -f -C -e "$elf" "$rip"
+              printf 'Closest available symbols: '
+              nm -n "$elf" | grep -i ' [tT] ' | tail -n 5 || :
+            fi
+          fi
       - name: Preserve real Mesa output, kernel errors and QEMU traces
         if: always()
         uses: actions/upload-artifact@v4
