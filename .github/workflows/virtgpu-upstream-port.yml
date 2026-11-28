@@ -5,6 +5,10 @@ on:
     paths:
       - 'third_party/linux-virtgpu/**'
       - 'ports/linux-virtgpu/**'
+      - 'ports/unikraft/split_queue.c'
+      - 'ports/unikraft/split_queue.h'
+      - 'tests/linux-virtgpu-vq-bridge.c'
+      - 'scripts/check-linux-virtgpu-vq-bridge.sh'
       - 'scripts/linux-virtgpu-v6.14.blobs'
       - 'scripts/verify-linux-virtgpu-v6.14.sh'
       - 'scripts/check-linux-virtgpu-uapi.sh'
@@ -35,6 +39,10 @@ jobs:
           clang --version
           sh -n scripts/check-linux-virtgpu-uapi.sh
           sh scripts/check-linux-virtgpu-uapi.sh
+      - name: Check real split queue Linux-style deferred submission and completion bridge
+        run: |
+          sh -n scripts/check-linux-virtgpu-vq-bridge.sh
+          sh scripts/check-linux-virtgpu-vq-bridge.sh
   compile-real-gpu-kernel:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
