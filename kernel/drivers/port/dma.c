@@ -120,7 +120,7 @@ int nas_dma_map_borrowed_frame(const struct nas_dma_provider *provider,
     }
     *map=(struct nas_dma_mapped_frame){
         .provider=provider,.frame_pa=frame_pa,
-        .bus_address=bus,.active=true};
+        .bus_address=bus,.active=true,.usable=true};
     return 0;
 }
 int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *map) {
@@ -128,7 +128,12 @@ int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *map) {
         !map->provider->unmap_frame)return -EINVAL;
     int rc=map->provider->unmap_frame(map->provider->context,
                                       map->frame_pa,map->bus_address);
-    if (rc)return rc; /* Failed unmap remains caller-owned for retry. */
+    if (rc) {
+        /* Unmap state is uncertain: keep the pin and allow retry, but
+         * never publish its old bus address to a new device command. */
+        map->usable=false;
+        return rc;
+    }
     *map=(struct nas_dma_mapped_frame){0};
     return 0;
 }
