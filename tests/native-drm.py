@@ -112,21 +112,43 @@ def run_original_xorg(guest):
         '>/root/xorg-console.log 2>&1 & xorg_pid=$!; echo XORG_LAUNCHED')
     guest.expect(r'\r*\nXORG_LAUNCHED\r*\n', timeout=35)
     guest.expect(r'# ')
-    verify(guest,
-           'for i in $(seq 1 35); do '
-           'timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 '
-           '&& break; sleep 1; done; '
-           'if kill -0 "$xorg_pid" 2>/dev/null && '
-           'xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1; then '
-           'echo XORG_SERVER_PASS; else '
-           'echo XORG_SERVER_DIAGNOSTICS_BEGIN; '
-           'cat /root/xdpyinfo.log 2>/dev/null; '
-           'ls -ld /tmp/.X11-unix /tmp/.X11-unix/* 2>&1; '
-           'ps -ef 2>&1 | grep -E "Xorg|xdpyinfo"; '
-           'tail -140 /root/Xorg.log /root/xorg-console.log; '
-           'echo XORG_SERVER_DIAGNOSTICS_END; '
-           'echo XORG_SERVER_FAIL; fi',
-           'XORG_SERVER', timeout=140)
+    try:
+        verify(guest,
+               'for i in $(seq 1 35); do '
+               'timeout 3 xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1 '
+               '&& break; sleep 1; done; '
+               'if kill -0 "$xorg_pid" 2>/dev/null && '
+               'xdpyinfo -display :0 >/root/xdpyinfo.log 2>&1; then '
+               'echo XORG_SERVER_PASS; else '
+               'echo XORG_SERVER_DIAGNOSTICS_BEGIN; '
+               'cat /root/xdpyinfo.log 2>/dev/null; '
+               'ls -ld /tmp/.X11-unix /tmp/.X11-unix/* 2>&1; '
+               'ps -ef 2>&1 | grep -E "Xorg|xdpyinfo"; '
+               'tail -140 /root/Xorg.log /root/xorg-console.log; '
+               'echo XORG_SERVER_DIAGNOSTICS_END; '
+               'echo XORG_SERVER_FAIL; fi',
+               'XORG_SERVER', timeout=140)
+    except RuntimeError:
+        # Preserve the real Xorg failure. A second original Alpine Xorg
+        # run under GDB gives an actual guest backtrace without replacing
+        # or weakening the required ordinary X11 acceptance.
+        guest.sendline(
+            "timeout 160 gdb -q -batch -ex 'set pagination off' "
+            "-ex 'set confirm off' -ex 'run' "
+            "-ex 'thread apply all bt 14' -ex 'info sharedlibrary' "
+            "--args /usr/libexec/Xorg :1 vt1 -keeptty "
+            "-config /root/xorg.conf -logfile /root/Xorg-gdb.log "
+            "-nolisten tcp -ac -noreset -extension GLX -extension DRI3 "
+            ">/root/xorg-gdb-backtrace.log 2>&1; "
+            "echo XORG_GDB_DIAGNOSTICS_BEGIN; "
+            "tail -180 /root/xorg-gdb-backtrace.log; "
+            "echo XORG_GDB_DIAGNOSTICS_END")
+        try:
+            guest.expect(r'\r*\nXORG_GDB_DIAGNOSTICS_END\r*\n', timeout=190)
+        except pexpect.TIMEOUT:
+            print(f'{arch}: guest GDB diagnostic timed out', flush=True)
+        raise
+
     _, _, before = scanout('xorg-before-root')
     verify(guest,
            'if DISPLAY=:0 xsetroot -solid red; then echo XORG_ROOT_PASS; '
