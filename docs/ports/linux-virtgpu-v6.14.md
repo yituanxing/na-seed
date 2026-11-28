@@ -100,9 +100,13 @@ rejected explicitly; this is NOT a general hardware DMA implementation.
 `ports/linux-virtgpu/gem_dma_port.[ch]` reuses the existing NaSeed
 `nas_drm_gem_map_offset / nas_drm_gem_mmap_pin / nas_vm_device.page`
 contract. A mapped page owns **two references**: the GEM object owner pin
-and the DMA provider's independent physical-frame pin. Only after a
-verified GPU completion or device reset may the caller unmap DMA and
-then release the GEM owner. Failed unmap preserves both references.
+and the DMA provider's independent physical-frame pin. For one-shot
+command DMA buffers, wait for USED response and any command fence before
+unmapping. For **persistent VirtIO-GPU resource backing**, USED completion
+of RESOURCE_ATTACH_BACKING does **not** revoke the host's backing-memory
+access: retain the mapping until confirmed RESOURCE_DETACH_BACKING or
+RESOURCE_UNREF, with relevant fences, or verified device reset. Failed
+unmap preserves both references.
 
 `ports/linux-virtgpu/virtqueue_bridge.c` now accepts mapped-page
 scatter/gather slices, converts them through the provider's checked
@@ -114,7 +118,7 @@ The native GPU build links both adapters on x86-64/RV64/AArch64.
 `scripts/check-linux-virtgpu-vq-bridge.sh` now tests real
 `dma.c` mapping (including nonidentity device addresses, pin
 refcounts, unmap failures, overflow rollback), the GEM pin lifecycle,
-and a fully linked host **GEM pin → provider DMA bus mapping →
+and a fully linked host **one-shot GEM command page → DMA bus →
 split-ring submission → USED completion → safe release** sequence.
 That host test emulates the external transport and GEM lookup only.
 **It is not a real QEMU run, upstream Linux driver link, or VirGL 3D
