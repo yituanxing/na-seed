@@ -1,0 +1,33 @@
+name: Linux VirtIO-GPU v6.14 provenance and UAPI port contract
+on:
+  push:
+    branches: [port/linux-virtgpu-v6.14-20261128]
+    paths:
+      - 'third_party/linux-virtgpu/**'
+      - 'ports/linux-virtgpu/**'
+      - 'scripts/linux-virtgpu-v6.14.blobs'
+      - 'scripts/verify-linux-virtgpu-v6.14.sh'
+      - 'scripts/check-linux-virtgpu-uapi.sh'
+      - 'tests/linux-virtgpu-v6.14-abi.c'
+      - '.github/workflows/virtgpu-upstream-port.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-virtgpu-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  source-and-wire-abi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify unmodified Linux v6.14 source blobs and copyright
+        run: |
+          sh -n scripts/verify-linux-virtgpu-v6.14.sh
+          sh scripts/verify-linux-virtgpu-v6.14.sh
+      - name: Compile canonical Linux VirtIO GPU/DRM UAPI for three architectures
+        run: |
+          clang --version
+          sh -n scripts/check-linux-virtgpu-uapi.sh
+          sh scripts/check-linux-virtgpu-uapi.sh
