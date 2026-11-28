@@ -9,6 +9,10 @@ on:
       - 'scripts/verify-linux-virtgpu-v6.14.sh'
       - 'scripts/check-linux-virtgpu-uapi.sh'
       - 'tests/linux-virtgpu-v6.14-abi.c'
+      - 'kernel/drivers/display/virtio_gpu.c'
+      - 'Makefile'
+      - 'scripts/build-native-full.sh'
+      - 'docs/ports/linux-virtgpu-v6.14.md'
       - '.github/workflows/virtgpu-upstream-port.yml'
   workflow_dispatch:
 permissions:
@@ -31,3 +35,20 @@ jobs:
           clang --version
           sh -n scripts/check-linux-virtgpu-uapi.sh
           sh scripts/check-linux-virtgpu-uapi.sh
+  compile-real-gpu-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, riscv64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the native NaSeed kernel build toolchain
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends clang lld binutils curl make
+      - name: Cross-build ACTUAL NaSeed 2D VirtIO GPU against canonical Linux UAPI
+        run: |
+          sh scripts/verify-linux-virtgpu-v6.14.sh
+          make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
