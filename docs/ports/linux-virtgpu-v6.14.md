@@ -45,12 +45,41 @@ same thing as having linked Linux's complete 3D driver.
 
 | Original Linux dependency | Real NaSeed implementation today | Required port boundary / gap |
 |---|---|---|
-| `virtio_driver`, `virtio_device`, `virtqueue` & feature negotiation | `kernel/drivers/core/bus.h`, `kernel/drivers/virtio/transport.h`, `ports/unikraft/split_queue.h` | Bind Linux queue submission/completion to existing PCI+MMIO transport; no second VirtIO stack; preserve reset and IRQ ownership |
+| `virtio_driver`, `virtio_device`, `virtqueue` & feature negotiation | `kernel/drivers/core/bus.h`, `kernel/drivers/virtio/transport.h`, `ports/unikraft/split_queue.h`, `ports/linux-virtgpu/virtqueue_bridge.[ch]` | Built: batched submit/kick, token-to-used-head mapping, callback re-arm with used-index check. Missing: original Linux `struct virtqueue` binding, scatterlist/DMA mapping, feature/device registration and real driver control-queue linkage |
 | `drm_device`, `drm_driver`, `drm_file`, DRM ioctl dispatch | `kernel/fs/drm_chrdev.c` supports primary node and partial KMS | Linux DRM core, file lifetime, master/render-node semantics not present in equivalent form |
 | `drm_gem_shmem_object`, `drm_gem_object`, `dma_resv` | `kernel/fs/drm_gem.c` has per-OpenFile RAM GEM dumb buffers | Existing GEM cannot be passed as Linux shmem BO without implementing reference counts, shared placement, reservations and mmap lifetime |
 | `dma_fence`, `dma_fence_chain`, sync_file, `drm_syncobj` | NaSeed has IRQ/fence IDs in its 2D VirtIO command path | Proper asynchronous fence completion and syncobj FD semantics must be provided; do not signal early |
 | Linux `work_struct`, `mutex`, `spinlock`, wait queues | NaSeed IRQ + scheduled deferred device services | Adapt process-context completion, cancellation and timeout safely, never sleeping in hard IRQ |
 | `virtgpu_ioctl.c` render ioctls & `virtgpu_submit.c` | NaSeed's 2D DRM facade, no full render node | Only publish render node and 3D feature once authentic upstream submit, resource, fence and context APIs work |
+
+## Queue adaptation increment (later than the original UAPI-only baseline)
+
+The real NaSeed split queue now has a deferred submit path and distinct
+kick_prepare / notify functions, preserving its original eager-submit API
+for all existing clients. It also supports the legacy split-ring
+disable_cb / enable_cb race check; never claim EVENT_IDX support.
+
+`ports/linux-virtgpu/virtqueue_bridge.[ch]` maintains per-descriptor-head
+opaque request cookies for out-of-order completion, without copying or
+reimplementing GPU commands or creating another VirtIO transport.
+Both x86-64 Makefile and RV64/AArch64 native source manifests compile-link
+this adapter when NAS_ENABLE_VIRTIO_GPU=1.
+
+`scripts/check-linux-virtgpu-vq-bridge.sh` cross-compiles the original
+Unikraft split queue **and** the new NaSeed bridge for 3 ISAs. Its host
+test executes the real queue code against an emulated transport/DMA
+provider; it checks batched kicks, out-of-order cookies, NO_NOTIFY,
+lost-callback re-arm, and original eager submission. **This test is a
+queue behavior contract, not an accelerated rendering or real-QEMU test.**
+The new CI gate must pass before this increment is marked verified.
+
+**Critical missing boundary:** the original `virtgpu_vq.c` is still
+unmodified but NOT compiled or linked. Its `virtqueue_add_sgs` call
+accepts Linux `scatterlist` and `dma_map_sg` ownership, not NaSeed's
+pre-mapped `nas_vring_segment`. The bridge is consequently not a
+drop-in implementation of `struct virtqueue`. Next: map Linux SG to
+existing NaSeed DMA provider without inventing a new VirtIO-GPU engine;
+then resolve dequeue-work lifecycle and `virtio_find_vqs` wiring.
 
 ## Port acceptance sequence (non-negotiable)
 
