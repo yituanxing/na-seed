@@ -18,7 +18,7 @@ docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec "
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add xorg-server xorg-server-dbg gdb xf86-input-evdev openbox xterm xeyes xcalc \
-            xdpyinfo xsetroot xwininfo font-adobe-75dpi font-adobe-100dpi
+            xdpyinfo xsetroot xwininfo xprop font-adobe-75dpi font-adobe-100dpi
 "
 # Alpine --no-scripts deliberately skips font-package post-install triggers.
 # Restore the same upstream bitmap-font indexes used by the x86-64 desktop
