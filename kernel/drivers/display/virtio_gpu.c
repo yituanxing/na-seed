@@ -614,7 +614,7 @@ static int probe_3d_context(struct gpu_device *g) {
     const uint32_t stream[19]={
         (5U<<16)|(8U<<8)|1U, GPU_PROBE_SURFACE_ID,GPU_PROBE_RESOURCE_ID,1U,0U,0U,
         (3U<<16)|5U, 1U,0U,GPU_PROBE_SURFACE_ID,
-        (8U<<16)|7U, 1U,
+        (8U<<16)|7U, 4U, /* PIPE_CLEAR_COLOR0 = 1 << 2, NOT depth bit 0 */
         UINT32_C(0x3e4ccccd),UINT32_C(0x3ecccccd),
         UINT32_C(0x3f19999a),UINT32_C(0x3f4ccccd),
         0U,UINT32_C(0x3ff00000),0U
