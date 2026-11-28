@@ -10,6 +10,7 @@ on:
       - 'ports/unikraft/split_queue.c'
       - 'ports/unikraft/split_queue.h'
       - 'tests/linux-virtgpu-vq-bridge.c'
+      - 'tests/linux-virtgpu-virtqueue-api.c'
       - 'tests/linux-virtgpu-dma-frames.c'
       - 'tests/linux-virtgpu-gem-queue-e2e.c'
       - 'scripts/check-linux-virtgpu-vq-bridge.sh'
