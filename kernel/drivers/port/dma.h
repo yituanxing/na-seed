@@ -40,6 +40,8 @@ struct nas_dma_mapped_frame {
     const struct nas_dma_provider *provider;
     uint64_t frame_pa, bus_address;
     bool active;
+    /* Failed/overflowed mappings can retain a pin but are not usable. */
+    bool usable;
 };
 /* An explicit, bounded software ownership lease for one DMA-capable device.
  * A controller must arm the lease BEFORE a write that might enable bus
@@ -83,7 +85,7 @@ int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *);
 static inline int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *map,
                                       uint32_t offset,uint32_t length,
                                       uint64_t *bus_address) {
-    if (!map || !map->active || !map->provider || !bus_address ||
+    if (!map || !map->active || !map->usable || !map->provider || !bus_address ||
         !length || offset>=NAS_DMA_PAGE_BYTES ||
         length>NAS_DMA_PAGE_BYTES-offset)return -EINVAL;
     *bus_address=map->bus_address+offset;
