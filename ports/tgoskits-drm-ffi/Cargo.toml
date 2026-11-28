@@ -13,7 +13,7 @@ crate-type = ["staticlib"]
 # scripts/build-tgoskits-drm-ffi.sh and remain UNMODIFIED.
 [features]
 default = []
-gpu-owner = ["dep:virtio-gpu", "dep:virtio-drivers", "dep:zerocopy"]
+gpu-owner = ["dep:virtio-gpu", "dep:virtio-drivers", "dep:zerocopy", "dep:log"]
 
 [dependencies]
 kdrm-core = { path = "../../build/tgos-upstream/components/kdrm-core" }
@@ -22,6 +22,7 @@ drm-kapi = { path = "../../build/tgos-upstream/components/drm-kapi" }
 virtio-gpu = { path = "../../build/tgos-upstream/drivers/gpu/virtio-gpu", optional = true }
 virtio-drivers = { version = "=0.13.0", default-features = false, features = ["alloc"], optional = true }
 zerocopy = { version = "0.8", default-features = false, optional = true }
+log = { version = "0.4", default-features = false, optional = true }
 
 [profile.release]
 panic = "abort"
