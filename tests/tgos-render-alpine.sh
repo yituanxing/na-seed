@@ -91,6 +91,8 @@ cat "$work/serial.log"
 if [ "$mesa_mode" = "1" ]; then
     for marker in \
         "TGOS_MESA_GBM_RENDER_NODE_PASS" \
+        "TGOS_MESA_REAL_SYSFS_PCI_PASS" \
+        "TGOS_MESA_LIBDRM_DEVICE_ENUM_PASS" \
         "TGOS_MESA_EGL_INITIALIZE_PASS" \
         "TGOS_MESA_VIRGL_RENDERER_PASS" \
         "TGOS_MESA_GL_CLEAR_PIXELS_PASS" \
