@@ -106,7 +106,7 @@ with log.open("wb") as stream:
             m = capset.search(output)
             if m and all(int(n) > 0 for n in m.groups()) and context.search(output) and pixel.search(output) and runtime.search(output):
                 if ("[M177 VIRTIO GPU READY]" not in output or
-                    "[M1] entering actual ring 3" not in output):
+                    "[M4] real Alpine busybox via musl interpreter in ring 3" not in output):
                     continue
                 print(
                     f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
@@ -116,7 +116,7 @@ with log.open("wb") as stream:
                 break
         else:
             raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output or "[M1] entering actual ring 3" not in output:
+        if not capset.search(output) or not context.search(output) or not pixel.search(output) or not runtime.search(output) or "[M177 VIRTIO GPU READY]" not in output or "[M4] real Alpine busybox via musl interpreter in ring 3" not in output:
             raise RuntimeError(f"{arch}: missing original user entry, VirGL pixels or runtime IRQ completion")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
