@@ -232,7 +232,11 @@ static uint64_t resources(unsigned slot,uint64_t arg) {
        (rc=copy_u32s(r.encoders,r.count_encoders,&encoder,1)))
         return (uint64_t)(int64_t)rc;
     r.count_fbs=n;r.count_crtcs=1;r.count_connectors=1;r.count_encoders=1;
-    r.min_width=1;r.min_height=1;r.max_width=KMS_WIDTH;r.max_height=KMS_HEIGHT;
+    /* This fixed-mode KMS accepts only KMS_WIDTH x KMS_HEIGHT in ADDFB.
+     * Report the actual framebuffer limits: Xorg verifies the 32-bpp
+     * path using the minimum advertised size before initializing X11. */
+    r.min_width=KMS_WIDTH;r.min_height=KMS_HEIGHT;
+    r.max_width=KMS_WIDTH;r.max_height=KMS_HEIGHT;
     return (uint64_t)(int64_t)copyout(arg,&r,sizeof(r));
 }
 static uint64_t get_connector(uint64_t arg) {
