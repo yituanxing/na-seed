@@ -19,6 +19,18 @@ int nas_linux_virtgpu_vq_bind(struct nas_linux_virtgpu_vq_bridge *,
 int nas_linux_virtgpu_vq_submit(struct nas_linux_virtgpu_vq_bridge *,
                                const struct nas_vring_segment *,
                                unsigned count, void *cookie);
+/* One Linux SG entry per mapped/borrowed page slice. It is NOT a raw
+ * virtual-address-to-DMA shortcut: each map requires an explicit provider pin.
+ * The mapped pages MUST remain active until the returned cookie is completed,
+ * or after a verified device reset and abandoned-cookie recovery. */
+struct nas_linux_virtgpu_dma_sg {
+    const struct nas_dma_mapped_frame *map;
+    uint32_t offset, length;
+    bool device_writes;
+};
+int nas_linux_virtgpu_vq_submit_mapped(struct nas_linux_virtgpu_vq_bridge *,
+                                      const struct nas_linux_virtgpu_dma_sg *,
+                                      unsigned count, void *cookie);
 /* Linux virtqueue_get_buf semantics: completion length and ORIGINAL cookie,
  * and -EAGAIN if the device has not completed anything. */
 int nas_linux_virtgpu_vq_reclaim(struct nas_linux_virtgpu_vq_bridge *,
