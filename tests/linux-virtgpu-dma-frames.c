@@ -2,6 +2,7 @@
  * Fake only the physical frame allocator; do not fake DMA address mapping
  * or the reference-counted map/unmap functions under test. */
 #include "../kernel/drivers/port/dma.h"
+#include "../ports/linux-virtgpu/gem_dma_port.h"
 #include "../kernel/errno.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -45,6 +46,54 @@ static int synthetic_unmap(void *ctx,uint64_t frame,uint64_t bus) {
     if(bus!=fake_bus || fail_unmap)return -EIO;
     fake_unmap_calls++;
     return nas_frame_put(frame)?0:-EIO;
+}
+/* Stub only the pre-existing DRM GEM handle lookup and VMA owner.
+ * Run the actual GEM->DMA bridge and production DMA page mapper. */
+#define GEM_BASE UINT64_C(0x10000000)
+static unsigned gem_pins;
+static void gem_put(void *ctx) {(void)ctx;gem_pins--;}
+static int gem_page(void *ctx,uint64_t at,uint64_t *frame) {
+    (void)ctx;
+    if(!frame)return -EINVAL;
+    if(at==GEM_BASE){*frame=FRAME_A;return 0;}
+    if(at==GEM_BASE+NAS_DMA_PAGE_BYTES){*frame=FRAME_B;return 0;}
+    return -EINVAL;
+}
+static struct nas_vm_device gem_owner={
+    .context=&gem_pins,.extent_bytes=GEM_BASE+2*NAS_DMA_PAGE_BYTES,
+    .put=gem_put,.page=gem_page
+};
+int nas_drm_gem_map_offset(unsigned slot,uint32_t handle,uint64_t *out) {
+    if(!out || slot!=5U || handle!=7U)return -ENOENT;
+    *out=GEM_BASE;
+    return 0;
+}
+int nas_drm_gem_mmap_pin(unsigned slot,uint64_t at,struct nas_vm_device **out) {
+    if(!out || slot!=5U || at!=GEM_BASE)return -EINVAL;
+    gem_pins++;
+    *out=&gem_owner;
+    return 0;
+}
+static int test_gem_dma(void) {
+    struct nas_linux_virtgpu_gem_page pin={0};
+    CHECK(nas_linux_virtgpu_gem_map_page(5U,7U,1U,
+          &nas_dma_qemu_coherent,&pin)==0);
+    CHECK(pin.owner==&gem_owner && pin.dma.frame_pa==FRAME_B);
+    CHECK(gem_pins==1U && refs_b==2U);
+    CHECK(nas_linux_virtgpu_gem_map_page(5U,7U,0U,
+          &nas_dma_qemu_coherent,&pin)==-EBUSY);
+    CHECK(nas_linux_virtgpu_gem_unmap_page(&pin)==0);
+    CHECK(gem_pins==0U && refs_b==1U);
+    CHECK(nas_linux_virtgpu_gem_unmap_page(&pin)==-EINVAL);
+    CHECK(nas_linux_virtgpu_gem_map_page(5U,7U,3U,
+          &nas_dma_qemu_coherent,&pin)==-EINVAL);
+    CHECK(gem_pins==0U && refs_a==1U && refs_b==1U);
+    CHECK(nas_linux_virtgpu_gem_map_page(5U,7U,0U,
+          &nas_dma_qemu_coherent,&pin)==0);
+    CHECK(gem_pins==1U && refs_a==2U);
+    CHECK(nas_linux_virtgpu_gem_unmap_page(&pin)==0);
+    CHECK(gem_pins==0U && refs_a==1U);
+    return 0;
 }
 static int test_mapping(void) {
     struct nas_dma_mapped_frame map={0}, second={0};
@@ -98,4 +147,8 @@ static int test_mapping(void) {
     CHECK(fake_map_calls==3U && fake_unmap_calls==3U);
     return 0;
 }
-int main(void) {return test_mapping();}
+int main(void) {
+    int rc=test_mapping();
+    if(rc)return rc;
+    return test_gem_dma();
+}
