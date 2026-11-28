@@ -66,9 +66,10 @@ static int test(void) {
 
     sg_init_table(output,2);
     sg_init_table(input,1);
-    CHECK(nas_linux_virtgpu_sg_map(&output[0],&cmd,16,48)==0);
-    CHECK(nas_linux_virtgpu_sg_map(&output[1],&cmd,128,32)==0);
-    CHECK(nas_linux_virtgpu_sg_map(&input[0],&response,4,24)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&output[0],&cmd,16,48)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&output[1],&cmd,128,32)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&input[0],&response,4,24)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&input[0],&response,4,24)==-EBUSY);
     CHECK(virtqueue_add_sgs(&port.linux_vq,sgs,1,1,&token,0)==0);
     CHECK(q.free_count==13U && port.linux_vq.num_free==13U);
     uint16_t head=q.ring.avail->ring[0], d2=q.ring.desc[head].next;
@@ -98,10 +99,11 @@ static int test(void) {
     sg_init_table(output,1);
     CHECK(virtqueue_add_sgs(&port.linux_vq,sgs,1,0,&token,0)==-EINVAL);
     CHECK(q.ring.avail->idx==1U);
-    CHECK(nas_linux_virtgpu_sg_map(&output[0],&cmd,8,16)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&output[0],&cmd,8,16)==0);
     cmd.usable=false;
     CHECK(virtqueue_add_sgs(&port.linux_vq,sgs,1,0,&token,0)==-EINVAL);
     cmd.usable=true;
+    CHECK(nas_linux_virtgpu_sg_map(&port,&output[0],&cmd,8,16)==0);
     output[0].dma_address++;
     CHECK(virtqueue_add_sgs(&port.linux_vq,sgs,1,0,&token,0)==-EINVAL);
     output[0].dma_address--;
@@ -113,7 +115,7 @@ static int test(void) {
     struct scatterlist *long_list[]={long_sgs};
     sg_init_table(long_sgs,17);
     for(unsigned i=0;i<17;i++)
-        CHECK(nas_linux_virtgpu_sg_map(&long_sgs[i],&cmd,0,16)==0);
+        CHECK(nas_linux_virtgpu_sg_map(&port,&long_sgs[i],&cmd,0,16)==0);
     CHECK(virtqueue_add_sgs(&port.linux_vq,long_list,1,0,&token,0)==-ENOSPC);
     CHECK(q.free_count==16U && port.linux_vq.num_free==16U);
 
@@ -121,8 +123,8 @@ static int test(void) {
     struct scatterlist chain[2],second[1];
     sg_init_table(chain,2);
     sg_init_table(second,1);
-    CHECK(nas_linux_virtgpu_sg_map(&chain[0],&cmd,0,8)==0);
-    CHECK(nas_linux_virtgpu_sg_map(&second[0],&cmd,16,8)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&chain[0],&cmd,0,8)==0);
+    CHECK(nas_linux_virtgpu_sg_map(&port,&second[0],&cmd,16,8)==0);
     chain[1].page_link=((uintptr_t)second)|SG_CHAIN;
     struct scatterlist *linked[]={chain};
     CHECK(virtqueue_add_sgs(&port.linux_vq,linked,1,0,&token,0)==0);
