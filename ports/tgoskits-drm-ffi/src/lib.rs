@@ -67,7 +67,7 @@ fn check_alignment(alignment: usize, stage: u32) -> i32 {
     unsafe { nas_tgos_probe_stage(stage + 2) };
     if ptr.is_null() { return -7; }
     if (ptr as usize) & (alignment - 1) != 0 {
-        unsafe { dealloc(ptr, layout) };
+        unsafe { ALLOC.dealloc(ptr, layout) };
         return -8;
     }
     unsafe { core::ptr::write_bytes(ptr, 0xa5, layout.size()) };
