@@ -6,14 +6,14 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 temp=$(mktemp -d)
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
-inc="-Ithird_party/unikraft/include -Iports/unikraft/include"
+inc="-Ithird_party/unikraft/include -Iports/unikraft/include -Iports/linux-virtgpu/include"
 for arch in x86_64 riscv64 aarch64; do
     case "$arch" in
         x86_64) target=x86_64-unknown-none-elf ;;
         riscv64) target=riscv64-unknown-elf ;;
         aarch64) target=aarch64-none-elf ;;
     esac
-    for src in kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/gem_dma_port.c; do
+    for src in kernel/drivers/port/dma.c ports/unikraft/split_queue.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/gem_dma_port.c; do
         clang --target="$target" -std=c11 -ffreestanding -fno-builtin \
             -Wall -Wextra -Werror $inc -c "$src" \
             -o "$temp/${arch}-$(basename "$src" .c).o"
@@ -41,3 +41,11 @@ cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
     -o "$temp/gem-queue-e2e"
 "$temp/gem-queue-e2e"
 echo "PASS: one-shot GEM DMA pin -> mapped vring -> used completion -> safe release"
+cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
+    tests/linux-virtgpu-virtqueue-api.c \
+    ports/unikraft/split_queue.c \
+    ports/linux-virtgpu/virtqueue_bridge.c \
+    ports/linux-virtgpu/virtqueue_api_port.c \
+    -o "$temp/linux-virtqueue-api-test"
+"$temp/linux-virtqueue-api-test"
+echo "PASS: original Linux virtqueue_* SG API backed by real NaSeed split ring"
