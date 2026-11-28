@@ -27,6 +27,36 @@ device = gbm.gbm_create_device(fd)
 assert device, "Alpine Mesa GBM refused NaSeed virtio_gpu DRM renderD128"
 print("TGOS_MESA_GBM_RENDER_NODE_PASS", flush=True)
 
+# The real generic NaSeed sysfs provider now projects the same PCI owner to
+# Linux's /sys/dev/char and /sys/class/drm. libdrm requires this BEFORE EGL
+# can select a rendering EGLDevice; a driver-name override alone is insufficient.
+device_path = "/sys/dev/char/226:128/device"
+assert os.path.isdir(device_path), "original GPU PCI device missing from real sysfs"
+with open(device_path + "/vendor", "rt") as vendor_file:
+    vendor = int(vendor_file.read().strip(), 16)
+with open(device_path + "/device", "rt") as device_file:
+    pci_device = int(device_file.read().strip(), 16)
+with open(device_path + "/uevent", "rt") as uevent_file:
+    uevent = uevent_file.read()
+assert vendor == 0x1AF4 and pci_device == 0x1050, (
+    f"GPU sysfs identity differs from QEMU PCI bus: {vendor:#x}:{pci_device:#x}"
+)
+assert "PCI_SLOT_NAME=" in uevent, "libdrm cannot identify GPU PCI slot"
+print("TGOS_MESA_REAL_SYSFS_PCI_PASS", flush=True)
+
+libdrm = C.CDLL("libdrm.so.2")
+libdrm.drmGetDevice2.argtypes = [C.c_int, C.c_uint32, C.POINTER(C.c_void_p)]
+libdrm.drmGetDevice2.restype = C.c_int
+libdrm.drmFreeDevice.argtypes = [C.POINTER(C.c_void_p)]
+drm_device = C.c_void_p()
+drm_rc = libdrm.drmGetDevice2(fd, 0, C.byref(drm_device))
+assert drm_rc == 0 and drm_device.value, (
+    f"stock Alpine libdrm drmGetDevice2 failed: {drm_rc}"
+)
+libdrm.drmFreeDevice(C.byref(drm_device))
+print("TGOS_MESA_LIBDRM_DEVICE_ENUM_PASS", flush=True)
+
+
 egl = C.CDLL("libEGL.so.1")
 egl.eglGetProcAddress.argtypes = [C.c_char_p]
 egl.eglGetProcAddress.restype = C.c_void_p
