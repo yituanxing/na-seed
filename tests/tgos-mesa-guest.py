@@ -10,6 +10,11 @@ import sys
 
 os.environ["LIBGL_ALWAYS_SOFTWARE"] = "0"
 os.environ["EGL_PLATFORM"] = "gbm"
+# NaSeed has a real Linux DRM render node but /sys/dev/char/226:128 is not
+# yet implemented. This is Mesa's documented driver-selection override,
+# NOT a software fallback; the actual guest renderer must still be VIRGL.
+os.environ["MESA_LOADER_DRIVER_OVERRIDE"] = "virtio_gpu"
+os.environ["LIBGL_DEBUG"] = "verbose"
 
 # The host must have loaded a REAL QEMU virtio-gpu-gl device. GBM gets the
 # existing NaSeed Linux DRM render node; no vtest or llvmpipe fallback.
