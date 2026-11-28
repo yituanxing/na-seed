@@ -220,7 +220,7 @@ static int read_dir(const struct nas_fs_node *node,uint64_t cursor,
                     struct nas_vfs_dirent *entries,unsigned maximum) {
     if(!node || !entries || !maximum)return -EINVAL;
     unsigned directory=dir_number(node);
-    if(directory==3U)return -ENOTDIR;
+    if(directory==DEV_DIR_COUNT)return -ENOTDIR;
     unsigned count=0;
     for(;count<maximum;count++,cursor++) {
         int rc=entry_at(directory,cursor,&entries[count]);
