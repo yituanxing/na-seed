@@ -1,0 +1,46 @@
+name: TGOSKits ORIGINAL DRM Rust to NaSeed kernel ABI (experimental)
+on:
+  push:
+    branches: [experiment/tgoskits-drm-ffi-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/fs/drm_chrdev.c'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-drm-ffi.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tgos-drm-original-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  original-source-real-kernel-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install freestanding C/Rust link tools
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends clang lld make git binutils curl
+          rustup toolchain install nightly-2026-11-13 --profile minimal --component rust-src --target x86_64-unknown-none
+          cargo +nightly-2026-11-13 --version
+          rustc +nightly-2026-11-13 --version
+      - name: Build unchanged pinned TGOSKits kdrm-core + drm-kapi with native NaSeed TLSF adapter
+        run: |
+          sh -n scripts/build-tgoskits-drm-ffi.sh
+          sh scripts/build-tgoskits-drm-ffi.sh
+      - name: Link ACTUAL NaSeed x86-64 kernel and call ORIGINAL Rust DRM functions at DRM node registration
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 NAS_EXPERIMENT_TGOS_DRM_FFI=1 kernel
+          test -s build/kernel.elf
+          readelf -h build/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          for sym in nas_tgos_drm_check_original_abi nas_tgos_original_drm_ffi_selftest drm_mode_legacy_fb_format drm_format_info; do
+            readelf -Ws build/kernel.elf | grep -Eq "[[:space:]]${sym}$" || {
+              echo "HARD FAIL: missing original Rust/C symbol ${sym} in REAL NaSeed kernel"
+              exit 1
+            }
+          done
+          echo 'PASS: original upstream DRM Rust objects are linked into the real NaSeed kernel'
+          echo 'NOTE: this gate has not run QEMU and does not demonstrate GPU 3D or Mesa.'
