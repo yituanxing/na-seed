@@ -215,6 +215,30 @@ fn with_device<T>(f: impl FnOnce(&mut VirtIoGpu<NaSeedHal, NaTransport>) -> Resu
 const RENDER_SLOTS: usize = 128;
 static RENDER_CONTEXTS: [AtomicBool; RENDER_SLOTS] =
     [const { AtomicBool::new(false) }; RENDER_SLOTS];
+// This is a bounded *transitional* NaSeed File -> original GPU resource
+// adapter. Original axdrm GEM/refcount/VM ownership is still required for
+// arbitrary Mesa BO allocation and mapping. No copied GPU command engine.
+const BO_PER_FILE: usize = 16;
+static RENDER_BO_SIZE: [AtomicU32; RENDER_SLOTS * BO_PER_FILE] =
+    [const { AtomicU32::new(0) }; RENDER_SLOTS * BO_PER_FILE];
+#[repr(C)]
+pub struct GuestResource3d {
+    target: u32, format: u32, bind: u32, width: u32, height: u32,
+    depth: u32, array_size: u32, last_level: u32, nr_samples: u32,
+    flags: u32, bo_handle: u32, res_handle: u32, size: u32, stride: u32,
+}
+const _: () = assert!(size_of::<GuestResource3d>() == 56);
+
+fn bo_index(file: usize, handle: u32) -> Result<usize, i32> {
+    if file >= RENDER_SLOTS || handle == 0 || handle > BO_PER_FILE as u32 {
+        return Err(-2); // ENOENT; never resolve other files' BOs
+    }
+    Ok(file * BO_PER_FILE + (handle as usize - 1))
+}
+fn bo_resource_id(file: usize, handle: u32) -> u32 {
+    0x5000_0000 | ((file as u32) << 8) | handle
+}
+
 
 fn render_ctx_id(slot: usize) -> u32 {
     0x4e53_1000 + slot as u32
@@ -255,6 +279,23 @@ pub extern "C" fn nas_tgos_original_gpu_render_close(slot: u32) -> i32 {
         return -22;
     }
     let result = with_device(|gpu| {
+        // Every still-open BO belongs to this File. Destroy resources
+        // BEFORE the context and only after actual QEMU used-ring proof.
+        // A failure retains the slot IDs rather than risking DMA reuse.
+        for handle in 1..=BO_PER_FILE as u32 {
+            let idx = bo_index(index, handle)?;
+            if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 { continue; }
+            gpu.ctx_detach_resource(render_ctx_id(index), bo_resource_id(index, handle))
+                .map_err(|_| -5)?;
+            let fence = gpu.resource_unref(bo_resource_id(index, handle))
+                .map_err(|_| -5)?;
+            gpu.ctrl_notify();
+            gpu.wait_fence(fence).map_err(|_| -5)?;
+            if !gpu.fence_completed(fence) || !gpu_async_ok() {
+                return Err(-5);
+            }
+            RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+        }
         gpu.ctx_destroy(render_ctx_id(index)).map_err(|_| -5)?;
         gpu.ctrl_notify();
         gpu.wait_idle().map_err(|_| -5)?;
@@ -271,13 +312,114 @@ pub extern "C" fn nas_tgos_original_gpu_render_close(slot: u32) -> i32 {
     }
 }
 
+// Linux VirtGPU RESOURCE_CREATE: kernel-validated struct, not user pointers.
+// Device creation and context attachment are delegated to ORIGINAL upstream
+// VirtIoGpu APIs. This limited stage has HOST 3D objects but NO guest mmap,
+// transfer-to-host backing, PRIME, multi-plane or reusable dma-buf.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_resource_create(
+    slot: u32, request: *const GuestResource3d,
+    out_handle: *mut u32, out_resource: *mut u32,
+) -> i32 {
+    let file = slot as usize;
+    if file >= RENDER_SLOTS || request.is_null() ||
+       out_handle.is_null() || out_resource.is_null() ||
+       !RENDER_CONTEXTS[file].load(Ordering::Acquire) {
+        return -22;
+    }
+    let req = unsafe { &*request };
+    if req.width == 0 || req.height == 0 || req.depth == 0 ||
+       req.array_size == 0 || req.size == 0 || req.size > 64*1024*1024 ||
+       req.width > 8192 || req.height > 8192 || req.depth > 8192 {
+        return -22;
+    }
+    match with_device(|gpu| {
+        if !gpu_async_ok() { return Err(-5); }
+        for handle in 1..=BO_PER_FILE as u32 {
+            let idx = bo_index(file, handle)?;
+            if RENDER_BO_SIZE[idx].load(Ordering::Acquire) != 0 { continue; }
+            // Reserve before the first async host command. A failed host
+            // operation is fail-closed: BO and ID stay pinned for teardown.
+            RENDER_BO_SIZE[idx].store(req.size, Ordering::Release);
+            let id = bo_resource_id(file, handle);
+            gpu.resource_create_3d(ResourceCreate3d {
+                ctx_id: 0, resource_id: id, target: req.target,
+                format: req.format, bind: req.bind, width: req.width,
+                height: req.height, depth: req.depth, array_size: req.array_size,
+                last_level: req.last_level, nr_samples: req.nr_samples,
+                flags: req.flags,
+            }).map_err(|_| -5)?;
+            gpu.ctx_attach_resource(render_ctx_id(file), id).map_err(|_| -5)?;
+            gpu.ctrl_notify();
+            gpu.wait_idle().map_err(|_| -5)?;
+            if !gpu_async_ok() { return Err(-5); }
+            unsafe {
+                *out_handle = handle;
+                *out_resource = id;
+            }
+            return Ok(());
+        }
+        Err(-28) // ENOSPC
+    }) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_resource_info(
+    slot: u32, handle: u32, id: *mut u32, size: *mut u32,
+) -> i32 {
+    if id.is_null() || size.is_null() { return -22; }
+    let file = slot as usize;
+    match with_device(|_| {
+        if !RENDER_CONTEXTS.get(file).is_some_and(|entry|
+            entry.load(Ordering::Acquire)) { return Err(-9); }
+        let idx = bo_index(file, handle)?;
+        let bytes = RENDER_BO_SIZE[idx].load(Ordering::Acquire);
+        if bytes == 0 { return Err(-2); }
+        unsafe {
+            *id = bo_resource_id(file, handle);
+            *size = bytes;
+        }
+        Ok(())
+    }) {
+        Ok(()) => 0, Err(e) => e,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_resource_close(
+    slot: u32, handle: u32,
+) -> i32 {
+    let file = slot as usize;
+    match with_device(|gpu| {
+        if !RENDER_CONTEXTS.get(file).is_some_and(|entry|
+            entry.load(Ordering::Acquire)) { return Err(-9); }
+        let idx = bo_index(file, handle)?;
+        if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 { return Err(-2); }
+        let id = bo_resource_id(file, handle);
+        gpu.ctx_detach_resource(render_ctx_id(file), id).map_err(|_| -5)?;
+        let fence = gpu.resource_unref(id).map_err(|_| -5)?;
+        gpu.ctrl_notify();
+        gpu.wait_fence(fence).map_err(|_| -5)?;
+        if !gpu.fence_completed(fence) || !gpu_async_ok() {
+            return Err(-5);
+        }
+        RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+        Ok(())
+    }) {
+        Ok(()) => 0, Err(e) => e,
+    }
+}
+
 // Use the upstream TGOSKits VirtIoGpu queue implementation unchanged.
 // The first admitted user command is VIRGL_CCMD_NOP: non-empty 4-byte
 // VirGL protocol command, accepted by original virglrenderer decoder.
 // Nothing here claims a Mesa render, GL surface or pixel output.
 #[unsafe(no_mangle)]
 pub extern "C" fn nas_tgos_original_gpu_render_exec_nop(
-    slot: u32, command: *const u8, size: usize,
+    slot: u32, command: *const u8, size: usize, bo_handle: u32,
 ) -> i32 {
     let index = slot as usize;
     if index >= RENDER_SLOTS ||
@@ -290,6 +432,12 @@ pub extern "C" fn nas_tgos_original_gpu_render_exec_nop(
     if bytes != [0, 0, 0, 0] { return -95; }
     match with_device(|gpu| {
         if !gpu_async_ok() { return Err(-5); }
+        if bo_handle != 0 {
+            let idx = bo_index(index, bo_handle)?;
+            if RENDER_BO_SIZE[idx].load(Ordering::Acquire) == 0 {
+                return Err(-2);
+            }
+        }
         let fence = gpu.submit_3d(render_ctx_id(index), bytes).map_err(|_| -5)?;
         if fence == 0 { return Err(-5); }
         gpu.ctrl_notify();
