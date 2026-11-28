@@ -229,16 +229,18 @@ pub extern "C" fn nas_tgos_original_gpu_get_caps(
             }
         }
         let info = found.ok_or(-22)?;
-        if version > info.max_version || info.max_size as usize > capacity {
-            return Err(-22);
-        }
+        if version > info.max_version { return Err(-22); }
         let bytes = gpu.get_capset(id, version, info.max_size).map_err(|_| -5)?;
-        if bytes.is_empty() || bytes.len() > capacity { return Err(-5); }
+        if bytes.is_empty() { return Err(-5); }
+        // Match the pinned upstream axdrm ioctl_get_caps: copy only
+        // min(request.size, contents.len()). A small user buffer is valid;
+        // it must NOT require space for the host's entire max_size capset.
+        let count = bytes.len().min(capacity);
         // SAFETY: caller promises capacity bytes writable in kernel memory.
         // VFS passes a private heap buffer, never an unchecked user pointer.
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-            *written = bytes.len();
+            ptr::copy_nonoverlapping(bytes.as_ptr(), dst, count);
+            *written = count;
         }
         Ok(())
     });
