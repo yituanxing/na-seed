@@ -72,7 +72,7 @@ fail:
     return rc;
 }
 
-int nas_vring_queue_submit(struct nas_vring_queue *q,
+int nas_vring_queue_submit_deferred(struct nas_vring_queue *q,
                            const struct nas_vring_segment *segs, unsigned n,
                            uint16_t *out_head) {
     if (!q || !q->active || !segs || !out_head || !n)
@@ -107,9 +107,34 @@ int nas_vring_queue_submit(struct nas_vring_queue *q,
      * chain already belongs to the device. Mark it failed and reset on
      * close, never free live descriptors here. */
     if (rc) { broken(q); return rc; }
-    if (!(r->used->flags & VRING_USED_F_NO_NOTIFY))
-        nas_virtio_notify(q->transport, q->queue_id);
+    /* Descriptor publication completed; a separate kick may batch more. */
+    q->kick_pending=true;
     *out_head=head;
+    return 0;
+}
+
+
+/* The Linux virtqueue driver only kicks after releasing the queue lock.
+ * Preserve that semantics while retaining NaSeed's original eager-submit API.
+ * Coherent split-ring memory is required by queue_init; EVENT_IDX is not used. */
+bool nas_vring_queue_kick_prepare(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned || !q->kick_pending)
+        return false;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    q->kick_pending=false;
+    return !(q->ring.used->flags & VRING_USED_F_NO_NOTIFY);
+}
+void nas_vring_queue_notify(struct nas_vring_queue *q) {
+    if (q && q->active && !q->poisoned)
+        nas_virtio_notify(q->transport, q->queue_id);
+}
+int nas_vring_queue_submit(struct nas_vring_queue *q,
+                            const struct nas_vring_segment *segs, unsigned n,
+                            uint16_t *out_head) {
+    int rc=nas_vring_queue_submit_deferred(q,segs,n,out_head);
+    if (rc)return rc;
+    if (nas_vring_queue_kick_prepare(q))
+        nas_vring_queue_notify(q);
     return 0;
 }
 
