@@ -13,14 +13,17 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 2 or sys.argv[1] not in ("x86_64", "riscv64", "aarch64"):
-    raise SystemExit("usage: native-virgl-probe.py <x86_64|riscv64|aarch64>")
+if (len(sys.argv) not in (2, 3)
+        or sys.argv[1] not in ("x86_64", "riscv64", "aarch64")
+        or (len(sys.argv) == 3 and sys.argv[2] != "user")):
+    raise SystemExit("usage: native-virgl-probe.py <x86_64|riscv64|aarch64> [user]")
 arch = sys.argv[1]
+user_program = len(sys.argv) == 3
 work = pathlib.Path("build/native-boot") / arch
 work.mkdir(parents=True, exist_ok=True)
-esp = (pathlib.Path("build/naseed.iso") if arch == "x86_64"
-       else work / "efi.img").resolve()
-log = work / "virgl-probe.log"
+esp = (pathlib.Path(os.environ.get("NAS_GPU_USER_ISO", "build/naseed.iso"))
+       if arch == "x86_64" else work / "efi.img").resolve()
+log = work / ("virgl-userspace.log" if user_program else "virgl-probe.log")
 if arch == "x86_64":
     firmware = next(
         (pathlib.Path(p) for p in (
@@ -75,6 +78,8 @@ else:
 # Require the hardware capset response, not merely a -device switch or
 # an echoed command string. All checks are based on actual guest UART.
 gpu_owner = os.environ.get("NAS_EXPERIMENT_TGOS_GPU_OWNER") == "1"
+if user_program and (not gpu_owner or arch != "x86_64"):
+    raise SystemExit("real GPU userspace acceptance currently requires experimental x86-64 owner")
 if gpu_owner:
     # Only the experimental original Rust GPU owner emits this marker.
     # It means a REAL QEMU capset reply and original CTX used-ring drain,
@@ -104,7 +109,18 @@ with log.open("wb") as stream:
             if m and all(int(n) > 0 for n in m.groups()):
                 if ready_marker not in output:
                     continue
-                if gpu_owner:
+                if user_program and not (
+                    "[USER GPU CAPSET PASS]" in output
+                    and "[PASS] userspace exit 0" in output
+                ):
+                    continue
+                if user_program:
+                    print(
+                        "PASS: actual x86-64 ring-3 ELF opened /dev/dri/renderD128, "
+                        "read upstream QEMU VirGL capset via standard Linux DRM ioctl; "
+                        "NOT Mesa/glmark2 or GPU rendered output", flush=True
+                    )
+                elif gpu_owner:
                     print(
                         f"PASS: {arch} original TGOSKits VirtIoGpu owns real "
                         f"QEMU device, capset_id={m[1]}, original RES3D + "
@@ -119,7 +135,11 @@ with log.open("wb") as stream:
                 break
         else:
             raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or ready_marker not in output:
+        if (not capset.search(output) or ready_marker not in output
+                or (user_program and (
+                    "[USER GPU CAPSET PASS]" not in output
+                    or "[PASS] userspace exit 0" not in output
+                ))):
             raise RuntimeError(f"{arch}: no actual VirGL feature/capset response")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
