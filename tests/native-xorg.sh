@@ -20,6 +20,21 @@ docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec "
         add xorg-server xorg-server-dbg gdb xf86-input-evdev openbox xterm xeyes xcalc \
             xdpyinfo xsetroot xwininfo font-adobe-75dpi font-adobe-100dpi
 "
+# Alpine --no-scripts deliberately skips font-package post-install triggers.
+# Restore the same upstream bitmap-font indexes used by the x86-64 desktop
+# acceptance. Otherwise Xorg drops every misc/75dpi/100dpi FontPath.
+docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec '
+    apk add --no-cache mkfontscale >/dev/null
+    for dir in /target/usr/share/fonts/*; do
+        [ -d "$dir" ] || continue
+        [ "${dir##*/}" != encodings ] || continue
+        mkfontdir "$dir"
+        mkfontscale "$dir"
+    done
+'
+test -s "$xroot/usr/share/fonts/misc/fonts.dir"
+test -s "$xroot/usr/share/fonts/75dpi/fonts.dir"
+test -s "$xroot/usr/share/fonts/100dpi/fonts.dir"
 sudo python3 - "$xroot" <<'PY'
 from pathlib import Path
 import sys
