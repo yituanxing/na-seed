@@ -93,7 +93,7 @@ runtime = re.compile(
     r"\[VIRTIO GPU 3D RUNTIME\] ctx_create=1 ctx_destroy=1 "
     r"irq_fence=1 deferred=1"
 )
-user_marker = ("NASEED_VIRGL_CAPS_USER_PASS id=2 version=2 bytes=1384"
+user_marker = ("NASEED_VIRGL_CAPS_USER_PASS id=2 version=0 bytes=1384"
                if mode == "caps" else
                "[M4] real Alpine busybox via musl interpreter in ring 3")
 
