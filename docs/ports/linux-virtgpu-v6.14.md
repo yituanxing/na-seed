@@ -176,6 +176,70 @@ descriptors and callback/workqueue lifetime; then full
 render-node semantics. Native upstream `virtgpu_vq.c` unit compilation
 and actual Mesa EXECBUFFER must remain explicit acceptance gates.
 
+## Native vbuf bounce + real GPU control/cursor queue ownership
+
+The imported original `virtgpu_vq.c` uses Linux kmem_cache/heap-backed
+command and response payloads. NaSeed's TLSF boot heap and dynamically
+registered heap arenas do **not** promise DMA-safe addresses. Guessing
+`virt_to_phys` for those pointers would produce incorrect device memory.
+The new `ports/linux-virtgpu/vbuf_dma_port.[ch]` is a bounded, real
+provider-owned **single-page DMA bounce** layer for such payloads:
+- the original CPU buffer is copied into a provider-mapped DMA page
+  (or the inbound page is zero-initialized and prepared for device writes);
+- `nas_linux_virtgpu_vbuf_dma_register_sg` makes that DMA page eligible
+  for the Linux-form `virtqueue_add_sgs` submission, using the original
+  Unikraft split ring;
+- only a matching real USED completion permits response DMA sync and
+  copying the result into the original CPU buffer; DMA pin and page release
+  follow device quiescence;
+- noncoherent/unsupported provider mapping, multiframe buffers and
+  premature general-heap direct mapping are **not** silently accepted.
+
+`tests/linux-virtgpu-gem-queue-e2e.c` uses actual NaSeed `dma.c`,
+the upstream-derived split ring, Linux SG adapter and this bounce layer
+to transfer a stack-allocated CPU command via QEMU-like DMA pages,
+simulate a device response in that DMA allocation, publish a USED entry,
+then verify copy-back and independent page-ref cleanup. This is a
+**queue/DMA integration test**, not a VirGL command or original driver
+runtime test.
+
+The original Linux `virtgpu_kms.c` also creates TWO VirtIO queues
+(control index 0, cursor index 1) and schedules their completion workers.
+The new `ports/linux-virtgpu/vq_pair_port.[ch]` now initializes both
+real queues through NaSeed's shared transport and allows the native
+feature-negotiated device to reach DRIVER_OK. A real PCI/MMIO
+`nas_virtio_irq_ack` records device-owned interrupt bits in the hard
+IRQ, then a separate process-context `service` invokes per-queue
+Linux-style callbacks only if their USED indexes have advanced.
+The callbacks may schedule original dequeue work; they never forge GPU
+response completion or signal a fence.
+
+`tests/linux-virtgpu-vq-pair.c` links the REAL NaSeed
+`kernel/drivers/virtio/transport.c`, Unikraft split queue and Linux
+`virtqueue_*` adapter. Hardware registers and the DMA memory allocator
+are emulated, but transport feature negotiation, two-ring setup,
+per-queue callbacks, real device IRQ acknowledgement and reset-before
+abandoned-cookie release are tested. This is still not a QEMU run with
+the original Linux driver.
+
+### Native upstream compilation is explicitly diagnosed, NOT passed
+
+`scripts/probe-linux-virtgpu-vq-native.sh` invokes Clang on the
+**actual unmodified Linux v6.14 `virtgpu_vq.c`** and publishes first
+compiler errors to the CI job summary. On the initial diagnostic run
+the first genuine blocker was `linux/dma-mapping.h` absent from the
+NaSeed API compatibility surface. The diagnostic step is informational,
+and **its green job result must never be interpreted as original driver
+object compilation**; the script explicitly prints `NOT COMPILED`.
+
+Still missing before a Linux vbuf allocation can run unmodified:
+full Linux `dma-mapping.h` and ordinary SG-table ownership,
+`kmem_cache`/vmalloc-compatible lifetime and larger DMA buffers;
+the complete `virtio_device` / `virtio_find_vqs` core binding and
+dequeue work scheduling; and the real Linux DRM/GEM shmem, `dma_resv`,
+`dma_fence`, syncobj and render-node implementation. The adapters here
+do not replace those real kernel facilities.
+
 ## Port acceptance sequence (non-negotiable)
 
 1. **Source authenticity / live UAPI bridge**: upstream blob checks, exact UAPI cross-compilation, and live NaSeed 2D GPU build on 3 ISAs — the current step.
