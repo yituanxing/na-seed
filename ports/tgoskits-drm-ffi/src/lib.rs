@@ -14,6 +14,7 @@ use drm_kapi::kernel_services::ProviderSlot;
 unsafe extern "C" {
     fn nas_tgos_alloc_aligned(size: usize, align: usize) -> *mut u8;
     fn nas_tgos_free_aligned(ptr: *mut u8);
+    fn nas_tgos_probe_stage(stage: u32);
 }
 
 // Real NaSeed TLSF provider. The kernel heap is process-context-only;
@@ -75,7 +76,8 @@ pub extern "C" fn nas_tgos_original_drm_ffi_selftest() -> i32 {
     // callback. These are deliberately *not* GPU DMA buffers: the test
     // checks C/Rust heap ownership and the 64/4096-byte alignment contract.
     // Executed from NaSeed's process-context DRM registration, never IRQ.
-    for alignment in [8usize, 16, 64, 4096] {
+    for (index, alignment) in [8usize, 16, 64, 4096].into_iter().enumerate() {
+        unsafe { nas_tgos_probe_stage(10 + 10 * index as u32) };
         let layout = match Layout::from_size_align(513, alignment) {
             Ok(layout) => layout,
             Err(_) => return -6,
@@ -83,6 +85,7 @@ pub extern "C" fn nas_tgos_original_drm_ffi_selftest() -> i32 {
         // SAFETY: valid layout; non-null pointer comes from the selected
         // kernel TLSF global allocator. Deallocated once with same layout.
         let ptr = unsafe { alloc(layout) };
+        unsafe { nas_tgos_probe_stage(11 + 10 * index as u32) };
         if ptr.is_null() {
             return -7;
         }
@@ -92,7 +95,9 @@ pub extern "C" fn nas_tgos_original_drm_ffi_selftest() -> i32 {
         }
         unsafe { core::ptr::write_bytes(ptr, 0xa5, layout.size()) };
         let last = unsafe { *ptr.add(layout.size() - 1) };
+        unsafe { nas_tgos_probe_stage(12 + 10 * index as u32) };
         unsafe { dealloc(ptr, layout) };
+        unsafe { nas_tgos_probe_stage(13 + 10 * index as u32) };
         if last != 0xa5 {
             return -9;
         }
