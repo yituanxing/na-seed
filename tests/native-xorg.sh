@@ -17,7 +17,7 @@ docker run --rm -v "$PWD/$xroot:/target" alpine:3.23 sh -ec "
     apk --arch $arch --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
         -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
-        add xorg-server xf86-input-evdev openbox xterm xeyes xcalc \
+        add xorg-server xorg-server-dbg gdb xf86-input-evdev openbox xterm xeyes xcalc \
             xdpyinfo xsetroot xwininfo font-adobe-75dpi font-adobe-100dpi
 "
 sudo python3 - "$xroot" <<'PY'
