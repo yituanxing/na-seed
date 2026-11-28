@@ -86,6 +86,55 @@
 - [真实 3D 用例 README](https://github.com/rcore-os/tgoskits/blob/dev/apps/starry/virgl-test/README.md)：Weston DRM + GL，`/dev/dri/card0` 和 `renderD128`，`GL_RENDERER: virgl`，x86-64 QEMU/KVM 默认 `glmark2-es2-wayland` 场景通过且可视动画；**个别 `refract` 场景失败**、人工验收需手工结束虚机，**没有自动 PASS 标记**。这比只做 capset probe 的 NaSeed 证据强，但并非本次重新运行或所有功能/所有架构全面通过。上游通用 DRM x86/RV64/AArch64 测试不等于这三架构已有 3D 渲染测试。
 - **选型影响**：TGOSKits 是 NaSeed 所求的“完整 Linux ABI + 成熟 3D 渲染路径”**非 Linux C 内核**实例，是与 Linux v6.14/FreeBSD #517 并列的真实候选。不能因为已经写了 Linux 适配层就排除；同样不能因为 Rust 是 MIT 就忽略巨大的跨语言 runtime 桥。下一决定性试验应是**原样的 kdrm-core/drm-kapi 能否单独以 C ABI 静态链接进 NaSeed 的 x86-64 最小内核**，并跑真正 provider 初始化；若不能，退回 Linux C + 完整 DRM 依赖导入，绝不把源文件翻译成另一套自写 DRM。
 
+### NaOS / na-kernel：C 核心 + Rust `no_std` GPU 模块（源码实审）
+
+**代码来源与归属：** [aether-os-studio/na-kernel](https://github.com/aether-os-studio/na-kernel) 是实际内核和模块源码；[aether-os-studio/naos](https://github.com/aether-os-studio/naos) 是父构建、rootfs 与运行脚本。前者仓库根目录 **LICENSE = GPL-3.0**（2026-11-28 查实）。项目结构不是 FreeBSD 式的“Linux VirtIO-GPU 驱动原样搬运”，而是项目自行实现 Linux 风格 DRM 与 VirtIO-GPU 协议，**不可当成经过上游逐项验证的驱动源码直接引进 NaSeed**。
+
+**源码级真实调用链，均已读取：**
+
+```text
+Alpine / Void 原版 Mesa、libdrm
+        │ Linux DRM ioctl（VIRTGPU_*, GEM, modeset, syncobj...）
+        ▼
+na-kernel/kernel/src/drivers/drm/
+  drm_drv.c (1342 行，card/render node、VFS fd、DRM 对象)
+  drm_ioctl.c (5465 行，自有 ioctl/PRIME/syncobj/leases 等实现)
+        │ C ABI callback
+        ▼
+modules/na-std/src/drm/device.rs (544 行，Driver trait -> C vtable)
+        │ no_std Rust Driver
+        ▼
+modules/drivers/drm/virtio-gpu/src/
+  lib.rs (37 行，注册设备模块)
+  device.rs (204 行，特性协商、GPU control Q、文件/上下文)
+  display.rs (421 行，2D/KMS/atomic adapter)
+  ioctl.rs (617 行，Context/3D Resource/EXECBUFFER 等原生实现)
+  buffer.rs (69 行，独立 DMA buffers)
+  protocol.rs (95 行，自行编码 wire commands)
+        │ Rust na-std::virtio / na-std::memory
+        ▼
+na-kernel/kernel/src/mod/rust/virtio.c (297 行)
+  设备特性与真实 VirtIO 队列、DMA 请求、同步 used-ring 等
+        ▼
+QEMU VirtIO-GPU
+```
+
+实际 [Rust GPU Cargo.toml](https://github.com/aether-os-studio/na-kernel/blob/main/modules/drivers/drm/virtio-gpu/Cargo.toml) 是 `crate-type=["staticlib"]`，[`lib.rs`](https://github.com/aether-os-studio/na-kernel/blob/main/modules/drivers/drm/virtio-gpu/src/lib.rs) 是 `#![no_std]`、`#![forbid(unsafe_code)]`；跨 C/Rust 的 **unsafe** 限定在 `na-std` 等接口层。[`device.rs`](https://github.com/aether-os-studio/na-kernel/blob/main/modules/drivers/drm/virtio-gpu/src/device.rs) 使用现成控制队列并注册 `render_node(true)` / `atomic_modeset(true)`，而非将 DRMs/GEM/VM 全塞回 GPU 模块。
+
+**3D 能力逐函数审查：** [`ioctl.rs`](https://github.com/aether-os-studio/na-kernel/blob/main/modules/drivers/drm/virtio-gpu/src/ioctl.rs) 实现 `GETPARAM`、`GET_CAPS`、`CONTEXT_INIT`、`RESOURCE_CREATE_3D`、`ATTACH_BACKING`、`EXECBUFFER`、`TRANSFER_{TO,FROM}_HOST_3D`、`WAIT`、`GEM_CLOSE` 等，是真正的**经典 VirGL 协议路径**，不是纯 2D Capset 探测。提交 3D 命令时 C/Rust 队列桥同步等待 used entry，Rust 再核对 Fence ID/Flag；显式的 `FENCE_FD_OUT`、非零 `ring_idx`、syncobj 数量被拒绝；`RESOURCE_CREATE_BLOB` 明确 `Unsupported`。因此是**简化/同步版本**，不是 Linux VirtIO-GPU 的全部能力。
+
+**重要的正确性/证据缺口：**
+- [`kernel/src/mod/rust/virtio.c`](https://github.com/aether-os-studio/na-kernel/blob/main/kernel/src/mod/rust/virtio.c) 的 `na_virtio_queue_submit()` 在 **229–262 行**进行共用 DMA buffer 分配/写入/同步，在 **264 行**才取 `queue->lock`。并发调用相同 queue 会竞争覆盖缓冲区，存在明确的潜在竞态；不能不加审查就照搬此队列实现。
+- [`ioctl.rs`](https://github.com/aether-os-studio/na-kernel/blob/main/modules/drivers/drm/virtio-gpu/src/ioctl.rs) 的 `ioctl_wait` (484–500) 只校验 file 与 buffer 是否存在，**并未显式等待一个 fence**；`EXECBUFFER` 自己已同步等待 used completion，但并不能由此推断支持 Linux 所有异步同步语义。另需审 `ioctl_execbuffer/transfer` 对全局 handle 的 per-file 权限检验。
+- `naos` 构建仓库中有 [Alpine `mesa`/`mesa-dri-gallium` 等原版软件包](https://github.com/aether-os-studio/naos/blob/main/rootfs/alpine/packages.txt) 和 [XFCE4 启动脚本](https://github.com/aether-os-studio/naos/blob/main/rootfs/alpine/overlay/usr/lib/aether/start-xfce4-session)。**但当前源代码与可见仓库搜索没有给出 glmark2 实际运行、GL_RENDERER=virgl 或 3D 像素读回的可核验证据**。仓库代码有功能不等于该功能真实验收通过，不能把桌面正常误算为 GPU 渲染。
+- [C DRM ioctl 实现](https://github.com/aether-os-studio/na-kernel/blob/main/kernel/src/drivers/drm/drm_ioctl.c) 约 **5,465 行**，不是成熟 Linux/FreeBSD 上游 DRM C 原样复用；整套拷贝会重引入重复实现/ABI 不兼容、GPLv3 合规以及相关测试负担。
+
+**NaSeed 可借鉴/不可借鉴的明确结论：**
+1. **借鉴架构**：C 内核稳定 provider/API + 静态链接 Rust `no_std` 模块 + 安全驱动 trait + 原有 DMA/VirtIO/DRM 单一所有者。这证明非 Rust/C 主内核也能嵌入 Rust 独立 GPU 模块，并降低“跨语言不可行”的先验顾虑；尚未证明 TGOSKits 的巨大 DRM 核心也能以相同成本移植。
+2. **不可直接照搬**：NaOS 自写 3D protocol、C DRM/ioctl 大实现和上述队列同步错误风险；用户此前明确要求避免自己重复实现已经成熟的驱动，不应为了复制该结构反过来复制整套胶水。
+3. **建议的整合方向**：如果走 Rust `no_std`，优先评估 **TGOSKits 已跑过 glmark2 的 `kdrm-core`/`drm-kapi` 原始 Rust 源码和 rcore-os/virtio-drivers 的成熟协议核心**，用 NaOS 的 C/Rust FFI 分层作参考；如果不能在 NaSeed 构建链接，则转为 Linux v6.14 + FreeBSD #517 的成熟 DRM 依赖整体移植。都必须满足真实 3D 证据，不能把 NaOS 的“实现了 ioctl”当验收结论。
+4. **许可证审查**：NaOS 根 LICENSE 为 GPLv3；TGOSKits 子 crate 声称 MIT，Linux/FreeBSD DRM 涉 GPL-2.0；具体合并/派生义务要逐来源确认，不能混用后笼统标 BSD/MIT。
+
 ## 根因分析：为何原版 Linux 3D 迟迟没有集成
 
 现有 PR 的 `ports/linux-virtgpu` 代码尽管能通过三架构构建、DMA ownership/队列测试和 QEMU VirGL 功能探测，但**都是 NaSeed 适配层对象，而不是已链接的 Linux 原版 `virtgpu_vq.o`**。2026-11-28 已新增直接编译原版 `virtgpu_vq.c` 的 CI 诊断，第一次就因缺 `linux/dma-mapping.h` 失败。后续还必须解决 Linux scatterlist/kmem_cache、DRM/GEM shmem、dma_resv、dma_fence/syncobj、workqueue 和原版 ioctl。这不是一个“仅补两三个接口”的问题。
