@@ -11,14 +11,7 @@ if [ -z "$ovmf" ]; then
     done
 fi
 [ -n "$ovmf" ] && [ -f "$ovmf" ] || { echo "OVMF firmware not found" >&2; exit 2; }
-# Opt-in CI experiment: capture real guest exceptions/PC to distinguish
-# CPU faults from host ABI / heap-code deadlock. No default runtime change.
-if [ "${NAS_EXPERIMENT_TGOS_QEMU_TRACE:-0}" = 1 ]; then
-    set -- -d int,guest_errors -D build/tgos-qemu-exceptions.log
-else
-    set --
-fi
-exec qemu-system-x86_64 "$@" -M q35 -m "${NAS_QEMU_RAM:-256M}" -cpu qemu64 \
+exec qemu-system-x86_64 -M q35 -m "${NAS_QEMU_RAM:-256M}" -cpu qemu64 \
     -display none -monitor none -serial stdio -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive "if=pflash,unit=0,format=raw,file=$ovmf,readonly=on" \
