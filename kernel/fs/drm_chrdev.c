@@ -219,17 +219,20 @@ static uint64_t drm_cap(uint64_t user_arg,bool is_render) {
                                 sizeof(cap))?0:(uint64_t)-EFAULT;
 }
 #if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
-/* Linux VirtGPU GETPARAM is *not* an in-place value: `value` is a user
- * pointer to the returned u64. Keep pointer validation in the C VFS layer. */
+/* Linux virtgpu GETPARAM carries a u64 user pointer to a C int,
+ * NOT to a u64-sized result (as upstream TGOSKits ioctl_getparam proves).
+ * Copying eight bytes corrupts the adjacent userspace object. */
 static uint64_t render_getparam(uint64_t arg) {
     struct nas_drm_virtgpu_getparam req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
         return (uint64_t)-EFAULT;
-    if(!req.value || !nas_user_prepare_write(req.value,sizeof(uint64_t)))
+    if(!req.value || !nas_user_prepare_write(req.value,sizeof(uint32_t)))
         return (uint64_t)-EFAULT;
-    uint64_t value=0;
-    int rc=nas_tgos_original_gpu_get_param(req.param,&value);
+    uint64_t original_value=0;
+    int rc=nas_tgos_original_gpu_get_param(req.param,&original_value);
     if(rc)return (uint64_t)(int64_t)rc;
+    /* Match Linux's 32-bit result, including the capset-ID mask truncation. */
+    uint32_t value=(uint32_t)original_value;
     return nas_user_write_bytes(req.value,(const uint8_t *)&value,
                                 sizeof(value))?0:(uint64_t)-EFAULT;
 }
