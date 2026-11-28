@@ -25,4 +25,6 @@ int nas_linux_virtgpu_vq_reclaim(struct nas_linux_virtgpu_vq_bridge *,
                                 void **cookie, uint32_t *used_bytes);
 bool nas_linux_virtgpu_vq_kick_prepare(struct nas_linux_virtgpu_vq_bridge *);
 void nas_linux_virtgpu_vq_notify(struct nas_linux_virtgpu_vq_bridge *);
+void nas_linux_virtgpu_vq_disable_callbacks(struct nas_linux_virtgpu_vq_bridge *);
+bool nas_linux_virtgpu_vq_enable_callbacks(struct nas_linux_virtgpu_vq_bridge *);
 #endif
