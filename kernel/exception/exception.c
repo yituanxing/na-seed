@@ -1,6 +1,7 @@
 #include "exception.h"
 #include "../mm/mm.h"
 #include "../mm/fault.h"
+#include "../drivers/serial.h"
 /* Architectures decode raw registers into a shared cause. The shared
  * exception layer decides which specialized subsystem may handle it. */
 struct nas_exception nas_exception_x86(unsigned vector,uint64_t error,
@@ -88,6 +89,16 @@ struct nas_exception_outcome nas_exception_dispatch(const struct nas_exception *
         enum nas_mm_fault_result status=nas_mm_handle_fault(mm,e->addr,e->access,e->present);
         if(status==NAS_MM_FAULT_RESOLVED){out.action=NAS_EXC_RETRY;return out;}
         if(status==NAS_MM_FAULT_MAPERR||status==NAS_MM_FAULT_ACCERR){
+            /* Log only fatal user mapping faults, not recoverable lazy/COW
+             * faults. The same PC/address/access diagnostic on all ISAs
+             * identifies real Xorg/GTK shared VMA errors without synthetic
+             * process instrumentation or disabling fault protection. */
+            nas_print("[USER SIGSEGV] pc="); nas_hex(e->pc);
+            nas_print(" addr="); nas_hex(e->addr);
+            nas_print(" access="); nas_dec(e->access);
+            nas_print(" present="); nas_dec(e->present);
+            nas_print(" code="); nas_dec(status==NAS_MM_FAULT_MAPERR?1:2);
+            nas_print("\n");
             out.action=NAS_EXC_SIGNAL;
             out.signo=11; /* Linux SIGSEGV */
             out.si_code=status==NAS_MM_FAULT_MAPERR?1:2;
