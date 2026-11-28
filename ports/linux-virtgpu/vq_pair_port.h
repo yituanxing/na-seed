@@ -29,7 +29,11 @@ int nas_linux_virtgpu_vq_pair_init(
     void (*cursor_cb)(struct virtqueue *));
 /* After both device queues are allocated and fully initialized. */
 int nas_linux_virtgpu_vq_pair_activate(struct nas_linux_virtgpu_vq_pair *);
-/* Called from hard IRQ after the authoritative device-specific IRQ ack. */
+/* Read/ack the real PCI or MMIO VirtIO device IRQ source. The top
+ * half records only bits; the GPU callbacks run later in process context.
+ * Returns zero if the interrupt belonged to another shared-line device. */
+uint32_t nas_linux_virtgpu_vq_pair_irq_ack(struct nas_linux_virtgpu_vq_pair *);
+/* For already acknowledged sources, record only the verified device bits. */
 void nas_linux_virtgpu_vq_pair_irq_record(struct nas_linux_virtgpu_vq_pair *,
                                          uint32_t asserted);
 /* Invoke the Linux callbacks in process context if a used-ring actually
