@@ -1,0 +1,24 @@
+# Linux v6.14 upstream git blob SHA-1 manifest (git hash-object, NOT a checksum of some synthetic port).
+# Upstream: torvalds/linux tag v6.14 -> 38fec10eb60d687e30c8c6b5420d86e8149f7557
+# Each path below MUST match the exact upstream Git blob. Edit upstream sources only via explicit downstream patches, not in place.
+a635a38ef9405fdfcfe97f3a435393c1e9cae971	third_party/linux-virtgpu/COPYING
+fc884fb57b7eaf4217cbdf9277f79b89f5ab9021	third_party/linux-virtgpu/drivers/gpu/drm/virtio/Kconfig
+d2e1788a82270a9b70cac3a0db0f74864ae5e3c4	third_party/linux-virtgpu/drivers/gpu/drm/virtio/Makefile
+853dd9aa397eb8903e84e20197fcc29ad8c2284e	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_debugfs.c
+64baf2f22d9f0566511b38f49a6e3225f2acd9ee	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_display.c
+6a67c6297d5836658e914cab8b4cab963c44450c	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_drv.c
+f42ca9d8ed10fad013dd843ee4903b91f3192777	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_drv.h
+f28357dbde3522f55382723084206618794e1d32	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_fence.c
+5aab588fc400e7ad9795b9a8568b13e08d931e59	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_gem.c
+c33c057365f85a2ace536f91655c903036827312	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_ioctl.c
+7dfb2006c561ca13b15d979ddb8bf2d753e35dad	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_kms.c
+5517cff8715c2ab3c6761a5e4f1e7d1c49cd558d	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_object.c
+42aa554eca9fef9f9f6b043cbd41f57a1b059987	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_plane.c
+f92133a01195a95f9a2bd386a8aee78fd718de08	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_prime.c
+7d34cf83f5f2bb6a87612dc277da54750d63371c	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_submit.c
+1970cb6f24ef462e5ba387ff8afd2525bb9920c1	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_trace_points.c
+227bf0ae7ed53170febae9514f6163e3ea356c9b	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_trace.h
+ad91624df42dd9a7f1a74da9be5f0a444c3bdc73	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_vq.c
+25df81c027837c248a746e41856b5aa7e216b8d5	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_vram.c
+c2ce71987e9bb816d13a300679336cb756f1cbcf	third_party/linux-virtgpu/include/uapi/drm/virtgpu_drm.h
+bf2c9cabd20793e3851e749baadf210341445501	third_party/linux-virtgpu/include/uapi/linux/virtio_gpu.h
