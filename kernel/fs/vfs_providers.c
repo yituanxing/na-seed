@@ -4,6 +4,9 @@
 #include "../tmpfs.h"
 #include "procfs.h"
 #include "devfs.h"
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+#include "../../ports/tgoskits-drm-ffi/gpu_pci_identity.h"
+#endif
 #include "../errno.h"
 #include "../mm/frame.h"
 #include "../block/device.h"
@@ -682,6 +685,16 @@ enum {
     SYS_DRM_DEV, SYS_DRM_UEVENT, SYS_DRM_SUBSYSTEM,
     SYS_DEV_CHAR, SYS_DEV_CHAR_DRM_LINK,
     SYS_CLASS_INPUT, SYS_VIRTUAL_INPUT,
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    SYS_GPU_BUS, SYS_GPU_BUS_PCI, SYS_GPU_BUS_PCI_DEVICES,
+    SYS_GPU_BUS_PCI_LINK, SYS_GPU_PCI_ROOT, SYS_GPU_PCI_DEVICE,
+    SYS_GPU_PCI_VENDOR, SYS_GPU_PCI_DEVICE_ID,
+    SYS_GPU_PCI_SUBVENDOR, SYS_GPU_PCI_SUBDEVICE,
+    SYS_GPU_PCI_REVISION, SYS_GPU_PCI_UEVENT, SYS_GPU_PCI_SUBSYSTEM,
+    SYS_GPU_DRM_DIR, SYS_GPU_RENDER_DIR, SYS_GPU_RENDER_DEV,
+    SYS_GPU_RENDER_UEVENT, SYS_GPU_RENDER_DEVICE,
+    SYS_GPU_RENDER_SUBSYSTEM, SYS_GPU_CLASS_LINK, SYS_GPU_CHAR_LINK,
+#endif
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -758,6 +771,34 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
                              "../../devices/virtual/drm/card0",SYS_LINK},
     [SYS_CLASS_INPUT]={SYS_CLASS,"input",0,SYS_DIR},
     [SYS_VIRTUAL_INPUT]={SYS_VIRTUAL,"input",0,SYS_DIR}
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    /* A projection of the EXISTING registered bus device, not a fabricated
+     * Mesa-only filesystem. Render, class, /dev/char and PCI attrs refer
+     * to one actual PCI owner and vanish on driver unregistration. */
+    ,[SYS_GPU_BUS]={SYS_ROOT,"bus",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI]={SYS_GPU_BUS,"pci",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI_DEVICES]={SYS_GPU_BUS_PCI,"devices",0,SYS_DIR}
+    ,[SYS_GPU_BUS_PCI_LINK]={SYS_GPU_BUS_PCI_DEVICES,"",0,SYS_LINK}
+    ,[SYS_GPU_PCI_ROOT]={SYS_DEVICES,"",0,SYS_DIR}
+    ,[SYS_GPU_PCI_DEVICE]={SYS_GPU_PCI_ROOT,"",0,SYS_DIR}
+    ,[SYS_GPU_PCI_VENDOR]={SYS_GPU_PCI_DEVICE,"vendor",0,SYS_FILE}
+    ,[SYS_GPU_PCI_DEVICE_ID]={SYS_GPU_PCI_DEVICE,"device",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBVENDOR]={SYS_GPU_PCI_DEVICE,"subsystem_vendor",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBDEVICE]={SYS_GPU_PCI_DEVICE,"subsystem_device",0,SYS_FILE}
+    ,[SYS_GPU_PCI_REVISION]={SYS_GPU_PCI_DEVICE,"revision",0,SYS_FILE}
+    ,[SYS_GPU_PCI_UEVENT]={SYS_GPU_PCI_DEVICE,"uevent",0,SYS_FILE}
+    ,[SYS_GPU_PCI_SUBSYSTEM]={SYS_GPU_PCI_DEVICE,"subsystem",0,SYS_LINK}
+    ,[SYS_GPU_DRM_DIR]={SYS_GPU_PCI_DEVICE,"drm",0,SYS_DIR}
+    ,[SYS_GPU_RENDER_DIR]={SYS_GPU_DRM_DIR,"renderD128",0,SYS_DIR}
+    ,[SYS_GPU_RENDER_DEV]={SYS_GPU_RENDER_DIR,"dev","226:128\n",SYS_FILE}
+    ,[SYS_GPU_RENDER_UEVENT]={SYS_GPU_RENDER_DIR,"uevent",
+      "MAJOR=226\nMINOR=128\nDEVNAME=dri/renderD128\nDEVTYPE=drm_minor\n",SYS_FILE}
+    ,[SYS_GPU_RENDER_DEVICE]={SYS_GPU_RENDER_DIR,"device","../..",SYS_LINK}
+    ,[SYS_GPU_RENDER_SUBSYSTEM]={SYS_GPU_RENDER_DIR,"subsystem",
+        "../../../../../class/drm",SYS_LINK}
+    ,[SYS_GPU_CLASS_LINK]={SYS_CLASS_DRM,"renderD128",0,SYS_LINK}
+    ,[SYS_GPU_CHAR_LINK]={SYS_DEV_CHAR,"226:128",0,SYS_LINK}
+#endif
 };
 /* The registered DisplayDevice is the owner of the fbdev endpoint,
  * not a second PCI device. Represent its class and the fbdev consumer
@@ -766,6 +807,16 @@ static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
 static bool sys_entry_visible(unsigned id) {
     if(id>=SYS_CLASS_GRAPHICS && id<=SYS_DISPLAY_SUBSYSTEM)
         return nas_display_primary()!=NULL;
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+    if(id>=SYS_GPU_BUS && id<=SYS_GPU_CHAR_LINK) {
+        struct nas_tgos_gpu_pci_identity identity;
+        return nas_tgos_original_gpu_pci_identity(&identity)==0;
+    }
+    if(id==SYS_CLASS_DRM || id==SYS_DEV_CHAR) {
+        struct nas_tgos_gpu_pci_identity identity;
+        return nas_tgos_original_gpu_pci_identity(&identity)==0;
+    }
+#endif
     if(id>=SYS_CLASS_DRM && id<=SYS_DEV_CHAR_DRM_LINK) {
 #ifdef NAS_ENABLE_VIRTIO_GPU
         return nas_virtio_gpu_count()!=0U;
