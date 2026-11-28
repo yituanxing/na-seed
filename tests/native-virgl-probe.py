@@ -6,6 +6,7 @@ contexts/resources, Mesa winsys and command submission are still unfinished.
 It proves that the host advertises VirGL and that the guest's control queue
 actually obtained a nonzero VirGL capset from the unmodified QEMU backend.
 """
+import os
 import pathlib
 import re
 import subprocess
@@ -73,11 +74,23 @@ else:
         args += ["-semihosting-config", "enable=on,target=native"]
 # Require the hardware capset response, not merely a -device switch or
 # an echoed command string. All checks are based on actual guest UART.
-capset = re.compile(
-    r"\[VIRTIO GPU 3D DISCOVERY\] host_virgl=1 capsets=(\d+) "
-    r"virgl_id=([12]) version=(\d+) bytes=(\d+) "
-    r"render_api=not-implemented"
-)
+gpu_owner = os.environ.get("NAS_EXPERIMENT_TGOS_GPU_OWNER") == "1"
+if gpu_owner:
+    # Only the experimental original Rust GPU owner emits this marker.
+    # It means a REAL QEMU capset reply and original CTX used-ring drain,
+    # NOT a render node or Mesa/glmark2 result.
+    capset = re.compile(
+        r"\[TGOS ORIGINAL GPU CAPSET PASS\] capset_id=([12]) "
+        r"original-ctx-create/destroy-used=1 render-node=absent"
+    )
+    ready_marker = "[TGOS ORIGINAL DRM ABI PASS]"
+else:
+    capset = re.compile(
+        r"\[VIRTIO GPU 3D DISCOVERY\] host_virgl=1 capsets=(\d+) "
+        r"virgl_id=([12]) version=(\d+) bytes=(\d+) "
+        r"render_api=not-implemented"
+    )
+    ready_marker = "[M177 VIRTIO GPU READY]"
 deadline = time.monotonic() + 150
 with log.open("wb") as stream:
     proc = subprocess.Popen(args, stdout=stream, stderr=subprocess.STDOUT)
@@ -89,17 +102,24 @@ with log.open("wb") as stream:
                 break
             m = capset.search(output)
             if m and all(int(n) > 0 for n in m.groups()):
-                if "[M177 VIRTIO GPU READY]" not in output:
+                if ready_marker not in output:
                     continue
-                print(
-                    f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
-                    f"count={m[1]} id={m[2]} version={m[3]} bytes={m[4]}; "
-                    "3D rendering not yet implemented", flush=True
-                )
+                if gpu_owner:
+                    print(
+                        f"PASS: {arch} original TGOSKits VirtIoGpu owns real "
+                        f"QEMU device, capset_id={m[1]}, CTX_CREATE/DESTROY "
+                        "used-ring complete; NOT Mesa 3D", flush=True
+                    )
+                else:
+                    print(
+                        f"PASS: {arch} real QEMU VirGL feature+capset handshake: "
+                        f"count={m[1]} id={m[2]} version={m[3]} bytes={m[4]}; "
+                        "3D rendering not yet implemented", flush=True
+                    )
                 break
         else:
             raise RuntimeError(f"{arch}: timed out waiting for genuine VirGL capset")
-        if not capset.search(output) or "[M177 VIRTIO GPU READY]" not in output:
+        if not capset.search(output) or ready_marker not in output:
             raise RuntimeError(f"{arch}: no actual VirGL feature/capset response")
     except Exception:
         print("=== QEMU VirGL probe serial tail ===", file=sys.stderr)
