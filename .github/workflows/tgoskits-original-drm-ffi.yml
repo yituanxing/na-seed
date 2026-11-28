@@ -54,14 +54,16 @@ jobs:
           done
           echo 'PASS: original upstream DRM Rust objects are linked into the real NaSeed kernel'
           echo 'PASS: direct original DRM code symbols retained in real NaSeed kernel.'
-      - name: Disassemble captured native QEMU fault PC (original GPU source unchanged)
+      - name: Validate freestanding Rust GOT relocation resolved by true high-half kernel linker
         run: |
-          echo '=== QEMU #PF RIP ffffffff80095500 source location ==='
-          addr2line -C -f -i -e build/kernel.elf 0xffffffff80095500
-          echo '=== Linked x86-64 kernel instructions around QEMU RIP ==='
-          objdump -d --start-address=0xffffffff80095490 --stop-address=0xffffffff80095580 build/kernel.elf
-          echo '=== Linked memset and allocator symbols ==='
-          nm -n build/kernel.elf | grep -E ' (memset|__rust_alloc|__rust_dealloc|nas_tgos_free_aligned|nas_tgos_original_drm_ffi_selftest)$' || true
+          echo '=== Rust GOT must exist in a loadable native kernel section ==='
+          readelf -W -S build/kernel.elf | grep -Eq '[[:space:]]\\.got[[:space:]]' || {
+            echo 'HARD FAIL: original Rust GOTPCREL calls could dereference address zero'
+            exit 1
+          }
+          readelf -x .got build/kernel.elf | head -n 24
+          echo '=== Linked native libc memset and upstream Rust ABI symbols ==='
+          nm -n build/kernel.elf | grep -E ' (memset|nas_tgos_free_aligned|nas_tgos_original_drm_ffi_selftest)$'
       - name: Install real x86-64 UEFI QEMU and VirGL host for executable-ABI boot acceptance
         run: |
           sudo apt-get install -y --no-install-recommends \
