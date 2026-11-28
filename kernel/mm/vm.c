@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "../errno.h"
 #include "../task.h"
+#include "../panic.h"
 #include "../arch/arch.h"
 #include "vm.h"
 #include "mm.h"
@@ -146,11 +147,6 @@ bool nas_vm_walk_task_vmas(const struct nas_task *task,
     return task && task->state!=NAS_TASK_FREE && task->mm &&
            task->mm->users && nas_vma_walk(&task->mm->mmap_vmas,callback,ctx);
 }
-bool nas_vm_walk_task_pages(const struct nas_task *task,
-                             nas_mmu_user_visit callback,void *ctx) {
-    if(!task || !callback || task->state==NAS_TASK_FREE)return false;
-    return nas_mm_walk_pages(task->mm,callback,ctx);
-}
 #define heap_break TASK.mm->heap_break
 /* Ordinary anonymous allocation stays in the top-down window. Fixed
  * mappings participate in the same per-task VM ownership ledger, including
@@ -261,15 +257,16 @@ static uint64_t vm_device_shared_mmap(uint64_t hint,uint64_t length,
     uint64_t result=(uint64_t)-EOPNOTSUPP;
     struct nas_anon_regions planned={0};
     if((flags&3U)!=1U || (prot&NAS_VM_EXEC))goto finish;
-    /* A framebuffer may end midway through its final PMM page. The mapped
-     * logical bytes, not the rounded-up virtual page extent, are bounded
-     * by the actual device surface size. */
+    /* mmap maps complete pages, including the dedicated final partial
+     * device page. Bound page count rather than logical byte count; fbdev
+     * callers may pass the already rounded length. Never admit an extra
+     * page beyond the provider's owned backing. */
     uint64_t size=device->extent_bytes;
-    if(offset>=size || length>size-offset) {
+    uint64_t pages=(length+PAGE-1)/PAGE,bytes=pages*PAGE;
+    if(offset>=size || pages>(size-offset)/PAGE+((size-offset)%PAGE!=0)) {
         result=(uint64_t)-EINVAL;
         goto finish;
     }
-    uint64_t pages=(length+PAGE-1)/PAGE,bytes=pages*PAGE;
     uint64_t last=0;
     if(!device->page || device->page(device->context,
                                     offset+(pages-1)*PAGE,&last) || !last)
@@ -316,6 +313,13 @@ finish:
     device->put(device->context);
     return result;
 }
+uint64_t nas_vm_map_owned_device(uint64_t hint,uint64_t length,
+                                  uint64_t prot,uint64_t flags,
+                                  struct nas_vm_device *device) {
+    if(!device || !device->put || !device->get || !device->page)
+        return (uint64_t)-EINVAL;
+    return vm_device_shared_mmap(hint,length,prot,flags,0,device);
+}
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset) {
     /* glibc's ELF loader maps DSOs with MAP_COPY=MAP_PRIVATE|MAP_DENYWRITE.
@@ -336,7 +340,8 @@ uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
     if (!nas_vm_prot_supported(prot) || !nas_arch_user_nx_supported())
         return (uint64_t)-EOPNOTSUPP;
     struct nas_vm_device *device=NULL;
-    int probe=nas_fs_mmap_device_pin(fd,(prot&NAS_VM_WRITE)!=0,&device);
+    int probe=nas_fs_mmap_device_pin(fd,(prot&NAS_VM_WRITE)!=0,
+                                     offset,&device);
     if(probe<0)return (uint64_t)(int64_t)probe;
     if(probe>0)return vm_device_shared_mmap(hint,length,prot,flags,
                                            offset,device);
@@ -499,13 +504,87 @@ uint64_t nas_vm_munmap(uint64_t addr, uint64_t len) {
     for (uint64_t i=0; i<count; ++i) {
         uint64_t va=addr+i*PAGE;
         /* PROT_NONE reservations have intentionally absent PTEs. */
-        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va)) {
-            nas_anon_reset(&updated);
-            return (uint64_t)-EFAULT;
-        }
+        if (nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+            /* Earlier pages may already be unmapped; the MM cannot roll
+             * back leaf ownership after the first physical frame put. */
+            nas_fail("munmap: committed leaf release invariant");
     }
     nas_vma_commit(&TASK.mm->mmap_vmas,&updated);
     return 0;
+}
+/* Linux mremap for regular mmap-backed VMAs. The VMA ledger is the
+ * authoritative owner of virtual space, independently of resident PTEs.
+ * Grow/shrink private anonymous VMAs without materializing absent pages;
+ * grow/relocate live MAP_SHARED file VMAs via their original pinned inode
+ * cache (even when the fd was closed). This is NOT an mmap of a new fd.
+ *
+ * No other mapping kind may be silently resized: snapshot pages cannot
+ * regrow from a missing backing, and anonymous/device shared relocations
+ * need their own physical alias transfer. Refuse unsupported forms until
+ * those full ownership contracts are implemented. */
+uint64_t nas_vm_mremap(uint64_t old_addr,uint64_t old_size,
+                        uint64_t new_size,uint64_t flags,
+                        uint64_t new_addr) {
+    const uint64_t MREMAP_MAYMOVE=1ULL,MREMAP_FIXED=2ULL,
+                   MREMAP_DONTUNMAP=4ULL;
+    if((old_addr&(PAGE-1)) || !old_size || !new_size ||
+       old_size>UINT64_MAX-(PAGE-1) ||
+       new_size>UINT64_MAX-(PAGE-1) ||
+       (flags&~(MREMAP_MAYMOVE|MREMAP_FIXED|MREMAP_DONTUNMAP)))
+        return (uint64_t)-EINVAL;
+    /* Explicit target replacement and DONTUNMAP require separate,
+     * all-or-nothing PTE ownership transactions. Never acknowledge them. */
+    if(flags&(MREMAP_FIXED|MREMAP_DONTUNMAP))
+        return (uint64_t)-EOPNOTSUPP;
+    (void)new_addr;
+    const uint64_t old_bytes=(old_size+PAGE-1)&~(PAGE-1);
+    const uint64_t new_bytes=(new_size+PAGE-1)&~(PAGE-1);
+    if(!nas_anon_fixed_range_allowed(old_addr,old_bytes))
+        return (uint64_t)-EFAULT;
+    struct nas_anon_regions *regions=&TASK.mm->mmap_vmas;
+    const struct nas_anon_region *source=nas_vma_find(regions,old_addr);
+    if(!source || old_bytes>source->end-old_addr)
+        return (uint64_t)-EFAULT;
+    if(old_bytes==new_bytes)return old_addr;
+    if(new_bytes<old_bytes) {
+        uint64_t result=nas_vm_munmap(old_addr+new_bytes,
+                                       old_bytes-new_bytes);
+        return (int64_t)result<0 ? result:old_addr;
+    }
+    const unsigned kind=source->kind;
+    if(kind!=NAS_VMA_FILE_MUTABLE_SHARED &&
+       kind!=NAS_VMA_ANON_PRIVATE &&
+       kind!=NAS_VMA_FILE_PRIVATE_LAZY)
+        return (uint64_t)-EOPNOTSUPP;
+    const uint64_t added=new_bytes-old_bytes;
+    const bool inplace=nas_anon_fixed_range_allowed(old_addr,new_bytes) &&
+        !nas_anon_intersects(regions,old_addr+old_bytes,added);
+    uint64_t destination=old_addr;
+    if(!inplace) {
+        if(!(flags&MREMAP_MAYMOVE))return (uint64_t)-ENOMEM;
+        /* A backed, coherent shared file can fault every moved page from
+         * the SAME inode cache. Private/COW pages cannot be dropped and
+         * recreated; their relocation awaits a real leaf transfer. */
+        if(kind!=NAS_VMA_FILE_MUTABLE_SHARED)
+            return (uint64_t)-EOPNOTSUPP;
+        if(!nas_anon_find_gap(regions,new_bytes,&destination))
+            return (uint64_t)-ENOMEM;
+        int sync=sync_shared_intersection(regions,old_addr,old_bytes,false);
+        if(sync)return (uint64_t)(int64_t)sync;
+    }
+    /* Clone, split, and publish the complete metadata transaction before
+     * releasing any old leaf. Allocation failures retain the original
+     * mapping, including its inode pin, file offset and data. */
+    if(!nas_vma_remap_region(regions,old_addr,old_bytes,
+                              destination,new_bytes))
+        return (uint64_t)-ENOMEM;
+    if(destination!=old_addr) {
+        for(uint64_t va=old_addr;va<old_addr+old_bytes;va+=PAGE) {
+            if(nas_mmu_user_byte(va) && !nas_mmu_unmap_page(va))
+                nas_fail("mremap: committed shared leaf release invariant");
+        }
+    }
+    return destination;
 }
 /* Linux msync accepts flags=0 (historically equivalent to ASYNC), but
  * neither unknown bits nor simultaneous ASYNC/SYNC are valid. Anonymous
@@ -633,7 +712,10 @@ uint64_t nas_vm_brk(uint64_t want) {
             return base;
         }
         for (uint64_t va=after;va<before;va+=PAGE)
-            if (!nas_mmu_unmap_page(va)) { nas_anon_reset(&planned); return base; }
+            if (!nas_mmu_unmap_page(va))
+                /* A previous page may already have been released; returning
+                 * the old brk would conceal a partially destroyed heap. */
+                nas_fail("brk shrink: committed leaf release invariant");
         nas_vma_commit(&TASK.mm->mmap_vmas,&planned);
     }
     heap_break=want;
@@ -752,8 +834,7 @@ uint64_t nas_vm_mprotect(uint64_t addr,uint64_t length,uint64_t prot) {
                  * instead: the first genuine store marks inode times and
                  * advances the page's coherent dirty state. */
                 if(mutable_shared(v))hw_prot &= ~NAS_VM_WRITE;
-                else if(v && (v->kind==NAS_VMA_ANON_SHARED ||
-                              v->kind==NAS_VMA_DEVICE_SHARED))
+                else if(v && nas_vma_direct_shared(v->kind))
                     hw_prot=(unsigned)prot; /* true shared physical frame */
                 else if((prot&NAS_VM_WRITE) &&
                         nas_frame_refs(pa&~UINT64_C(4095))>1)
@@ -774,27 +855,46 @@ struct nas_vm_resize_context {
     const struct nas_fs_node *node;
     uint64_t new_size;
 };
-/* A truncate affects every process mapping this inode, not just the Task
- * issuing ftruncate(2). The VFS lease pins an incarnation across close,
- * unlink and rename; an inode-number-only comparison would be unsound. */
+/* A truncate invalidates resident mappings of the changed inode in
+ * every MM. MAP_PRIVATE lazy pages are *already copies* of the file, and
+ * after fork may share COW frames with other MMs. Linux's truncate path
+ * unmaps even such private COW PTEs when the new EOF crosses their page.
+ * NEVER memset a private copy in place: drop only this MM's leaf reference
+ * and let a future fault read the pinned inode (or SIGBUS past EOF).
+ * Private pages entirely before EOF remain intact. Compare stable VFS inode
+ * identity, never a recycled pathname. */
 static bool invalidate_mm_after_resize(struct nas_mm *mm,void *opaque) {
     const struct nas_vm_resize_context *ctx=opaque;
     for(unsigned i=0;i<mm->mmap_vmas.capacity;i++) {
         const struct nas_anon_region *v=&mm->mmap_vmas.slots[i];
         if((!mutable_shared(v) && v->kind!=NAS_VMA_FILE_PRIVATE_LAZY) ||
            !nas_fs_mmap_matches(v->backing,ctx->node))continue;
-        for(uint64_t va=v->start;va<v->end;va+=PAGE) {
+        const bool private_copy=v->kind==NAS_VMA_FILE_PRIVATE_LAZY;
+        /* Only the page overlapping the new EOF and following leaves
+         * can change. Skip the untouched prefix without probing page
+         * tables for every sparse/absent page in a multi-GiB VMA.
+         * file_offset belongs to this split VMA, not the original FD. */
+        uint64_t first_va=v->start;
+        if(ctx->new_size>v->file_offset) {
+            uint64_t full_pages=(ctx->new_size-v->file_offset)/PAGE;
+            if(full_pages>=(v->end-v->start)/PAGE)continue;
+            first_va+=full_pages*PAGE;
+        }
+        for(uint64_t va=first_va;va<v->end;va+=PAGE) {
             uint64_t off=v->file_offset+(va-v->start);
             uint64_t pa=0;
             if(!nas_mm_resolve_user(mm,va,&pa,0))continue;
-            if(off>=ctx->new_size) {
+            /* For a private snapshot invalidate the entire last partial
+             * page instead of modifying a frame held by another COW MM. */
+            if(off>=ctx->new_size ||
+               (private_copy && ctx->new_size-off<PAGE)) {
                 uint64_t old=0;
                 if(!nas_mmu_exchange_leaf_at(mm->root_phys,va,0,0,&old) ||
                    old!=(pa&~(PAGE-1)))nas_arch_halt();
                 if(!nas_frame_put(old))nas_arch_halt();
             } else if(ctx->new_size-off<PAGE) {
-                /* Linux zeroes the tail of the last partial page after
-                 * truncate, including private-lazy fault-time snapshots. */
+                /* Only the live MAP_SHARED cache page is modified here;
+                 * every private frame touched by EOF has been unmapped. */
                 uint64_t first=ctx->new_size-off;
                 memset((void *)(uintptr_t)(nas_hhdm_offset()+
                        (pa&~(PAGE-1))+first),0,(size_t)(PAGE-first));

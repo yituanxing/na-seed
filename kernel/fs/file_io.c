@@ -12,6 +12,9 @@
 #include "../mm/heap.h"
 #include "../drivers/tty.h"
 #include "../drivers/display/display.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "drm_chrdev.h"
+#endif
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../arch/linux_fcntl_abi.h"
@@ -30,7 +33,7 @@
  * passed the blocked Task, never made against another current Task. */
 uint16_t nas_fs_poll_description_task(unsigned slot,uint16_t events,
                                      const struct nas_task *task) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return 0;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
     if(ops && ops->poll_description_task)
@@ -44,14 +47,14 @@ uint16_t nas_fs_poll_description(unsigned slot,uint16_t events) {
 
 /* Same open-file-description source for read(), exec and file mmap.
  * Do not expose kernel pointer paths or share mutable file offsets. */
-int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,uint64_t offset,
                            struct nas_vm_device **out) {
     if(!out)return -EINVAL;
     *out=NULL;
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     if(TASK.fds->entries[fd].kind==FD_SOCKET &&
        nas_packet_socket_is_slot(slot)) {
@@ -60,6 +63,19 @@ int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
         int rc=nas_packet_socket_mmap_pin(slot,out);
         return rc ? rc : 1;
     }
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    if(TASK.fds->entries[fd].kind==FD_DRM) {
+        const struct nas_open_file *opened=&nas_open_files[slot];
+        if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
+        const unsigned access=(unsigned)(opened->status_flags&3ULL);
+        if(access==1U || access==3U || (writable && access!=2U))
+            return -EACCES;
+        int rc=nas_drm_chrdev_mmap_pin(slot,offset,out);
+        return rc ? rc : 1;
+    }
+#else
+    (void)offset;
+#endif
     if(TASK.fds->entries[fd].kind!=FD_FRAMEBUFFER)return 0;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
@@ -73,7 +89,7 @@ int nas_fs_mmap_immutable_readonly(uint64_t fd) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
@@ -116,13 +132,14 @@ static int mmap_pin_node(const struct nas_fs_node *node,bool write_allowed,
     *out=mapped;
     return 0;
 }
-int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
+static int mmap_pin_file(uint64_t fd,bool shared,bool writable,
+                         struct nas_mapped_file **out) {
     if(!out)return -EINVAL;
     *out=NULL;
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return -EBADF;
     unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     const struct nas_open_file *opened=&nas_open_files[slot];
     if(opened->status_flags & NAS_LINUX_O_PATH)return -EBADF;
@@ -142,30 +159,21 @@ int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
      * Linux mmap(2) reports ENODEV for unsupported filesystem mappings,
      * allowing original callers such as libdeflate-gzip to fall back to
      * read().  ENOSYS incorrectly claims that mmap itself is absent. */
-    if(!node->filesystem->acquire_shared_page)return -ENODEV;
+    if(shared && !node->filesystem->acquire_shared_page)return -ENODEV;
+    /* Read-only shared files may have a coherent read cache without a
+     * writable dirty/writeback path. Reject unsupported writable MAP_SHARED
+     * at mmap time, rather than SIGBUS on the first userspace store. */
+    if(shared && writable && !node->filesystem->touch_shared)return -ENODEV;
     if(writable && !nas_vfs_can_write(node))return -EACCES;
     return mmap_pin_node(node,access==2U,out);
 }
-/* Every private lazy file mapping pins the ORIGINAL inode, never a pathname
- * or an open FD. Even a writable ext4 inode needs only read_at to provide a
- * private fault-time copy; no shared physical page provider is required. */
+int nas_fs_mmap_pin(uint64_t fd,bool writable,struct nas_mapped_file **out) {
+    return mmap_pin_file(fd,true,writable,out);
+}
+/* Private mappings pin the original inode and need only read_at, not a
+ * coherent shared-page provider. */
 int nas_fs_mmap_pin_private(uint64_t fd,struct nas_mapped_file **out) {
-    if(!out)return -EINVAL;
-    *out=NULL;
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
-        return -EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
-        return -EBADF;
-    const struct nas_open_file *opened=&nas_open_files[slot];
-    if(opened->status_flags&NAS_LINUX_O_PATH)return -EBADF;
-    const unsigned access=(unsigned)(opened->status_flags&3ULL);
-    if(access==1U || access==3U)return -EACCES;
-    if(!opened->vnode_pinned)return -ENODEV;
-    const struct nas_fs_node *node=&opened->vnode;
-    if(node->is_dir || (node->mode&0170000U)!=0100000U ||
-       !node->filesystem || !node->filesystem->read_at)return -ENODEV;
-    return mmap_pin_node(node,access==2U,out);
+    return mmap_pin_file(fd,false,false,out);
 }
 int64_t nas_fs_mmap_read_private(struct nas_mapped_file *file,
                                     uint64_t offset,uint8_t *dst,uint64_t len) {
@@ -187,6 +195,7 @@ void nas_fs_mmap_put(struct nas_mapped_file *file) {
 }
 bool nas_fs_mmap_writable(const struct nas_mapped_file *file) {
     return file && file->refs && file->write_allowed &&
+           file->node.filesystem && file->node.filesystem->touch_shared &&
            nas_vfs_can_write(&file->node);
 }
 int nas_fs_mmap_page(struct nas_mapped_file *file,uint64_t offset,
@@ -214,16 +223,14 @@ bool nas_fs_mmap_matches(struct nas_mapped_file *file,
                          const struct nas_fs_node *node) {
     if(!file || !file->refs || !node)return false;
     const struct nas_fs_node *mine=&file->node;
-    return mine->mount==node->mount && mine->mount_id==node->mount_id &&
-           mine->filesystem==node->filesystem && mine->ino==node->ino &&
-           mine->inode==node->inode;
+    return nas_fs_node_same_identity(mine,node);
 }
 int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
                         uint8_t *buffer, uint64_t length) {
     if (fd >= NAS_FD_LIMIT || TASK.fds->entries[fd].kind == FD_CLOSED)
         return -EBADF;
     unsigned slot = TASK.fds->entries[fd].slot;
-    if (slot >= NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if (!nas_file_slot_live(slot))
         return -EBADF;
     if(nas_open_files[slot].status_flags & NAS_LINUX_O_PATH)return -EBADF;
     if ((nas_open_files[slot].status_flags & 3ULL) == 1ULL)
@@ -249,7 +256,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 }
 
 static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return (uint64_t)-EBADF;
     /* O_PATH is never a writable description, irrespective of O_ACCMODE.
      * A combined mask would accidentally accept it as a write permission. */
@@ -308,7 +315,7 @@ static uint64_t io_slot_write(unsigned slot, uint64_t address, uint64_t length) 
 }
 static uint64_t io_slot_read_mode(unsigned slot, uint64_t address,
                                   uint64_t length,bool peek) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return (uint64_t)-EBADF;
     if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
        (nas_open_files[slot].status_flags&3ULL)==1)
@@ -391,102 +398,72 @@ uint64_t nas_fs_fd_peek(uint64_t fd,uint64_t address,uint64_t length) {
  * provided seekable-character-device FileOp. Pipes, sockets and nonseekable
  * devices still fail with ESPIPE. Neither path changes the dup/fork-shared
  * open-file position; device callbacks receive only kernel-owned buffers. */
-uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
-                         uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[slot].status_flags&3ULL)==1ULL) return (uint64_t)-EBADF;
-    /* A mounted S_IFCHR inode owns its VFS namespace identity, while the
-     * character FileOps still owns positioned I/O. Regular VFS files use
-     * their filesystem's read_at. Never infer a data-plane backend solely
-     * from the fact that this OpenFile has a pinned VFS inode. */
-    const struct nas_open_file *read_open=&nas_open_files[slot];
-    const bool regular_vfs=read_open->vnode_pinned &&
-        (read_open->vnode.mode&0170000U)!=0020000U;
-    if(regular_vfs) {
-        if(read_open->vnode.is_dir)return (uint64_t)-EISDIR;
-        if(!read_open->vnode.filesystem ||
-           !read_open->vnode.filesystem->read_at)return (uint64_t)-ESPIPE;
-    } else if((!read_open->ops || !read_open->ops->read_at) &&
-              TASK.fds->entries[fd].kind!=FD_BOOTFS)
-        return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
-    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
-    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
-    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
-        return (uint64_t)-EFAULT;
-    uint8_t buffer[1024];
-    uint64_t done=0;
-    while(done<count) {
-        uint64_t take=count-done;
-        if(take>sizeof(buffer))take=sizeof(buffer);
-        int64_t got=(!regular_vfs && read_open->ops &&
-                     read_open->ops->read_at) ?
-            (int64_t)read_open->ops->read_at(slot,offset+done,buffer,take) :
-            nas_fs_mmap_read(fd,offset+done,buffer,take);
-        if(got<0)return done ? done : (uint64_t)got;
-        if((uint64_t)got>take)return done ? done : (uint64_t)-EIO;
-        if(!got)break;
-        if(!nas_user_write_bytes(address+done,buffer,(uint64_t)got))
-            return done ? done : (uint64_t)-EFAULT;
-        done+=(uint64_t)got;
-        if((uint64_t)got<take)break;
-    }
-    return done;
-}
-uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
-                          uint64_t offset) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED) return (uint64_t)-EBADF;
-    unsigned slot=TASK.fds->entries[fd].slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount) return (uint64_t)-EBADF;
-    if((nas_open_files[slot].status_flags&NAS_LINUX_O_PATH) ||
-       (nas_open_files[slot].status_flags&3ULL)==0ULL) return (uint64_t)-EBADF;
-    const struct nas_open_file *write_open=&nas_open_files[slot];
-    /* Same owner boundary as pread: devfs is a namespace, fbdev's original
-     * seekable-char FileOps supplies pwrite instead of devfs.write_at. */
-    const bool regular_vfs=write_open->vnode_pinned &&
-        (write_open->vnode.mode&0170000U)!=0020000U;
-    if(regular_vfs) {
-        if(write_open->vnode.is_dir)return (uint64_t)-EISDIR;
-        if(!write_open->vnode.filesystem ||
-           !write_open->vnode.filesystem->write_at)return (uint64_t)-ESPIPE;
-    } else if(!write_open->ops || !write_open->ops->write_at)
-        return (uint64_t)-ESPIPE;
-    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
-    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
-    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
-    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
-        return (uint64_t)-EFAULT;
+static uint64_t positioned_io(uint64_t fd,uint64_t address,uint64_t count,
+                              uint64_t offset,bool writing) {
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry)return (uint64_t)-EBADF;
+    unsigned slot=entry->slot;
     struct nas_open_file *opened=&nas_open_files[slot];
-    if(regular_vfs && !nas_vfs_can_write(&opened->vnode))
-        return (uint64_t)-EROFS;
-    /* Linux intentionally differs from POSIX: pwrite() on an O_APPEND
-     * description appends to the live inode size without changing the
-     * shared OFD seek position. Providers still see explicit write_at. */
-    if(regular_vfs && (opened->status_flags&0x400ULL))
-        offset=nas_vfs_node_size(&opened->vnode);
-    if(offset>INT64_MAX || count>INT64_MAX-offset)
-        return (uint64_t)-EFBIG;
-    uint64_t done=0;
+    if((opened->status_flags&NAS_LINUX_O_PATH) ||
+       (opened->status_flags&3ULL)==(writing ? 0ULL : 1ULL))
+        return (uint64_t)-EBADF;
+    const bool regular_vfs=opened->vnode_pinned &&
+        (opened->vnode.mode&0170000U)!=0020000U;
+    if(regular_vfs) {
+        if(opened->vnode.is_dir)return (uint64_t)-EISDIR;
+        if(!opened->vnode.filesystem ||
+           (writing ? !opened->vnode.filesystem->write_at :
+                      !opened->vnode.filesystem->read_at))return (uint64_t)-ESPIPE;
+    } else if((!opened->ops ||
+               (writing ? !opened->ops->write_at : !opened->ops->read_at)) &&
+              (writing || entry->kind!=FD_BOOTFS))return (uint64_t)-ESPIPE;
+    if(offset>INT64_MAX)return (uint64_t)-EINVAL;
+    if(count>NAS_MAX_RW_COUNT)count=NAS_MAX_RW_COUNT;
+    if(count>INT64_MAX-offset)return (uint64_t)-EINVAL;
+    if(count && (address>=USER_LIMIT || count>USER_LIMIT-address))
+        return (uint64_t)-EFAULT;
+    if(writing && regular_vfs) {
+        if(!nas_vfs_can_write(&opened->vnode))return (uint64_t)-EROFS;
+        /* Linux pwrite on O_APPEND uses the live inode size, never f_pos. */
+        if(opened->status_flags&0x400ULL)offset=nas_vfs_node_size(&opened->vnode);
+        if(offset>INT64_MAX || count>INT64_MAX-offset)return (uint64_t)-EFBIG;
+    }
     uint8_t buffer[1024];
+    uint64_t done=0;
     while(done<count) {
         uint64_t n=count-done;
         if(n>sizeof(buffer))n=sizeof(buffer);
-        if(!nas_user_read_bytes(address+done,buffer,n))
+        int64_t transferred;
+        if(writing) {
+            if(!nas_user_read_bytes(address+done,buffer,n))
+                return done ? done : (uint64_t)-EFAULT;
+            transferred=regular_vfs ?
+                nas_vfs_write_at(&opened->vnode,offset+done,buffer,n) :
+                (int64_t)opened->ops->write_at(slot,offset+done,buffer,n);
+        } else {
+            transferred=(!regular_vfs && opened->ops && opened->ops->read_at) ?
+                (int64_t)opened->ops->read_at(slot,offset+done,buffer,n) :
+                nas_fs_mmap_read(fd,offset+done,buffer,n);
+        }
+        if(transferred<0)return done ? done : (uint64_t)transferred;
+        if((uint64_t)transferred>n)return done ? done : (uint64_t)-EIO;
+        if(!transferred)break;
+        if(!writing && !nas_user_write_bytes(address+done,buffer,(uint64_t)transferred))
             return done ? done : (uint64_t)-EFAULT;
-        int64_t wrote=regular_vfs ?
-            nas_vfs_write_at(&opened->vnode,offset+done,buffer,n) :
-            (int64_t)opened->ops->write_at(slot,offset+done,buffer,n);
-        if(wrote<0)return done ? done : (uint64_t)wrote;
-        if((uint64_t)wrote>n)return done ? done : (uint64_t)-EIO;
-        done+=(uint64_t)wrote;
-        if(regular_vfs && offset+done>opened->vnode.size)
+        done+=(uint64_t)transferred;
+        if(writing && regular_vfs && offset+done>opened->vnode.size)
             opened->vnode.size=offset+done;
-        if((uint64_t)wrote<n)break;
+        if((uint64_t)transferred<n)break;
     }
     return done;
+}
+uint64_t nas_fs_fd_pread(uint64_t fd,uint64_t address,uint64_t count,
+                         uint64_t offset) {
+    return positioned_io(fd,address,count,offset,false);
+}
+uint64_t nas_fs_fd_pwrite(uint64_t fd,uint64_t address,uint64_t count,
+                          uint64_t offset) {
+    return positioned_io(fd,address,count,offset,true);
 }
 /* LP64 Linux iovec data plane. Every iovec is imported once into heap-owned
  * kernel memory BEFORE any provider can consume data or change File offsets.
@@ -507,12 +484,9 @@ struct nas_pending_io {
 /* Capture the process-local descriptor mapping once. A pending syscall
  * subsequently holds the shared File by slot, regardless of dup2/close. */
 static int io_resolve_fd(uint64_t fd,unsigned *slot) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
-        return -EBADF;
-    const unsigned target=TASK.fds->entries[fd].slot;
-    if(target>=NAS_OPEN_FILE_LIMIT || !nas_open_files[target].refcount)
-        return -EBADF;
-    *slot=target;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry)return -EBADF;
+    *slot=entry->slot;
     return 0;
 }
 static void io_request_release(struct nas_io_request *req) {
@@ -520,19 +494,21 @@ static void io_request_release(struct nas_io_request *req) {
     req->vectors=0;
 }
 static int io_request_import_slot(unsigned slot,uint64_t user_iov,uint64_t count,
-                                  bool writing,struct nas_io_request *req) {
+                                  bool writing,bool require_scalar_ops,
+                                  struct nas_io_request *req) {
     *req=(struct nas_io_request){0};
     /* Linux looks up and checks the File before importing user iovecs,
      * including an empty iovec array. This also prevents zero-byte writev
      * from silently succeeding on an O_RDONLY/open(O_PATH) descriptor. */
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return -EBADF;
     uint64_t flags=nas_open_files[slot].status_flags;
     if((flags&NAS_LINUX_O_PATH) ||
        (writing ? (flags&3ULL)==0 : (flags&3ULL)==1))
         return -EBADF;
     const struct nas_file_ops *ops=nas_open_files[slot].ops;
-    if(!ops || (writing ? !ops->write : !ops->read))return -EBADF;
+    if(!ops || (require_scalar_ops &&
+       (writing ? !ops->write : !ops->read)))return -EBADF;
     if(count>NAS_IOV_MAX)return -EINVAL;
     if(count && (user_iov>=USER_LIMIT ||
                  count>(USER_LIMIT-user_iov)/16ULL))return -EFAULT;
@@ -580,7 +556,7 @@ static int io_request_import(uint64_t fd,uint64_t user_iov,uint64_t count,
                              bool writing,struct nas_io_request *req) {
     unsigned slot;
     int rc=io_resolve_fd(fd,&slot);
-    return rc ? rc : io_request_import_slot(slot,user_iov,count,writing,req);
+    return rc ? rc : io_request_import_slot(slot,user_iov,count,writing,true,req);
 }
 /* Advance a cursor across empty iovecs and return its next user slice.
  * Callers hold a private cursor while preflighting to avoid changing the
@@ -674,15 +650,28 @@ static bool io_scatter_vector(const struct nas_io_request *req,
 /* M180 uses the original iovec validator, cursor and usercopy rules.
  * Metadata belongs to the blocked Task; ext4 receives only a kernel-owned
  * transfer buffer on the dedicated parkable Worker stack. */
-int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
-                             bool writing,struct nas_fs_io_vectors *out) {
+/* A datagram owns its protocol read/write callback and must not be
+ * rejected solely because scalar FileOps are intentionally absent. */
+static int io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,bool require_scalar,
+                             struct nas_fs_io_vectors *out) {
     if(!out)return -EINVAL;
     *out=(struct nas_fs_io_vectors){0};
     struct nas_io_request req={0};
-    int rc=io_request_import_slot(slot,user_iov,count,writing,&req);
+    int rc=io_request_import_slot(slot,user_iov,count,writing,
+                                   require_scalar,&req);
     if(rc)return rc;
     *out=(struct nas_fs_io_vectors){req.vectors,req.count,req.total};
     return 0;
+}
+int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
+                             bool writing,struct nas_fs_io_vectors *out) {
+    return io_vectors_import(slot,user_iov,count,writing,true,out);
+}
+int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
+                                      uint64_t count,bool writing,
+                                      struct nas_fs_io_vectors *out) {
+    return io_vectors_import(slot,user_iov,count,writing,false,out);
 }
 static struct nas_io_request io_view(const struct nas_fs_io_vectors *vectors) {
     return (struct nas_io_request){.vectors=vectors->entries,
@@ -807,38 +796,27 @@ static uint64_t io_aggregate_write(const struct nas_io_request *req) {
 /* Legacy scalar callback fallback. The metadata has ALREADY been imported
  * and verified, avoiding the old bug where a later invalid iovec caused
  * partial pipe writes/consumption before Linux's import_iovec EFAULT. */
-static uint64_t io_segmented_read(const struct nas_io_request *req) {
-    uint64_t done=0;
-    for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
-        uint64_t bytes=req->vectors[i].length;
-        if(!bytes)continue;
-        if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t got=io_slot_read(req->slot,req->vectors[i].address,bytes);
-        if((int64_t)got<0)return done ? done:got;
-        done+=got;
-        if(got!=bytes || bytes!=req->vectors[i].length)break;
-    }
-    return done;
-}
-static uint64_t io_segmented_write(const struct nas_io_request *req) {
+/* The scalar-only FileOps fallback has a single checked transfer cursor.
+ * Zero-length writev segments are intentionally still submitted before
+ * progress (eventfd/pipe legacy behavior); empty readv segments are skipped. */
+static uint64_t io_segmented(const struct nas_io_request *req,bool writing) {
     uint64_t done=0;
     for(uint64_t i=0;i<req->count && done<NAS_MAX_RW_COUNT;i++) {
         uint64_t bytes=req->vectors[i].length;
         if(!bytes) {
-            /* A leading zero-length segment is handed to a scalar-only
-             * provider when later data exists: Linux eventfd.write(0)
-             * rejects [0,8], but skips zero entries after progress. */
-            if(!done && req->total) {
+            if(writing && !done && req->total) {
                 uint64_t rc=io_slot_write(req->slot,req->vectors[i].address,0);
                 if((int64_t)rc<0)return rc;
             }
             continue;
         }
         if(bytes>NAS_MAX_RW_COUNT-done)bytes=NAS_MAX_RW_COUNT-done;
-        uint64_t wrote=io_slot_write(req->slot,req->vectors[i].address,bytes);
-        if((int64_t)wrote<0)return done ? done:wrote;
-        done+=wrote;
-        if(wrote!=bytes || bytes!=req->vectors[i].length)break;
+        uint64_t transferred=writing ?
+            io_slot_write(req->slot,req->vectors[i].address,bytes) :
+            io_slot_read(req->slot,req->vectors[i].address,bytes);
+        if((int64_t)transferred<0)return done ? done : transferred;
+        done+=transferred;
+        if(transferred!=bytes || bytes!=req->vectors[i].length)break;
     }
     return done;
 }
@@ -846,34 +824,35 @@ static uint64_t io_vector_execute(const struct nas_io_request *req,bool writing)
     if(!req->total)return 0;
     if(writing)
         return req->ops->aggregate_writev ? io_aggregate_write(req) :
-                                           io_segmented_write(req);
+                                           io_segmented(req,true);
     return req->ops->aggregate_readv ? io_aggregate_read(req) :
-                                      io_segmented_read(req);
+                                      io_segmented(req,false);
 }
 /* The issuing syscall may park after -EAGAIN. Return the already-imported
  * logical request size as a kernel-owned wait hint: the scheduler must NEVER
  * dereference a different task's iovec pointer just to check TTY readiness. */
-uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
-                                  uint64_t *requested_out) {
+/* Metadata import and its owner are identical for readv/writev; only
+ * the access mode and scalar/aggregate provider dispatch differ. */
+static uint64_t io_vector_syscall(uint64_t fd,uint64_t iov,uint64_t count,
+                                  bool writing,uint64_t *requested_out) {
     if(requested_out)*requested_out=0;
     struct nas_io_request req;
-    int rc=io_request_import(fd,iov,count,false,&req);
+    int rc=io_request_import(fd,iov,count,writing,&req);
     if(rc)return (uint64_t)(int64_t)rc;
     if(requested_out)*requested_out=req.total;
-    uint64_t result=io_vector_execute(&req,false);
+    uint64_t result=io_vector_execute(&req,writing);
     io_request_release(&req);
     return result;
+}
+uint64_t nas_fs_fd_readv_with_size(uint64_t fd,uint64_t iov,uint64_t count,
+                                  uint64_t *requested_out) {
+    return io_vector_syscall(fd,iov,count,false,requested_out);
 }
 uint64_t nas_fs_fd_readv(uint64_t fd,uint64_t iov,uint64_t count) {
-    return nas_fs_fd_readv_with_size(fd,iov,count,0);
+    return io_vector_syscall(fd,iov,count,false,NULL);
 }
 uint64_t nas_fs_fd_writev(uint64_t fd,uint64_t iov,uint64_t count) {
-    struct nas_io_request req;
-    int rc=io_request_import(fd,iov,count,true,&req);
-    if(rc)return (uint64_t)(int64_t)rc;
-    uint64_t result=io_vector_execute(&req,true);
-    io_request_release(&req);
-    return result;
+    return io_vector_syscall(fd,iov,count,true,NULL);
 }
 /* A File is a shared open-description, not a mutable fd number. This
  * single executor is used by both the first attempt and wake completion. */
@@ -922,7 +901,7 @@ void nas_fs_io_start(uint64_t op,uint64_t fd,uint64_t address,uint64_t length,
     current.request.slot=slot;
     current.request.ops=ops;
     if(op==NAS_SC_readv || op==NAS_SC_writev) {
-        rc=io_request_import_slot(slot,address,length,op==NAS_SC_writev,
+        rc=io_request_import_slot(slot,address,length,op==NAS_SC_writev,true,
                                   &current.request);
         if(rc) {
             attempt->result=(uint64_t)(int64_t)rc;

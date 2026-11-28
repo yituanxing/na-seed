@@ -4,6 +4,7 @@
 #include "../../kernel/fd.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/mm/heap.h"
 #include "../../kernel/task/k_sync.h"
 #include "../../kernel/task/kthread.h"
 #include "../../kernel/arch/arch.h"
@@ -83,7 +84,10 @@ struct bridge_slot {
     struct nas_lwip_bridge_result result;
 };
 static struct {
-    struct bridge_slot slots[NAS_LWIP_BRIDGE_SLOTS];
+    /* Heavy buffers belong only to admitted Netconn generations.
+     * Tombstones remain after final close to prevent recycled-handle ABA. */
+    struct bridge_slot *slots[NAS_LWIP_BRIDGE_SLOTS];
+    uint32_t generations[NAS_LWIP_BRIDGE_SLOTS];
     uint16_t queue[NAS_LWIP_BRIDGE_QUEUE];
     unsigned first,count,active,deferred_count;
     struct nas_ksem wake;
@@ -100,8 +104,8 @@ static void netconn_event(struct netconn *connection,enum netconn_evt event,
                           u16_t length) {
     (void)length;
     for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
-        struct bridge_slot *s=&bridge.slots[i];
-        if(!s->owned || s->connection!=connection)continue;
+        struct bridge_slot *s=bridge.slots[i];
+        if(!s || !s->owned || s->connection!=connection)continue;
         if(s->closing) {
             /* A full send queue can reopen when the peer ACKs. Wake only
              * an actual waiting close, never repeatedly post stale tokens
@@ -128,8 +132,8 @@ static bool accept_lease_valid(unsigned slot,uint64_t token) {
 
 static struct bridge_slot *lookup(struct nas_lwip_bridge_id id) {
     if(id.slot>=NAS_LWIP_BRIDGE_SLOTS || !id.generation)return NULL;
-    struct bridge_slot *s=&bridge.slots[id.slot];
-    return s->owned && !s->closing && s->generation==id.generation ? s : NULL;
+    struct bridge_slot *s=bridge.slots[id.slot];
+    return s && s->owned && !s->closing && s->generation==id.generation ? s : NULL;
 }
 #ifdef NASEED_SYSCALL_TRACE
 extern void nas_print(const char *);
@@ -142,8 +146,8 @@ static void trace_bridge_exhaustion(unsigned requested) {
     nas_print(" capacity=");nas_dec(NAS_LWIP_BRIDGE_ACTIVE_LIMIT);
     nas_print("\n");
     for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
-        const struct bridge_slot *s=&bridge.slots[i];
-        if(!s->owned)continue;
+        const struct bridge_slot *s=bridge.slots[i];
+        if(!s || !s->owned)continue;
         nas_print("[LWIP BRIDGE CAP SLOT] id=");nas_dec(i);
         nas_print(" ref=");nas_dec(nas_open_files[i].refcount);
         nas_print(" closing=");nas_dec(s->closing);
@@ -160,19 +164,21 @@ static struct nas_lwip_bridge_id reserve(unsigned slot,
     struct nas_lwip_bridge_id none={0};
     if(slot>=NAS_LWIP_BRIDGE_SLOTS ||
        bridge.active+bridge.deferred_count>=NAS_LWIP_BRIDGE_ACTIVE_LIMIT ||
-       bridge.slots[slot].owned) {
+       bridge.slots[slot]) {
 #ifdef NASEED_SYSCALL_TRACE
         trace_bridge_exhaustion(slot);
 #endif
         return none;
     }
-    struct bridge_slot *s=&bridge.slots[slot];
-    uint32_t generation=s->generation+1U;
+    uint32_t generation=bridge.generations[slot]+1U;
     if(!generation)return none; /* no ABA after 2^32 incarnations */
-    memset(s,0,sizeof(*s));
+    struct bridge_slot *s=nas_heap_calloc(1,sizeof(*s));
+    if(!s)return none; /* Failed allocation publishes no generation. */
     s->generation=generation;
     s->owned=true;
     s->type=type;
+    bridge.generations[slot]=generation;
+    bridge.slots[slot]=s;
     bridge.active++;
     return (struct nas_lwip_bridge_id){(uint16_t)slot,generation};
 }
@@ -184,7 +190,8 @@ static bool enqueue(unsigned slot) {
     return true;
 }
 static void free_native(unsigned slot) {
-    struct bridge_slot *s=&bridge.slots[slot];
+    struct bridge_slot *s=bridge.slots[slot];
+    if(!s)__builtin_trap();
     /* ACCEPT creates an owned Netconn before userspace can install a new
      * File. Until take() transfers the result, the LISTENER owns this child.
      * Closing the listener must not orphan an accepted, unclaimed handle. */
@@ -202,9 +209,10 @@ static void free_native(unsigned slot) {
         bridge.deferred_count--;
     }
     if(s->connection)(void)netconn_delete(s->connection);
-    uint32_t generation=s->generation;
-    memset(s,0,sizeof(*s));
-    s->generation=generation; /* invalidated old ID, never revive it */
+    bridge.slots[slot]=NULL;
+    /* Native worker retains ownership through FIN and deferred accepts.
+     * Keep generation tombstone after releasing the large allocation. */
+    (void)nas_heap_free(s);
     bridge.active--;
 }
 
@@ -482,7 +490,7 @@ static int send_datagram(struct netconn *connection,
 }
 
 static void execute(unsigned slot) {
-    struct bridge_slot *s=&bridge.slots[slot];
+    struct bridge_slot *s=bridge.slots[slot];
     struct nas_lwip_bridge_result *out=&s->result;
     const struct nas_lwip_bridge_request *r=&s->request;
     memset(out,0,sizeof(*out));
@@ -563,7 +571,7 @@ static void execute(unsigned slot) {
         /* accept_slot is reserved by the future OpenFile caller; the
          * accepted connection is never allocated in an unrelated FD map. */
         if(!accept_lease_valid(r->accept_slot,r->accept_lease_token) ||
-           bridge.slots[r->accept_slot].owned ||
+           bridge.slots[r->accept_slot] ||
            (bridge.active+bridge.deferred_count>=
                 NAS_LWIP_BRIDGE_ACTIVE_LIMIT && !s->deferred_accepted)) {
             trace_accept_error("lease-or-pool",ENFILE,s->accept_pending,
@@ -629,7 +637,7 @@ static void execute(unsigned slot) {
             out->status=-ENFILE;return;
         }
         if(deferred)s->deferred_accepted=NULL;
-        bridge.slots[id.slot].connection=accepted;
+        bridge.slots[id.slot]->connection=accepted;
         netconn_set_nonblocking(accepted,1);
         if(deferred)
             nas_print("[LWIP ACCEPT REPLAYED] saved TCP peer claimed by fresh FD lease\n");
@@ -764,7 +772,8 @@ static void execute(unsigned slot) {
  * is retained under the old bridge generation until either upstream lwIP
  * accepts it, a real error arrives, or the close deadline expires. */
 static void finish_closing(unsigned slot) {
-    struct bridge_slot *s=&bridge.slots[slot];
+    struct bridge_slot *s=bridge.slots[slot];
+    if(!s)__builtin_trap();
     if(s->type!=NAS_LWIP_BRIDGE_TCP) {
         if(!s->connection ||
            s->close_udp_position==s->close_udp_count ||
@@ -851,8 +860,8 @@ static void finish_closing(unsigned slot) {
 static int next_closing(void) {
     uint64_t now=nas_arch_monotonic_ns();
     for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
-        const struct bridge_slot *s=&bridge.slots[i];
-        if(!s->owned || !s->closing || s->queued)continue;
+        const struct bridge_slot *s=bridge.slots[i];
+        if(!s || !s->owned || !s->closing || s->queued)continue;
         if(!s->close_tx_wait ||
            deadline_expired(now,s->close_tx_retry_at) ||
            deadline_expired(now,s->close_tx_deadline))return (int)i;
@@ -862,8 +871,8 @@ static int next_closing(void) {
 static uint64_t next_closing_retry(void) {
     uint64_t earliest=0;
     for(unsigned i=0;i<NAS_LWIP_BRIDGE_SLOTS;i++) {
-        const struct bridge_slot *s=&bridge.slots[i];
-        if(!s->owned || !s->closing || !s->close_tx_wait)continue;
+        const struct bridge_slot *s=bridge.slots[i];
+        if(!s || !s->owned || !s->closing || !s->close_tx_wait)continue;
         uint64_t deadline=s->close_tx_retry_at<s->close_tx_deadline ?
                           s->close_tx_retry_at:s->close_tx_deadline;
         if(!earliest || deadline<earliest)earliest=deadline;
@@ -885,7 +894,8 @@ static void worker(void *unused) {
             unsigned slot=bridge.queue[bridge.first];
             bridge.first=(bridge.first+1U)%NAS_LWIP_BRIDGE_QUEUE;
             bridge.count--;
-            struct bridge_slot *s=&bridge.slots[slot];
+            struct bridge_slot *s=bridge.slots[slot];
+            if(!s)__builtin_trap(); /* queued native work must own this ID */
             s->queued=false;
             if(s->closing) {
                 /* If close raced a queued SEND, first consume the exact
@@ -953,7 +963,7 @@ void nas_lwip_bridge_set_completion_hook(
     bridge.completion_hook=hook;
 }
 bool nas_lwip_bridge_slot_available(unsigned slot) {
-    return slot<NAS_LWIP_BRIDGE_SLOTS && !bridge.slots[slot].owned;
+    return slot<NAS_LWIP_BRIDGE_SLOTS && !bridge.slots[slot];
 }
 int nas_lwip_bridge_open(unsigned file_slot,enum nas_lwip_bridge_type type,
                          struct nas_lwip_bridge_id *out) {
@@ -963,7 +973,7 @@ int nas_lwip_bridge_open(unsigned file_slot,enum nas_lwip_bridge_type type,
     if(bridge.count==NAS_LWIP_BRIDGE_QUEUE)return -EAGAIN;
     struct nas_lwip_bridge_id id=reserve(file_slot,type);
     if(!id.generation)return -ENFILE;
-    struct bridge_slot *s=&bridge.slots[id.slot];
+    struct bridge_slot *s=bridge.slots[id.slot];
     s->request.op=(enum nas_lwip_bridge_op)BRIDGE_OPEN;
     s->queued=true;
     if(!enqueue(id.slot)) {s->queued=false;s->closing=true;return -EAGAIN;}

@@ -42,17 +42,10 @@ int nas_usb_serial_chrdev_publish(const struct nas_usb_serial_backend *device) {
     if(!device->ready(device->context))return -ENODEV;
     int pinned=device->publication_pin(device->context);
     if(pinned)return pinned;
-    termios=(struct nas_termios){0};
-    /* A real FT232BM is initialized by USB vendor requests in the
-     * transport to 115200, 8 data bits, no parity and one stop bit.
-     * stty -F changes only the compatible Linux-side stream discipline. */
-    termios.iflag=0000400U; /* ICRNL */
-    termios.oflag=0000001U|0000004U; /* OPOST|ONLCR */
-    termios.cflag=H15_LINUX_B115200|H15_LINUX_CS8|0000200U|0004000U;
-    termios.lflag=0000001U|0000002U|0000010U; /* ISIG|ICANON|ECHO */
-    termios.cc[0]=3; termios.cc[1]=28; termios.cc[2]=127;
-    termios.cc[3]=21;termios.cc[4]=4;termios.cc[6]=1;
-    termios.cc[10]=26;termios.cc[14]=23;
+    /* FT232BM is fixed by the real USB vendor request to 115200 8N1;
+     * only the c_cflag differs from the shared Linux N_TTY defaults. */
+    nas_termios_defaults(&termios,
+        H15_LINUX_B115200|H15_LINUX_CS8|0000200U|0004000U);
     h15_node=(struct nas_chrdev_node){
         .path="/dev/ttyUSB0",
         .info={.fd_kind=FD_USB_SERIAL,.unit=0U,.dev=2U,

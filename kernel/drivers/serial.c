@@ -33,6 +33,17 @@ void nas_putchar(char ch) {
 }
 void nas_print(const char *s) {
     if (!s) return;
+    #ifdef NAS_ENABLE_H0_HARDWARE_DISCOVERY
+    if (h0_framebuffer_active) {
+        const char *start = s;
+        while (*s) {
+            if (*s == '\n') nas_arch_console_log_newline();
+            nas_arch_console_putc(*s++);
+        }
+        (void)nas_fbcon_write((const uint8_t *)start, (uint64_t)(s-start));
+        return;
+    }
+    #endif
     while (*s) {
         /* Diagnostic terminal formatting is separate from raw stdout. */
         if (*s == '\n') nas_arch_console_log_newline();

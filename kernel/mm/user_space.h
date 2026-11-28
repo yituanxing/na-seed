@@ -10,8 +10,6 @@ bool nas_space_map_page(struct nas_user_space *space, uint64_t va, bool writable
  * owner chooses which prot and mapping kinds are authorized. */
 bool nas_space_map_access(struct nas_user_space *space, uint64_t va,
                           unsigned access);
-bool nas_space_map_elf_access(struct nas_user_space *space, uint64_t va,
-                             unsigned access);
 bool nas_space_unmap_page(struct nas_user_space *space, uint64_t va);
 bool nas_space_lookup(const struct nas_user_space *space, uint64_t va,
                       uint64_t *pa, unsigned *access);
@@ -19,5 +17,4 @@ bool nas_space_protect(struct nas_user_space *space, uint64_t va,
                        uint64_t pages, unsigned protection);
 bool nas_space_user_writable(const struct nas_user_space *space, uint64_t va);
 uint8_t *nas_space_user_byte(const struct nas_user_space *space, uint64_t va);
-bool nas_space_regression(void);
 #endif

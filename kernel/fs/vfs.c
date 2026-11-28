@@ -850,12 +850,6 @@ static const struct nas_fs_node *mount_covered_inode(
     if(!slot || !slot->covered_path.dentry)return NULL;
     return &slot->covered_path.dentry->node;
 }
-static bool same_vnode(const struct nas_fs_node *a,
-                       const struct nas_fs_node *b) {
-    return a->mount==b->mount && a->mount_id==b->mount_id &&
-           a->ino==b->ino && a->inode==b->inode &&
-           a->filesystem==b->filesystem;
-}
 /* Watchers receive inode events and their parent directories receive child
  * names. Enumerate VFS's already-owned positive Dentries; no additional
  * path walk, inode pin or syscall-layer event hooks are necessary. Hardlinks
@@ -865,7 +859,7 @@ static void inotify_emit_inode_and_parents(const struct nas_fs_node *node,
     nas_inotify_emit_node(node,event);
     for(struct nas_vfs_dentry *d=dentry_live;d;d=d->next)
         if(!d->detached && d->parent && !d->parent->detached &&
-           same_vnode(&d->node,node))
+           nas_fs_node_same_identity(&d->node,node))
             nas_inotify_emit_child(&d->parent->node,d->name,
                                    event,0,node->is_dir);
 }
@@ -917,7 +911,7 @@ static struct nas_vfs_dentry *dentry_find(struct nas_vfs_dentry *parent,
         if(d->parent==parent && !strcmp(d->name,name) &&
            d->node.mount_id==node->mount_id &&
            d->node.mount==node->mount) {
-            if(same_vnode(&d->node,node))return d;
+            if(nas_fs_node_same_identity(&d->node,node))return d;
             dentry_detach(d);
         }
         d=next;
@@ -990,7 +984,7 @@ int nas_vfs_path_bind(const struct nas_fs_node *inode,
     } else if(rc!=-ENOENT)return rc;
     if(length==1) {
         if(!current)return -ENOENT;
-        if(!same_vnode(&current->node,inode)) {
+        if(!nas_fs_node_same_identity(&current->node,inode)) {
             (void)dentry_put(current);return -ESTALE;
         }
     } else {
@@ -1035,7 +1029,7 @@ int nas_vfs_path_bind(const struct nas_fs_node *inode,
             if(current)(void)dentry_put(current);
             return rc;
         }
-        if(!current || !same_vnode(&current->node,inode)) {
+        if(!current || !nas_fs_node_same_identity(&current->node,inode)) {
             if(current)(void)dentry_put(current);
             return -ESTALE;
         }
@@ -1402,25 +1396,51 @@ static int child_exists(const struct nas_vfs_path *parent,
     int rc=nas_vfs_path_lookup_child(parent,name,found);
     return rc;
 }
-int nas_vfs_create_child(const struct nas_vfs_path *parent,
-                         const char *leaf,uint64_t mode) {
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
+/* One admission for all new children: the already-resolved parent Dentry
+ * is the authority. Never fall back to an absolute path or create under a
+ * detached parent, even if a backend would otherwise accept the name. */
+static int child_creation_begin(const struct nas_vfs_path *parent,
+                                const char *name,struct nas_fs_node *owner) {
+    int rc=child_parent_node(parent,name,owner);
     if(rc)return rc;
     struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
+    rc=child_exists(parent,name,&existing);
     if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
     if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->create ?
-       owner.filesystem->create(&owner,leaf,mode) : -EOPNOTSUPP;
+    return nas_vfs_can_write(owner) ? 0 : -EROFS;
+}
+enum child_creation_kind { CHILD_REGULAR, CHILD_DIRECTORY, CHILD_SYMLINK };
+/* The three simple provider mutations share one owner-assignment/rollback
+ * transaction. mknod is intentionally separate: socket/FIFO publication
+ * reserves and pins a positive Dentry BEFORE a provider-side mutation. */
+static int create_simple_child(const struct nas_vfs_path *parent,
+                               const char *name,uint64_t mode,
+                               const char *target,enum child_creation_kind kind) {
+    struct nas_fs_node owner;
+    int rc=child_creation_begin(parent,name,&owner);
+    if(rc)return rc;
+    if(kind==CHILD_REGULAR)
+        rc=owner.filesystem->create ?
+           owner.filesystem->create(&owner,name,mode) : -EOPNOTSUPP;
+    else if(kind==CHILD_DIRECTORY)
+        rc=owner.filesystem->mkdir ?
+           owner.filesystem->mkdir(&owner,name,mode) : -EOPNOTSUPP;
+    else
+        rc=owner.filesystem->symlink ?
+           owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
     if(!rc) {
-        rc=assign_new_child_owner(&owner,leaf,false);
+        rc=assign_new_child_owner(&owner,name,kind==CHILD_DIRECTORY);
         if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,leaf,0)))rc=-EIO;
+                  owner.filesystem->unlink(&owner,name,
+                      kind==CHILD_DIRECTORY ? 0x200ULL:0)))rc=-EIO;
     }
-    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,false);
+    if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,
+                                  kind==CHILD_DIRECTORY);
     return rc;
+}
+int nas_vfs_create_child(const struct nas_vfs_path *parent,
+                         const char *leaf,uint64_t mode) {
+    return create_simple_child(parent,leaf,mode,NULL,CHILD_REGULAR);
 }
 int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode,
@@ -1433,13 +1453,8 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
     if(special_type!=0140000ULL && special_type!=0010000ULL)
         return -EOPNOTSUPP;
     struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
+    int rc=child_creation_begin(parent,leaf,&owner);
     if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
     if(!owner.filesystem->mknod)return -EOPNOTSUPP;
     /* Reserve every allocation and the parent reference before the backend
      * changes its namespace. There must be no fresh allocation after a
@@ -1495,23 +1510,7 @@ int nas_vfs_mknod_child(const struct nas_vfs_path *parent,
 }
 int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode) {
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,leaf,&owner);
-    if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,leaf,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->mkdir ?
-       owner.filesystem->mkdir(&owner,leaf,mode) : -EOPNOTSUPP;
-    if(!rc) {
-        rc=assign_new_child_owner(&owner,leaf,true);
-        if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,leaf,0x200ULL)))rc=-EIO;
-    }
-    if(!rc)nas_inotify_emit_child(&owner,leaf,NAS_IN_CREATE,0,true);
-    return rc;
+    return create_simple_child(parent,leaf,mode,NULL,CHILD_DIRECTORY);
 }
 int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
                          const char *leaf,uint64_t flags) {
@@ -1600,7 +1599,7 @@ int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
         if(!rc && ancestor_of_mounted_child(&target))rc=-EBUSY;
         if(!rc && flags==2ULL && victim.is_dir &&
            dentry_contains(target.dentry,old_parent->dentry))rc=-EINVAL;
-        if(!rc && same_vnode(&source_node,&victim) && flags<=2ULL) {
+        if(!rc && nas_fs_node_same_identity(&source_node,&victim) && flags<=2ULL) {
             /* POSIX rename of two hard links to the SAME inode is a
              * namespace no-op, including an EXCHANGE of identical inodes.
              * Do not rekey one Dentry when both names already exist. */
@@ -1683,13 +1682,6 @@ finish:
         return dropped ? dropped : rc;
     }
 }
-int nas_vfs_rename_child(const struct nas_vfs_path *old_parent,
-                         const char *old_name,
-                         const struct nas_vfs_path *new_parent,
-                         const char *new_name,uint64_t flags) {
-    return nas_vfs_rename_child_with_intent(old_parent,old_name,
-                                            new_parent,new_name,flags,false);
-}
 int nas_vfs_link_child(const struct nas_vfs_path *old_parent,
                        const char *old_name,
                        const struct nas_vfs_path *new_parent,
@@ -1740,23 +1732,7 @@ int nas_vfs_link_path_child(const struct nas_vfs_path *source,
 int nas_vfs_symlink_child(const char *target,
                           const struct nas_vfs_path *parent,const char *name) {
     if(!target)return -EINVAL;
-    struct nas_fs_node owner;
-    int rc=child_parent_node(parent,name,&owner);
-    if(rc)return rc;
-    struct nas_vfs_path existing={0};
-    rc=child_exists(parent,name,&existing);
-    if(!rc) {(void)nas_vfs_path_put(&existing);return -EEXIST;}
-    if(rc!=-ENOENT)return rc;
-    if(!nas_vfs_can_write(&owner))return -EROFS;
-    rc=owner.filesystem->symlink ?
-       owner.filesystem->symlink(&owner,name,target) : -EOPNOTSUPP;
-    if(!rc) {
-        rc=assign_new_child_owner(&owner,name,false);
-        if(rc && (!owner.filesystem->unlink ||
-                  owner.filesystem->unlink(&owner,name,0)))rc=-EIO;
-    }
-    if(!rc)nas_inotify_emit_child(&owner,name,NAS_IN_CREATE,0,false);
-    return rc;
+    return create_simple_child(parent,name,0,target,CHILD_SYMLINK);
 }
 static bool valid_vfs_dirent(const struct nas_vfs_dirent *entry) {
     unsigned length=entry->name_len;
@@ -2073,10 +2049,14 @@ int nas_vfs_resize(const struct nas_fs_node *node,uint64_t length) {
     if(length>INT64_MAX)return -EFBIG;
     if(!nas_vfs_can_write(node))return -EROFS;
     if(!node->filesystem->resize)return -EOPNOTSUPP;
+    /* Only a real shrink revokes PTEs. Extending a file or ftruncate to
+     * the existing size must not discard a resident private COW copy;
+     * the filesystem provider zeroes any newly visible backing bytes. */
+    uint64_t original_size=nas_vfs_node_size(node);
     int rc=node->filesystem->resize(node,length);
     if(!rc) {
         publish_inode_size(node,length);
-        nas_vm_invalidate_file(node,length);
+        if(length<original_size)nas_vm_invalidate_file(node,length);
         inotify_emit_inode_and_parents(node,NAS_IN_MODIFY);
     }
     return rc;
@@ -2101,8 +2081,10 @@ int nas_vfs_preallocate(const struct nas_fs_node *node,uint64_t offset,
     if(!rc && !(mode&1U)) {
         uint64_t end=offset+length;
         if(end>old_size) {
+            /* This is a growth-only operation: the provider has already
+             * zeroed newly visible bytes; existing private COW leaves
+             * are not invalidated on an EOF extension. */
             publish_inode_size(node,end);
-            nas_vm_invalidate_file(node,end);
         }
     }
     return rc;
@@ -2198,38 +2180,6 @@ int nas_vfs_rename(const char *oldpath,const char *newpath,uint64_t flags) {
     int dropped_to=to.dentry ? nas_vfs_path_put(&to) : 0;
     int dropped_from=nas_vfs_path_put(&from);
     return dropped_to ? dropped_to : dropped_from ? dropped_from : rc;
-}
-int nas_vfs_link(const char *oldpath,const char *newpath) {
-    if(!oldpath || oldpath[0]!='/' || !newpath || newpath[0]!='/')
-        return -EINVAL;
-    struct nas_vfs_path source={0},parent={0};
-    int rc=nas_fs_lookup_path_at(NULL,NULL,oldpath,false,&source);
-    if(rc)return rc;
-    struct nas_fs_node node;
-    rc=nas_vfs_path_node(&source,&node);
-    /* Preserve EPERM for linking root itself, whose Dentry has no parent. */
-    if(!rc && node.is_dir)rc=-EPERM;
-    char leaf[256];
-    if(!rc)rc=nas_fs_lookup_parent_at_policy(NULL,NULL,newpath,
-                                             NAS_FS_TRAILING_CREATE_DEST,
-                                             &parent,leaf);
-    if(!rc)rc=nas_vfs_link_path_child(&source,&parent,leaf);
-    int dropped_parent=parent.dentry ? nas_vfs_path_put(&parent) : 0;
-    int dropped_source=nas_vfs_path_put(&source);
-    return dropped_parent ? dropped_parent : dropped_source ? dropped_source : rc;
-}
-int nas_vfs_symlink(const char *target,const char *path) {
-    if(!target)return -EINVAL;
-    if(!path || path[0]!='/')return -EINVAL;
-    struct nas_vfs_path parent={0};
-    char leaf[256];
-    int rc=nas_fs_lookup_parent_at_policy(NULL,NULL,path,
-                                          NAS_FS_TRAILING_CREATE_DEST,
-                                          &parent,leaf);
-    if(rc)return rc;
-    rc=nas_vfs_symlink_child(target,&parent,leaf);
-    int dropped=nas_vfs_path_put(&parent);
-    return dropped ? dropped : rc;
 }
 int nas_vfs_chmod(const struct nas_fs_node *node,uint64_t mode) {
     int status=vfs_node_status(node);

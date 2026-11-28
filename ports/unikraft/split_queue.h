@@ -47,4 +47,13 @@ int nas_vring_queue_poll(struct nas_vring_queue *, uint16_t *head,
 /* Reset before releasing a live queue. Also completes an inactive queue's
  * failed-initialization rollback or retries a failed DMA release. */
 int nas_vring_queue_close(struct nas_vring_queue *);
+/* Single-queue owner may fail before publishing ring DMA. Stop its partial
+ * transport too, but never bypass close's retryable DMA ownership rules. */
+static inline int nas_vring_queue_close_or_reset(struct nas_vring_queue *q,
+    const struct nas_virtio_transport *transport) {
+    if(q->active || q->dma_page.cpu)return nas_vring_queue_close(q);
+    if(transport->ops && transport->ops->reset)
+        transport->ops->reset(transport->context);
+    return 0;
+}
 #endif

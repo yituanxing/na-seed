@@ -10,6 +10,7 @@
 #include "../tmpfs.h"
 #include "../pipe.h"
 #include "../lib/string.h"
+#include "../mm/heap.h"
 #include "../mm/usercopy.h"
 #include "../mm/frame.h"
 #include "../arch/arch.h"
@@ -23,6 +24,10 @@
 #include "../drivers/vt.h"
 #include "../drivers/pty.h"
 #include "../drivers/display/fbdev.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "drm_chrdev.h"
+#include "drm_kms.h"
+#endif
 #include "../drivers/core/chrdev.h"
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
@@ -107,7 +112,6 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         nas_pipe_create_socketpair(slots[0], slots[1]) :
         nas_pipe_create(slots[0], slots[1]);
     if (result) return (uint64_t)(int64_t)result;
-    if (stream_socket) nas_unix_socket_pair_ready(slots[0],slots[1]);
     for (unsigned i = 0; i < 2; i++) {
         unsigned fd = fds[i], slot = slots[i];
         uint8_t kind=stream_socket ? FD_SOCKET : i ? FD_PIPE_W : FD_PIPE_R;
@@ -116,6 +120,14 @@ static uint64_t sys_channel_pair(uint64_t user_pair, uint64_t flags,
         if(!nas_fd_install_new(nas_current_task,fd,slot,kind,status,
                                !!(flags & 0x80000ULL)))
             nas_fs_fail("reserved pipe/socket FD was occupied");
+    }
+    if(stream_socket) {
+        int rc=nas_unix_socket_pair_ready(slots[0],slots[1]);
+        if(rc) {
+            nas_fs_close_fd(fds[0]);
+            nas_fs_close_fd(fds[1]);
+            return (uint64_t)(int64_t)rc;
+        }
     }
     uint8_t output[8] = {0};
     for (unsigned i = 0; i < 2; i++)
@@ -206,6 +218,11 @@ void nas_fs_description_final_close(unsigned slot) {
         nas_fs_fail("File mount pin corrupted at final close");
     if(nas_open_files[slot].chrdev_node)
         nas_chrdev_node_put(nas_open_files[slot].chrdev_node);
+    /* File final close is the only owner of this optional diagnostic label.
+     * Other FDs/SCM_RIGHTS refs share it; a reused slot must never inherit it. */
+    if(nas_open_files[slot].origin_path &&
+       !nas_heap_free(nas_open_files[slot].origin_path))
+        nas_fs_fail("File diagnostic label ownership corrupted");
     nas_open_files[slot]=(struct nas_open_file){0};
 }
 void nas_fs_drop_kernel_description(unsigned slot) {
@@ -687,18 +704,10 @@ static uint64_t open_path_owned(const char *path,
          * literal whitelist from the SAME owned request, then run a
          * side-effect-free nofollow namei. An existing real inode (also a
          * symlink) proceeds through ordinary VFS open, never this bridge. */
-        char candidate[256];
-        const char *literal=NULL;
-        if(request && nas_fs_bootstrap_candidate(request,candidate))
-            literal=candidate;
-        else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
-        if(literal) {
-            int checked=nas_fs_bootstrap_nofollow_probe(request,path);
-            if(checked==-ENOENT) {
-                if(!nas_fs_bootstrap_describe(literal,&bootstrap))
-                    bootstrap_ready=true;
-            } else if(checked)return (uint64_t)(int64_t)checked;
-        }
+        int checked=nas_fs_bootstrap_if_absent(request,path,&bootstrap);
+        if(!checked)bootstrap_ready=true;
+        else if(checked!=-ENOENT && checked!=-EEXIST)
+            return (uint64_t)(int64_t)checked;
     }
     if(!bootstrap_ready) {
         /* The VFS owns namei, O_CREAT, inode mode/permission validation,
@@ -748,14 +757,7 @@ static uint64_t open_path_owned(const char *path,
              * transaction. Keep the owned root/dirfd anchors through its
              * nofollow probe; never reconstruct a name and reopen it via
              * the process root after the first namei already failed. */
-            char candidate[256];
-            const char *literal=NULL;
-            if(request && nas_fs_bootstrap_candidate(request,candidate))
-                literal=candidate;
-            else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
-            if(!literal ||
-               nas_fs_bootstrap_nofollow_probe(request,path)!=-ENOENT ||
-               nas_fs_bootstrap_describe(literal,&bootstrap))
+            if(nas_fs_bootstrap_if_absent(request,path,&bootstrap))
                 return (uint64_t)(int64_t)rc;
             bootstrap_ready=true;
         } else return (uint64_t)(int64_t)rc;
@@ -854,13 +856,15 @@ static uint64_t open_path_owned(const char *path,
     /* Diagnostic hint only. No open/read/stat/dirfd may rely on an old
      * pathname after rename: its pinned VFS inode remains authoritative. */
     const char *origin=have_node && canonical[0]?canonical:path;
-    unsigned path_len=0;
-    while(origin[path_len] &&
-          path_len<sizeof(nas_open_files[slot].origin_path)-1U) {
-        nas_open_files[slot].origin_path[path_len]=origin[path_len];
-        ++path_len;
+    size_t path_len=strnlen(origin,NAS_FILE_ORIGIN_LIMIT-1U);
+    if(path_len) {
+        char *hint=nas_heap_alloc(path_len+1U);
+        if(hint) {
+            memcpy(hint,origin,path_len);
+            hint[path_len]=0;
+            nas_open_files[slot].origin_path=hint;
+        }
     }
-    nas_open_files[slot].origin_path[path_len]=0;
     return fd;
 open_rollback:
     if(have_node) {
@@ -895,19 +899,21 @@ uint64_t nas_fs_open_anon_tmpfs(const char *user_name,bool cloexec) {
     opened->vnode=node;
     opened->vnode_pinned=true;
     /* Linux presents /memfd:<description> (deleted) in /proc/self/fd.
-     * Existing OpenFile diagnostic hints are bounded to 256 bytes; keep
-     * the deletion suffix even when the permitted 249-byte name is longer.
-     * No operation may resolve or reopen this diagnostic string. */
+     * Build this non-authoritative hint only for a live memfd. Its absence
+     * on OOM cannot roll back an already-published anonymous VFS inode. */
     static const char prefix[]="/memfd:";
     static const char suffix[]=" (deleted)";
-    char *label=opened->origin_path;
-    unsigned written=0;
-    for(unsigned i=0;i<sizeof(prefix)-1;i++)label[written++]=prefix[i];
-    for(unsigned i=0;user_name[i] &&
-           written+sizeof(suffix)<sizeof(opened->origin_path);i++)
-        label[written++]=user_name[i];
-    for(unsigned i=0;i<sizeof(suffix)-1;i++)label[written++]=suffix[i];
-    label[written]=0;
+    const size_t max_name=NAS_FILE_ORIGIN_LIMIT-
+                          sizeof(prefix)-sizeof(suffix)+1U;
+    size_t name_bytes=strnlen(user_name,max_name);
+    size_t bytes=sizeof(prefix)-1U+name_bytes+sizeof(suffix)-1U;
+    char *label=nas_heap_alloc(bytes+1U);
+    if(label) {
+        memcpy(label,prefix,sizeof(prefix)-1U);
+        memcpy(label+sizeof(prefix)-1U,user_name,name_bytes);
+        memcpy(label+sizeof(prefix)-1U+name_bytes,suffix,sizeof(suffix));
+        opened->origin_path=label;
+    }
     return fd;
 }
 /* Direct Limine ELF modules have no mounted inode in the rootless boot.
@@ -1006,6 +1012,23 @@ int nas_fs_bootstrap_nofollow_probe(const struct nas_fs_path_request *request,
     if(existing.dentry && nas_vfs_path_put(&existing))
         nas_fs_fail("bootstrap nofollow Path reference corrupted");
     return rc;
+}
+/* Boot-only synthetic names are never a second path resolver. This
+ * single decision is reused by open/stat/access; policy specific to an
+ * operation (DAC, O_CREAT, error translation) stays with that operation. */
+int nas_fs_bootstrap_if_absent(const struct nas_fs_path_request *request,
+                               const char *path,struct nas_fs_bootstrap_info *out) {
+    if(!path || !out)return -EINVAL;
+    char candidate[256];
+    const char *literal=NULL;
+    if(request && nas_fs_bootstrap_candidate(request,candidate))
+        literal=candidate;
+    else if(!request && nas_fs_bootstrap_endpoint(path))literal=path;
+    if(!literal)return -ENOENT;
+    int checked=nas_fs_bootstrap_nofollow_probe(request,path);
+    if(!checked)return -EEXIST; /* A genuine mounted inode or symlink won. */
+    if(checked!=-ENOENT)return checked;
+    return nas_fs_bootstrap_describe(literal,out);
 }
 static uint64_t sys_open_device(uint64_t pathname, uint64_t flags,
                                  uint64_t mode) {
@@ -1151,17 +1174,11 @@ static uint64_t vwrite_tty(unsigned slot,const uint8_t *src,uint64_t n) {
 static uint16_t dpoll_always(unsigned slot,uint16_t events) {
     (void)slot;return events & 0x0005U;
 }
-static uint16_t vpoll_always(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_always(0,events);
-}
 static uint16_t dpoll_tty(unsigned slot,uint16_t events) {
     (void)slot;
     uint16_t out=events & 0x0004U;
     if((events & 0x0001U) && nas_tty_poll_readable())out|=0x0001U;
     return out;
-}
-static uint16_t vpoll_tty(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_tty(0,events);
 }
 static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
     if(nas_pipe_poll_readable(slot))
@@ -1170,23 +1187,14 @@ static uint16_t dpoll_pipe_read(unsigned slot,uint16_t events) {
      * A normally closed writer is already readable as EOF above. */
     return nas_pipe_read_ready(slot)?0x0018U:0;
 }
-static uint16_t vpoll_pipe_read(uint64_t fd,uint16_t events) {
-    return dpoll_pipe_read(TASK.fds->entries[fd].slot,events);
-}
 static uint16_t dpoll_pipe_write(unsigned slot,uint16_t events) {
     if(nas_pipe_poll_writable(slot))return events & 0x0004U;
     /* A full pipe must remain blocked, but no readers means EPIPE and
      * a blocked writer MUST wake, regardless of requested POLLOUT. */
     return nas_pipe_write_ready(slot)?0x0018U:0;
 }
-static uint16_t vpoll_pipe_write(uint64_t fd,uint16_t events) {
-    return dpoll_pipe_write(TASK.fds->entries[fd].slot,events);
-}
 static uint16_t dpoll_fifo_rw(unsigned slot,uint16_t events) {
     return dpoll_pipe_read(slot,events)|dpoll_pipe_write(slot,events);
-}
-static uint16_t vpoll_fifo_rw(uint64_t fd,uint16_t events) {
-    return dpoll_fifo_rw(TASK.fds->entries[fd].slot,events);
 }
 static uint64_t vioctl_tty(uint64_t fd,uint64_t cmd,uint64_t arg) {
     (void)fd;
@@ -1208,9 +1216,6 @@ static uint16_t dpoll_vt(unsigned slot,uint16_t events) {
     uint16_t ready=events&0x0004U;
     if((events&0x0001U)&&nas_vt_poll_readable())ready|=0x0001U;
     return ready;
-}
-static uint16_t vpoll_vt(uint64_t fd,uint16_t events) {
-    (void)fd;return dpoll_vt(0,events);
 }
 static void vt_wait_start(unsigned slot,struct nas_task *task,uint64_t n) {
     (void)slot;(void)n;nas_vt_blocking_read_start(task);
@@ -1235,14 +1240,14 @@ static const struct nas_file_ops ops_uart={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_TTY,
-    .poll=vpoll_tty,.poll_description=dpoll_tty,
+    .poll_description=dpoll_tty,
     .ioctl=vioctl_uart
 };
 static const struct nas_file_ops ops_tty={
     .read_plan=vread_tty_plan,.read=vread_tty,.write=vwrite_tty,
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_TTY,
-    .poll=vpoll_tty,.poll_description=dpoll_tty,
+    .poll_description=dpoll_tty,
     .ioctl=vioctl_tty
 };
 static const struct nas_file_ops ops_vt={
@@ -1250,49 +1255,63 @@ static const struct nas_file_ops ops_vt={
     .aggregate_readv=true,.read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
     .read_wait_start=vt_wait_start,.read_wait_ready=vt_wait_ready,
-    .poll=vpoll_vt,.poll_description=dpoll_vt,
+    .poll_description=dpoll_vt,
     .ioctl=vioctl_vt
 };
 static const struct nas_file_ops ops_null={
     .read_plan=vread_null_plan,.read=vread_null,.write=vwrite_discard,
     .write_ignores_source=true,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_zero={
     .read=vread_zero,.write=vwrite_discard,.write_ignores_source=true,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_random={
     .read=vread_random,.write=vwrite_random,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_bootfs={
     .read_plan=vread_limine_plan,.read=vread_limine,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_fbdev={
     .read_plan=fb_transfer_plan,.write_plan=fb_transfer_plan,
     .read=fb_read,.write=fb_write,
     .read_at=fb_read_at,.write_at=fb_write_at,
-    .poll=vpoll_always,.poll_description=dpoll_always,
+    .poll_description=dpoll_always,
     .ioctl=fb_ioctl
 };
+#ifdef NAS_ENABLE_VIRTIO_GPU
+/* DRM's nonblocking event/poll and GEM data plane arrive with KMS.
+ * Do not advertise invented framebuffer semantics on a DRM descriptor. */
+static const struct nas_file_ops ops_drm={
+    .read_plan=nas_drm_kms_read_plan,
+    .read_record_bytes=32,
+    .read=nas_drm_kms_read,
+    .aggregate_readv=true,
+    .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
+    .poll_description=nas_drm_kms_poll,
+    .ioctl=nas_drm_chrdev_ioctl,
+    .release=nas_drm_chrdev_release
+};
+#endif
 /* Every mounted regular file/dir reuses the SAME read/write/poll File ops.
  * Filesystem types are selected only by the inode's provider callbacks. */
 static const struct nas_file_ops ops_vfs_regular={
     .read_plan=vread_regular_plan,.write_plan=vwrite_regular_plan,
     .read=vread_regular,.write=vwrite_regular,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_vfs_dir={
     .read_plan=vread_dir_plan,.read=vread_dir,
-    .poll=vpoll_always,.poll_description=dpoll_always
+    .poll_description=dpoll_always
 };
 static const struct nas_file_ops ops_pipe_read={
     .read_plan=pipe_read_plan,.read=pipe_fd_read,
     .aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=vpoll_pipe_read,.poll_description=dpoll_pipe_read,
+    .poll_description=dpoll_pipe_read,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_pipe_write={
@@ -1300,7 +1319,7 @@ static const struct nas_file_ops ops_pipe_write={
     .atomic_write_limit=NAS_PIPE_CAP,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_pipe_write,.poll_description=dpoll_pipe_write,
+    .poll_description=dpoll_pipe_write,
     .release=vrelease_pipe
 };
 static const struct nas_file_ops ops_fifo_rw={
@@ -1310,7 +1329,7 @@ static const struct nas_file_ops ops_fifo_rw={
     .aggregate_readv=true,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_fifo_rw,.poll_description=dpoll_fifo_rw,
+    .poll_description=dpoll_fifo_rw,
     .release=vrelease_pipe
 };
 static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
@@ -1321,23 +1340,17 @@ static uint16_t dpoll_socket(unsigned slot,uint16_t events) {
         return (events&1U)|0x10U|dpoll_pipe_write(slot,events);
     return dpoll_pipe_read(slot,events) | dpoll_pipe_write(slot,events);
 }
-static uint16_t vpoll_socket(uint64_t fd,uint16_t events) {
-    return dpoll_socket(TASK.fds->entries[fd].slot,events);
-}
 static const struct nas_file_ops ops_socket={
     .read_plan=socket_read_plan,.write_plan=socket_write_plan,
     .read=pipe_fd_read,.write=pipe_fd_write,
     .aggregate_readv=true,.aggregate_writev=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=vpoll_socket,.poll_description=dpoll_socket,
+    .poll_description=dpoll_socket,
     .release=vrelease_socket
 };
 static uint16_t dpoll_pty(unsigned slot,uint16_t events) {
     return nas_pty_poll(slot,events);
-}
-static uint16_t vpoll_pty(uint64_t fd,uint16_t events) {
-    return dpoll_pty(TASK.fds->entries[fd].slot,events);
 }
 static uint64_t vread_pty_plan(unsigned slot,uint64_t requested) {
     return nas_pty_read_plan_mode(slot,requested,
@@ -1357,18 +1370,14 @@ static const struct nas_file_ops ops_pty={
     .io_wait_flags=NAS_IO_WAIT_INITIAL_EAGAIN|NAS_IO_WAIT_RETRY,
     .read_wait_start=nas_pty_read_wait_start,
     .read_wait_ready=nas_pty_read_wait_ready,
-    .poll=vpoll_pty,.poll_description=dpoll_pty,
+    .poll_description=dpoll_pty,
     .ioctl=nas_pty_ioctl,.release=vrelease_pty
 };
-static uint16_t vpoll_epoll(uint64_t fd,uint16_t events){
-    return nas_epoll_fd_poll(fd,events);
-}
 static void vrelease_epoll(unsigned slot){nas_epoll_release(slot);}
 static void vrelease_eventfd(unsigned slot){nas_eventfd_release(slot);}
 /* signalfd is a genuine File: its mask belongs to the refcounted open
  * description, while pending signals belong to the active task/TGID. This
  * works across dup/fork without creating an independent fake signal queue. */
-static uint64_t signalfd_masks[NAS_OPEN_FILE_LIMIT];
 static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
                              uint64_t mask_size,uint64_t flags) {
     if(mask_size!=8ULL || (flags&~(0x800ULL|0x80000ULL)))
@@ -1378,26 +1387,26 @@ static uint64_t sys_signalfd4(uint64_t raw_fd,uint64_t user_mask,
     mask&=~((1ULL<<(NAS_SIGKILL-1U))|(1ULL<<(NAS_SIGSTOP-1U)));
     int fd=(int32_t)(uint32_t)raw_fd;
     if(fd!=-1) {
-        if(fd<0 || fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)
-            return (uint64_t)-EBADF;
-        unsigned slot=TASK.fds->entries[fd].slot;
-        signalfd_masks[slot]=mask;
+        const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,(uint64_t)fd);
+        if(!entry || entry->kind!=FD_SIGNALFD)return (uint64_t)-EBADF;
+        unsigned slot=entry->slot;
+        nas_open_files[slot].private.signalfd_mask=mask;
         return (uint64_t)fd;
     }
     unsigned fds[2],slots[2];
     int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"signalfd4");
     if(rc)return (uint64_t)(int64_t)rc;
-    signalfd_masks[slots[0]]=mask;
     if(!nas_fd_install_new(nas_current_task,fds[0],slots[0],FD_SIGNALFD,
                            flags&0x800ULL,!!(flags&0x80000ULL)))
         nas_fs_fail("reserved signalfd description was occupied");
+    nas_open_files[slots[0]].private.signalfd_mask=mask;
     return fds[0];
 }
 static uint64_t signalfd_read_plan(unsigned slot,uint64_t requested) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return (uint64_t)-EBADF;
     if(requested<128ULL)return (uint64_t)-EINVAL;
-    if(!nas_signal_signalfd_ready(nas_current_task,signalfd_masks[slot]))
+    if(!nas_signal_signalfd_ready(nas_current_task,nas_open_files[slot].private.signalfd_mask))
         return (nas_open_files[slot].status_flags&0x800ULL)?
                (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
     return 128ULL;
@@ -1408,7 +1417,7 @@ static uint64_t signalfd_read(unsigned slot,uint8_t *dst,uint64_t length) {
     if(!dst)return (uint64_t)-EFAULT;
     struct nas_signalfd_event event={0};
     unsigned signo=nas_signal_signalfd_take(nas_current_task,
-                                             signalfd_masks[slot],&event);
+                                             nas_open_files[slot].private.signalfd_mask,&event);
     if(!signo)return (uint64_t)-EAGAIN;
     /* Native Linux signalfd_siginfo: signo@0, code@8, pid@12,
      * status@40, all 32-bit fields in the same LP64 ABI on three ISAs. */
@@ -1423,20 +1432,16 @@ uint16_t nas_fs_signalfd_poll_task(unsigned slot,uint16_t events,
                                   const struct nas_task *task) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return 0;
     return (events&1U) &&
-        nas_signal_signalfd_ready(task,signalfd_masks[slot])?1U:0U;
+        nas_signal_signalfd_ready(task,nas_open_files[slot].private.signalfd_mask)?1U:0U;
 }
 static uint16_t signalfd_poll_slot(unsigned slot,uint16_t events) {
     return nas_fs_signalfd_poll_task(slot,events,nas_current_task);
 }
-static uint16_t signalfd_poll_fd(uint64_t fd,uint16_t events) {
-    if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind!=FD_SIGNALFD)return 0;
-    return signalfd_poll_slot(TASK.fds->entries[fd].slot,events);
-}
 static void signalfd_release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)signalfd_masks[slot]=0;
+    if(slot<NAS_OPEN_FILE_LIMIT)nas_open_files[slot].private.signalfd_mask=0;
 }
 static const struct nas_file_ops ops_epoll={
-    .poll=vpoll_epoll,.poll_description=nas_epoll_description_poll,.release=vrelease_epoll
+    .poll_description=nas_epoll_description_poll,.release=vrelease_epoll
 };
 static const struct nas_file_ops ops_eventfd={
     .read_plan=nas_eventfd_read_plan,.write_plan=nas_eventfd_write_plan,
@@ -1444,13 +1449,13 @@ static const struct nas_file_ops ops_eventfd={
     .atomic_write_limit=8,.read_commit_before_copyout=true,
     .aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_eventfd_poll,.poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
+    .poll_description=nas_eventfd_poll_slot,.release=vrelease_eventfd
 };
 static const struct nas_file_ops ops_timerfd={
     .read_plan=nas_timerfd_read_plan,.read=nas_timerfd_read,
     .read_commit_before_copyout=true,.aggregate_readv=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_timerfd_poll_fd,.poll_description=nas_timerfd_poll_slot,
+    .poll_description=nas_timerfd_poll_slot,
     .release=nas_timerfd_release
 };
 static uint64_t vioctl_inotify(uint64_t fd,uint64_t cmd,uint64_t arg) {
@@ -1466,20 +1471,19 @@ static const struct nas_file_ops ops_inotify={
     .read_plan=nas_inotify_read_plan,.read=nas_inotify_read,
     .read_variable_records=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=nas_inotify_poll_fd,.poll_description=nas_inotify_poll_slot,
+    .poll_description=nas_inotify_poll_slot,
     .ioctl=vioctl_inotify,
     .release=nas_inotify_release
 };
 static const struct nas_file_ops ops_signalfd={
     .read_plan=signalfd_read_plan,.read=signalfd_read,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=signalfd_poll_fd,.poll_description=signalfd_poll_slot,
+    .poll_description=signalfd_poll_slot,
     .poll_description_task=nas_fs_signalfd_poll_task,
     .release=signalfd_release
 };
 static const struct nas_file_ops ops_pidfd={
     .read=nas_pidfd_read,
-    .poll=nas_pidfd_poll_fd,
     .poll_description=nas_pidfd_poll_description,
     .release=nas_pidfd_release
 };
@@ -1516,6 +1520,9 @@ static const struct nas_file_ops *const ops_by_kind[]={
     [FD_ZERO]=&ops_zero,[FD_RANDOM]=&ops_random,
     [FD_BOOTFS]=&ops_bootfs,
     [FD_FRAMEBUFFER]=&ops_fbdev,
+#ifdef NAS_ENABLE_VIRTIO_GPU
+    [FD_DRM]=&ops_drm,
+#endif
 #if defined(NAS_ENABLE_VIRTIO_INPUT) || \
     defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
     defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \

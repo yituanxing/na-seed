@@ -87,9 +87,8 @@ struct nas_file_ops {
     bool (*read_wait_ready)(unsigned slot,struct nas_task *task,
                             uint64_t requested);
     bool sends_sigpipe;
-    uint16_t (*poll)(uint64_t fd,uint16_t events);
     /* Readiness without a process-local FD or active userspace root.
-     * Used by epoll, blocked tasks and future socket/device providers.
+     * Used by poll/select, epoll, blocked tasks and socket/device providers.
      * slot is an owned open-file description, not an integer user FD. */
     uint16_t (*poll_description)(unsigned slot,uint16_t events);
     /* Optional Task-dependent readiness (signalfd). Scheduler passes the

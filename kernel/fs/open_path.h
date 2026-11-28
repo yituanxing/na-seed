@@ -33,6 +33,11 @@ bool nas_fs_bootstrap_candidate(const struct nas_fs_path_request *request,
  * Returns the actual nofollow namei status (0 if an inode exists). */
 int nas_fs_bootstrap_nofollow_probe(const struct nas_fs_path_request *request,
                                     const char *path);
+/* Single bootstrap admission policy, shared by openat, stat/statx, access.
+ * Only whitelisted endpoints absent from the REAL nofollow namespace may
+ * be described. -EEXIST means a mounted entry (including symlinks) won. */
+int nas_fs_bootstrap_if_absent(const struct nas_fs_path_request *request,
+                               const char *path,struct nas_fs_bootstrap_info *out);
 /* Internal open helper for the allowed bootstrap compatibility endpoints. */
 uint64_t nas_fs_open_path(const char *path, uint64_t flags, uint64_t mode);
 /* Linux memfd_create: reserve one FD, create and pin an unlinked tmpfs

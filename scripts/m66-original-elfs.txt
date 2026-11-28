@@ -1,4 +1,0 @@
-usr/bin/top
-usr/bin/htop
-usr/bin/tmux
-usr/bin/uptime

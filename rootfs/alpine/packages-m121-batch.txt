@@ -1,5 +1,0 @@
-# Fifteen genuine PDF CLI executables from official Alpine v3.23 APKs.
-poppler-utils
-mupdf-tools
-pdfgrep
-pdfcpu

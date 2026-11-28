@@ -222,11 +222,6 @@ bool nas_vma_record_device(struct nas_anon_regions *regions,uint64_t addr,
     return device && record_file(regions,addr,length,prot,
                                  NAS_VMA_DEVICE_SHARED,file_offset,NULL,device);
 }
-bool nas_anon_record(struct nas_anon_regions *regions,
-                     uint64_t addr,uint64_t length) {
-    if(addr>=NAS_ANON_CEILING || length>NAS_ANON_CEILING-addr)return false;
-    return nas_vma_record(regions,addr,length,0,NAS_VMA_ANON_PRIVATE,0);
-}
 bool nas_anon_forget(struct nas_anon_regions *regions,
                      uint64_t addr,uint64_t length) {
     if (!regions || !length || !aligned(addr) || !aligned(length) ||
@@ -272,6 +267,37 @@ bool nas_anon_forget(struct nas_anon_regions *regions,
     return true;
 }
 
+/* Rebuild one mmap-owned interval, preserving the exact typed VMA and
+ * independently pinned backing. This is a metadata transaction: callers
+ * must preserve/transfer or release the old PTE ownership separately. The
+ * operation may split the old VMA; it never reads a user pointer or fd. */
+bool nas_vma_remap_region(struct nas_anon_regions *regions,
+                          uint64_t old_start,uint64_t old_bytes,
+                          uint64_t new_start,uint64_t new_bytes) {
+    if(!regions || !valid_interval(old_start,old_bytes) ||
+       !valid_interval(new_start,new_bytes))return false;
+    const struct nas_anon_region *src=nas_vma_find(regions,old_start);
+    if(!src || old_bytes>src->end-old_start)return false;
+    struct nas_anon_region next=*src;
+    if(offset_backed_kind(next.kind)) {
+        uint64_t delta=old_start-src->start;
+        if(delta>UINT64_MAX-next.file_offset)return false;
+        next.file_offset+=delta;
+        if(new_bytes>UINT64_MAX-next.file_offset)return false;
+    }
+    next.start=new_start;
+    next.end=new_start+new_bytes;
+    struct nas_anon_regions staged={0};
+    if(!nas_vma_clone(&staged,regions))return false;
+    if(!nas_anon_forget(&staged,old_start,old_bytes) ||
+       !insert_area(&staged,next)) {
+        nas_anon_reset(&staged);
+        return false;
+    }
+    nas_vma_commit(regions,&staged);
+    return true;
+}
+
 /* Validate an entire interval without scanning one page at a time. */
 bool nas_anon_covered(const struct nas_anon_regions *regions,
                       uint64_t addr,uint64_t length) {
@@ -297,22 +323,6 @@ bool nas_anon_intersects(const struct nas_anon_regions *regions,
         if (r->end && addr<r->end && r->start<end) return true;
     }
     return false;
-}
-bool nas_anon_overlay(struct nas_anon_regions *regions,
-                      uint64_t addr,uint64_t length) {
-    if (!regions || !valid_interval(addr,length) ||
-        addr>=NAS_ANON_CEILING || length>NAS_ANON_CEILING-addr)
-        return false;
-    if (nas_anon_covered(regions,addr,length)) return true;
-    struct nas_anon_regions next={0};
-    if (!nas_vma_clone(&next,regions))return false;
-    if (!nas_anon_forget(&next,addr,length) ||
-        !nas_anon_record(&next,addr,length)) {
-        nas_anon_reset(&next);
-        return false;
-    }
-    nas_vma_commit(regions,&next);
-    return true;
 }
 
 /* Replacement is staged in a separately owned allocation so a grow/split

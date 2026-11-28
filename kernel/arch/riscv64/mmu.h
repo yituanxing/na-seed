@@ -19,8 +19,7 @@ struct nas_rv_page_table {
     uint64_t root_pa;
     unsigned levels;
 };
-/* Page-table API constructs mappings offline; RV64 usermode smoke is a
- * separate one-way architectural SATP switch test. */
+/* Page-table APIs construct user mappings under the common MM owner. */
 bool nas_rv_pt_init(struct nas_rv_page_table *pt, unsigned levels);
 void nas_rv_pt_destroy(struct nas_rv_page_table *pt);
 bool nas_rv_pt_prepare(const struct nas_rv_page_table *,uint64_t va);
@@ -32,7 +31,6 @@ bool nas_rv_pt_translate(const struct nas_rv_page_table *pt, uint64_t user_va,
                          uint64_t *pa, uint64_t *perms);
 bool nas_rv_pt_unmap(struct nas_rv_page_table *pt, uint64_t user_va);
 uint64_t nas_rv_pt_user_limit(unsigned levels);
-bool nas_rv_pt_smoke(void);
 /* Genuine native 4K PTE permission edits and lower-half user-only walk. */
 bool nas_rv_pt_protect(const struct nas_rv_page_table *, uint64_t va,
                        unsigned access);

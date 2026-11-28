@@ -36,13 +36,20 @@ struct packet_socket {
     uint8_t version;
     bool owned,bound;
 };
-static struct packet_socket sockets[NAS_OPEN_FILE_LIMIT];
+/* Only a live AF_PACKET File owns a socket. Mapped rings have separate
+ * VMA references and remain alive after the final socket File close. */
+static const struct nas_file_ops packet_ops;
+static struct packet_socket *packet_at(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT ||
+       nas_open_files[slot].ops!=&packet_ops)return NULL;
+    return (struct packet_socket *)nas_open_files[slot].private.provider;
+}
 static uint8_t observer_identity;
 static unsigned socket_count;
 
 static struct packet_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && sockets[slot].owned &&
-           nas_open_files[slot].refcount ? &sockets[slot]:NULL;
+    struct packet_socket *socket=packet_at(slot);
+    return socket && socket->owned && nas_file_slot_live(slot)?socket:NULL;
 }
 bool nas_packet_socket_is_slot(unsigned slot) {return live(slot)!=NULL;}
 
@@ -147,25 +154,31 @@ static void packet_tap(void *identity,const struct nas_netdev *nic,
     if(identity!=&observer_identity || !nic || !frame || length<14)return;
     const uint16_t ether_type=(uint16_t)((unsigned)frame[12]<<8|frame[13]);
     for(unsigned slot=0;slot<NAS_OPEN_FILE_LIMIT;slot++) {
-        struct packet_socket *socket=&sockets[slot];
-        if(!socket->owned || !socket->bound || socket->nic!=nic ||
+        struct packet_socket *socket=live(slot);
+        if(!socket || !socket->bound || socket->nic!=nic ||
            !socket->protocol || (socket->protocol!=PACKET_ETH_ALL &&
                                  socket->protocol!=ether_type))continue;
         publish(socket,nic,frame,length,outgoing);
     }
 }
 int nas_packet_socket_open(unsigned slot,unsigned type,uint16_t protocol) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return -EBADF;
+    if(!nas_file_slot_live(slot) ||
+       nas_open_files[slot].ops!=&packet_ops)return -EBADF;
     if(type!=3U)return -ESOCKTNOSUPPORT;
-    if(sockets[slot].owned)return -EBUSY;
+    if(packet_at(slot))return -EBUSY;
+    struct packet_socket *socket=nas_heap_calloc(1,sizeof(*socket));
+    if(!socket)return -ENOMEM;
     if(!socket_count) {
         int rc=nas_netdev_set_packet_tap(packet_tap,&observer_identity);
-        if(rc)return rc;
+        if(rc) {
+            (void)nas_heap_free(socket);
+            return rc;
+        }
     }
     socket_count++;
-    /* Linux initializes packet sockets in V1. This deliberately supports
-     * ring creation only after the caller negotiates actual V2 behavior. */
-    sockets[slot]=(struct packet_socket){.owned=true,.protocol=protocol};
+    /* Linux initializes packet sockets in V1. Actual V2 is negotiated. */
+    *socket=(struct packet_socket){.owned=true,.protocol=protocol};
+    nas_open_files[slot].private.provider=socket;
     return 0;
 }
 int nas_packet_socket_bind(unsigned slot,unsigned ifindex,uint16_t protocol) {
@@ -275,11 +288,12 @@ int nas_packet_socket_detach_filter(unsigned slot) {
     return live(slot)?-ENOENT:-EBADF;
 }
 static void packet_release(unsigned slot) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
-    struct packet_socket socket=sockets[slot];
-    sockets[slot]=(struct packet_socket){0};
-    if(socket.nic)nas_netdev_put(socket.nic);
-    if(socket.ring)ring_put(socket.ring);
+    struct packet_socket *socket=packet_at(slot);
+    if(!socket || !socket->owned)return;
+    nas_open_files[slot].private.provider=NULL;
+    if(socket->nic)nas_netdev_put(socket->nic);
+    if(socket->ring)ring_put(socket->ring);
+    (void)nas_heap_free(socket);
     if(socket_count && !--socket_count)
         nas_netdev_set_packet_tap(NULL,NULL);
 }

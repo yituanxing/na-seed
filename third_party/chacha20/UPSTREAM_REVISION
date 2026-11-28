@@ -1,0 +1,4 @@
+https://github.com/freebsd/freebsd-src.git
+65355d0f213e11443cd13efad7c98e8ba5b6984b
+sys/crypto/chacha20/{chacha.c,chacha.h,_chacha.h}
+D. J. Bernstein, public domain (see source headers).

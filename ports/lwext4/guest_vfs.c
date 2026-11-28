@@ -9,6 +9,8 @@
 #include "../../kernel/lib/string.h"
 #include "../../kernel/time/clock.h"
 #include "../../kernel/arch/arch.h"
+#include "../../kernel/mm/frame.h"
+#include "../../kernel/mm/heap.h"
 #include <ext4.h>
 #include <ext4_fs.h>
 #include <ext4_inode.h>
@@ -321,6 +323,128 @@ static int64_t ext_read_inode(const struct nas_fs_node *node,
     int e=ext4_fread(&file,dst,(size_t)length,&obtained);
     return e ? -e : (int64_t)obtained;
 }
+/* A read-only MAP_SHARED file has an inode-owned physical page cache.
+ * Independent processes share the SAME frame; ordinary write(2) mutates
+ * those cached bytes after the upstream filesystem commits the write.
+ * Deliberately do not offer writable shared mappings until this provider
+ * has a dirty/writeback implementation: a private snapshot would violate
+ * Linux MAP_SHARED semantics. Single-CPU ownership matches VFS leases. */
+#define EXT_SHARED_PAGE_BYTES 4096ULL
+struct nas_lwext4_shared_page {
+    struct nas_lwext4_shared_page *next;
+    uint64_t index,pa;
+    uint32_t ino;
+};
+static struct nas_lwext4_shared_page *ext_shared_find(
+    struct nas_lwext4_mount *ctx,uint32_t ino,uint64_t index) {
+    for(struct nas_lwext4_shared_page *page=ctx->shared_pages;
+        page;page=page->next)
+        if(page->ino==ino && page->index==index)return page;
+    return NULL;
+}
+static int ext_acquire_readonly_shared_page(
+    const struct nas_fs_node *node,uint64_t offset,uint64_t *owned) {
+    if(!owned)return -EINVAL;
+    *owned=0;
+    if(!node || !node->mount || !node->mount->private_data ||
+       !node->ino || node->ino>UINT32_MAX || node->is_dir ||
+       (offset&(EXT_SHARED_PAGE_BYTES-1)))return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted)return -ENODEV;
+    if(offset>=nas_vfs_node_size(node))return -EFAULT;
+    uint32_t ino=(uint32_t)node->ino;
+    uint64_t index=offset/EXT_SHARED_PAGE_BYTES;
+    struct nas_lwext4_shared_page *cached=ext_shared_find(ctx,ino,index);
+    if(cached) {
+        if(!nas_frame_get(cached->pa))return -EIO;
+        *owned=cached->pa;
+        return 0;
+    }
+    struct nas_lwext4_shared_page *entry=nas_heap_alloc(sizeof(*entry));
+    if(!entry)return -ENOMEM;
+    uint64_t pa=nas_frame_alloc();
+    if(!pa) { (void)nas_heap_free(entry);return -ENOMEM; }
+    uint8_t *bytes=(uint8_t *)(uintptr_t)(nas_hhdm_offset()+pa);
+    memset(bytes,0,EXT_SHARED_PAGE_BYTES);
+    int64_t got=ext_read_inode(node,offset,bytes,EXT_SHARED_PAGE_BYTES);
+    if(got<=0 || got>EXT_SHARED_PAGE_BYTES) {
+        (void)nas_frame_put(pa);
+        (void)nas_heap_free(entry);
+        return got<0?(int)got:-EIO;
+    }
+    if(!nas_frame_get(pa)) {
+        (void)nas_frame_put(pa);
+        (void)nas_heap_free(entry);
+        return -EIO;
+    }
+    *entry=(struct nas_lwext4_shared_page){
+        .next=ctx->shared_pages,.index=index,.pa=pa,.ino=ino
+    };
+    ctx->shared_pages=entry;
+    *owned=pa;
+    return 0;
+}
+static int ext_readonly_shared_resident(
+    const struct nas_fs_node *node,uint64_t offset) {
+    if(!node || !node->mount || !node->mount->private_data ||
+       !node->ino || node->ino>UINT32_MAX || node->is_dir ||
+       (offset&(EXT_SHARED_PAGE_BYTES-1)))return -EINVAL;
+    struct nas_lwext4_mount *ctx=node->mount->private_data;
+    if(!ctx->mounted)return -ENODEV;
+    return ext_shared_find(ctx,(uint32_t)node->ino,
+                           offset/EXT_SHARED_PAGE_BYTES)!=NULL;
+}
+/* A write through a normal File must be immediately visible to every
+ * existing readonly-shared PTE of that inode, including aliases and fork. */
+static void ext_shared_mirror_write(struct nas_lwext4_mount *ctx,uint32_t ino,
+                                    uint64_t offset,const uint8_t *src,
+                                    uint64_t length) {
+    uint64_t end=offset+length;
+    for(struct nas_lwext4_shared_page *p=ctx->shared_pages;p;p=p->next) {
+        if(p->ino!=ino)continue;
+        uint64_t begin=p->index*EXT_SHARED_PAGE_BYTES;
+        if(begin>=end || begin+EXT_SHARED_PAGE_BYTES<=offset)continue;
+        uint64_t first=begin>offset?begin:offset;
+        uint64_t last=begin+EXT_SHARED_PAGE_BYTES<end ?
+                      begin+EXT_SHARED_PAGE_BYTES:end;
+        memcpy((uint8_t *)(uintptr_t)(nas_hhdm_offset()+p->pa)+first-begin,
+               src+first-offset,(size_t)(last-first));
+    }
+}
+/* Shrink revokes cached pages past new EOF and zeros the partial tail.
+ * Generic VFS simultaneously invalidates resident user PTEs on truncate;
+ * each leaf retains its own frame reference until MM has dropped it. */
+static void ext_shared_shrink(struct nas_lwext4_mount *ctx,uint32_t ino,
+                              uint64_t length) {
+    struct nas_lwext4_shared_page **cursor=&ctx->shared_pages;
+    while(*cursor) {
+        struct nas_lwext4_shared_page *page=*cursor;
+        uint64_t start=page->index*EXT_SHARED_PAGE_BYTES;
+        if(page->ino==ino && start>=length) {
+            *cursor=page->next;
+            if(!nas_frame_put(page->pa))__builtin_trap();
+            (void)nas_heap_free(page);
+            continue;
+        }
+        if(page->ino==ino && start<length &&
+           length-start<EXT_SHARED_PAGE_BYTES) {
+            memset((uint8_t *)(uintptr_t)(nas_hhdm_offset()+page->pa)+
+                   length-start,0,(size_t)(EXT_SHARED_PAGE_BYTES-(length-start)));
+        }
+        cursor=&page->next;
+    }
+}
+static void ext_shared_drop_inode(struct nas_lwext4_mount *ctx,uint32_t ino) {
+    struct nas_lwext4_shared_page **cursor=&ctx->shared_pages;
+    while(*cursor) {
+        struct nas_lwext4_shared_page *page=*cursor;
+        if(page->ino==ino) {
+            *cursor=page->next;
+            if(!nas_frame_put(page->pa))__builtin_trap();
+            (void)nas_heap_free(page);
+        } else cursor=&page->next;
+    }
+}
 /* Upstream lwext4 leaves timestamps zero on create/write. Initialize new
  * inodes and update real modifications in this adapter so original gzip,
  * tar and stat see an actual kernel clock, not a permanent 1970 timestamp.
@@ -412,6 +536,7 @@ static int64_t ext_write_inode(const struct nas_fs_node *node,uint64_t offset,
     int rc=ext4_fwrite(&file,src,(size_t)length,&written);
     if(rc)return -rc;
     if(written) {
+        ext_shared_mirror_write(ctx,(uint32_t)node->ino,offset,src,(uint64_t)written);
         rc=ext_record_write_time(ctx,(uint32_t)node->ino,false);
         if(rc)return rc;
     }
@@ -432,8 +557,10 @@ static int ext_resize_inode(const struct nas_fs_node *node,uint64_t length) {
      * provided by the filesystem; never lie to VFS about persisted size. */
     if(length<=old_size) {
         int rc=ext4_ftruncate(&f,length);
-        return rc ? -rc : (length==old_size ? 0 :
-            ext_record_write_time(ctx,(uint32_t)node->ino,false));
+        if(rc)return -rc;
+        if(length<old_size)ext_shared_shrink(ctx,(uint32_t)node->ino,length);
+        return length==old_size ? 0 :
+            ext_record_write_time(ctx,(uint32_t)node->ino,false);
     }
     static const uint8_t zeros[1024]={0};
     uint64_t offset=old_size;
@@ -681,6 +808,7 @@ static void ext_last_inode_unpin(const struct nas_fs_node *node) {
     if(!node || !node->mount || !node->mount->private_data)return;
     struct nas_lwext4_mount *ctx=node->mount->private_data;
     if(!ctx->mounted || node->ino>UINT32_MAX)return;
+    ext_shared_drop_inode(ctx,(uint32_t)node->ino);
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {
         struct nas_lwext4_orphan *orphan=&ctx->orphans[i];
         if(!orphan->used || orphan->ino!=(uint32_t)node->ino)continue;
@@ -1144,6 +1272,8 @@ static const struct nas_vfs_type ext_type={
     .read_at=ext_read_inode,
     .read_size_is_eof=true,
     .write_at=ext_write_inode,
+    .acquire_shared_page=ext_acquire_readonly_shared_page,
+    .shared_page_resident=ext_readonly_shared_resident,
     .resize=ext_resize_inode,.sync=ext_sync_inode,
     .read_dir=ext_read_directory,
     .chmod=ext_chmod_inode,.chown=ext_chown_inode,.utimens=ext_utimens_inode,
@@ -1469,6 +1599,7 @@ int nas_lwext4_ramdisk_mount(struct nas_lwext4_mount *ctx,
 }
 int nas_lwext4_unmount(struct nas_lwext4_mount *ctx) {
     if(!ctx || !ctx->mounted)return -EINVAL;
+    if(ctx->shared_pages)return ext_unmount_issue("shared cache still pinned",-EBUSY);
     /* Do not discard a private inode still owned by a File; retry failed
      * final-close reclamation here before the physical filesystem detach. */
     for(unsigned i=0;i<NAS_LWEXT4_ORPHAN_LIMIT;i++) {

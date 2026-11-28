@@ -125,3 +125,10 @@ size_t strcspn(const char *s,const char *reject) {
     }
     return n;
 }
+
+void *memchr(const void *p, int ch, size_t n) {
+    const unsigned char *s = p;
+    for (size_t i = 0; i < n; ++i)
+        if (s[i] == (unsigned char)ch) return (void *)(s + i);
+    return NULL;
+}

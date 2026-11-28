@@ -81,8 +81,14 @@ static uint64_t copy_bitmap(uint64_t address,const uint8_t *bitmap,
                             size_t available,size_t requested) {
     if(!requested)return 0;
     if(!bitmap)return (uint64_t)-EINVAL;
-    size_t n=available<requested?available:requested;
-    return nas_user_write_bytes(address,bitmap,n) ? n : (uint64_t)-EFAULT;
+    /* Linux LP64 exports whole unsigned-long bitmap words. Do not read
+     * beyond the compact capability/state array or expose padding bytes. */
+    uint8_t padded[NAS_INPUT_BIT_BYTES(NAS_INPUT_KEY_MAX)]={0};
+    if(available>sizeof(padded))return (uint64_t)-EOVERFLOW;
+    memcpy(padded,bitmap,available);
+    size_t n=(available+7U)&~(size_t)7U;
+    if(n>requested)n=requested;
+    return nas_user_write_bytes(address,padded,n) ? n : (uint64_t)-EFAULT;
 }
 uint64_t nas_input_chrdev_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
     if(fd>=NAS_FD_LIMIT || nas_current_task->fds->entries[fd].kind!=FD_EVDEV)
@@ -114,10 +120,17 @@ uint64_t nas_input_chrdev_ioctl(uint64_t fd,uint64_t cmd,uint64_t arg) {
             return (uint64_t)-EFAULT;
         return n;
     }
+    /* An input device without a physical path or unique string returns
+     * ENOENT, as Linux does; ENOTTY breaks normal libevdev discovery. */
+    if(nr==0x07U || nr==0x08U)return (uint64_t)-ENOENT;
     if(nr==0x09U) /* EVIOCGPROP(len) */
         return copy_bitmap(arg,d->propbit,sizeof(d->propbit),bytes);
     if(nr==0x18U) /* EVIOCGKEY(len), state on live device */
         return copy_bitmap(arg,d->key_state,sizeof(d->key_state),bytes);
+    if(nr==0x19U) /* EVIOCGLED(len) */
+        return copy_bitmap(arg,d->led_state,sizeof(d->led_state),bytes);
+    if(nr==0x1bU) /* EVIOCGSW(len) */
+        return copy_bitmap(arg,d->sw_state,sizeof(d->sw_state),bytes);
     if(nr>=0x20U && nr<0x20U+32U) { /* EVIOCGBIT(ev,len) */
         size_t cap=0;
         const uint8_t *bits=nas_input_capabilities(d,(uint16_t)(nr-0x20U),&cap);

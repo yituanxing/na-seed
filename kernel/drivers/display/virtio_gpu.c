@@ -12,6 +12,7 @@
 #include "../../arch/arch.h"
 #include "../../time/clock.h"
 #include "../../mm/frame.h"
+#include "../../mm/heap.h"
 #include "../../errno.h"
 #include "../../lib/string.h"
 #include "../../../ports/unikraft/split_queue.h"
@@ -33,14 +34,23 @@ extern void nas_dec(uint64_t);
 #define GPU_RESOURCE_ID 1U
 #define GPU_FORMAT_B8G8R8X8_UNORM 2U
 #define GPU_FENCE 1U
+/* VirtIO GPU 1.2: feature bit 0 advertises host VirGL command support.
+ * Negotiate it only for discovery; never expose 3D acceleration to
+ * userspace until context/resource submission and the render ABI exist. */
+#define GPU_FEATURE_VIRGL UINT64_C(1)
+#define GPU_CAPSET_VIRGL 1U
+#define GPU_CAPSET_VIRGL2 2U
+#define GPU_CAPSET_PROBE_LIMIT 32U
 #define GPU_CMD_GET_DISPLAY_INFO 0x0100U
 #define GPU_CMD_RESOURCE_CREATE_2D 0x0101U
 #define GPU_CMD_SET_SCANOUT 0x0103U
 #define GPU_CMD_RESOURCE_FLUSH 0x0104U
 #define GPU_CMD_TRANSFER_TO_HOST_2D 0x0105U
 #define GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106U
+#define GPU_CMD_GET_CAPSET_INFO 0x0108U
 #define GPU_RESP_OK_NODATA 0x1100U
 #define GPU_RESP_OK_DISPLAY_INFO 0x1101U
+#define GPU_RESP_OK_CAPSET_INFO 0x1102U
 #define GPU_TIMEOUT_NS UINT64_C(3000000000)
 /* A direct MAP_SHARED store cannot call write_at/mark_dirty. While VMAs
  * exist, refresh at a bounded 10 Hz through the existing deferred, IRQ-
@@ -64,6 +74,12 @@ struct gpu_scanout {struct gpu_hdr hdr; struct gpu_rect r; uint32_t scanout, id;
 struct gpu_transfer {struct gpu_hdr hdr; struct gpu_rect r; uint64_t offset; uint32_t id, pad;};
 struct gpu_flush {struct gpu_hdr hdr; struct gpu_rect r; uint32_t id, pad;};
 struct gpu_entry {uint64_t address; uint32_t length, padding;};
+/* Linux virtio_gpu.h / VirtIO 1.2 wire layouts, without a second protocol. */
+struct gpu_capset_query {struct gpu_hdr hdr;uint32_t index,padding;};
+struct gpu_capset_reply {
+    struct gpu_hdr hdr;
+    uint32_t id,max_version,max_size,padding;
+};
 _Static_assert(sizeof(struct gpu_hdr)==24U, "virtio-gpu control header");
 _Static_assert(sizeof(struct gpu_resp_info)==408U, "virtio-gpu display info");
 _Static_assert(sizeof(struct gpu_create)==40U, "virtio-gpu create2d");
@@ -72,6 +88,8 @@ _Static_assert(sizeof(struct gpu_scanout)==48U, "virtio-gpu scanout");
 _Static_assert(sizeof(struct gpu_transfer)==56U, "virtio-gpu transfer");
 _Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
 _Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
+_Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
+_Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
                          GPU_RUNTIME_FLUSH };
@@ -83,11 +101,18 @@ struct gpu_device {
     struct nas_irq_action irq;
     struct nas_dma_page command, response;
     struct nas_dma_page entries[GPU_ENTRY_PAGES];
-    struct nas_dma_page pixels[GPU_PAGES];
+    /* Descriptors are live only while this GPU has allocated backing.
+     * Their DMA pages remain individually provider-owned until quiescence. */
+    struct nas_dma_page *pixels;
     struct nas_display_device display;
     uint64_t submitted, completed, transfers, flushes, irq_acks, next_fence;
+    /* Monotonic dirty/host-flushed epochs, not synthetic ioctl-complete. */
+    uint64_t dirty_serial, epoch_serial, displayed_serial;
     uint32_t irq_pending;
     uint32_t scanout;
+    /* GPU host capability inventory; NOT a claim that /dev/dri supports 3D. */
+    uint32_t capset_count,virgl_capset_id,virgl_capset_version,virgl_capset_size;
+    bool virgl_feature;
     unsigned pixel_pages, entry_pages;
     uint32_t dirty_y0, dirty_y1;
     uint32_t epoch_first, epoch_last;
@@ -228,19 +253,16 @@ static int release_dma(struct gpu_device *g) {
     int rc=nas_irq_unbind(&g->irq);
     if(rc)return rc;
     /* A failed split-ring init can own a page without ever being active. */
-    if(g->control.active || g->control.dma_page.cpu) {
-        rc=nas_vring_queue_close(&g->control);
-        if(rc)return rc;
-    }else if(g->transport.ops && g->transport.ops->reset) {
-        g->transport.ops->reset(g->transport.context);
-    }
+    rc=nas_vring_queue_close_or_reset(&g->control,&g->transport);
+    if(rc)return rc;
     /* Scan the WHOLE stable array, not pixel_pages/entry_pages: M184 DMA
      * allocation may fail validation AND then fail rollback, leaving the
      * failing slot owned despite no successful-count increment. */
-    for(unsigned i=0;i<GPU_PAGES;i++)if(g->pixels[i].cpu) {
-        rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
-        if(rc)return rc;
-    }
+    if(g->pixels)
+        for(unsigned i=0;i<GPU_PAGES;i++)if(g->pixels[i].cpu) {
+            rc=nas_dma_free_page(g->transport.dma,&g->pixels[i]);
+            if(rc)return rc;
+        }
     for(unsigned i=0;i<GPU_ENTRY_PAGES;i++)if(g->entries[i].cpu) {
         rc=nas_dma_free_page(g->transport.dma,&g->entries[i]);
         if(rc)return rc;
@@ -253,10 +275,18 @@ static int release_dma(struct gpu_device *g) {
         rc=nas_dma_free_page(g->transport.dma,&g->response);
         if(rc)return rc;
     }
+    /* The record array may be released only AFTER every DMA page,
+     * queue and IRQ source is proven disarmed. Failed teardown retries
+     * operate on this same pointer with unchanged owner identity. */
+    if(g->pixels) {
+        if(!nas_heap_free(g->pixels))__builtin_trap();
+        g->pixels=NULL;
+    }
     return 0;
 }
 
 static void mark_dirty(struct gpu_device *g,uint32_t first,uint32_t last) {
+    ++g->dirty_serial;
     if(!g->dirty) {g->dirty_y0=first;g->dirty_y1=last;g->dirty=true;}
     else {
         if(first<g->dirty_y0)g->dirty_y0=first;
@@ -371,6 +401,8 @@ static int runtime_complete(struct gpu_device *g) {
         return rc ? runtime_poison(g,rc) : 0;
     }
     ++g->flushes;
+    /* Only a host-ACKed resource flush advances real presentation. */
+    g->displayed_serial=g->epoch_serial;
     g->runtime_phase=GPU_RUNTIME_IDLE;
     return 0;
 }
@@ -402,6 +434,7 @@ static int gpu_present(struct nas_display_device *display) {
     /* New user writes during an in-flight epoch remain dirty for the next
      * transfer; an older flush must never erase those later writes. */
     g->epoch_first=first;g->epoch_last=last;
+    g->epoch_serial=g->dirty_serial;
     g->dirty=false;
     struct gpu_rect rect={0,little32(first),little32(GPU_WIDTH),
                           little32(last-first)};
@@ -417,11 +450,49 @@ static const struct nas_display_ops gpu_display_ops={
     .mmap_page=gpu_mmap_page
 };
 
+/* Issue real control-queue GET_CAPSET_INFO commands only if the host
+ * advertises and accepts VIRTIO_GPU_F_VIRGL. Bounded scanning cannot
+ * overflow the fixed DMA reply buffer. No 3D resource or context is
+ * created and the current DRM dumb-buffer path remains unchanged. */
+static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
+    if(!(features&GPU_FEATURE_VIRGL))return 0;
+    g->virgl_feature=true;
+    g->capset_count=nas_virtio_config32(&g->transport,12U);
+    const uint32_t count=g->capset_count<GPU_CAPSET_PROBE_LIMIT ?
+                         g->capset_count:GPU_CAPSET_PROBE_LIMIT;
+    for(uint32_t i=0;i<count;i++) {
+        struct gpu_capset_query q={
+            .hdr=command_hdr(g,GPU_CMD_GET_CAPSET_INFO),
+            .index=little32(i)};
+        int rc=command_sync(g,&q,sizeof(q),0,GPU_RESP_OK_CAPSET_INFO);
+        if(rc)return rc;
+        const struct gpu_capset_reply *a=g->response.cpu;
+        uint32_t id=little32(a->id);
+        uint32_t version=little32(a->max_version);
+        uint32_t size=little32(a->max_size);
+        if((id==GPU_CAPSET_VIRGL || id==GPU_CAPSET_VIRGL2) &&
+           version && size && id>g->virgl_capset_id) {
+            g->virgl_capset_id=id;
+            g->virgl_capset_version=version;
+            g->virgl_capset_size=size;
+        }
+    }
+    nas_print("[VIRTIO GPU 3D DISCOVERY] host_virgl=1 capsets=");
+    nas_dec(g->capset_count);
+    nas_print(" virgl_id=");nas_dec(g->virgl_capset_id);
+    nas_print(" version=");nas_dec(g->virgl_capset_version);
+    nas_print(" bytes=");nas_dec(g->virgl_capset_size);
+    nas_print(" render_api=not-implemented\n");
+    return 0;
+}
+
 static int setup_resource(struct gpu_device *g) {
     uint64_t features=0;
-    int rc=nas_virtio_negotiate(&g->transport,0,0,&features);
+    int rc=nas_virtio_negotiate(&g->transport,0,GPU_FEATURE_VIRGL,&features);
     if(rc)return rc;
     if(!nas_virtio_config32(&g->transport,8U))return -ENODEV;
+    g->pixels=nas_heap_calloc(GPU_PAGES,sizeof(*g->pixels));
+    if(!g->pixels)return -ENOMEM;
     for(unsigned i=0;i<GPU_PAGES;i++) {
         rc=nas_dma_alloc_page(g->transport.dma,&g->pixels[i]);
         if(rc)return rc;
@@ -450,6 +521,8 @@ static int setup_resource(struct gpu_device *g) {
                     nas_virtio_irq_ack_source,&g->transport,irq_notify,g);
     if(rc)return rc;
     rc=nas_virtio_activate(&g->transport);
+    if(rc)return rc;
+    rc=discover_3d_capsets(g,features);
     if(rc)return rc;
 
     struct gpu_hdr display_info=command_hdr(g,GPU_CMD_GET_DISPLAY_INFO);
@@ -569,6 +642,25 @@ int nas_virtio_gpu_driver_register(void) {
     return nas_bus_driver_register(&gpu_driver);
 }
 unsigned nas_virtio_gpu_count(void) {return gpu.claimed?1U:0U;}
+void nas_virtio_gpu_get_scanout_state(struct nas_virtio_gpu_scanout_state *out) {
+    if(!out)return;
+    *out=(struct nas_virtio_gpu_scanout_state){
+        .dirty_serial=gpu.dirty_serial,
+        .displayed_serial=gpu.displayed_serial,
+        .busy=gpu.runtime_phase!=GPU_RUNTIME_IDLE,
+        .dirty=gpu.dirty,.ready=gpu.claimed && !gpu.stalled
+    };
+}
+void nas_virtio_gpu_get_3d_caps(struct nas_virtio_gpu_3d_caps *out) {
+    if(!out)return;
+    *out=(struct nas_virtio_gpu_3d_caps){
+        .host_virgl=gpu.virgl_feature && gpu.claimed && !gpu.stalled,
+        .capset_count=gpu.capset_count,
+        .virgl_capset_id=gpu.virgl_capset_id,
+        .virgl_capset_version=gpu.virgl_capset_version,
+        .virgl_capset_size=gpu.virgl_capset_size
+    };
+}
 void nas_virtio_gpu_get_stats(struct nas_virtio_gpu_stats *out) {
     if(!out)return;
     *out=(struct nas_virtio_gpu_stats){

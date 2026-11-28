@@ -4,6 +4,27 @@
 #include <stdbool.h>
 #include "ops.h"
 
+/* Shared readiness/retry classification. Socket control and epoll retain
+ * their own providers; poll and accept use the held poll snapshot. */
+enum nas_poll_wait_kind {
+    NAS_POLL_WAIT_NONE, NAS_POLL_WAIT_FDS,
+    NAS_POLL_WAIT_EPOLL, NAS_POLL_WAIT_SOCKET
+};
+static inline enum nas_poll_wait_kind nas_poll_wait_kind(enum nas_syscall_op op) {
+    switch(op) {
+    case NAS_SC_poll: case NAS_SC_ppoll: case NAS_SC_pselect6:
+    case NAS_SC_select: case NAS_SC_accept: case NAS_SC_accept4:
+        return NAS_POLL_WAIT_FDS;
+    case NAS_SC_epoll_wait: case NAS_SC_epoll_pwait:
+        return NAS_POLL_WAIT_EPOLL;
+    case NAS_SC_bind: case NAS_SC_connect: case NAS_SC_listen:
+    case NAS_SC_setsockopt: case NAS_SC_getsockopt: case NAS_SC_shutdown:
+    case NAS_SC_getsockname: case NAS_SC_getpeername:
+        return NAS_POLL_WAIT_SOCKET;
+    default: return NAS_POLL_WAIT_NONE;
+    }
+}
+
 /* Linux permits polling zero descriptors forever: it is a real signal
  * wait, not an unsupported I/O provider. musl uses ppoll(0, 0, 0, 0)
  * to implement pause() on asm-generic 64-bit architectures. In all cases

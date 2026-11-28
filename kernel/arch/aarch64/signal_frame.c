@@ -8,7 +8,7 @@
 #include "../../task.h"
 #include "../../task/signal.h"
 #include "../../mm/usercopy.h"
-#include "../arch.h"
+#include "../signal_frame_common.h"
 #include "../abi.h"
 #include "../mmu.h"
 #include "../../panic.h"
@@ -22,7 +22,7 @@ struct arm_sigcontext {
 };
 struct arm_ucontext {
     uint64_t flags,link;
-    struct {uint64_t sp;uint32_t flags,pad;uint64_t size;} stack;
+    struct nas_sigaltstack_wire stack;
     uint64_t sigmask;
     uint8_t unused[120];
     struct arm_sigcontext mc;
@@ -59,9 +59,7 @@ bool nas_arch_signal_install_handler(uint64_t *opaque,unsigned signo,
     struct arm_sigframe sf={0};
     sf.info[0]=(uint32_t)signo;
     sf.uc.sigmask=t->blocked_signals;
-    sf.uc.stack.sp=t->signal_stack_sp;
-    sf.uc.stack.size=t->signal_stack_size;
-    sf.uc.stack.flags=nas_signal_altstack_flags(t,interrupted_sp);
+    sf.uc.stack=nas_signal_stack_snapshot(t,interrupted_sp);
     for(unsigned i=0;i<31;i++)sf.uc.mc.regs[i]=saved.user_regs[i];
     sf.uc.mc.sp=saved.user_sp;
     sf.uc.mc.pc=saved.user_elr;
@@ -73,11 +71,7 @@ bool nas_arch_signal_install_handler(uint64_t *opaque,unsigned signo,
     fp->fpcr=(uint32_t)saved.fpcr;
     for(unsigned i=0;i<512;i++)fp->regs[i]=saved.simd_regs[i];
     if(!nas_user_write_bytes(sp,(const uint8_t *)&sf,sizeof(sf)))return false;
-    t->signal_saved_arch=saved;
-    t->signal_saved_mask=t->blocked_signals;
-    t->signal_frame_sp=sp;
-    t->signal_frame_active=true;
-    nas_signal_handler_enter(t,signo,action);
+    nas_signal_frame_commit(t,&saved,sp,signo,action);
     fr->sp_el0=sp;
     fr->x[30]=NAS_SIGRETURN_TRAMPOLINE; /* Linux rt_sigreturn via RX page */
     fr->x[0]=signo;
@@ -92,13 +86,7 @@ uint64_t nas_arch_signal_sigreturn(uint64_t *frame) {
     if(!t->signal_frame_active ||
        nas_arch_signal_user_sp()!=t->signal_frame_sp)
         return (uint64_t)-EFAULT;
-    t->arch=t->signal_saved_arch;
-    t->blocked_signals=t->signal_saved_mask;
-    t->signal_frame_active=false;
-    t->signal_frame_sp=0;
-    nas_arch_restore_cpu(t);
-    nas_arch_load_user_frame(t,frame);
-    return nas_arch_saved_return(t);
+    return nas_signal_frame_restore(t,frame);
 
 }
 bool nas_arch_signal_install_trampoline(void) {
@@ -110,15 +98,7 @@ bool nas_arch_signal_install_trampoline(void) {
         0xd4000001U, /* svc #0 */
         0xd4200000U, /* brk #0: unexpected return */
     };
-    if(!nas_mmu_map_prot_page(NAS_SIGRETURN_TRAMPOLINE,5U))
-        return false;
-    if(!nas_user_copy_to_mapped(NAS_SIGRETURN_TRAMPOLINE,
-                               (const uint8_t *)insns,sizeof(insns)) ||
-       !nas_mmu_sync_user_exec(NAS_SIGRETURN_TRAMPOLINE,sizeof(insns))) {
-        (void)nas_mmu_unmap_page(NAS_SIGRETURN_TRAMPOLINE);
-        return false;
-    }
-    return true;
+    return nas_signal_map_restorer(insns,sizeof(insns),true);
 }
 
 uint64_t nas_arch_signal_min_altstack(void) {

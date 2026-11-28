@@ -8,7 +8,7 @@
 #include "../../task.h"
 #include "../../task/signal.h"
 #include "../../mm/usercopy.h"
-#include "../arch.h"
+#include "../signal_frame_common.h"
 #include "../mmu.h"
 #include "../../panic.h"
 #include "context.h"
@@ -27,7 +27,7 @@ struct x86_sigcontext {
 };
 struct x86_ucontext {
     uint64_t flags,link;
-    struct { uint64_t sp; uint32_t flags,pad; uint64_t size; } stack;
+    struct nas_sigaltstack_wire stack;
     struct x86_sigcontext sc;
     uint64_t sigmask;
 };
@@ -73,9 +73,7 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
     uf.pretcode=restorer;
     uf.uc.flags=0x6; /* UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS */
     uf.uc.sigmask=t->blocked_signals;
-    uf.uc.stack.sp=t->signal_stack_sp;
-    uf.uc.stack.size=t->signal_stack_size;
-    uf.uc.stack.flags=nas_signal_altstack_flags(t,interrupted_sp);
+    uf.uc.stack=nas_signal_stack_snapshot(t,interrupted_sp);
     uf.uc.sc.gpr[0]=regs[5];  /* r8 */
     uf.uc.sc.gpr[1]=regs[6];  /* r9 */
     uf.uc.sc.gpr[2]=regs[4];  /* r10 */
@@ -103,11 +101,7 @@ bool nas_arch_signal_install_handler(uint64_t *regs,unsigned signo,
     if(!nas_user_write_bytes(fpaddr,save.fpu_state,512) ||
        !nas_user_write_bytes(frameaddr,(const uint8_t *)&uf,sizeof(uf)))
         return false;
-    t->signal_saved_arch=save;
-    t->signal_saved_mask=t->blocked_signals;
-    t->signal_frame_sp=frameaddr;
-    t->signal_frame_active=true;
-    nas_signal_handler_enter(t,signo,action);
+    nas_signal_frame_commit(t,&save,frameaddr,signo,action);
     regs[0]=0;
     regs[1]=signo;
     regs[2]=frameaddr+offsetof(struct x86_rt_sigframe,info);
@@ -137,13 +131,7 @@ uint64_t nas_arch_signal_sigreturn(uint64_t *frame) {
         nas_print(" userpc_before=");nas_hex(t->arch.resume_user_rip);
         nas_print("\n");
     }
-    t->arch=t->signal_saved_arch;
-    t->blocked_signals=t->signal_saved_mask;
-    t->signal_frame_active=false;
-    t->signal_frame_sp=0;
-    nas_arch_restore_cpu(t);
-    nas_arch_load_user_frame(t,frame);
-    return nas_arch_saved_return(t);
+    return nas_signal_frame_restore(t,frame);
 
 }
 bool nas_arch_signal_install_trampoline(void) {

@@ -1,5 +1,5 @@
 #include "readonly.h"
-#include "../../errno.h"
+#include "controller_internal.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -7,21 +7,11 @@
 /* NVM Express 1.x: administration and NVM READ on one known QEMU namespace.
  * The hardware qualification, PCI config writes and UC BAR are platform-owned.
  * No GPL third-party source is copied into this small acceptance core. */
-#define NVME_CAP 0x00U
-#define NVME_CC 0x14U
-#define NVME_CSTS 0x1cU
-#define NVME_AQA 0x24U
-#define NVME_ASQ 0x28U
-#define NVME_ACQ 0x30U
 #define NVME_DOORBELL_BASE 0x1000U
-#define NVME_CC_EN 1U
-#define NVME_CSTS_RDY 1U
-#define NVME_CSTS_CFS 2U
 #define NVME_OP_CREATE_IO_SQ 0x01U
 #define NVME_OP_CREATE_IO_CQ 0x05U
 #define NVME_OP_IDENTIFY 0x06U
 #define NVME_OP_NVM_READ 0x02U
-#define NVME_POLL_LIMIT 1000000U
 
 static void zero_bytes(void *destination, uint32_t count) {
     uint8_t *p = destination;
@@ -31,42 +21,6 @@ static void copy_bytes(void *destination, const void *source, uint32_t count) {
     uint8_t *d=destination;
     const uint8_t *s=source;
     for(uint32_t i=0;i<count;i++)d[i]=s[i];
-}
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1]<<8) |
-           ((uint32_t)p[2]<<16) | ((uint32_t)p[3]<<24);
-}
-static uint64_t le64(const uint8_t *p) {
-    return (uint64_t)le32(p) | ((uint64_t)le32(p+4U)<<32);
-}
-static void put32(uint8_t *p,uint32_t value) {
-    p[0]=(uint8_t)value;p[1]=(uint8_t)(value>>8);
-    p[2]=(uint8_t)(value>>16);p[3]=(uint8_t)(value>>24);
-}
-static int io_read(struct nas_nvme_ro_session *s,uint32_t off,uint32_t *val) {
-    if(!s || !s->io || !s->io->read32 || !val || (off&3U) ||
-       off>s->io->mmio_bytes || s->io->mmio_bytes-off<4U)return -EINVAL;
-    return s->io->read32(s->io->context,off,val);
-}
-static int io_write(struct nas_nvme_ro_session *s,uint32_t off,uint32_t val) {
-    if(!s || !s->io || !s->io->write32 || (off&3U) ||
-       off>s->io->mmio_bytes || s->io->mmio_bytes-off<4U)return -EINVAL;
-    return s->io->write32(s->io->context,off,val);
-}
-static int ready_wait(struct nas_nvme_ro_session *s,bool wanted) {
-    for(unsigned i=0;i<NVME_POLL_LIMIT;i++) {
-        uint32_t status=0;
-        int rc=io_read(s,NVME_CSTS,&status);
-        if(rc)return rc;
-        if(status&NVME_CSTS_CFS)return -EIO;
-        if(((status&NVME_CSTS_RDY)!=0U)==wanted)return 0;
-    }
-    return -ETIMEDOUT;
-}
-static int addr_write(struct nas_nvme_ro_session *s,uint32_t reg,uint64_t addr) {
-    int rc=io_write(s,reg,(uint32_t)addr);
-    if(!rc)rc=io_write(s,reg+4U,(uint32_t)(addr>>32));
-    return rc;
 }
 static uint32_t db_off(const struct nas_nvme_ro_session *s,
                        const struct nas_nvme_ro_queue *q,bool cq) {
@@ -84,19 +38,19 @@ static int queue_submit(struct nas_nvme_ro_session *s,
     if(!q->cid_next)q->cid_next=1U;
     uint8_t *cmd=(uint8_t *)q->sq.cpu+(uint32_t)q->sq_tail*64U;
     zero_bytes(cmd,64U);
-    put32(cmd,(uint32_t)opcode|((uint32_t)cid<<16));
-    put32(cmd+4U,nsid);
-    put32(cmd+24U,(uint32_t)prp);
-    put32(cmd+28U,(uint32_t)(prp>>32));
-    put32(cmd+40U,cdw10);
-    put32(cmd+44U,cdw11);
-    put32(cmd+48U,cdw12);
+    nas_put_le32(cmd,(uint32_t)opcode|((uint32_t)cid<<16));
+    nas_put_le32(cmd+4U,nsid);
+    nas_put_le32(cmd+24U,(uint32_t)prp);
+    nas_put_le32(cmd+28U,(uint32_t)(prp>>32));
+    nas_put_le32(cmd+40U,cdw10);
+    nas_put_le32(cmd+44U,cdw11);
+    nas_put_le32(cmd+48U,cdw12);
     int rc=nas_dma_lease_sync(&s->lease,&q->sq,
                               (uint32_t)q->sq_tail*64U,64U,
                               NAS_DMA_TO_DEVICE);
     if(rc)return rc;
     q->sq_tail=(uint8_t)((q->sq_tail+1U)%NAS_NVME_RO_QUEUE_DEPTH);
-    rc=io_write(s,db_off(s,q,false),q->sq_tail);
+    rc=nas_nvme_mmio_write(s->io,db_off(s,q,false),q->sq_tail);
     if(rc)return rc;
     for(unsigned i=0;i<NVME_POLL_LIMIT;i++) {
         uint32_t byte_off=(uint32_t)q->cq_head*16U;
@@ -104,14 +58,14 @@ static int queue_submit(struct nas_nvme_ro_session *s,
                               NAS_DMA_FROM_DEVICE);
         if(rc)return rc;
         const uint8_t *c=(const uint8_t *)q->cq.cpu+byte_off;
-        uint32_t dw3=le32(c+12U);
+        uint32_t dw3=nas_get_le32(c+12U);
         if(((dw3>>16)&1U)!=q->cq_phase)continue;
-        uint32_t dw2=le32(c+8U);
+        uint32_t dw2=nas_get_le32(c+8U);
         if((dw3&0xffffU)!=cid || (dw2>>16)!=q->qid || (dw3>>17)!=0U)
             return -EIO;
         q->cq_head=(uint8_t)((q->cq_head+1U)%NAS_NVME_RO_QUEUE_DEPTH);
         if(!q->cq_head)q->cq_phase^=1U;
-        return io_write(s,db_off(s,q,true),q->cq_head);
+        return nas_nvme_mmio_write(s->io,db_off(s,q,true),q->cq_head);
     }
     return -ETIMEDOUT;
 }
@@ -130,9 +84,9 @@ int nas_nvme_ro_close(struct nas_nvme_ro_session *s) {
     int result=0;
     if(s->may_dma) {
         uint32_t cc=0;
-        int rc=io_read(s,NVME_CC,&cc);
-        if(!rc)rc=io_write(s,NVME_CC,cc&~NVME_CC_EN);
-        if(!rc)rc=ready_wait(s,false);
+        int rc=nas_nvme_mmio_read(s->io,NVME_CC,&cc);
+        if(!rc)rc=nas_nvme_mmio_write(s->io,NVME_CC,cc&~NVME_CC_EN);
+        if(!rc)rc=nas_nvme_poll_ready(s->io,false);
         if(rc){result=rc;goto failed;} /* PINNED on unsafe stop. */
         rc=nas_dma_lease_disarm_after_quiesce(&s->lease);
         if(rc){result=rc;goto failed;}
@@ -168,9 +122,9 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     int lease_rc=nas_dma_lease_begin(&s->lease,dma);
     if(lease_rc){*s=(struct nas_nvme_ro_session){0};return lease_rc;}
     uint32_t cap_lo=0,cap_hi=0,cc=0;
-    int rc=io_read(s,NVME_CAP,&cap_lo);
-    if(!rc)rc=io_read(s,NVME_CAP+4U,&cap_hi);
-    if(!rc)rc=io_read(s,NVME_CC,&cc);
+    int rc=nas_nvme_mmio_read(s->io,NVME_CAP,&cap_lo);
+    if(!rc)rc=nas_nvme_mmio_read(s->io,NVME_CAP+4U,&cap_hi);
+    if(!rc)rc=nas_nvme_mmio_read(s->io,NVME_CC,&cc);
     if(rc)goto failed;
     uint64_t cap=(uint64_t)cap_lo|((uint64_t)cap_hi<<32);
     if((cap&0xffffU)<NAS_NVME_RO_QUEUE_DEPTH-1U ||
@@ -181,10 +135,10 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     if(db_off(s,&(struct nas_nvme_ro_queue){.qid=1U},true) >
        io->mmio_bytes-4U) {rc=-EOPNOTSUPP;goto failed;}
     if(cc&NVME_CC_EN) {
-        rc=io_write(s,NVME_CC,cc&~NVME_CC_EN);
+        rc=nas_nvme_mmio_write(s->io,NVME_CC,cc&~NVME_CC_EN);
         if(rc)goto failed;
     }
-    rc=ready_wait(s,false);
+    rc=nas_nvme_poll_ready(s->io,false);
     if(rc)goto failed;
     struct nas_dma_page *pages[]={&s->admin.sq,&s->admin.cq,
                                   &s->data.sq,&s->data.cq,&s->bounce};
@@ -200,19 +154,19 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
     s->data.cid_next=1U;
     s->data.cq_phase=1U;
     s->data.qid=1U;
-    rc=io_write(s,NVME_AQA,(NAS_NVME_RO_QUEUE_DEPTH-1U)|
+    rc=nas_nvme_mmio_write(s->io,NVME_AQA,(NAS_NVME_RO_QUEUE_DEPTH-1U)|
        ((NAS_NVME_RO_QUEUE_DEPTH-1U)<<16));
-    if(!rc)rc=addr_write(s,NVME_ASQ,s->admin.sq.bus_address);
-    if(!rc)rc=addr_write(s,NVME_ACQ,s->admin.cq.bus_address);
+    if(!rc)rc=nas_nvme_write_dma_address(s->io,NVME_ASQ,s->admin.sq.bus_address);
+    if(!rc)rc=nas_nvme_write_dma_address(s->io,NVME_ACQ,s->admin.cq.bus_address);
     if(rc)goto failed;
     /* Arm before CC: a callback can report failure after the controller has
      * already observed the write. An armed lease blocks all DMA frees. */
     rc=nas_dma_lease_arm(&s->lease);
     if(rc)goto failed;
     s->may_dma=true;
-    rc=io_write(s,NVME_CC,NVME_CC_EN|(6U<<16)|(4U<<20));
+    rc=nas_nvme_mmio_write(s->io,NVME_CC,NVME_CC_EN|(6U<<16)|(4U<<20));
     if(rc)goto failed;
-    rc=ready_wait(s,true);
+    rc=nas_nvme_poll_ready(s->io,true);
     if(rc)goto failed;
 
     /* Identify Namespace 1: NVMe admin opcode 06, CNS 0, PRP1=4K page. */
@@ -223,8 +177,8 @@ int nas_nvme_ro_open(const struct nas_nvme_io *io,
                           NAS_DMA_FROM_DEVICE);
     if(rc)goto failed;
     const uint8_t *ns=s->bounce.cpu;
-    s->sectors=le64(ns);
-    const uint64_t capacity=le64(ns+8U);
+    s->sectors=nas_get_le64(ns);
+    const uint64_t capacity=nas_get_le64(ns+8U);
     uint8_t flbas=(uint8_t)(ns[26U]&0xfU);
     uint8_t nlbaf=ns[25U];
     if(!s->sectors || !capacity || capacity>s->sectors ||

@@ -191,15 +191,8 @@ static const struct nas_port_block_ops block_ops={
  * keeps its page/heap pointer intact, and an already released owner is
  * skipped on retry. This is shared by normal detach and failed attach. */
 static int release_block_owners(struct nas_uboot_block *b) {
- int rc=0;
- if(b->ring.active || b->ring.dma_page.cpu) {
-     rc=nas_vring_queue_close(&b->ring);
-     if(rc)return rc;
- } else if(b->transport.ops && b->transport.ops->reset) {
-     /* Also stop a partially configured transport which never published
-      * an active ring. The real close above already resets its device. */
-     b->transport.ops->reset(b->transport.context);
- }
+ int rc=nas_vring_queue_close_or_reset(&b->ring,&b->transport);
+ if(rc)return rc;
  if(b->header_dma.cpu) {
      rc=nas_dma_free_page(b->transport.dma,&b->header_dma);
      if(rc)return rc;

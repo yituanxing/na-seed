@@ -7,6 +7,11 @@
 #include "../errno.h"
 #include "../mm/frame.h"
 #include "../block/device.h"
+#include "../drivers/input/core.h"
+#include "../drivers/display/display.h"
+#ifdef NAS_ENABLE_VIRTIO_GPU
+#include "../drivers/display/virtio_gpu.h"
+#endif
 #include "../lib/string.h"
 #include <stddef.h>
 
@@ -484,9 +489,10 @@ static struct runtime_tmpfs {
     bool used;
 } runtime_tmpfs[NAS_RUNTIME_TMPFS_MAX];
 
-int nas_vfs_mount_tmpfs(const char *target,const char *source,
+static int mount_tmpfs(const char *target,const char *source,
                         uint32_t mode,bool read_only,uint64_t max_pages,
-                        uint64_t max_inodes,bool strict_atime) {
+                        uint64_t max_inodes,bool strict_atime,
+                        bool bootstrap) {
     if(!target || !source || !source[0] ||
        strlen(target)>=sizeof(runtime_tmpfs[0].target) ||
        strlen(source)>=sizeof(runtime_tmpfs[0].source) ||
@@ -509,7 +515,7 @@ int nas_vfs_mount_tmpfs(const char *target,const char *source,
     entry->mount=(struct nas_vfs_mount){
         .mountpoint=entry->target,.type=&tmp_type,
         .private_data=root,.source_label=entry->source,
-        .read_only=read_only
+        .allow_missing_mountpoint=bootstrap,.read_only=read_only
     };
     int rc=nas_vfs_register_mount(&entry->mount);
     if(rc) {
@@ -522,6 +528,12 @@ int nas_vfs_mount_tmpfs(const char *target,const char *source,
     return 0;
 }
 
+int nas_vfs_mount_tmpfs(const char *target,const char *source,
+                        uint32_t mode,bool read_only,uint64_t max_pages,
+                        uint64_t max_inodes,bool strict_atime) {
+    return mount_tmpfs(target,source,mode,read_only,max_pages,max_inodes,
+                       strict_atime,false);
+}
 int nas_vfs_umount_tmpfs(const char *target) {
     if(!target)return -EINVAL;
     for(unsigned i=0;i<NAS_RUNTIME_TMPFS_MAX;i++) {
@@ -662,6 +674,14 @@ enum {
     SYS_CORE_ID, SYS_PACKAGE_ID, SYS_THREAD_SIBLINGS, SYS_CORE_SIBLINGS,
     SYS_MEMORY, SYS_MEMORY_BLOCK_SIZE,
     SYS_DEV, SYS_DEV_BLOCK, SYS_BLOCK, SYS_VIRTUAL, SYS_VIRTUAL_BLOCK,
+    SYS_CLASS, SYS_CLASS_GRAPHICS, SYS_GRAPHICS_LINK,
+    SYS_VIRTUAL_GRAPHICS, SYS_GRAPHICS_FB, SYS_GRAPHICS_DEV,
+    SYS_GRAPHICS_OWNER, SYS_CLASS_DISPLAY, SYS_DISPLAY_LINK,
+    SYS_VIRTUAL_DISPLAY, SYS_DISPLAY_OWNER, SYS_DISPLAY_SUBSYSTEM,
+    SYS_CLASS_DRM, SYS_DRM_LINK, SYS_VIRTUAL_DRM, SYS_DRM_OWNER,
+    SYS_DRM_DEV, SYS_DRM_UEVENT, SYS_DRM_SUBSYSTEM,
+    SYS_DEV_CHAR, SYS_DEV_CHAR_DRM_LINK,
+    SYS_CLASS_INPUT, SYS_VIRTUAL_INPUT,
     SYS_NODE_COUNT
 };
 #define SYS_INO_BASE 900000ULL
@@ -673,36 +693,94 @@ enum {
 _Static_assert(NAS_MEMORY_BLOCK_BYTES==0x8000000ULL,
                "sysfs block_size_bytes must match physical block granularity");
 enum { SYS_MEMORY_DIR, SYS_MEMORY_STATE, SYS_MEMORY_REMOVABLE };
+enum sys_entry_type {SYS_FILE, SYS_DIR, SYS_LINK};
 struct sys_entry {
     unsigned parent;
     const char *name;
     const char *contents;
-    bool directory;
+    enum sys_entry_type type;
 };
 static const struct sys_entry sys_entries[SYS_NODE_COUNT]={
-    [SYS_ROOT]={SYS_ROOT,"",0,true},
-    [SYS_DEVICES]={SYS_ROOT,"devices",0,true},
-    [SYS_SYSTEM]={SYS_DEVICES,"system",0,true},
-    [SYS_CPU]={SYS_SYSTEM,"cpu",0,true},
-    [SYS_CPU0]={SYS_CPU,"cpu0",0,true},
-    [SYS_TOPOLOGY]={SYS_CPU0,"topology",0,true},
-    [SYS_POSSIBLE]={SYS_CPU,"possible","0\n",false},
-    [SYS_PRESENT]={SYS_CPU,"present","0\n",false},
-    [SYS_ONLINE]={SYS_CPU,"online","0\n",false},
-    [SYS_OFFLINE]={SYS_CPU,"offline","\n",false},
-    [SYS_KERNEL_MAX]={SYS_CPU,"kernel_max","0\n",false},
-    [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",false},
-    [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",false},
-    [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",false},
-    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",false},
-    [SYS_MEMORY]={SYS_SYSTEM,"memory",0,true},
-    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",false},
-    [SYS_DEV]={SYS_ROOT,"dev",0,true},
-    [SYS_DEV_BLOCK]={SYS_DEV,"block",0,true},
-    [SYS_BLOCK]={SYS_ROOT,"block",0,true},
-    [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,true},
-    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,true}
+    [SYS_ROOT]={SYS_ROOT,"",0,SYS_DIR},
+    [SYS_DEVICES]={SYS_ROOT,"devices",0,SYS_DIR},
+    [SYS_SYSTEM]={SYS_DEVICES,"system",0,SYS_DIR},
+    [SYS_CPU]={SYS_SYSTEM,"cpu",0,SYS_DIR},
+    [SYS_CPU0]={SYS_CPU,"cpu0",0,SYS_DIR},
+    [SYS_TOPOLOGY]={SYS_CPU0,"topology",0,SYS_DIR},
+    [SYS_POSSIBLE]={SYS_CPU,"possible","0\n",SYS_FILE},
+    [SYS_PRESENT]={SYS_CPU,"present","0\n",SYS_FILE},
+    [SYS_ONLINE]={SYS_CPU,"online","0\n",SYS_FILE},
+    [SYS_OFFLINE]={SYS_CPU,"offline","\n",SYS_FILE},
+    [SYS_KERNEL_MAX]={SYS_CPU,"kernel_max","0\n",SYS_FILE},
+    [SYS_CORE_ID]={SYS_TOPOLOGY,"core_id","0\n",SYS_FILE},
+    [SYS_PACKAGE_ID]={SYS_TOPOLOGY,"physical_package_id","0\n",SYS_FILE},
+    [SYS_THREAD_SIBLINGS]={SYS_TOPOLOGY,"thread_siblings_list","0\n",SYS_FILE},
+    [SYS_CORE_SIBLINGS]={SYS_TOPOLOGY,"core_siblings_list","0\n",SYS_FILE},
+    [SYS_MEMORY]={SYS_SYSTEM,"memory",0,SYS_DIR},
+    [SYS_MEMORY_BLOCK_SIZE]={SYS_MEMORY,"block_size_bytes","8000000\n",SYS_FILE},
+    [SYS_DEV]={SYS_ROOT,"dev",0,SYS_DIR},
+    [SYS_DEV_BLOCK]={SYS_DEV,"block",0,SYS_DIR},
+    [SYS_BLOCK]={SYS_ROOT,"block",0,SYS_DIR},
+    [SYS_VIRTUAL]={SYS_DEVICES,"virtual",0,SYS_DIR},
+    [SYS_VIRTUAL_BLOCK]={SYS_VIRTUAL,"block",0,SYS_DIR},
+    [SYS_CLASS]={SYS_ROOT,"class",0,SYS_DIR},
+    [SYS_CLASS_GRAPHICS]={SYS_CLASS,"graphics",0,SYS_DIR},
+    [SYS_GRAPHICS_LINK]={SYS_CLASS_GRAPHICS,"fb0",
+                         "../../devices/virtual/graphics/fb0",SYS_LINK},
+    [SYS_VIRTUAL_GRAPHICS]={SYS_VIRTUAL,"graphics",0,SYS_DIR},
+    [SYS_GRAPHICS_FB]={SYS_VIRTUAL_GRAPHICS,"fb0",0,SYS_DIR},
+    [SYS_GRAPHICS_DEV]={SYS_GRAPHICS_FB,"dev","29:0\n",SYS_FILE},
+    [SYS_GRAPHICS_OWNER]={SYS_GRAPHICS_FB,"device","../../display/scanout0",SYS_LINK},
+    [SYS_CLASS_DISPLAY]={SYS_CLASS,"display",0,SYS_DIR},
+    [SYS_DISPLAY_LINK]={SYS_CLASS_DISPLAY,"scanout0",
+                        "../../devices/virtual/display/scanout0",SYS_LINK},
+    [SYS_VIRTUAL_DISPLAY]={SYS_VIRTUAL,"display",0,SYS_DIR},
+    [SYS_DISPLAY_OWNER]={SYS_VIRTUAL_DISPLAY,"scanout0",0,SYS_DIR},
+    [SYS_DISPLAY_SUBSYSTEM]={SYS_DISPLAY_OWNER,"subsystem",
+                             "../../../../class/display",SYS_LINK},
+    /* These are actual current DRM primary-node attributes, published only
+     * while the registered VirtIO GPU exists. /sys/dev/char and /sys/class
+     * converge on the same inode and one authoritative character-device
+     * identity (226:0), rather than a per-application fabricated device. */
+    [SYS_CLASS_DRM]={SYS_CLASS,"drm",0,SYS_DIR},
+    [SYS_DRM_LINK]={SYS_CLASS_DRM,"card0",
+                    "../../devices/virtual/drm/card0",SYS_LINK},
+    [SYS_VIRTUAL_DRM]={SYS_VIRTUAL,"drm",0,SYS_DIR},
+    [SYS_DRM_OWNER]={SYS_VIRTUAL_DRM,"card0",0,SYS_DIR},
+    [SYS_DRM_DEV]={SYS_DRM_OWNER,"dev","226:0\n",SYS_FILE},
+    [SYS_DRM_UEVENT]={SYS_DRM_OWNER,"uevent",
+                       "MAJOR=226\nMINOR=0\nDEVNAME=dri/card0\nDEVTYPE=drm_minor\n",
+                       SYS_FILE},
+    [SYS_DRM_SUBSYSTEM]={SYS_DRM_OWNER,"subsystem",
+                         "../../../../class/drm",SYS_LINK},
+    [SYS_DEV_CHAR]={SYS_DEV,"char",0,SYS_DIR},
+    [SYS_DEV_CHAR_DRM_LINK]={SYS_DEV_CHAR,"226:0",
+                             "../../devices/virtual/drm/card0",SYS_LINK},
+    [SYS_CLASS_INPUT]={SYS_CLASS,"input",0,SYS_DIR},
+    [SYS_VIRTUAL_INPUT]={SYS_VIRTUAL,"input",0,SYS_DIR}
 };
+/* The registered DisplayDevice is the owner of the fbdev endpoint,
+ * not a second PCI device. Represent its class and the fbdev consumer
+ * as separate sysfs objects with an actual owner and subsystem link.
+ * Physical transport discovery remains the real driver's responsibility. */
+static bool sys_entry_visible(unsigned id) {
+    if(id>=SYS_CLASS_GRAPHICS && id<=SYS_DISPLAY_SUBSYSTEM)
+        return nas_display_primary()!=NULL;
+    if(id>=SYS_CLASS_DRM && id<=SYS_DEV_CHAR_DRM_LINK) {
+#ifdef NAS_ENABLE_VIRTIO_GPU
+        return nas_virtio_gpu_count()!=0U;
+#else
+        return false;
+#endif
+    }
+    return true;
+}
+static bool sys_entry_link(unsigned id) {
+    return sys_entries[id].type==SYS_LINK;
+}
+static unsigned sys_entry_dtype(unsigned id) {
+    return sys_entry_link(id)?10U:sys_entries[id].type==SYS_DIR?4U:8U;
+}
 /* Dynamic sysfs block identities are incarnations issued by the real block
  * class registry. No symlink, geometry or partition appears before its owner
  * registers, and stale inodes cannot become another disk after slot reuse. */
@@ -882,6 +960,328 @@ static void sys_memory_name(uint64_t block,char name[32]) {
     for(unsigned i=0;i<count;i++)name[6+i]=digits[count-1-i];
     name[6+count]=0;
 }
+
+/* Input sysfs is a projection of the registered input core, not a second
+ * device inventory. Event nodes and their class/dev symlinks disappear when
+ * their actual input_device is unregistered. The same DEVNAME and rdev are
+ * owned by the evdev chrdev publisher. */
+#define SYS_INPUT_INO_BASE (UINT64_C(1)<<52)
+#define SYS_INPUT_INO_STRIDE 32U
+enum {
+    SI_DEVICE,SI_EVENT,SI_NAME,SI_ID,SI_CAPS,
+    SI_BUSTYPE,SI_VENDOR,SI_PRODUCT,SI_VERSION,
+    SI_EV,SI_KEY,SI_REL,SI_ABS,SI_MSC,SI_SW,SI_LED,SI_PROP,
+    SI_DEV,SI_UEVENT,SI_EVENT_SUBSYSTEM,SI_INPUT_SUBSYSTEM,
+    SI_CLASS_DEVICE_LINK,SI_CLASS_EVENT_LINK,SI_CHAR_LINK,
+    SI_EVENT_DEVICE_LINK,SI_DEVICE_UEVENT
+};
+struct input_attr {const char *name;unsigned kind;};
+static const struct input_attr input_device_attrs[]={
+    {"name",SI_NAME},{"id",SI_ID},{"capabilities",SI_CAPS},
+    {"uevent",SI_DEVICE_UEVENT},{"subsystem",SI_INPUT_SUBSYSTEM}
+};
+static const struct input_attr input_event_attrs[]={
+    {"dev",SI_DEV},{"uevent",SI_UEVENT},
+    {"subsystem",SI_EVENT_SUBSYSTEM},{"device",SI_EVENT_DEVICE_LINK}
+};
+static const struct input_attr input_id_attrs[]={
+    {"bustype",SI_BUSTYPE},{"vendor",SI_VENDOR},
+    {"product",SI_PRODUCT},{"version",SI_VERSION}
+};
+static const struct input_attr input_cap_attrs[]={
+    {"ev",SI_EV},{"key",SI_KEY},{"rel",SI_REL},{"abs",SI_ABS},
+    {"msc",SI_MSC},{"sw",SI_SW},{"led",SI_LED},{"prop",SI_PROP}
+};
+static const struct nas_input_device *sys_input_present(unsigned index) {
+#if defined(NAS_ENABLE_VIRTIO_INPUT) || \
+    defined(NAS_ENABLE_H12_QEMU_USB_HID_USERLAND) || \
+    defined(NAS_ENABLE_H13_QEMU_USB_MOUSE_USERLAND) || \
+    defined(NAS_ENABLE_H14_QEMU_DUAL_HID_USERLAND)
+    return nas_input_device_at(index);
+#else
+    (void)index;
+    return NULL;
+#endif
+}
+static uint64_t sys_input_inode(unsigned index,unsigned kind) {
+    return SYS_INPUT_INO_BASE+(uint64_t)index*SYS_INPUT_INO_STRIDE+kind;
+}
+static bool sys_input_decode(const struct nas_fs_node *node,
+                             unsigned *index,unsigned *kind) {
+    if(!node || node->ino<SYS_INPUT_INO_BASE ||
+       node->ino>=SYS_INPUT_INO_BASE+
+           NAS_INPUT_MAX_DEVICES*SYS_INPUT_INO_STRIDE)return false;
+    uint64_t n=node->ino-SYS_INPUT_INO_BASE;
+    unsigned ix=(unsigned)(n/SYS_INPUT_INO_STRIDE);
+    unsigned k=(unsigned)(n%SYS_INPUT_INO_STRIDE);
+    if(k>SI_DEVICE_UEVENT || !sys_input_present(ix))return false;
+    if(index)*index=ix;
+    if(kind)*kind=k;
+    return true;
+}
+static bool sys_input_is_dir(unsigned kind) {
+    return kind==SI_DEVICE || kind==SI_EVENT ||
+           kind==SI_ID || kind==SI_CAPS;
+}
+static bool sys_input_is_link(unsigned kind) {
+    return (kind>=SI_EVENT_SUBSYSTEM && kind<=SI_CHAR_LINK) ||
+           kind==SI_EVENT_DEVICE_LINK;
+}
+static int sys_append_hex(char dst[256],unsigned *length,uint64_t val,
+                          unsigned min_digits) {
+    static const char hex[]="0123456789abcdef";
+    char digits[16];unsigned count=0;
+    do {digits[count++]=hex[val&15U];val>>=4;}while(val);
+    while(count<min_digits)digits[count++]='0';
+    if(count>255U-*length)return -ENAMETOOLONG;
+    while(count)dst[(*length)++]=digits[--count];
+    dst[*length]=0;
+    return 0;
+}
+static int sys_input_name(const char *prefix,unsigned index,char out[256]) {
+    unsigned n=0;out[0]=0;
+    return sys_append(out,&n,prefix) || sys_append_uint(out,&n,index)?
+        -ENAMETOOLONG:0;
+}
+static int sys_input_devnum(unsigned index,char out[256]) {
+    unsigned n=0;out[0]=0;
+    if(sys_append(out,&n,"13:") || sys_append_uint(out,&n,index+64U))
+        return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_input_text(unsigned index,unsigned kind,char out[256]) {
+    const struct nas_input_device *dev=sys_input_present(index);
+    if(!dev)return -ESTALE;
+    unsigned n=0;out[0]=0;
+    switch(kind) {
+    case SI_NAME:
+        if(sys_append(out,&n,dev->name) || sys_append(out,&n,"\n"))
+            return -ENAMETOOLONG;
+        return 0;
+    case SI_BUSTYPE:case SI_VENDOR:case SI_PRODUCT:case SI_VERSION: {
+        uint16_t id=kind==SI_BUSTYPE?dev->id.bustype:
+                    kind==SI_VENDOR?dev->id.vendor:
+                    kind==SI_PRODUCT?dev->id.product:dev->id.version;
+        return sys_append_hex(out,&n,id,4U) || sys_append(out,&n,"\n")?
+            -ENAMETOOLONG:0;
+    }
+    case SI_DEV:
+        if(sys_input_devnum(index,out))return -ENAMETOOLONG;
+        n=(unsigned)strlen(out);
+        return sys_append(out,&n,"\n");
+    case SI_UEVENT: {
+        if(sys_append(out,&n,"MAJOR=13\nMINOR=") ||
+           sys_append_uint(out,&n,index+64U) ||
+           sys_append(out,&n,"\nDEVNAME=input/event") ||
+           sys_append_uint(out,&n,index) ||
+           sys_append(out,&n,"\n"))
+            return -ENAMETOOLONG;
+        return 0;
+    }
+    case SI_DEVICE_UEVENT:
+        return sys_append(out,&n,"") ;
+    case SI_EV:case SI_KEY:case SI_REL:case SI_ABS:case SI_MSC:
+    case SI_SW:case SI_LED:case SI_PROP: {
+        const uint8_t *bits=NULL;size_t bytes=0;
+        if(kind==SI_PROP) {
+            bits=dev->propbit;bytes=sizeof(dev->propbit);
+        } else {
+            unsigned type=kind==SI_EV?NAS_INPUT_EV_SYN:
+                          kind==SI_KEY?NAS_INPUT_EV_KEY:
+                          kind==SI_REL?NAS_INPUT_EV_REL:
+                          kind==SI_ABS?NAS_INPUT_EV_ABS:
+                          kind==SI_MSC?NAS_INPUT_EV_MSC:
+                          kind==SI_SW?NAS_INPUT_EV_SW:NAS_INPUT_EV_LED;
+            bits=nas_input_capabilities(dev,(uint16_t)type,&bytes);
+        }
+        if(!bits)return -EINVAL;
+        unsigned words=(unsigned)((bytes+7U)/8U);
+        while(words) {
+            --words;
+            uint64_t val=0;
+            for(unsigned j=0;j<8U;j++) {
+                unsigned byte=words*8U+j;
+                if(byte<bytes)val|=(uint64_t)bits[byte]<<(8U*j);
+            }
+            if(sys_append_hex(out,&n,val,words?16U:1U))
+                return -ENAMETOOLONG;
+            if(words && sys_append(out,&n," "))return -ENAMETOOLONG;
+        }
+        return sys_append(out,&n,"\n");
+    }
+    default:return -EINVAL;
+    }
+}
+static void sys_input_fill(unsigned index,unsigned kind,
+                            struct nas_fs_node *out) {
+    bool dir=sys_input_is_dir(kind),link=sys_input_is_link(kind);
+    char text[256]={0};
+    int rc=dir||link?0:sys_input_text(index,kind,text);
+    *out=(struct nas_fs_node){
+        .ino=sys_input_inode(index,kind),
+        .mode=dir?0040555U:link?0120777U:0100444U,
+        .nlink=dir?2U:1U,
+        .size=!dir && !link && !rc?strlen(text):0U,
+        .is_dir=dir,.is_symlink=link};
+}
+static bool sys_input_child_at(unsigned index,unsigned dir,unsigned ordinal,
+                               unsigned *kind,char name[256]) {
+    const struct input_attr *entries=NULL;unsigned count=0;
+    switch(dir) {
+    case SI_DEVICE:
+        entries=input_device_attrs;
+        count=sizeof(input_device_attrs)/sizeof(input_device_attrs[0]);
+        if(ordinal==count) {
+            *kind=SI_EVENT;
+            return sys_input_name("event",index,name)==0;
+        }
+        break;
+    case SI_EVENT:
+        entries=input_event_attrs;
+        count=sizeof(input_event_attrs)/sizeof(input_event_attrs[0]);
+        break;
+    case SI_ID:
+        entries=input_id_attrs;
+        count=sizeof(input_id_attrs)/sizeof(input_id_attrs[0]);
+        break;
+    case SI_CAPS:
+        entries=input_cap_attrs;
+        count=sizeof(input_cap_attrs)/sizeof(input_cap_attrs[0]);
+        break;
+    default:return false;
+    }
+    if(ordinal>=count)return false;
+    *kind=entries[ordinal].kind;
+    size_t n=strlen(entries[ordinal].name);
+    memcpy(name,entries[ordinal].name,n+1U);
+    return true;
+}
+static int sys_input_child(unsigned index,unsigned parent_kind,
+                           const char *name,struct nas_fs_node *out) {
+    char child_name[256];
+    for(unsigned i=0;i<16U;i++) {
+        unsigned kind;
+        if(!sys_input_child_at(index,parent_kind,i,&kind,child_name))
+            break;
+        if(!strcmp(name,child_name)) {
+            sys_input_fill(index,kind,out);
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+static int sys_input_read_dir(const struct nas_fs_node *node,
+                              unsigned index,unsigned kind,uint64_t cursor,
+                              struct nas_vfs_dirent *out,unsigned maximum) {
+    if(!sys_input_is_dir(kind))return -ENOTDIR;
+    unsigned count=0;
+    for(;count<maximum;count++,cursor++) {
+        uint64_t ino=node->ino;
+        unsigned dtype=4U;
+        char generated[256];const char *name;
+        if(cursor==0)name=".";
+        else if(cursor==1) {
+            name="..";
+            ino=kind==SI_DEVICE?SYS_INO_BASE+SYS_VIRTUAL_INPUT:
+                sys_input_inode(index,SI_DEVICE);
+        } else {
+            unsigned child;
+            if(!sys_input_child_at(index,kind,(unsigned)(cursor-2),
+                                   &child,generated))break;
+            ino=sys_input_inode(index,child);
+            dtype=sys_input_is_link(child)?10U:
+                sys_input_is_dir(child)?4U:8U;
+            name=generated;
+        }
+        int rc=fill_dirent(&out[count],name,ino,dtype);
+        if(rc)return rc;
+    }
+    return (int)count;
+}
+static int sys_input_lookup_static(unsigned id,const char *name,
+                                   struct nas_fs_node *out) {
+    if(id!=SYS_CLASS_INPUT && id!=SYS_VIRTUAL_INPUT &&
+       id!=SYS_DEV_CHAR)return -ENOENT;
+    for(unsigned i=0;i<NAS_INPUT_MAX_DEVICES;i++) {
+        if(!sys_input_present(i))continue;
+        char namebuf[256];
+        if(id==SYS_DEV_CHAR) {
+            if(sys_input_devnum(i,namebuf))return -ENAMETOOLONG;
+            if(!strcmp(name,namebuf)) {
+                sys_input_fill(i,SI_CHAR_LINK,out);return 0;
+            }
+            continue;
+        }
+        if(sys_input_name("input",i,namebuf))return -ENAMETOOLONG;
+        if(!strcmp(name,namebuf)) {
+            sys_input_fill(i,id==SYS_CLASS_INPUT?
+                            SI_CLASS_DEVICE_LINK:SI_DEVICE,out);
+            return 0;
+        }
+        if(id==SYS_CLASS_INPUT) {
+            if(sys_input_name("event",i,namebuf))return -ENAMETOOLONG;
+            if(!strcmp(name,namebuf)) {
+                sys_input_fill(i,SI_CLASS_EVENT_LINK,out);return 0;
+            }
+        }
+    }
+    return -ENOENT;
+}
+static int sys_input_readdir_static(unsigned id,uint64_t skip,
+                                   struct nas_vfs_dirent *out) {
+    for(unsigned i=0;i<NAS_INPUT_MAX_DEVICES;i++) {
+        if(!sys_input_present(i))continue;
+        char name[256];unsigned kind;
+        if(id==SYS_DEV_CHAR) {
+            if(skip--!=0)continue;
+            if(sys_input_devnum(i,name))return -ENAMETOOLONG;
+            kind=SI_CHAR_LINK;
+        } else if(id==SYS_VIRTUAL_INPUT) {
+            if(skip--!=0)continue;
+            if(sys_input_name("input",i,name))return -ENAMETOOLONG;
+            kind=SI_DEVICE;
+        } else {
+            if(skip--==0) {
+                if(sys_input_name("input",i,name))return -ENAMETOOLONG;
+                int rc=fill_dirent(out,name,sys_input_inode(i,SI_CLASS_DEVICE_LINK),10U);
+                return rc?rc:1;
+            }
+            if(skip--!=0)continue;
+            if(sys_input_name("event",i,name))return -ENAMETOOLONG;
+            kind=SI_CLASS_EVENT_LINK;
+        }
+        int rc=fill_dirent(out,name,sys_input_inode(i,kind),
+                           kind==SI_DEVICE?4U:10U);
+        return rc?rc:1;
+    }
+    return 0;
+}
+static int sys_input_link(unsigned index,unsigned kind,char target[256]) {
+    unsigned n=0;target[0]=0;
+    const char *prefix=NULL;
+    switch(kind) {
+    case SI_CLASS_DEVICE_LINK:
+    case SI_CLASS_EVENT_LINK:
+    case SI_CHAR_LINK:
+        prefix="../../devices/virtual/input/input";break;
+    case SI_INPUT_SUBSYSTEM:
+        return sys_append(target,&n,"../../../../class/input")?
+            -ENAMETOOLONG:(int)n;
+    case SI_EVENT_SUBSYSTEM:
+        return sys_append(target,&n,"../../../../../class/input")?
+            -ENAMETOOLONG:(int)n;
+    case SI_EVENT_DEVICE_LINK:
+        return sys_append(target,&n,"..")?-ENAMETOOLONG:(int)n;
+    default:return -EINVAL;
+    }
+    if(sys_append(target,&n,prefix) || sys_append_uint(target,&n,index))
+        return -ENAMETOOLONG;
+    if(kind==SI_CLASS_EVENT_LINK || kind==SI_CHAR_LINK)
+        if(sys_append(target,&n,"/event") ||
+           sys_append_uint(target,&n,index))return -ENAMETOOLONG;
+    return (int)n;
+}
+
 static int sys_id(const struct nas_fs_node *node) {
     if(!node || node->ino<SYS_INO_BASE ||
        node->ino>=SYS_INO_BASE+SYS_NODE_COUNT)return -1;
@@ -889,11 +1289,12 @@ static int sys_id(const struct nas_fs_node *node) {
 }
 static void sys_fill(unsigned id,struct nas_fs_node *out) {
     const struct sys_entry *entry=&sys_entries[id];
+    bool link=sys_entry_link(id),dir=entry->type==SYS_DIR;
     *out=(struct nas_fs_node){.ino=SYS_INO_BASE+id,
-        .nlink=entry->directory?2:1,
-        .mode=entry->directory?0040555U:0100444U,
+        .nlink=dir?2:1,
+        .mode=dir?0040555U:link?0120777U:0100444U,
         .size=entry->contents?strlen(entry->contents):0,
-        .is_dir=entry->directory};
+        .is_dir=dir,.is_symlink=link};
 }
 static int sys_root(const struct nas_vfs_mount *mount,
                     struct nas_fs_node *out) {
@@ -909,6 +1310,9 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
     if(!name || !*name || !out || strchr(name,'/'))return -EINVAL;
     unsigned kind;
     if(id<0) {
+        unsigned input_index,input_kind;
+        if(sys_input_decode(parent,&input_index,&input_kind))
+            return sys_input_child(input_index,input_kind,name,out);
         const struct nas_block_device *dev=sys_block_decode(parent,&kind);
         if(dev) {
             if(kind!=SB_DIR && kind!=SB_QUEUE)return -ENOTDIR;
@@ -934,7 +1338,7 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
         return 0;
     }
     for(unsigned i=1;i<SYS_NODE_COUNT;i++)
-        if(sys_entries[i].parent==(unsigned)id &&
+        if(sys_entry_visible(i) && sys_entries[i].parent==(unsigned)id &&
            !strcmp(name,sys_entries[i].name)) {
             sys_fill(i,out);
             return 0;
@@ -945,6 +1349,10 @@ static int sys_child(const struct nas_fs_node *parent,const char *name,
             sys_memory_fill(block,SYS_MEMORY_DIR,out);
             return 0;
         }
+    }
+    if(id==SYS_CLASS_INPUT || id==SYS_VIRTUAL_INPUT || id==SYS_DEV_CHAR) {
+        int rc=sys_input_lookup_static((unsigned)id,name,out);
+        if(!rc)return 0;
     }
     if(id==SYS_VIRTUAL_BLOCK || id==SYS_BLOCK || id==SYS_DEV_BLOCK) {
         for(unsigned i=0;;i++) {
@@ -970,6 +1378,10 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
     if(!node || !node->is_dir || !out || !maximum)return -EINVAL;
     uint64_t block;unsigned kind;
     if(id<0) {
+        unsigned input_index,input_kind;
+        if(sys_input_decode(node,&input_index,&input_kind))
+            return sys_input_read_dir(node,input_index,input_kind,cursor,
+                                      out,maximum);
         const struct nas_block_device *dev=sys_block_decode(node,&kind);
         if(dev) {
             if(kind!=SB_DIR && kind!=SB_QUEUE)return -ENOTDIR;
@@ -1031,7 +1443,7 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
             uint64_t skip=cursor-2;
             bool found=false;
             for(unsigned i=1;i<SYS_NODE_COUNT;i++) {
-                if(sys_entries[i].parent!=(unsigned)id)continue;
+                if(!sys_entry_visible(i) || sys_entries[i].parent!=(unsigned)id)continue;
                 if(skip--!=0)continue;
                 child=i;
                 name=sys_entries[i].name;
@@ -1069,10 +1481,17 @@ static int sys_read_dir(const struct nas_fs_node *node,uint64_t cursor,
                 if(!found)break;
                 continue;
             }
+            if(!found && (id==SYS_CLASS_INPUT || id==SYS_VIRTUAL_INPUT ||
+                          id==SYS_DEV_CHAR)) {
+                int rc=sys_input_readdir_static((unsigned)id,skip,&out[count]);
+                if(rc<0)return rc;
+                if(rc==0)break;
+                continue;
+            }
             if(!found)break;
         }
         int rc=fill_dirent(&out[count],name,SYS_INO_BASE+child,
-                           sys_entries[child].directory?4:8);
+                           sys_entry_dtype(child));
         if(rc)return rc;
     }
     return (int)count;
@@ -1083,6 +1502,19 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     if(!dst && length)return -EINVAL;
     const char *content;
     if(id<0) {
+        unsigned input_index,input_kind;
+        if(sys_input_decode(node,&input_index,&input_kind)) {
+            if(sys_input_is_dir(input_kind))return -EISDIR;
+            if(sys_input_is_link(input_kind))return -EINVAL;
+            char input_text[256];
+            int rc=sys_input_text(input_index,input_kind,input_text);
+            if(rc)return rc;
+            uint64_t size=strlen(input_text);
+            if(offset>=size)return 0;
+            if(length>size-offset)length=size-offset;
+            memcpy(dst,input_text+offset,(size_t)length);
+            return (int64_t)length;
+        }
         unsigned blockkind;
         const struct nas_block_device *dev=sys_block_decode(node,&blockkind);
         if(dev) {
@@ -1102,7 +1534,8 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
         if(kind==SYS_MEMORY_DIR)return -EISDIR;
         content=kind==SYS_MEMORY_STATE?"online\n":"0\n";
     } else {
-        if(sys_entries[id].directory)return -EISDIR;
+        if(sys_entries[id].type==SYS_DIR)return -EISDIR;
+        if(sys_entry_link((unsigned)id))return -EINVAL;
         content=sys_entries[id].contents;
     }
     if(!content)return -EIO;
@@ -1113,6 +1546,18 @@ static int64_t sys_read_inode(const struct nas_fs_node *node,uint64_t offset,
     return (int64_t)length;
 }
 static int sys_readlink(const struct nas_fs_node *node,char target[256]) {
+    int id=sys_id(node);
+    if(id>=0 && sys_entry_link((unsigned)id)) {
+        if(!sys_entry_visible((unsigned)id))return -ESTALE;
+        const char *link=sys_entries[id].contents;
+        size_t n=strlen(link);
+        memcpy(target,link,n+1);
+        return (int)n;
+    }
+    unsigned input_index,input_kind;
+    if(sys_input_decode(node,&input_index,&input_kind))
+        return sys_input_is_link(input_kind)?
+            sys_input_link(input_index,input_kind,target):-EINVAL;
     unsigned kind;
     const struct nas_block_device *dev=sys_block_decode(node,&kind);
     if(!dev || (kind!=SB_ROOT_LINK && kind!=SB_DEV_LINK))return -EINVAL;
@@ -1155,34 +1600,47 @@ static struct nas_vfs_mount external_pseudos[
 static bool external_pseudos_mounted;
 int nas_vfs_register_pseudo_mounts(void) {
     if(external_pseudos_mounted)return 0;
-    for(unsigned i=0;i<sizeof(external_pseudos)/sizeof(external_pseudos[0]);i++) {
+    unsigned i=0;
+    int rc=0;
+    for(;i<sizeof(external_pseudos)/sizeof(external_pseudos[0]);i++) {
+        /* The legacy /tmp overlay borrows an immutable bootfs inode.
+         * A physical root must not depend on rescue archive contents. */
+        if(defaults[i+1].type==&tmp_type)continue;
         external_pseudos[i]=defaults[i+1];
-        /* Never guest-detach the legacy bootfs mounts. Only the external
-         * disk boot's final PID1 lifecycle is allowed to release these. */
         external_pseudos[i].permanent=false;
-        int rc=nas_vfs_register_mount(&external_pseudos[i]);
-        if(rc) {
-#ifdef NAS_ENABLE_M191_ALPINE_ROOT
-            extern void nas_print(const char *);
-            extern void nas_dec(uint64_t);
-            nas_print("[M191 ROOT FAIL] pseudo-attach ");
-            nas_print(external_pseudos[i].mountpoint);
-            nas_print(" code=");nas_dec((uint64_t)(rc<0?-rc:rc));
-            nas_print("\n");
-#endif
-            while(i>0) {
-                if(nas_vfs_unregister_mount(&external_pseudos[--i]))
-                    return -EIO;
-            }
-            return rc;
-        }
+        rc=nas_vfs_register_mount(&external_pseudos[i]);
+        if(rc)goto rollback;
     }
+    /* Use the same real tmpfs superblock and teardown as mount(2).
+     * The external root's /tmp is a normal sticky temporary directory. */
+    uint64_t limit=nas_managed_frames()/2U;
+    if(!limit)limit=1;
+    rc=mount_tmpfs("/tmp","tmpfs",01777U,false,limit,limit,false,true);
+    if(rc)goto rollback;
     external_pseudos_mounted=true;
     return 0;
+rollback:
+#ifdef NAS_ENABLE_M191_ALPINE_ROOT
+    ; /* C11 label must precede a statement. */
+    extern void nas_print(const char *);
+    extern void nas_dec(uint64_t);
+    nas_print("[M191 ROOT FAIL] pseudo-attach ");
+    nas_print(i<sizeof(external_pseudos)/sizeof(external_pseudos[0]) ?
+              external_pseudos[i].mountpoint : "/tmp");
+    nas_print(" code=");nas_dec((uint64_t)(rc<0?-rc:rc));nas_print("\n");
+#endif
+    while(i>0) {
+        --i;
+        if(defaults[i+1].type!=&tmp_type &&
+           nas_vfs_unregister_mount(&external_pseudos[i]))return -EIO;
+    }
+    return rc;
 }
 int nas_vfs_shutdown_external_root_pseudos(void) {
     if(!external_pseudos_mounted)return -EINVAL;
     for(unsigned i=sizeof(external_pseudos)/sizeof(external_pseudos[0]);i>0;i--) {
+        /* /tmp was already released by runtime tmpfs shutdown. */
+        if(defaults[i].type==&tmp_type)continue;
         int rc=nas_vfs_unregister_mount(&external_pseudos[i-1]);
         if(rc) {
 #ifdef NAS_ENABLE_M191_ALPINE_ROOT

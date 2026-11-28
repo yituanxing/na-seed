@@ -1,4 +1,5 @@
 #include "msc.h"
+#include "../../lib/endian.h"
 #include "xhci.h"
 #include "../../errno.h"
 #include <stddef.h>
@@ -18,26 +19,6 @@
 #define MSC_SECTOR_BYTES 512U
 #define MSC_MAX_SECTORS_PER_READ 8U
 
-static void store_le32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)v;
-    p[1]=(uint8_t)(v>>8);
-    p[2]=(uint8_t)(v>>16);
-    p[3]=(uint8_t)(v>>24);
-}
-static uint32_t load_le32(const uint8_t *p) {
-    return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
-           ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
-}
-static uint32_t load_be32(const uint8_t *p) {
-    return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|
-           ((uint32_t)p[2]<<8)|(uint32_t)p[3];
-}
-static void store_be32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)(v>>24);
-    p[1]=(uint8_t)(v>>16);
-    p[2]=(uint8_t)(v>>8);
-    p[3]=(uint8_t)v;
-}
 
 /* One synchronous BOT command: CBW OUT -> optional payload IN -> CSW IN.
  * No unchecked CSW status/residue/tag can be considered successful. BOT
@@ -56,9 +37,9 @@ static int bot_in(struct nas_usb_msc_ro_session *session,
     uint8_t cbw[MSC_CBW_BYTES]={0};
     uint8_t csw[MSC_CSW_BYTES]={0};
     const uint32_t tag=session->next_tag++;
-    store_le32(cbw,MSC_CBW_SIGNATURE);
-    store_le32(cbw+4U,tag);
-    store_le32(cbw+8U,result_bytes);
+    nas_put_le32(cbw,MSC_CBW_SIGNATURE);
+    nas_put_le32(cbw+4U,tag);
+    nas_put_le32(cbw+8U,result_bytes);
     cbw[12]=(uint8_t)(result_bytes ? 0x80U : 0U);
     cbw[13]=0U; /* Single qualified LUN 0. */
     cbw[14]=command_bytes;
@@ -69,9 +50,9 @@ static int bot_in(struct nas_usb_msc_ro_session *session,
         rc=nas_xhci_ro_bulk_in(session->xhci,result,result_bytes);
     if(!rc)
         rc=nas_xhci_ro_bulk_in(session->xhci,csw,MSC_CSW_BYTES);
-    if(!rc && (load_le32(csw)!=MSC_CSW_SIGNATURE ||
-               load_le32(csw+4U)!=tag ||
-               load_le32(csw+8U)!=0U || csw[12]>2U))
+    if(!rc && (nas_get_le32(csw)!=MSC_CSW_SIGNATURE ||
+               nas_get_le32(csw+4U)!=tag ||
+               nas_get_le32(csw+8U)!=0U || csw[12]>2U))
         rc=-EPROTO;
     if(!rc && csw[12]!=0U)
         rc=-EIO; /* Nonzero command status or BOT phase error. */
@@ -109,8 +90,8 @@ int nas_usb_msc_ro_open(struct nas_xhci_ro_session *xhci,
         rc=bot_in(session,capacity_cmd,10U,capacity,sizeof(capacity));
     }
     if(!rc) {
-        const uint32_t last_lba=load_be32(capacity);
-        const uint32_t sector_bytes=load_be32(capacity+4U);
+        const uint32_t last_lba=nas_get_be32(capacity);
+        const uint32_t sector_bytes=nas_get_be32(capacity+4U);
         if(last_lba==UINT32_MAX || sector_bytes!=MSC_SECTOR_BYTES ||
            last_lba<16383U)rc=-EOPNOTSUPP;
         else {
@@ -147,7 +128,7 @@ int nas_usb_msc_ro_read(struct nas_usb_msc_ro_session *session,
                                         MSC_MAX_SECTORS_PER_READ:remaining);
         const uint32_t sector=(uint32_t)(lba+completed);
         uint8_t command[10]={MSC_READ10,0,0,0,0,0,0,0,0,0};
-        store_be32(command+2U,sector);
+        nas_put_be32(command+2U,sector);
         command[7]=(uint8_t)(chunk>>8);
         command[8]=(uint8_t)chunk;
         int rc=bot_in(session,command,10U,

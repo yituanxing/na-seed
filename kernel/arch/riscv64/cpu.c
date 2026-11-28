@@ -3,24 +3,11 @@
 #include "cpu.h"
 #include "../../task.h"
 #include "../context.h"
-/* Limine paging mode values 0/1/2 -> Sv39/Sv48/Sv57.
- * satp.MODE values 8/9/10. Refuse unknown or mismatched modes. */
+/* Read the actual active SATP mode instead of the retired M0 boot request. */
 uint64_t nas_riscv_satp_read(void) {
     uint64_t value;
     __asm__ volatile ("csrr %0, satp" : "=r"(value));
     return value;
-}
-unsigned nas_riscv_page_table_levels(uint64_t mode) {
-    switch (mode) {
-    case 0: return 3;
-    case 1: return 4;
-    case 2: return 5;
-    default: return 0;
-    }
-}
-bool nas_riscv_validate_limine_mode(uint64_t mode) {
-    if (!nas_riscv_page_table_levels(mode)) return false;
-    return (nas_riscv_satp_read() >> 60) == (mode + 8);
 }
 /* Strict hardware-derived user VA limit: Sv39, Sv48, Sv57 as negotiated
  * with Limine. Do not promise 48-bit user mappings on an Sv39 CPU. */
@@ -37,8 +24,7 @@ void nas_arch_halt(void) {
     for (;;) __asm__ volatile ("wfi");
 }
 
-#ifndef NASEED_PORT_M0
-// Real RV64 full-kernel CPU context; not used by M0-only smoke.
+// RV64 user CPU context for the shared kernel.
 void nas_arch_prepare_user_cpu(void) {
     /* misa is M-mode only; S-mode must NOT read the machine CSR.
      * The RV64GC full-kernel image requires QEMU's F/D CPU profile.
@@ -77,4 +63,3 @@ void nas_arch_set_user_tls(uint64_t address) {
         nas_arch_context_set_tls(&nas_current_task->arch,address);
 }
 
-#endif /* full shared kernel, not M0 hardware-only smoke */

@@ -25,6 +25,14 @@ struct nas_fs_node {
     uint32_t mode;
     bool is_dir, is_symlink;
 };
+/* Provider pointer and stable inode number alone cannot identify an inode
+ * across mount-slot reuse. Compare the complete borrowed VFS identity. */
+static inline bool nas_fs_node_same_identity(const struct nas_fs_node *a,
+                                             const struct nas_fs_node *b) {
+    return a->mount==b->mount && a->mount_id==b->mount_id &&
+           a->filesystem==b->filesystem && a->inode==b->inode &&
+           a->ino==b->ino;
+}
 int nas_fs_lookup_node(const char *path,bool follow_final,
                        struct nas_fs_node *result,char resolved[256]);
 /* Slash-only spelling names the already-existing root. Shared by syscall

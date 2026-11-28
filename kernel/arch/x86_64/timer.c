@@ -2,6 +2,7 @@
 #include "../../task.h"
 #include "../../task/sched.h"
 #include "../arch.h"
+#include "../../time/counter.h"
 #include "../../panic.h"
 #include "irq.h"
 #include "../../drivers/core/irq.h"
@@ -10,7 +11,6 @@
  * The trap frame is live on the interrupted task's kernel entry stack.
  * Rescheduling occurs only after C call frames unwind to the IRET boundary.
  * No interrupt in kernel mode is treated as a runnable user snapshot. */
-static uint64_t irq_ticks;
 static uint64_t tsc_epoch, tsc_hz;
 static uint8_t pit_inb(uint16_t port) {
     uint8_t val;
@@ -57,8 +57,7 @@ void nas_x86_clock_init(void) {
 uint64_t nas_arch_monotonic_ns(void) {
     if(!tsc_hz) nas_fail("x86 monotonic clock before PIT calibration");
     uint64_t elapsed=read_tsc()-tsc_epoch;
-    return (elapsed/tsc_hz)*1000000000ULL +
-           (elapsed%tsc_hz)*1000000000ULL/tsc_hz;
+    return nas_counter_ns(elapsed,tsc_hz);
 }
 uint64_t nas_arch_clock_resolution_ns(void) {
     return 1000000ULL; /* conservative millisecond accuracy after PIT sync */
@@ -74,7 +73,6 @@ void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
     if ((frame->cs & 3U) == 0U) {
         /* Kernel-origin PIT wake: no Task register or FPU snapshots.
          * The common ISR restores its exact three-word kernel IRET frame. */
-        irq_ticks++;
         nas_arch_outb(0x20,0x20);
         return;
     }
@@ -83,7 +81,6 @@ void nas_x86_timer_irq(struct nas_x86_user_irq_frame *frame) {
     struct nas_task *from=nas_current_task;
     if (!from || !nas_task_kernel_stack_ok(from))
         nas_fail("x86 timer without a valid running task");
-    irq_ticks++;
     /* A native switch can suspend this entire IRQ C stack, so EOI
      * must be sent before we switch or subsequent ticks are blocked. */
     nas_arch_outb(0x20,0x20);

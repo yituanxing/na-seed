@@ -46,14 +46,6 @@ static void fill_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
     st->size=(int64_t)info->size;
     st->blocks=(int64_t)((info->size+511U)/512U);
 }
-static uint64_t write_bootstrap_stat(const struct nas_fs_bootstrap_info *info,
-                                     uint64_t address) {
-    struct nas_linux_stat st;
-    fill_bootstrap_stat(info,&st);
-    return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st)) ?
-           0:(uint64_t)-EFAULT;
-}
-
 /* Generic inode stat comes from the filesystem lookup result, never a
  * fixed ext4-only number or an exported kernel pointer. */
 static int fill_mounted_stat(const struct nas_fs_node *node,
@@ -80,14 +72,6 @@ static int fill_mounted_stat(const struct nas_fs_node *node,
     st->mtime_nsec=fresh.mtime_nsec;
     st->ctime_nsec=fresh.ctime_nsec;
     return 0;
-}
-static uint64_t write_mounted_stat(const struct nas_fs_node *node,
-                                   uint64_t destination) {
-    struct nas_linux_stat st;
-    int rc=fill_mounted_stat(node,&st);
-    if(rc)return (uint64_t)(int64_t)rc;
-    return nas_user_write_bytes(destination,(const uint8_t *)&st,sizeof(st))
-        ? 0:(uint64_t)-EFAULT;
 }
 /* Linux statfs and fstatfs query the same already-resolved mount/inode.
  * No provider sees a user pointer, pathname or Linux-native wire layout. */
@@ -137,15 +121,17 @@ static uint64_t sys_statfs_boot(uint64_t pathname,uint64_t address) {
 /* Linux x86-64 struct stat layout, 144 bytes. File size is actual module.
  * Device entries have character-device type; mounted files are regular.
  */
-static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
+/* One File-owned metadata snapshot for fstat and statx(AT_EMPTY_PATH).
+ * The Linux wire encoder is syscall-specific, the identity is not. */
+static int stat_fd_snapshot(uint64_t fd,struct nas_linux_stat *out) {
     if (fd >= NAS_FD_LIMIT || !TASK.fds->entries[fd].kind)
-        return (uint64_t)-EBADF;
+        return -EBADF;
     /* Any opened VFS inode, regardless of bootfs/tmpfs/procfs/ext4
      * branding, has exactly one owner and one stat encoder. fstat(fd)
      * and fstatat(path) report the same mount identity and timestamps. */
     const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
     if(opened->vnode_pinned)
-        return write_mounted_stat(&opened->vnode,address);
+        return fill_mounted_stat(&opened->vnode,out);
     if(opened->boot_identity.valid) {
         const struct nas_fs_bootstrap_info identity={
             .dev=opened->boot_identity.dev,
@@ -154,7 +140,7 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
             .mode=opened->boot_identity.mode,
             .size=opened->boot_identity.size
         };
-        return write_bootstrap_stat(&identity,address);
+        { fill_bootstrap_stat(&identity,out); return 0; }
     }
     const uint8_t kind=TASK.fds->entries[fd].kind;
     struct nas_linux_stat st={0};
@@ -165,19 +151,19 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         /* Linux presents socketpair as S_IFSOCK, pipe as S_IFIFO. */
     } else if(kind==FD_BOOTFS) {
         const struct limine_file *file=opened->boot_file;
-        if (!file) return (uint64_t)-EBADF;
+        if (!file) return -EBADF;
         const struct nas_fs_bootstrap_info module={
             .dev=1,.ino=nas_fs_bootstrap_module_ino(file),
             .mode=0100555U,.size=file->size
         };
-        return write_bootstrap_stat(&module,address);
+        { fill_bootstrap_stat(&module,out); return 0; }
     } else if(kind==FD_FRAMEBUFFER) {
         /* Relative openat("fb0") under /dev has the same device identity:
          * fstat must not depend on the optional origin-path spelling. */
         struct nas_fs_bootstrap_info info;
         if(nas_fs_bootstrap_describe("/dev/fb0",&info))
-            return (uint64_t)-ENODEV;
-        return write_bootstrap_stat(&info,address);
+            return -ENODEV;
+        { fill_bootstrap_stat(&info,out); return 0; }
     } else if(kind==FD_PTY_MASTER || kind==FD_PTY_SLAVE) {
         unsigned number=nas_pty_number(TASK.fds->entries[fd].slot);
         const struct nas_fs_bootstrap_info pty={
@@ -187,10 +173,10 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
                   ((136U<<8)|(uint64_t)number),
             .mode=0020620U
         };
-        return write_bootstrap_stat(&pty,address);
+        { fill_bootstrap_stat(&pty,out); return 0; }
     } else {
         const char *path=opened->origin_path;
-        if(!path[0]) {
+        if(!path || !path[0]) {
             path=kind==FD_NULL ? "/dev/null" :
                  kind==FD_ZERO ? "/dev/zero" :
                  kind==FD_RANDOM ? "/dev/urandom" : "/dev/console";
@@ -198,17 +184,24 @@ static uint64_t sys_fstat_boot(uint64_t fd, uint64_t address) {
         struct nas_fs_bootstrap_info info;
         if(!nas_fs_bootstrap_describe(path,&info) &&
            info.fd_kind!=FD_BOOTFS)
-            return write_bootstrap_stat(&info,address);
+            { fill_bootstrap_stat(&info,out); return 0; }
         /* The original bootstrap UART is not a named VFS inode. Keep its
          * console identity stable across dup and across separate FDs. */
         const struct nas_fs_bootstrap_info console={
             .dev=2,.ino=101,.rdev=(5U<<8)|1U,.mode=0020666U
         };
-        return write_bootstrap_stat(&console,address);
+        { fill_bootstrap_stat(&console,out); return 0; }
     }
-    if (!nas_user_write_bytes(address, (const uint8_t *)&st, sizeof(st)))
-        return (uint64_t)-EFAULT;
+    *out=st;
     return 0;
+}
+/* fstat and statx share the same File identity but not their ABI structs. */
+static uint64_t sys_fstat_boot(uint64_t fd,uint64_t address) {
+    struct nas_linux_stat st;
+    int rc=stat_fd_snapshot(fd,&st);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return nas_user_write_bytes(address,(const uint8_t *)&st,sizeof(st))
+           ? 0:(uint64_t)-EFAULT;
 }
 /* In a volatile tmpfs there is no asynchronous durable writeback.
  * fsync/fdatasync return success only for actual open RAM inodes. */
@@ -386,18 +379,15 @@ static uint64_t sys_access_path(uint64_t dirfd,uint64_t pathname,
         return (uint64_t)(int64_t)err;
     }
     /* Synthetic devices lack VFS dentries before devfs exists. Only this
-     * explicit compatibility endpoint still needs a printed fallback. */
-    char path[256]={0};
+     * explicit compatibility endpoint may use the shared bootstrap bridge. */
     if(err==-ENOENT) {
         /* Only a failed lookup reaches this explicit bootstrap whitelist;
          * it must reuse the SAME still-owned request/anchor. */
-        bool allowed=nas_fs_bootstrap_candidate(&request,path);
-        bool genuinely_missing=allowed &&
-            nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-        end_mounted_lookup(&request,&located);
-        if(!genuinely_missing)return (uint64_t)-ENOENT;
         struct nas_fs_bootstrap_info bootstrap;
-        if(nas_fs_bootstrap_describe(path,&bootstrap))return (uint64_t)-ENOENT;
+        int fallback=nas_fs_bootstrap_if_absent(&request,request.pathname,
+                                                &bootstrap);
+        end_mounted_lookup(&request,&located);
+        if(fallback)return (uint64_t)-ENOENT;
         /* Synthetic bootstrap path has no pinned inode or auditable
          * owner. Do not give nonroot an unprotected fallback. */
         if(nas_dac_nonroot())return (uint64_t)-EACCES;
@@ -421,54 +411,56 @@ static uint64_t sys_fchmod_fd(uint64_t fd,uint64_t mode) {
     if(!opened->vnode_pinned)return (uint64_t)-EBADF;
     return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
 }
-static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
-                               uint64_t mode,uint64_t flags) {
-    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
-    const uint64_t AT_EMPTY_PATH=0x1000ULL;
-    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH))
-        return (uint64_t)-EINVAL;
+/* One inode selector for chmodat and chownat: an owned named Path, a
+ * borrowed O_PATH File, or the pinned cwd. DAC and link mutation remain VFS
+ * policy. Successful name lookups alone require end_mounted_lookup(). */
+static int metadata_target_begin(uint64_t dirfd,uint64_t user_path,uint64_t flags,
+                                  bool null_as_fd,
+                                  struct nas_fs_path_request *request,
+                                  struct nas_vfs_path *path,
+                                  struct nas_fs_node *node) {
     uint8_t first=0;
-    if(!filename || !nas_user_read_bytes(filename,&first,1))
-        return (uint64_t)-EFAULT;
-    if(!first && (flags&AT_EMPTY_PATH)) {
+    if(!user_path && !null_as_fd)return -EFAULT;
+    if(user_path && !nas_user_read_bytes(user_path,&first,1))return -EFAULT;
+    if(!first) {
+        if(user_path && !(flags&0x1000ULL))return -ENOENT; /* AT_EMPTY_PATH */
         int64_t fd=nas_linux_signed_dirfd(dirfd);
         if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return (uint64_t)(int64_t)nas_vfs_chmod(&TASK.fs->cwd_node,mode);
-            struct nas_fs_node cwd;
+            /* utimensat(fd,NULL) names an FD, not AT_FDCWD's directory. */
+            if(!user_path)return -EBADF;
+            if(TASK.fs->cwd_pinned) {
+                *node=TASK.fs->cwd_node;
+                return 0;
+            }
             char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return (uint64_t)(int64_t)(rc?rc:nas_vfs_chmod(&cwd,mode));
+            return nas_fs_lookup_node(TASK.fs->cwd,true,node,canonical);
         }
         if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
+           TASK.fds->entries[fd].kind==FD_CLOSED)return -EBADF;
         const struct nas_open_file *opened=
             &nas_open_files[TASK.fds->entries[fd].slot];
-        /* Unlike fchmod(2), AT_EMPTY_PATH also accepts O_PATH handles. */
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        return (uint64_t)(int64_t)nas_vfs_chmod(&opened->vnode,mode);
+        if(!opened->vnode_pinned)return -EBADF;
+        *node=opened->vnode;
+        return 0;
     }
-    if(!first)return (uint64_t)-ENOENT;
+    return nas_fs_user_lookup_begin(dirfd,user_path,
+                                    !(flags&0x100ULL),request,path,node);
+}
+static uint64_t sys_chmod_path(uint64_t dirfd,uint64_t filename,
+                               uint64_t mode,uint64_t flags) {
+    if(flags & ~(0x100ULL|0x1000ULL))return (uint64_t)-EINVAL;
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=nas_fs_user_lookup_begin(dirfd,filename,
-                                    !(flags&AT_SYMLINK_NOFOLLOW),
-                                    &request,&path,&node);
+    int rc=metadata_target_begin(dirfd,filename,flags,false,
+                                 &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
-    /* Linux filesystems commonly cannot change a symlink's own mode.
-     * Never silently chmod its referent when NOFOLLOW was requested. */
-    rc=(node.is_symlink && (flags&AT_SYMLINK_NOFOLLOW)) ?
+    /* Named symlink nofollow cannot silently mutate its referent. */
+    rc=(path.dentry && node.is_symlink && (flags&0x100ULL)) ?
        -EOPNOTSUPP : nas_vfs_chmod(&node,mode);
-    end_mounted_lookup(&request,&path);
+    if(path.dentry)end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
-/* Linux chown/fchown/fchownat share one opened-inode VFS operation. Current
- * NaSeed credentials are root; providers must still perform an ACTUAL owner
- * mutation (or reject it) and must never report success for missing support.
- * uid_t/gid_t are 32-bit even on the supported LP64 syscall ABIs; each
- * 0xffffffff value means leave that field unchanged. */
 static uint64_t sys_fchown_fd(uint64_t fd,uint64_t uid,uint64_t gid) {
     if(fd>=NAS_FD_LIMIT || TASK.fds->entries[fd].kind==FD_CLOSED)
         return (uint64_t)-EBADF;
@@ -480,43 +472,15 @@ static uint64_t sys_fchown_fd(uint64_t fd,uint64_t uid,uint64_t gid) {
 }
 static uint64_t sys_chown_path(uint64_t dirfd,uint64_t pathname,
                                uint64_t uid,uint64_t gid,uint64_t flags) {
-    const uint64_t AT_SYMLINK_NOFOLLOW=0x100ULL;
-    const uint64_t AT_EMPTY_PATH=0x1000ULL;
-    if(flags & ~(AT_SYMLINK_NOFOLLOW|AT_EMPTY_PATH))return (uint64_t)-EINVAL;
-    uint8_t first=0;
-    if(!pathname || !nas_user_read_bytes(pathname,&first,1))
-        return (uint64_t)-EFAULT;
-    if(!first && (flags&AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return (uint64_t)(int64_t)nas_vfs_chown(&TASK.fs->cwd_node,
-                                           (uint32_t)uid,(uint32_t)gid);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return (uint64_t)(int64_t)(rc?rc:nas_vfs_chown(&cwd,
-                                           (uint32_t)uid,(uint32_t)gid));
-        }
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        /* Unlike fchown(2), AT_EMPTY_PATH accepts a pinned O_PATH inode. */
-        return (uint64_t)(int64_t)nas_vfs_chown(&opened->vnode,
-                                           (uint32_t)uid,(uint32_t)gid);
-    }
-    if(!first)return (uint64_t)-ENOENT;
+    if(flags & ~(0x100ULL|0x1000ULL))return (uint64_t)-EINVAL;
     struct nas_fs_path_request request;
     struct nas_vfs_path path={0};
     struct nas_fs_node node={0};
-    int rc=nas_fs_user_lookup_begin(dirfd,pathname,
-                                    !(flags&AT_SYMLINK_NOFOLLOW),
-                                    &request,&path,&node);
+    int rc=metadata_target_begin(dirfd,pathname,flags,false,
+                                 &request,&path,&node);
     if(rc)return (uint64_t)(int64_t)rc;
     rc=nas_vfs_chown(&node,(uint32_t)uid,(uint32_t)gid);
-    end_mounted_lookup(&request,&path);
+    if(path.dentry)end_mounted_lookup(&request,&path);
     return (uint64_t)(int64_t)rc;
 }
 /* Linux utimensat: native 64-bit timespec ABI common to all three ISAs.
@@ -534,23 +498,15 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     struct nas_fs_node vnode={0};
     struct nas_fs_path_request request;
     struct nas_vfs_path owned={0};
-    if (!pathname) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)
-            return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=&nas_open_files[TASK.fds->entries[fd].slot];
-        if(!opened->vnode_pinned)return (uint64_t)-EBADF;
-        vnode=opened->vnode;
-    } else {
-        int err=nas_fs_user_lookup_begin(dirfd,pathname,
-                                         !(flags&AT_SYMLINK_NOFOLLOW),
-                                         &request,&owned,&vnode);
-        if (err) return (uint64_t)(int64_t)err;
-        if (!nas_vfs_can_write(&vnode)) {
-            end_mounted_lookup(&request,&owned);
-            return (uint64_t)-EROFS;
-        }
+    int err=metadata_target_begin(dirfd,pathname,flags,true,
+                                   &request,&owned,&vnode);
+    if(err)return (uint64_t)(int64_t)err;
+    /* A named path, including AT_EMPTY_PATH, must satisfy the same
+     * mount write policy before timespec usercopy or inode mutation.
+     * The legacy utimensat(fd,NULL) retains its original File rule. */
+    if(pathname && !nas_vfs_can_write(&vnode)) {
+        if(owned.dentry)end_mounted_lookup(&request,&owned);
+        return (uint64_t)-EROFS;
     }
     uint64_t now=0;
     if (!nas_time_realtime_ns(&now)) now=nas_arch_monotonic_ns();
@@ -578,6 +534,63 @@ static uint64_t sys_utimensat_file(uint64_t dirfd, uint64_t pathname,
     if(owned.dentry)end_mounted_lookup(&request,&owned);
     return (uint64_t)(int64_t)rc;
 }
+/* newfstatat and statx share one pathname, mount-inode and bootstrap
+ * fallback policy. ABI layout and AT_EMPTY_PATH semantics stay syscall-local.
+ * Capture metadata while the Path is pinned; then release its owner. */
+/* AT_EMPTY_PATH with AT_FDCWD reads the already-owned cwd inode. The
+ * optional rootless-bootstrap spelling is consulted only if no inode is
+ * pinned, identically for fstatat and statx. */
+static int stat_cwd_snapshot(struct nas_linux_stat *out) {
+    if(TASK.fs->cwd_pinned)return fill_mounted_stat(&TASK.fs->cwd_node,out);
+    struct nas_fs_node cwd;
+    char canonical[256];
+    int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
+    return rc ? rc : fill_mounted_stat(&cwd,out);
+}
+static int stat_path_snapshot(uint64_t dirfd,uint64_t pathname,
+                              bool follow_final,struct nas_linux_stat *out) {
+    struct nas_fs_path_request request;
+    struct nas_vfs_path path={0};
+    struct nas_fs_node node={0};
+    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
+    if(rc)return rc;
+    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
+                             request.root.dentry?&request.root:NULL,
+                             request.pathname,follow_final,&path);
+    if(!rc)rc=nas_vfs_path_node(&path,&node);
+    if(!rc) {
+        rc=fill_mounted_stat(&node,out);
+        end_mounted_lookup(&request,&path);
+        return rc;
+    }
+    if(rc!=-ENOENT) {
+        end_mounted_lookup(&request,&path);
+        return rc;
+    }
+    /* Stale or unlinked dirfd never falls back to a string lookup.
+     * Only explicitly accepted boot device/module endpoints qualify. */
+    struct nas_fs_bootstrap_info info;
+    rc=nas_fs_bootstrap_if_absent(&request,request.pathname,&info);
+    end_mounted_lookup(&request,&path);
+    if(rc)return rc==-EEXIST ? -ENOENT : rc;
+    if(nas_dac_nonroot())return -EACCES;
+    fill_bootstrap_stat(&info,out);
+    return 0;
+}
+/* Once the caller has validated its distinct Linux flag mask, the
+ * snapshot is the same for both stat wire formats: a pinned cwd, a held
+ * File description or a normal anchored pathname. */
+static int stat_at_snapshot(uint64_t dirfd,uint64_t pathname,uint64_t flags,
+                            struct nas_linux_stat *out) {
+    uint8_t first;
+    if(!nas_user_read_bytes(pathname,&first,1))return -EFAULT;
+    if(!first && (flags&0x1000ULL)) {
+        int64_t fd=nas_linux_signed_dirfd(dirfd);
+        if(fd==-100)return stat_cwd_snapshot(out);
+        return fd<0 ? -EBADF : stat_fd_snapshot((uint64_t)fd,out);
+    }
+    return stat_path_snapshot(dirfd,pathname,(flags&0x100ULL)==0,out);
+}
 static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
                                  uint64_t statbuf, uint64_t flags) {
     const uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
@@ -588,59 +601,11 @@ static uint64_t sys_fstatat_boot(uint64_t dirfd, uint64_t pathname,
     const uint64_t AT_EMPTY_PATH = 0x1000ULL;
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH))
         return (uint64_t)-EINVAL;
-    uint8_t first;
-    if (!nas_user_read_bytes(pathname, &first, 1)) return (uint64_t)-EFAULT;
-    if (first == 0 && (flags & AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            /* Linux AT_FDCWD + AT_EMPTY_PATH refers to the current
-             * directory's inode, not an invalid file descriptor. */
-            if(TASK.fs->cwd_pinned)
-                return write_mounted_stat(&TASK.fs->cwd_node,statbuf);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int err=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return err ? (uint64_t)(int64_t)err :
-                         write_mounted_stat(&cwd,statbuf);
-        }
-        return fd<0 ? (uint64_t)-EBADF :
-                      sys_fstat_boot((uint64_t)fd,statbuf);
-    }
-    struct nas_fs_path_request request;
-    struct nas_vfs_path path_ref={0};
-    struct nas_fs_node node={0};
-    int err=nas_fs_user_path_begin(dirfd,pathname,&request);
-    if(err)return (uint64_t)(int64_t)err;
-    err=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
-                              request.root.dentry?&request.root:NULL,
-                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
-                              &path_ref);
-    if(!err)err=nas_vfs_path_node(&path_ref,&node);
-    if(!err) {
-        uint64_t result=write_mounted_stat(&node,statbuf);
-        end_mounted_lookup(&request,&path_ref);
-        return result;
-    }
-    if(err!=-ENOENT) {
-        end_mounted_lookup(&request,&path_ref);
-        return (uint64_t)(int64_t)err;
-    }
-    /* Only the SAME explicit bootstrap endpoints allowed by openat may
-     * use a printed-path fallback. In particular, ENOENT under a stale
-     * renamed/unlinked dirfd must not attempt a second legacy lookup. */
-    char path[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,path);
-    bool genuinely_missing=allowed &&
-        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-    end_mounted_lookup(&request,&path_ref);
-    if(!genuinely_missing)return (uint64_t)-ENOENT;
-    if(nas_dac_nonroot())return (uint64_t)-EACCES;
-    /* stat is a metadata operation. It must not consume a descriptor,
-     * initialize a driver, or fail EMFILE simply because FDs are full. */
-    struct nas_fs_bootstrap_info bootstrap;
-    int described=nas_fs_bootstrap_describe(path,&bootstrap);
-    return described ? (uint64_t)(int64_t)described :
-                       write_bootstrap_stat(&bootstrap,statbuf);
+    struct nas_linux_stat st;
+    int rc=stat_at_snapshot(dirfd,pathname,flags,&st);
+    if(rc)return (uint64_t)(int64_t)rc;
+    return nas_user_write_bytes(statbuf,(const uint8_t *)&st,sizeof(st)) ?
+           0:(uint64_t)-EFAULT;
 }
 
 /* Linux statx(2) first 0xa0 bytes plus reserved tail. A real metadata
@@ -673,18 +638,6 @@ static uint64_t write_linux_statx(const struct nas_linux_stat *st,
     return nas_user_write_bytes(destination,(const uint8_t *)&sx,sizeof(sx))
         ? 0:(uint64_t)-EFAULT;
 }
-static uint64_t write_mounted_statx(const struct nas_fs_node *node,
-                                    uint64_t destination) {
-    struct nas_linux_stat st;
-    int rc=fill_mounted_stat(node,&st);
-    return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,destination);
-}
-static uint64_t write_bootstrap_statx(const struct nas_fs_bootstrap_info *info,
-                                      uint64_t destination) {
-    struct nas_linux_stat st;
-    fill_bootstrap_stat(info,&st);
-    return write_linux_statx(&st,destination);
-}
 /* statx extends fstatat with a uniform 256-byte ABI and a separate mask.
  * The root/dirfd lookup and symlink policy are the existing VFS path API.
  * AT_STATX_SYNC_FORCE/DONT_SYNC are coherent no-ops: NaSeed has no delayed
@@ -700,64 +653,9 @@ static uint64_t sys_statx_boot(uint64_t dirfd, uint64_t pathname,
                  AT_EMPTY_PATH|AT_STATX_SYNC_TYPE))return (uint64_t)-EINVAL;
     if((flags&AT_STATX_SYNC_TYPE)==AT_STATX_SYNC_TYPE ||
        (mask&0x80000000ULL))return (uint64_t)-EINVAL;
-    uint8_t first;
-    if(!nas_user_read_bytes(pathname,&first,1))return (uint64_t)-EFAULT;
-    if(first==0 && (flags&AT_EMPTY_PATH)) {
-        int64_t fd=nas_linux_signed_dirfd(dirfd);
-        if(fd==-100) {
-            if(TASK.fs->cwd_pinned)
-                return write_mounted_statx(&TASK.fs->cwd_node,statbuf);
-            struct nas_fs_node cwd;
-            char canonical[256];
-            int rc=nas_fs_lookup_node(TASK.fs->cwd,true,&cwd,canonical);
-            return rc ? (uint64_t)(int64_t)rc :
-                        write_mounted_statx(&cwd,statbuf);
-        }
-        if(fd<0 || (uint64_t)fd>=NAS_FD_LIMIT ||
-           TASK.fds->entries[fd].kind==FD_CLOSED)return (uint64_t)-EBADF;
-        const struct nas_open_file *opened=
-            &nas_open_files[TASK.fds->entries[fd].slot];
-        if(opened->vnode_pinned)return write_mounted_statx(&opened->vnode,statbuf);
-        if(opened->boot_identity.valid) {
-            const struct nas_fs_bootstrap_info info={
-                .dev=opened->boot_identity.dev,.ino=opened->boot_identity.ino,
-                .rdev=opened->boot_identity.rdev,.mode=opened->boot_identity.mode,
-                .size=opened->boot_identity.size
-            };
-            return write_bootstrap_statx(&info,statbuf);
-        }
-        return (uint64_t)-EOPNOTSUPP;
-    }
-    struct nas_fs_path_request request;
-    struct nas_vfs_path path={0};
-    struct nas_fs_node node={0};
-    int rc=nas_fs_user_path_begin(dirfd,pathname,&request);
-    if(rc)return (uint64_t)(int64_t)rc;
-    rc=nas_fs_lookup_path_at(request.start.dentry?&request.start:NULL,
-                              request.root.dentry?&request.root:NULL,
-                              request.pathname,!(flags&AT_SYMLINK_NOFOLLOW),
-                              &path);
-    if(!rc)rc=nas_vfs_path_node(&path,&node);
-    if(!rc) {
-        uint64_t result=write_mounted_statx(&node,statbuf);
-        end_mounted_lookup(&request,&path);
-        return result;
-    }
-    if(rc!=-ENOENT) {
-        end_mounted_lookup(&request,&path);
-        return (uint64_t)(int64_t)rc;
-    }
-    char bootstrap_path[256];
-    bool allowed=nas_fs_bootstrap_candidate(&request,bootstrap_path);
-    bool missing=allowed &&
-        nas_fs_bootstrap_nofollow_probe(&request,request.pathname)==-ENOENT;
-    end_mounted_lookup(&request,&path);
-    if(!missing)return (uint64_t)-ENOENT;
-    if(nas_dac_nonroot())return (uint64_t)-EACCES;
-    struct nas_fs_bootstrap_info info;
-    int described=nas_fs_bootstrap_describe(bootstrap_path,&info);
-    return described ? (uint64_t)(int64_t)described :
-                       write_bootstrap_statx(&info,statbuf);
+    struct nas_linux_stat st;
+    int rc=stat_at_snapshot(dirfd,pathname,flags,&st);
+    return rc ? (uint64_t)(int64_t)rc : write_linux_statx(&st,statbuf);
 }
 
 /* Linux x86-64 linux_dirent64: ino64, off64, reclen16, dtype8, name[].

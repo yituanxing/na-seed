@@ -10,6 +10,7 @@
 #include "path_request.h"
 #include "vfs.h"
 #include "inotify.h"
+#include "file_ops.h"
 
 /* inotify watches identify live VFS inodes but deliberately DO NOT pin
  * their inode leases: a watch must not turn unlink(2) into EBUSY on a
@@ -47,21 +48,16 @@ struct in_instance {
     struct in_watch watch[IN_WATCH_MAX];
     struct in_event queue[IN_EVENT_MAX];
 };
-static struct in_instance *instances[NAS_OPEN_FILE_LIMIT];
-static uint32_t next_cookie;
-static bool same_inode(const struct nas_fs_node *a,
-                       const struct nas_fs_node *b) {
-    return a->mount==b->mount && a->mount_id==b->mount_id &&
-           a->filesystem==b->filesystem && a->inode==b->inode &&
-           a->ino==b->ino;
+static struct in_instance *inotify_state(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].ops ||
+       nas_open_files[slot].ops!=nas_fs_ops_for_kind(FD_INOTIFY))return NULL;
+    return nas_open_files[slot].private.inotify;
 }
+static uint32_t next_cookie;
 static int fd_instance(uint64_t fd,unsigned *slot) {
-    if(fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_INOTIFY)return -EBADF;
-    unsigned s=nas_current_task->fds->entries[fd].slot;
-    if(s>=NAS_OPEN_FILE_LIMIT || !nas_open_files[s].refcount ||
-       !instances[s])return -EBADF;
-    *slot=s;return 0;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry || entry->kind!=FD_INOTIFY || !inotify_state(entry->slot))return -EBADF;
+    *slot=entry->slot;return 0;
 }
 static struct in_event *last_event(struct in_instance *in) {
     if(!in->count)return NULL;
@@ -93,9 +89,8 @@ static uint32_t event_bytes(const struct in_event *e) {
  * Count entire unread records (including the pending overflow sentinel),
  * not merely the current 1024-byte bounded read batch. */
 int nas_inotify_pending_bytes(unsigned slot,uint32_t *bytes) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot] ||
-       !nas_open_files[slot].refcount)return -EBADF;
-    struct in_instance *in=instances[slot];
+    if(!nas_file_slot_live(slot) || !inotify_state(slot))return -EBADF;
+    struct in_instance *in=inotify_state(slot);
     uint32_t total=in->overflow_pending ? IN_WIRE_HEADER:0U;
     for(unsigned i=0;i<in->count;i++)
         total+=event_bytes(&in->queue[(in->head+i)%IN_EVENT_MAX]);
@@ -129,7 +124,7 @@ uint64_t nas_inotify_init1(uint64_t flags) {
                            0U|(flags&IN_NONBLOCK),(flags&IN_CLOEXEC)!=0)) {
         (void)nas_heap_free(instance);return (uint64_t)-EBADF;
     }
-    instances[slot]=instance;
+    nas_open_files[slot].private.inotify=instance;
     return fds[0];
 }
 uint64_t nas_inotify_add_watch(uint64_t fd,uint64_t user_path,uint64_t mask) {
@@ -150,12 +145,12 @@ uint64_t nas_inotify_add_watch(uint64_t fd,uint64_t user_path,uint64_t mask) {
     }
     nas_fs_path_end(&request);
     if(rc)return (uint64_t)(int64_t)rc;
-    struct in_instance *in=instances[slot];
+    struct in_instance *in=inotify_state(slot);
     struct in_watch *free_watch=NULL;
     for(unsigned i=0;i<IN_WATCH_MAX;i++) {
         struct in_watch *watch=&in->watch[i];
         if(!watch->used) {if(!free_watch)free_watch=watch;continue;}
-        if(!same_inode(&watch->identity,&node))continue;
+        if(!nas_fs_node_same_identity(&watch->identity,&node))continue;
         if(mask&IN_MASK_CREATE)return (uint64_t)-EEXIST;
         const uint32_t events=(uint32_t)mask&IN_ALL_EVENTS;
         watch->mask=(mask&IN_MASK_ADD)?
@@ -172,7 +167,7 @@ uint64_t nas_inotify_rm_watch(uint64_t fd,uint64_t wd) {
     unsigned slot=0;
     int rc=fd_instance(fd,&slot);
     if(rc)return (uint64_t)(int64_t)rc;
-    struct in_instance *in=instances[slot];
+    struct in_instance *in=inotify_state(slot);
     for(unsigned i=0;i<IN_WATCH_MAX;i++) {
         struct in_watch *w=&in->watch[i];
         if(w->used && w->wd==(int32_t)wd) {
@@ -183,10 +178,9 @@ uint64_t nas_inotify_rm_watch(uint64_t fd,uint64_t wd) {
     return (uint64_t)-EINVAL;
 }
 uint64_t nas_inotify_read_plan(unsigned slot,uint64_t requested) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot] ||
-       !nas_open_files[slot].refcount)return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot) || !inotify_state(slot))return (uint64_t)-EBADF;
     if(!requested)return 0;
-    struct in_instance *in=instances[slot];
+    struct in_instance *in=inotify_state(slot);
     if(!in->count && !in->overflow_pending)
         return (nas_open_files[slot].status_flags&IN_NONBLOCK)?
                (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
@@ -203,7 +197,7 @@ uint64_t nas_inotify_read(unsigned slot,uint8_t *dst,uint64_t count) {
     uint64_t planned=nas_inotify_read_plan(slot,count);
     if((int64_t)planned<0 || !planned)return planned;
     if(!dst)return (uint64_t)-EFAULT;
-    struct in_instance *in=instances[slot];
+    struct in_instance *in=inotify_state(slot);
     unsigned copied=0;
     while(copied<planned) {
         struct in_event e;
@@ -216,19 +210,15 @@ uint64_t nas_inotify_read(unsigned slot,uint8_t *dst,uint64_t count) {
     return copied;
 }
 uint16_t nas_inotify_poll_slot(unsigned slot,uint16_t events) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot] ||
-       !nas_open_files[slot].refcount)return 0;
-    return (events&1U) && (instances[slot]->count ||
-                            instances[slot]->overflow_pending)?1U:0;
-}
-uint16_t nas_inotify_poll_fd(uint64_t fd,uint16_t events) {
-    unsigned slot=0;
-    return fd_instance(fd,&slot)?0:nas_inotify_poll_slot(slot,events);
+    if(!nas_file_slot_live(slot) || !inotify_state(slot))return 0;
+    return (events&1U) && (inotify_state(slot)->count ||
+                            inotify_state(slot)->overflow_pending)?1U:0;
 }
 void nas_inotify_release(unsigned slot) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !instances[slot])return;
-    (void)nas_heap_free(instances[slot]);
-    instances[slot]=NULL;
+    struct in_instance *in=inotify_state(slot);
+    if(!in)return;
+    nas_open_files[slot].private.inotify=NULL;
+    (void)nas_heap_free(in);
 }
 uint32_t nas_inotify_rename_cookie(void) {
     if(!++next_cookie)++next_cookie;
@@ -238,11 +228,11 @@ static void publish(const struct nas_fs_node *node,const char *name,
                     uint32_t mask,uint32_t cookie,bool isdir,bool child) {
     if(!node)return;
     for(unsigned s=0;s<NAS_OPEN_FILE_LIMIT;s++) {
-        struct in_instance *in=instances[s];
+        struct in_instance *in=inotify_state(s);
         if(!in)continue;
         for(unsigned i=0;i<IN_WATCH_MAX;i++) {
             struct in_watch *w=&in->watch[i];
-            if(!w->used || !same_inode(&w->identity,node) ||
+            if(!w->used || !nas_fs_node_same_identity(&w->identity,node) ||
                !(w->mask&mask))continue;
             queue_event(in,w->wd,mask|(isdir?NAS_IN_ISDIR:0U),cookie,
                         child?name:NULL);
@@ -263,11 +253,11 @@ void nas_inotify_emit_node(const struct nas_fs_node *node,uint32_t mask) {
 void nas_inotify_erase_node(const struct nas_fs_node *node) {
     if(!node)return;
     for(unsigned s=0;s<NAS_OPEN_FILE_LIMIT;s++) {
-        struct in_instance *in=instances[s];
+        struct in_instance *in=inotify_state(s);
         if(!in)continue;
         for(unsigned i=0;i<IN_WATCH_MAX;i++) {
             struct in_watch *w=&in->watch[i];
-            if(!w->used || !same_inode(&w->identity,node))continue;
+            if(!w->used || !nas_fs_node_same_identity(&w->identity,node))continue;
             queue_event(in,w->wd,NAS_IN_DELETE_SELF,0,NULL);
             queue_event(in,w->wd,NAS_IN_IGNORED,0,NULL);
             *w=(struct in_watch){0};
@@ -276,7 +266,7 @@ void nas_inotify_erase_node(const struct nas_fs_node *node) {
 }
 void nas_inotify_erase_mount(const void *mount,uint64_t mount_id) {
     for(unsigned s=0;s<NAS_OPEN_FILE_LIMIT;s++) {
-        struct in_instance *in=instances[s];
+        struct in_instance *in=inotify_state(s);
         if(!in)continue;
         for(unsigned i=0;i<IN_WATCH_MAX;i++) {
             struct in_watch *w=&in->watch[i];

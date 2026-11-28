@@ -112,7 +112,14 @@ if [ "$mode" = kernel ] && [ "${NAS_ENABLE_H11_QEMU_XHCI_USERLAND:-0}" = 1 ]; th
         echo '[H11 LWEXT4 BUILD FAIL] compiled guest_boot.c never references physical BlockDevice' >&2
         exit 1
     }
-    sh scripts/check-h11-usb-guest-boot-guard.sh "$out/lwext4_guest.o"
+    nm -u "$out/lwext4_guest.o" | grep -Eq '[[:space:]]U[[:space:]]+nas_partition_probe$' || {
+        echo '[H11 LWEXT4 BUILD FAIL] USB partition probe not linked' >&2
+        exit 1
+    }
+    strings "$out/lwext4_guest.o" | grep -Fq '[H11 USB ROOT MOUNTED] / read-only source=usb0' || {
+        echo '[H11 LWEXT4 BUILD FAIL] USB root mount branch missing' >&2
+        exit 1
+    }
 fi
 undefined="$(nm -u "$out/lwext4_guest.o" | awk 'NF {print $NF}' | sort -u)"
 if [ "$mode" = closed ]; then
@@ -124,7 +131,7 @@ else
     # Strong common symbols belong to the kernel, not a duplicate in lwext4.
     for symbol in $undefined; do
         case "$symbol" in
-            nas_heap_*|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_partition_probe|nas_partition_attach|nas_partition_detach|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|nas_module|nas_platform_virtio_blk_probe) ;;
+            nas_heap_*|nas_frame_alloc|nas_frame_get|nas_frame_put|nas_hhdm_offset|memcpy|memmove|memset|memcmp|strlen|strnlen|strcmp|strncmp|strchr|strrchr|strcpy|strncpy|strspn|strcspn|nas_block_get|nas_block_put|nas_block_read|nas_block_write|nas_block_flush|nas_partition_probe|nas_partition_attach|nas_partition_detach|nas_ramdisk_attach|nas_ramdisk_detach|nas_vfs_register_mount|nas_vfs_unregister_mount|nas_fs_lookup_node|nas_vfs_join_child|nas_vfs_read_at|nas_vfs_node_size|nas_vfs_node_has_lease|nas_print|nas_time_realtime_ns|nas_arch_monotonic_ns|nas_module|nas_platform_virtio_blk_probe) ;;
             nas_vfs_shutdown_external_root_pseudos|nas_vfs_shutdown_runtime_tmpfs)
                 [ "$mode" = kernel ] && { [ "${NAS_ENABLE_M191_ALPINE_ROOT:-0}" = 1 ] ||
                                          [ "${NAS_ENABLE_H8_QEMU_ALPINE_ROOT:-0}" = 1 ] ||

@@ -7,17 +7,8 @@
 #include "../drivers/core/irq.h"
 #include "../drivers/port/dma.h"
 #include "../arch/x86_64/mmu.h"
-#include "../../ports/uboot/virtio_bus.h"
-#include "../../ports/uboot/virtio_net_bus.h"
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-#include "../drivers/input/virtio_input.h"
-#endif
-#ifdef NAS_ENABLE_VIRTIO_GPU
-#include "../drivers/display/virtio_gpu.h"
-#endif
-#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
-#include "../../ports/uboot/async_blk.h"
-#endif
+#include "virtio_qemu_classes.h"
+#include "x86_pci_config.h"
 #include "../drivers/serial.h"
 #include "../errno.h"
 #include <virtio/virtio_ids.h>
@@ -45,53 +36,9 @@ static struct nas_virtio_transport transports[VIRTIO_DEVICES];
 static struct nas_bus_device devices[VIRTIO_DEVICES];
 static uint8_t device_pirq[VIRTIO_DEVICES];
 static bool scanned;
-static unsigned block_count(void){
-#ifdef NAS_ENABLE_VIRTIO_BLK
-    return nas_virtio_blk_count();
-#else
-    return 0;
-#endif
-}
-static unsigned net_count(void){
-#ifdef NAS_ENABLE_VIRTIO_NET
-    return nas_virtio_net_count();
-#else
-    return 0;
-#endif
-}
-static void out32(uint16_t port,uint32_t value) {
-    __asm__ volatile("outl %0,%1"::"a"(value),"Nd"(port));
-}
-static void out16(uint16_t port,uint16_t value) {
-    __asm__ volatile("outw %0,%1"::"a"(value),"Nd"(port));
-}
-static uint32_t in32(uint16_t port) {
-    uint32_t value;__asm__ volatile("inl %1,%0":"=a"(value):"Nd"(port));
-    return value;
-}
-static uint32_t cfg_read(uint8_t bus,uint8_t slot,uint8_t fun,
-                         unsigned offset) {
-    out32(0xcf8,UINT32_C(0x80000000) | ((uint32_t)bus<<16) |
-        ((uint32_t)slot<<11) | ((uint32_t)fun<<8) | (offset&0xfcU));
-    return in32(0xcfc);
-}
-static void cfg_write(uint8_t bus,uint8_t slot,uint8_t fun,
-                      unsigned offset,uint32_t value) {
-    out32(0xcf8,UINT32_C(0x80000000) | ((uint32_t)bus<<16) |
-        ((uint32_t)slot<<11) | ((uint32_t)fun<<8) | (offset&0xfcU));
-    out32(0xcfc,value);
-}
-static void cfg_write_command(uint8_t slot,uint8_t fun,uint16_t command) {
-    /* PCI STATUS occupies the upper 16 bits of the command DWORD and
-     * contains write-one-to-clear bits. Never write it back merely to
-     * change IO/MEM/BUS_MASTER or INTX_DISABLE in PCI COMMAND. */
-    out32(0xcf8,UINT32_C(0x80000000) | ((uint32_t)slot<<11) |
-        ((uint32_t)fun<<8) | 4U);
-    out16(0xcfc,command);
-}
 static void load_config(uint8_t bus,uint8_t slot,uint8_t fun,uint8_t *cfg) {
     for(unsigned off=0;off<256;off+=4) {
-        uint32_t value=cfg_read(bus,slot,fun,off);
+        uint32_t value=nas_x86_pci_read32(bus,slot,fun,off);
         for(unsigned i=0;i<4;i++)cfg[off+i]=(uint8_t)(value>>(i*8));
     }
 }
@@ -108,9 +55,9 @@ static int q35_route_device_pirqs(uint8_t enabled_pirqs) {
     /* Intel 82801IB/ICH9 LPC is bus0:device31:function0 on Q35.  An
      * unrecognized host bridge is an explicit unsupported platform, not
      * permission to write unknown PCI config bytes. */
-    if(cfg_read(0,ICH9_LPC_SLOT,0,0)!=UINT32_C(0x29188086))
+    if(nas_x86_pci_read32(0,ICH9_LPC_SLOT,0,0)!=UINT32_C(0x29188086))
         return -ENODEV;
-    uint32_t route=cfg_read(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT);
+    uint32_t route=nas_x86_pci_read32(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT);
     uint32_t updated=route;
     for(unsigned pirq=4U;pirq<8U;pirq++) {
         if(!(enabled_pirqs&(1U<<pirq)))continue;
@@ -118,8 +65,8 @@ static int q35_route_device_pirqs(uint8_t enabled_pirqs) {
         updated=(updated&~(UINT32_C(0xff)<<shift)) |
                 ((uint32_t)X86_PIC_DEVICE_IRQ<<shift);
     }
-    cfg_write(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT,updated);
-    if(cfg_read(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT)!=updated)
+    nas_x86_pci_write32(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT,updated);
+    if(nas_x86_pci_read32(0,ICH9_LPC_SLOT,0,ICH9_PIRQ_E_ROUT)!=updated)
         return -EIO;
     return 0;
 }
@@ -135,19 +82,19 @@ static int q35_set_pci_interrupt_mode(uint8_t slot,uint8_t function,
            (cap&3U) || visited[cap])return -EINVAL;
         visited[cap]=1U;
         if(config[cap]==0x11U) { /* MSI-X Message Control bit 15 */
-            uint32_t word=cfg_read(0,slot,function,cap);
-            cfg_write(0,slot,function,cap,word&~(UINT32_C(1)<<31));
+            uint32_t word=nas_x86_pci_read32(0,slot,function,cap);
+            nas_x86_pci_write32(0,slot,function,cap,word&~(UINT32_C(1)<<31));
         } else if(config[cap]==0x05U) { /* MSI Message Control bit 0 */
-            uint32_t word=cfg_read(0,slot,function,cap);
-            cfg_write(0,slot,function,cap,word&~(UINT32_C(1)<<16));
+            uint32_t word=nas_x86_pci_read32(0,slot,function,cap);
+            nas_x86_pci_write32(0,slot,function,cap,word&~(UINT32_C(1)<<16));
         }
         cap=config[cap+1];
     }
-    uint32_t command=cfg_read(0,slot,function,4U);
+    uint32_t command=nas_x86_pci_read32(0,slot,function,4U);
     uint32_t desired=intx?(command&~(UINT32_C(1)<<10)):
                            (command|(UINT32_C(1)<<10));
-    cfg_write_command(slot,function,(uint16_t)desired);
-    return ((cfg_read(0,slot,function,4U)^desired)&(UINT32_C(1)<<10))?
+    nas_x86_pci_write_command16(slot,function,(uint16_t)desired);
+    return ((nas_x86_pci_read32(0,slot,function,4U)^desired)&(UINT32_C(1)<<10))?
            -EIO:0;
 }
 static bool q35_device_needs_irq(const struct nas_bus_device *dev) {
@@ -173,24 +120,24 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
                      struct nas_virtio_pci_resources *res) {
     /* Disable decode while sizing, then enable memory + bus mastering
      * only for the device whose BAR regions passed bounds checks. */
-    uint16_t old_cmd=(uint16_t)cfg_read(bus,slot,fun,4);
-    cfg_write_command(slot,fun,(uint16_t)(old_cmd&~7U));
+    uint16_t old_cmd=(uint16_t)nas_x86_pci_read32(bus,slot,fun,4);
+    nas_x86_pci_write_command16(slot,fun,(uint16_t)(old_cmd&~7U));
     bool mapped=false;
     for(unsigned i=0;i<BAR_COUNT;i++) {
         unsigned off=0x10U+i*4U;
-        uint32_t lo=cfg_read(bus,slot,fun,off);
+        uint32_t lo=nas_x86_pci_read32(bus,slot,fun,off);
         if(!lo || lo==UINT32_MAX || (lo&1U))continue;
         unsigned type=(lo>>1)&3U;
         if(type!=0U && type!=2U)continue;
         if(type==2U && i+1U>=BAR_COUNT)continue;
-        uint32_t hi=type==2U?cfg_read(bus,slot,fun,off+4):0;
+        uint32_t hi=type==2U?nas_x86_pci_read32(bus,slot,fun,off+4):0;
         uint64_t address=((uint64_t)hi<<32)|(lo&~UINT32_C(15));
-        cfg_write(bus,slot,fun,off,UINT32_MAX);
-        if(type==2U)cfg_write(bus,slot,fun,off+4,UINT32_MAX);
-        uint32_t probelo=cfg_read(bus,slot,fun,off);
-        uint32_t probehi=type==2U?cfg_read(bus,slot,fun,off+4):UINT32_MAX;
-        cfg_write(bus,slot,fun,off,lo);
-        if(type==2U)cfg_write(bus,slot,fun,off+4,hi);
+        nas_x86_pci_write32(bus,slot,fun,off,UINT32_MAX);
+        if(type==2U)nas_x86_pci_write32(bus,slot,fun,off+4,UINT32_MAX);
+        uint32_t probelo=nas_x86_pci_read32(bus,slot,fun,off);
+        uint32_t probehi=type==2U?nas_x86_pci_read32(bus,slot,fun,off+4):UINT32_MAX;
+        nas_x86_pci_write32(bus,slot,fun,off,lo);
+        if(type==2U)nas_x86_pci_write32(bus,slot,fun,off+4,hi);
         uint64_t mask=((uint64_t)probehi<<32)|(probelo&~UINT32_C(15));
         uint64_t size=~mask+1U;
         if(address && !(address&4095U) && size>=4096U &&
@@ -210,49 +157,27 @@ static bool map_bars(uint8_t bus,uint8_t slot,uint8_t fun,unsigned index,
         }
         if(type==2U)i++;
     }
-    cfg_write_command(slot,fun,(uint16_t)(mapped?old_cmd|6U:old_cmd));
+    nas_x86_pci_write_command16(slot,fun,(uint16_t)(mapped?old_cmd|6U:old_cmd));
     return mapped;
 }
 int nas_platform_virtio_blk_probe(void) {
-    if(scanned)return (int)block_count();
-    int rc=0;
-#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
-    rc=nas_async_blk_driver_register();
+    if(scanned)return (int)nas_qemu_virtio_block_count();
+    int rc=nas_qemu_virtio_register_classes();
     if(rc<0)return rc;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_BLK
-    rc=nas_virtio_blk_driver_register();
-    if(rc<0)return rc;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_NET
-    rc=nas_virtio_net_driver_register();
-    if(rc<0)return rc;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-    rc=nas_virtio_input_driver_register();
-    if(rc<0)return rc;
-#endif
-#ifdef NAS_ENABLE_VIRTIO_GPU
-    rc=nas_virtio_gpu_driver_register();
-    if(rc<0)return rc;
-#endif
     unsigned count=0;
     for(unsigned slot=0;slot<32U;slot++) {
-        uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
+        uint32_t first=nas_x86_pci_read32(0,(uint8_t)slot,0,0);
         if((first&0xffffU)==0xffffU)continue;
-        uint32_t header=cfg_read(0,(uint8_t)slot,0,0x0c);
+        uint32_t header=nas_x86_pci_read32(0,(uint8_t)slot,0,0x0c);
         unsigned funcs=(header&(1U<<23))?8U:1U;
         for(unsigned function=0;function<funcs;function++) {
-            uint32_t id=cfg_read(0,(uint8_t)slot,(uint8_t)function,0);
+            uint32_t id=nas_x86_pci_read32(0,(uint8_t)slot,(uint8_t)function,0);
             /* Modern VirtIO PCI ID = 0x1040 + device class. The bus
              * publishes each supported class; drivers own protocols and
              * lifetime, including input and its independent event queues. */
             if((id&0xffffU)!=0x1af4U)continue;
             uint32_t device_id=id>>16;
-            if(device_id!=0x1040U+VIRTIO_ID_NET &&
-               device_id!=0x1040U+VIRTIO_ID_BLOCK &&
-               device_id!=0x1040U+VIRTIO_ID_INPUT &&
-               device_id!=0x1040U+VIRTIO_ID_GPU)continue;
+            if(device_id<0x1040U || !nas_qemu_virtio_supported_class(device_id-0x1040U))continue;
             if(count>=VIRTIO_DEVICES)return -ENOSPC;
             load_config(0,(uint8_t)slot,(uint8_t)function,
                         cfg_snapshot[count]);
@@ -327,18 +252,18 @@ int nas_platform_virtio_blk_probe(void) {
     nas_print("[M195 Q35 PIRQ DIAG] active_mask=");
     nas_hex(active_pirqs);nas_print("\n");
     for(unsigned slot=0;slot<32U;slot++) {
-        uint32_t first=cfg_read(0,(uint8_t)slot,0,0);
+        uint32_t first=nas_x86_pci_read32(0,(uint8_t)slot,0,0);
         if((first&UINT32_C(0xffff))==UINT32_C(0xffff))continue;
-        uint32_t header=cfg_read(0,(uint8_t)slot,0,0x0cU);
+        uint32_t header=nas_x86_pci_read32(0,(uint8_t)slot,0,0x0cU);
         unsigned functions=(header&(1U<<23))?8U:1U;
         for(unsigned function=0;function<functions;function++) {
-            uint32_t identity=cfg_read(0,(uint8_t)slot,(uint8_t)function,0);
+            uint32_t identity=nas_x86_pci_read32(0,(uint8_t)slot,(uint8_t)function,0);
             if((identity&UINT32_C(0xffff))==UINT32_C(0xffff))continue;
-            uint32_t line_pin=cfg_read(0,(uint8_t)slot,(uint8_t)function,0x3cU);
+            uint32_t line_pin=nas_x86_pci_read32(0,(uint8_t)slot,(uint8_t)function,0x3cU);
             unsigned pin=(line_pin>>8)&UINT32_C(0xff);
             if(!pin)continue;
             unsigned pirq=q35_bus0_pirq((uint8_t)slot,(uint8_t)pin);
-            uint32_t class_code=cfg_read(0,(uint8_t)slot,
+            uint32_t class_code=nas_x86_pci_read32(0,(uint8_t)slot,
                                          (uint8_t)function,0x08U);
             nas_print("[M195 Q35 PCI SOURCE] slot=");nas_dec(slot);
             nas_print(" function=");nas_dec(function);
@@ -388,22 +313,7 @@ int nas_platform_virtio_blk_probe(void) {
             return -EIO;
         }
     }
-    nas_print("[VIRTIO-BLK] real modern PCI devices=");
-    nas_dec(block_count());nas_print("\n");
-    nas_print("[VIRTIO-NET] real modern PCI devices=");
-    nas_dec(net_count());nas_print("\n");
-#ifdef NAS_ENABLE_VIRTIO_INPUT
-    nas_print("[VIRTIO-INPUT] real modern PCI devices=");
-    nas_dec(nas_virtio_input_count());nas_print("\n");
-#endif
-#ifdef NAS_ENABLE_VIRTIO_GPU
-    nas_print("[VIRTIO-GPU] real modern PCI devices=");
-    nas_dec(nas_virtio_gpu_count());nas_print("\n");
-#endif
-#ifdef NAS_ENABLE_VIRTIO_BLK_ASYNC
-    nas_print("[VIRTIO-BLK-ASYNC] real modern PCI devices=");
-    nas_dec(nas_async_blk_count());nas_print("\n");
-#endif
+    nas_qemu_virtio_report_classes("PCI");
     scanned=true;
-    return (int)block_count();
+    return (int)nas_qemu_virtio_block_count();
 }

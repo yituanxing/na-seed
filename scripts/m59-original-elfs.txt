@@ -1,4 +1,0 @@
-usr/bin/rsync
-usr/bin/diff
-usr/bin/patch
-usr/bin/file

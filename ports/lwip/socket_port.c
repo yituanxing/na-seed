@@ -18,6 +18,7 @@
 #include "../../kernel/arch/arch.h"
 #include "../../kernel/errno.h"
 #include "../../kernel/lib/string.h"
+#include "../../kernel/mm/heap.h"
 #include "lwip/opt.h"
 
 #define PORT_POLLIN 0x0001U
@@ -68,15 +69,18 @@ struct port_socket {
     int failure,rx_error,tx_error,connect_result;
     uint64_t rx_retry_at,tx_retry_at;
 };
-static struct port_socket sockets[NAS_OPEN_FILE_LIMIT];
+/* Native Netconn accept can exist before its File lease is committed.
+ * This is the bridge-generation owner, not a second File-state copy.
+ * Store only occupied native generations instead of 128 full RX/TX FIFOs. */
+static struct port_socket *sockets[NAS_OPEN_FILE_LIMIT];
 
 _Static_assert(NAS_OPEN_FILE_LIMIT==NAS_LWIP_BRIDGE_SLOTS,
                "socket provider indexes the same OpenFile slots as bridge");
 
 static struct port_socket *socket_at(unsigned slot) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount ||
-       !sockets[slot].owned)return NULL;
-    return &sockets[slot];
+       !sockets[slot] || !sockets[slot]->owned)return NULL;
+    return sockets[slot];
 }
 
 static bool elapsed(uint64_t deadline) {
@@ -423,13 +427,19 @@ static void port_bridge_complete(struct nas_lwip_bridge_id id) {
 int nas_lwip_socket_port_open(unsigned slot,enum nas_lwip_bridge_type type) {
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
-    if(sockets[slot].owned)return -EBUSY;
+    if(sockets[slot])return -EBUSY;
+    struct port_socket *s=nas_heap_calloc(1,sizeof(*s));
+    if(!s)return -ENOMEM;
     nas_lwip_bridge_set_completion_hook(port_bridge_complete);
     struct nas_lwip_bridge_id id={0};
     int rc=nas_lwip_bridge_open(slot,type,&id);
-    if(rc)return rc;
-    sockets[slot]=(struct port_socket){.owned=true,.type=type,
+    if(rc) {
+        (void)nas_heap_free(s);
+        return rc;
+    }
+    *s=(struct port_socket){.owned=true,.type=type,
         .id=id,.command=PORT_OPEN};
+    sockets[slot]=s;
     return 0;
 }
 
@@ -438,11 +448,14 @@ int nas_lwip_socket_port_adopt(struct nas_lwip_bridge_id accepted,
     unsigned slot=accepted.slot;
     if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
         return -EBADF;
-    if(sockets[slot].owned)return -EBUSY;
+    if(sockets[slot])return -EBUSY;
     if(!nas_lwip_bridge_alive(accepted))return -EBADF;
-    sockets[slot]=(struct port_socket){.owned=true,.connected=true,
+    struct port_socket *s=nas_heap_calloc(1,sizeof(*s));
+    if(!s)return -ENOMEM;
+    *s=(struct port_socket){.owned=true,.connected=true,
         .type=NAS_LWIP_BRIDGE_TCP,.id=accepted,.command=PORT_IDLE,
         .keepalive=inherited_keepalive};
+    sockets[slot]=s;
     return 0;
 }
 
@@ -839,15 +852,10 @@ static uint16_t poll_description(unsigned slot,uint16_t events) {
     return ready&(uint16_t)(events|PORT_POLLERR|PORT_POLLHUP);
 }
 
-static uint16_t poll_fd(uint64_t fd,uint16_t events) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_SOCKET)return 0;
-    return poll_description(nas_current_task->fds->entries[fd].slot,events);
-}
 
 static void release(unsigned slot) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot].owned)return;
-    struct port_socket *s=&sockets[slot];
+    if(slot>=NAS_OPEN_FILE_LIMIT || !sockets[slot] || !sockets[slot]->owned)return;
+    struct port_socket *s=sockets[slot];
     struct nas_lwip_bridge_id id=s->id;
     if(s->prefetch_owned) {
         /* nas_fd_close has already set this listener's refcount to zero.
@@ -893,7 +901,8 @@ static void release(unsigned slot) {
     /* A malformed/overlapping bridge state must never orphan its native
      * Netconn after the File's final refcount has gone away. */
     if(rc)(void)nas_lwip_bridge_release(id);
-    sockets[slot]=(struct port_socket){0};
+    sockets[slot]=NULL;
+    (void)nas_heap_free(s);
 }
 
 static const struct nas_file_ops ops={
@@ -902,12 +911,12 @@ static const struct nas_file_ops ops={
     .read_finalize_zero=true,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
     .sends_sigpipe=true,
-    .poll=poll_fd,.poll_description=poll_description,
+    .poll_description=poll_description,
     .release=release
 };
 const struct nas_file_ops *nas_lwip_socket_port_ops(void){return &ops;}
 bool nas_lwip_socket_slot_reusable(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && !sockets[slot].owned &&
+    return slot<NAS_OPEN_FILE_LIMIT && !sockets[slot] &&
            nas_lwip_bridge_slot_available(slot);
 }
 

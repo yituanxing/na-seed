@@ -42,6 +42,18 @@ enum nas_vma_kind {
     NAS_VMA_FILE_PRIVATE_LAZY=9,
     NAS_VMA_DEVICE_SHARED=10
 };
+/* These predicates describe physical sharing (not the user MAP_SHARED
+ * flag: immutable snapshots need not share resident frames). Mutable file
+ * pages have a separate dirtying contract from anonymous/device aliases. */
+static inline bool nas_vma_direct_shared(unsigned kind) {
+    return kind==NAS_VMA_ANON_SHARED || kind==NAS_VMA_DEVICE_SHARED;
+}
+static inline bool nas_vma_preserves_shared_frames(unsigned kind) {
+    return kind==NAS_VMA_FILE_MUTABLE_SHARED || nas_vma_direct_shared(kind);
+}
+static inline bool nas_vma_provider_writes(unsigned kind) {
+    return kind==NAS_VMA_FILE_MUTABLE_SHARED || kind==NAS_VMA_DEVICE_SHARED;
+}
 #define NAS_VMA_DONTFORK 1U
 struct nas_mapped_file;
 struct nas_vm_device;
@@ -94,8 +106,6 @@ bool nas_vma_protect(struct nas_anon_regions *,uint64_t addr,uint64_t length,
                      unsigned prot);
 bool nas_vma_set_dontfork(struct nas_anon_regions *,uint64_t addr,
                            uint64_t length,bool enabled);
-/* M11 reservation APIs are retained as compatibility wrappers. These and
- * the typed VMA routines manipulate the SAME canonical MM-owned slots. */
 /* Reset releases table storage. Clone preserves the destination on OOM;
  * both operands must be zero-initialized or already own valid VMA tables.
  * Commit transfers ownership of staged slots, zeroing the staged handle. */
@@ -108,9 +118,13 @@ bool nas_anon_find_gap(const struct nas_anon_regions *,uint64_t length,uint64_t 
 /* Whole MAP_FIXED interval must stay in the historical low VA domain or the
  * extended mmap domain; never overwrite the intervening user stack/gap. */
 bool nas_anon_fixed_range_allowed(uint64_t addr,uint64_t length);
-bool nas_anon_record(struct nas_anon_regions *,uint64_t addr,uint64_t length);
+/* Transactionally resize or relocate a VMA interval, retaining original
+ * backing/device pins, offsets, protection and MADV_DONTFORK policy.
+ * Caller owns the resident PTE transition (if any) after success. */
+bool nas_vma_remap_region(struct nas_anon_regions *,
+                          uint64_t old_start,uint64_t old_bytes,
+                          uint64_t new_start,uint64_t new_bytes);
 bool nas_anon_forget(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_covered(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
 bool nas_anon_intersects(const struct nas_anon_regions *,uint64_t addr,uint64_t length);
-bool nas_anon_overlay(struct nas_anon_regions *,uint64_t addr,uint64_t length);
 #endif

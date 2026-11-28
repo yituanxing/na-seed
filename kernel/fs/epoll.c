@@ -9,6 +9,7 @@
 #include "../arch/arch.h"
 #include "../arch/mmu.h"
 #include "../mm/usercopy.h"
+#include "../mm/heap.h"
 #include "../time/clock.h"
 #include "../lib/string.h"
 #include "file_ops.h"
@@ -43,7 +44,13 @@ struct ep_watch {
     uint64_t data;
 };
 struct ep_state {struct ep_watch watches[NAS_EPOLL_EVENTS_MAX];};
-static struct ep_state epolls[NAS_OPEN_FILE_LIMIT];
+/* Provider identity is carried by the File's existing operation table.
+ * Final release also needs the instance when refcount has reached zero. */
+static struct ep_state *epoll_state(unsigned slot) {
+    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].ops ||
+       nas_open_files[slot].ops!=nas_fs_ops_for_kind(FD_EPOLL))return 0;
+    return nas_open_files[slot].private.epoll;
+}
 
 #if defined(__x86_64__)
 #define EP_EVENT_BYTES 12U
@@ -54,17 +61,11 @@ static struct ep_state epolls[NAS_OPEN_FILE_LIMIT];
 #define EP_DATA_OFFSET 8U
 #endif
 
-static bool valid_fd_task(const struct nas_task *task,uint64_t fd){
-    return task && fd<NAS_FD_LIMIT &&
-        task->fds->entries[fd].kind!=FD_CLOSED &&
-        task->fds->entries[fd].slot<NAS_OPEN_FILE_LIMIT &&
-        nas_open_files[task->fds->entries[fd].slot].refcount;
-}
 static bool instance_slot(const struct nas_task *task,uint64_t fd,
                           unsigned *slot){
-    if(!valid_fd_task(task,fd) || task->fds->entries[fd].kind!=FD_EPOLL)
-        return false;
-    *slot=task->fds->entries[fd].slot;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(task,fd);
+    if(!entry || entry->kind!=FD_EPOLL || !epoll_state(entry->slot))return false;
+    *slot=entry->slot;
     return true;
 }
 static uint16_t ready_now(const struct ep_watch *w,const struct nas_task *task){
@@ -74,15 +75,24 @@ static uint16_t ready_now(const struct ep_watch *w,const struct nas_task *task){
     /* All kinds share one open-description operation. Future AF_INET,
      * block devices and filesystems only need to implement their own
      * poll_description callback; epoll never learns the backend type. */
-    return nas_fs_poll_description_task(w->slot,
-        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP)),task);
+    const uint16_t requested =
+        (uint16_t)(w->events & (EP_IN|EP_PRI|EP_OUT|EP_RDHUP));
+    const uint16_t ready =
+        nas_fs_poll_description_task(w->slot,requested,task);
+    /* poll providers may return additional Linux bits (e.g.
+     * POLLRDNORM together with POLLIN for timerfd). epoll_wait reports
+     * only the subscribed bits, plus unconditional ERR/HUP. Forwarding
+     * a raw poll mask leaks unrequested events into the epoll ABI. */
+    return ready & (uint16_t)(requested|EP_ERR|EP_HUP);
 }
 static bool instance_ready(unsigned slot,const struct nas_task *task){
+    struct ep_state *state=epoll_state(slot);
+    if(!state)return false;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
-        struct ep_watch *w=&epolls[slot].watches[i];
+        struct ep_watch *w=&state->watches[i];
         uint16_t ready=ready_now(w,task);
-        if(!ready)w->last_ready=0;
-        else if(!(w->events&EP_EDGE) || (ready & ~w->last_ready))return true;
+        w->last_ready &= ready;
+        if(ready && (!(w->events&EP_EDGE) || (ready & ~w->last_ready)))return true;
     }
     return false;
 }
@@ -93,11 +103,47 @@ uint64_t nas_epoll_create1(uint64_t flags){
     int rc=nas_fd_reserve(task,0,1,fds,slots,"epoll_create1");
     if(rc)return (uint64_t)(int64_t)rc;
     unsigned fd=fds[0],slot=slots[0];
-    epolls[slot]=(struct ep_state){0};
+    struct ep_state *state=nas_heap_calloc(1,sizeof(*state));
+    if(!state)return (uint64_t)-ENOMEM;
     if(!nas_fd_install_new(task,fd,slot,FD_EPOLL,0,
-                           (flags&EP_CLOEXEC)!=0))
+                           (flags&EP_CLOEXEC)!=0)) {
+        (void)nas_heap_free(state);
         return (uint64_t)-EBADF;
+    }
+    nas_open_files[slot].private.epoll=state;
     return fd;
+}
+/* Linux accepts epoll-of-epoll as long as the watch graph stays acyclic
+ * and bounded. The physical OpenFile slot is the graph vertex, not the
+ * process-local descriptor (dup/fork may alias one vertex). */
+#define NAS_EPOLL_MAX_NEST 5U
+static bool epoll_path_to(unsigned start,unsigned destination,unsigned depth) {
+    if(start==destination)return true;
+    if(depth>=NAS_EPOLL_MAX_NEST)return true; /* reject invalid chains */
+    struct ep_state *state=epoll_state(start);
+    if(!state)return false;
+    for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++) {
+        const struct ep_watch *w=&state->watches[i];
+        if(w->used && w->kind==FD_EPOLL &&
+           epoll_path_to(w->slot,destination,depth+1U))return true;
+    }
+    return false;
+}
+static bool epoll_chain_too_deep(unsigned start,unsigned depth) {
+    if(depth>NAS_EPOLL_MAX_NEST)return true;
+    struct ep_state *state=epoll_state(start);
+    if(!state)return false;
+    for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++) {
+        const struct ep_watch *w=&state->watches[i];
+        if(w->used && w->kind==FD_EPOLL &&
+           epoll_chain_too_deep(w->slot,depth+1U))return true;
+    }
+    return false;
+}
+static bool epoll_graph_over_depth(void) {
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
+        if(epoll_state(i) && epoll_chain_too_deep(i,1U))return true;
+    return false;
 }
 static bool decode_event(uint64_t addr,uint32_t *events,uint64_t *data){
     uint8_t bytes[EP_EVENT_BYTES];
@@ -111,13 +157,14 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     unsigned slot;
     if(!instance_slot(task,epfd,&slot))return (uint64_t)-EBADF;
     if(op<1 || op>3)return (uint64_t)-EINVAL;
-    if(!valid_fd_task(task,fd))return (uint64_t)-EBADF;
-    if(task->fds->entries[fd].kind==FD_EPOLL)return (uint64_t)-ELOOP;
+    const struct nas_fd_entry *target=nas_task_fd_entry(task,fd);
+    if(!target)return (uint64_t)-EBADF;
     if(epfd==fd)return (uint64_t)-EINVAL;
-    const unsigned target_slot=task->fds->entries[fd].slot;
+    const unsigned target_slot=target->slot;
+    struct ep_state *state=epoll_state(slot);
     struct ep_watch *slot_found=0,*free_watch=0;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
-        struct ep_watch *w=&epolls[slot].watches[i];
+        struct ep_watch *w=&state->watches[i];
         if(!w->used) {if(!free_watch)free_watch=w;continue;}
         if(w->fd==fd && w->slot==target_slot)slot_found=w;
     }
@@ -133,11 +180,21 @@ uint64_t nas_epoll_ctl(uint64_t epfd,uint64_t op,uint64_t fd,uint64_t event){
     if(op==1){ /* EPOLL_CTL_ADD */
         if(slot_found)return (uint64_t)-EEXIST;
         if(!free_watch)return (uint64_t)-ENOSPC;
+        /* A nested epoll watches an independent real event stream; adding
+         * itself or an ancestor would recurse indefinitely during poll. */
+        if(target->kind==FD_EPOLL &&
+           epoll_path_to(target_slot,slot,0U))return (uint64_t)-ELOOP;
         *free_watch=(struct ep_watch){0};
         free_watch->used=true;
         free_watch->fd=(uint16_t)fd;
         free_watch->slot=(uint8_t)target_slot;
-        free_watch->kind=task->fds->entries[fd].kind;
+        free_watch->kind=target->kind;
+        /* The complete graph, including ancestors of this epoll, must
+         * stay within Linux's bounded nesting limit. Roll back atomically. */
+        if(target->kind==FD_EPOLL && epoll_graph_over_depth()) {
+            *free_watch=(struct ep_watch){0};
+            return (uint64_t)-ELOOP;
+        }
         slot_found=free_watch;
     }else if(!slot_found)return (uint64_t)-ENOENT;
     slot_found->events=events;
@@ -153,7 +210,8 @@ int nas_epoll_hold_instance(uint64_t epfd,unsigned *slot) {
 uint64_t nas_epoll_wait_description(unsigned slot,uint64_t out,
                                     uint64_t maximum,uint64_t timeout){
     struct nas_task *task=nas_current_task;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    struct ep_state *state=epoll_state(slot);
+    if(!nas_file_slot_live(slot) || !state)
         return (uint64_t)-EBADF;
     if(maximum==0 || (int64_t)maximum<0 || maximum>INT32_MAX)
         return (uint64_t)-EINVAL;
@@ -166,9 +224,10 @@ uint64_t nas_epoll_wait_description(unsigned slot,uint64_t out,
         return (uint64_t)-EFAULT;
     uint64_t done=0;
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX && done<maximum;i++){
-        struct ep_watch *w=&epolls[slot].watches[i];
+        struct ep_watch *w=&state->watches[i];
         uint16_t ready=ready_now(w,task);
-        if(!ready) {w->last_ready=0;continue;}
+        w->last_ready &= ready;
+        if(!ready)continue;
         if((w->events&EP_EDGE) && !(ready & ~w->last_ready))continue;
         uint8_t bytes[EP_EVENT_BYTES]={0};
         uint32_t events=ready;
@@ -194,22 +253,18 @@ uint64_t nas_epoll_wait(uint64_t epfd,uint64_t out,uint64_t maximum,
     return nas_epoll_wait_description(slot,out,maximum,timeout);
 }
 uint16_t nas_epoll_description_poll(unsigned slot,uint16_t interests) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)
+    if(!nas_file_slot_live(slot))
         return 0;
     return instance_ready(slot,nas_current_task)?(interests&EP_IN):0;
-}
-uint16_t nas_epoll_fd_poll(uint64_t fd,uint16_t interests){
-    unsigned slot;
-    if(!instance_slot(nas_current_task,fd,&slot))return 0;
-    return nas_epoll_description_poll(slot,interests);
 }
 void nas_epoll_arm_current_task(uint64_t epfd){
     unsigned slot;
     struct nas_task *task=nas_current_task;
     nas_wait_io_clear(task);
     if(!instance_slot(task,epfd,&slot))return;
+    struct ep_state *state=epoll_state(slot);
     for(unsigned i=0;i<NAS_EPOLL_EVENTS_MAX;i++){
-        struct ep_watch *w=&epolls[slot].watches[i];
+        struct ep_watch *w=&state->watches[i];
         if(!w->used || w->disabled)continue;
         /* Register ANY watched open description (including eventfd and
          * future network/device providers). No type switch in epoll.
@@ -224,18 +279,39 @@ void nas_epoll_arm_current_task(uint64_t epfd){
 bool nas_epoll_task_ready(const struct nas_task *task){
     if(!task || !task->wait.description_release)return true;
     unsigned slot=task->wait.description_slot;
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return true;
+    if(!nas_file_slot_live(slot))return true;
     return instance_ready(slot,task);
+}
+/* A provider's successful I/O can produce a new notification even when no
+ * epoll_wait observed the intervening empty/full state. Rearm only the
+ * affected readiness bits; ONESHOT remains disabled until MOD. */
+void nas_epoll_notify(unsigned target,uint16_t events){
+    for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){
+        if(!nas_file_slot_live(i))continue;
+        struct ep_state *state=epoll_state(i);
+        if(!state)continue;
+        for(unsigned j=0;j<NAS_EPOLL_EVENTS_MAX;j++){
+            struct ep_watch *w=&state->watches[j];
+            if(w->used && !w->disabled && w->slot==target &&
+               (w->events&EP_EDGE))
+                w->last_ready &= (uint16_t)~events;
+        }
+    }
 }
 void nas_epoll_target_final_close(unsigned target){
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++){
-        if(!nas_open_files[i].refcount)continue;
+        if(!nas_file_slot_live(i))continue;
+        struct ep_state *state=epoll_state(i);
+        if(!state)continue;
         for(unsigned j=0;j<NAS_EPOLL_EVENTS_MAX;j++){
-            struct ep_watch *w=&epolls[i].watches[j];
+            struct ep_watch *w=&state->watches[j];
             if(w->used && w->slot==target)*w=(struct ep_watch){0};
         }
     }
 }
 void nas_epoll_release(unsigned slot){
-    if(slot<NAS_OPEN_FILE_LIMIT)epolls[slot]=(struct ep_state){0};
+    struct ep_state *state=epoll_state(slot);
+    if(!state)return;
+    nas_open_files[slot].private.epoll=0;
+    (void)nas_heap_free(state);
 }

@@ -25,6 +25,7 @@
 #include "../../ports/lwip/socket_port.h"
 #include "../../ports/lwip/network_boot.h"
 #include "netlink_core.h"
+#include "netlink_kobject.h"
 #include "packet_socket.h"
 #define TASK (*nas_current_task)
 
@@ -72,9 +73,6 @@ static bool unix_fd(uint64_t fd) {
            && !nas_packet_socket_is_slot(TASK.fds->entries[fd].slot)
            ;
 }
-static bool inet_fd(uint64_t fd) {
-    return lwip_fd(fd);
-}
 static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
     if(domain!=1 && domain!=2 && domain!=17
        && domain!=16 /* Linux AF_NETLINK */
@@ -112,10 +110,16 @@ static uint64_t sys_socket(uint64_t domain,uint64_t type,uint64_t protocol) {
         nas_fd_reserve(nas_current_task,0,1,fds,slots,"socket");
     if(capacity)return (uint64_t)(int64_t)capacity;
     unsigned fd=fds[0],slot=slots[0];
-    if(domain==1)nas_unix_socket_init(slot);
     if(!nas_fd_install_new(nas_current_task,fd,slot,FD_SOCKET,
                            2ULL|(type&0x800ULL),(type&0x80000ULL)!=0))
         nas_fail("reserved socket descriptor became occupied");
+    if(domain==1) {
+        int rc=nas_unix_socket_init(slot);
+        if(rc) {
+            nas_fs_close_fd(fd);
+            return (uint64_t)(int64_t)rc;
+        }
+    }
     if(domain==2) {
         nas_open_files[slot].ops=nas_lwip_socket_port_ops();
         enum nas_lwip_bridge_type native_type=socket_type==1U ?
@@ -373,14 +377,16 @@ uint64_t nas_fs_socket_control_description(unsigned slot) {
     if(rc==0)return (uint64_t)-EAGAIN;
     return (uint64_t)(int64_t)(rc==1 ? result.status:rc);
 }
-/* Linux sockaddr_un has a native two-byte family followed by the pathname.
- * This first backend supports Linux pathname sockets, not abstract names. */
-static int unix_pathname(uint64_t addr,uint64_t length,char out[109]) {
+/* Linux sockaddr_un: pathname strings and binary abstract addresses. */
+static int unix_address(uint64_t addr,uint64_t length,char out[109]) {
     uint8_t buffer[110];
     if(length<3 || length>sizeof(buffer))return -EINVAL;
     if(!nas_user_read_bytes(addr,buffer,length))return -EFAULT;
     if(buffer[0]!=1 || buffer[1])return -EAFNOSUPPORT;
-    if(!buffer[2])return -EOPNOTSUPP;
+    if(!buffer[2]) {
+        memcpy(out,buffer+2,length-2);
+        return (int)(length-2);
+    }
     unsigned n=0;
     for(;n<length-2 && buffer[n+2] && n<108;n++)
         out[n]=(char)buffer[n+2];
@@ -390,8 +396,10 @@ static int unix_pathname(uint64_t addr,uint64_t length,char out[109]) {
 static uint64_t sys_unix_bind(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     char path[109];
-    int rc=unix_pathname(address,size,path);
-    if(rc)return (uint64_t)(int64_t)rc;
+    int rc=unix_address(address,size,path);
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(rc>0)return (uint64_t)(int64_t)nas_unix_socket_bind_abstract(
+        TASK.fds->entries[fd].slot,(const uint8_t *)path,(unsigned)rc);
     struct nas_fs_path_request request;
     rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -415,8 +423,10 @@ static uint64_t sys_unix_listen(uint64_t fd,uint64_t backlog) {
 static uint64_t sys_unix_connect(uint64_t fd,uint64_t address,uint64_t size) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     char path[109];
-    int rc=unix_pathname(address,size,path);
-    if(rc)return (uint64_t)(int64_t)rc;
+    int rc=unix_address(address,size,path);
+    if(rc<0)return (uint64_t)(int64_t)rc;
+    if(rc>0)return (uint64_t)(int64_t)nas_unix_socket_connect_abstract(
+        TASK.fds->entries[fd].slot,(const uint8_t *)path,(unsigned)rc);
     struct nas_fs_path_request request;
     rc=nas_fs_kernel_path_begin((uint64_t)-100,path,&request);
     if(rc)return (uint64_t)(int64_t)rc;
@@ -624,7 +634,7 @@ uint64_t nas_fs_socket_accept_description(unsigned listener_slot,
 }
 static uint64_t sys_socket_accept_fd(uint64_t fd,uint64_t address,
                                      uint64_t length_ptr,uint64_t flags) {
-    if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
+    if(!unix_fd(fd) && !lwip_fd(fd))return (uint64_t)-EBADF;
     return nas_fs_socket_accept_description(TASK.fds->entries[fd].slot,
                                              address,length_ptr,flags);
 }
@@ -636,14 +646,8 @@ static uint64_t sys_unix_name(uint64_t fd,uint64_t address,
     if(!nas_user_read_bytes(length_ptr,(uint8_t *)&size,4))
         return (uint64_t)-EFAULT;
     uint8_t output[110]={1,0};
-    const char *path=peer ? 0 : nas_unix_socket_name(TASK.fds->entries[fd].slot);
-    uint32_t actual=2;
-    if(path) {
-        unsigned n=(unsigned)strnlen(path,107);
-        memcpy(output+2,path,n);
-        output[n+2]=0;
-        actual=n+3;
-    }
+    uint32_t actual=2+nas_unix_socket_name(
+        TASK.fds->entries[fd].slot,peer,output+2);
     if(size>actual)size=actual;
     if(!nas_user_prepare_write(length_ptr,4) ||
        (size && !nas_user_prepare_write(address,size)))
@@ -662,6 +666,17 @@ static uint64_t sys_ipv4_name(uint64_t fd,uint64_t address,
         return lwip_control_result(rc);
     }
     return (uint64_t)-EBADF;
+}
+static uint64_t sys_unix_setsockopt(uint64_t fd,uint64_t level,
+                                    uint64_t opt,uint64_t address,uint64_t size) {
+    if(!unix_fd(fd))return (uint64_t)-EBADF;
+    if(level!=1 || opt!=2)return (uint64_t)-ENOPROTOOPT;
+    if(size<4)return (uint64_t)-EINVAL;
+    uint32_t value;
+    if(!nas_user_read_bytes(address,(uint8_t *)&value,4))
+        return (uint64_t)-EFAULT;
+    int rc=nas_unix_socket_reuseaddr(TASK.fds->entries[fd].slot,true,value!=0);
+    return rc<0?(uint64_t)(int64_t)rc:0;
 }
 static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
                                     uint64_t opt,uint64_t address,
@@ -685,7 +700,12 @@ static uint64_t sys_unix_getsockopt(uint64_t fd,uint64_t level,
     }
     if(size<4)return (uint64_t)-EINVAL;
     uint32_t value;
-    if(opt==3)value=1; /* SO_TYPE: stream */
+    if(opt==2) { /* SO_REUSEADDR */
+        int rc=nas_unix_socket_reuseaddr(TASK.fds->entries[fd].slot,false,false);
+        if(rc<0)return (uint64_t)(int64_t)rc;
+        value=(uint32_t)rc;
+    }
+    else if(opt==3)value=1; /* SO_TYPE: stream */
     else if(opt==4)value=0; /* SO_ERROR: no pending asynchronous error */
     else return (uint64_t)-ENOPROTOOPT;
     size=4;
@@ -986,27 +1006,25 @@ static uint64_t sys_netlink_sendmsg(uint64_t fd,uint64_t user_message,
     if((!msg.name && msg.namelen) ||
        (msg.name && msg.namelen<NAS_NETLINK_SOCKADDR_SIZE))
         return (uint64_t)-EINVAL;
-    uint8_t packet[NAS_NETLINK_MAX_DATAGRAM];
-    uint8_t name[NAS_NETLINK_SOCKADDR_SIZE];
-    uint64_t length=0;
-    for(unsigned i=0;i<msg.iovlen;i++) {
-        struct nas_iovec iov;
-        if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov) ||
-           !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov),
-                                (uint8_t *)&iov,sizeof(iov)))
-            return (uint64_t)-EFAULT;
-        if(iov.length>NAS_NETLINK_MAX_DATAGRAM-length)
-            return (uint64_t)-EMSGSIZE;
-        if(iov.length && !nas_user_read_bytes(iov.base,packet+length,
-                                              iov.length))
-            return (uint64_t)-EFAULT;
-        length+=iov.length;
+    /* Datagrams use the same File-owned LP64 vector validation and gather
+     * as writev: no separate netlink-only copy loop or overflow policy. */
+    unsigned slot=TASK.fds->entries[fd].slot;
+    struct nas_fs_io_vectors vectors={0};
+    int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,true,&vectors);
+    if(rc)return (uint64_t)(int64_t)rc;
+    if(vectors.total>NAS_NETLINK_MAX_DATAGRAM) {
+        nas_fs_io_vectors_release(&vectors);
+        return (uint64_t)-EMSGSIZE;
     }
+    uint8_t packet[NAS_NETLINK_MAX_DATAGRAM],name[NAS_NETLINK_SOCKADDR_SIZE];
+    bool copied=nas_fs_io_vectors_copyin(&vectors,packet,vectors.total);
+    unsigned length=(unsigned)vectors.total;
+    nas_fs_io_vectors_release(&vectors);
+    if(!copied)return (uint64_t)-EFAULT;
     if(msg.name && !nas_user_read_bytes(msg.name,name,sizeof(name)))
         return (uint64_t)-EFAULT;
-    return (uint64_t)nas_netlink_core_sendto(TASK.fds->entries[fd].slot,
-          packet,(unsigned)length,msg.name?name:NULL,
-          msg.name?sizeof(name):0);
+    return (uint64_t)nas_netlink_core_sendto(slot,packet,length,
+          msg.name?name:NULL,msg.name?sizeof(name):0);
 }
 /* The same immutable, kernel-owned import serves synchronous socket syscalls
  * and a Task continuation after an asynchronous Netlink event. Foreign user
@@ -1016,7 +1034,7 @@ struct nas_netlink_rx_snapshot {
     bool message,nonblocking;
     uint64_t user_ptr,user_source,user_source_length;
     struct nas_msghdr msg;
-    struct nas_iovec iov[32];
+    struct nas_fs_io_vectors vectors; /* single kernel-owned import */
     uint32_t source_capacity;
 };
 static uint64_t netlink_rx_import(struct nas_netlink_rx_snapshot *p,
@@ -1037,22 +1055,25 @@ static uint64_t netlink_rx_import(struct nas_netlink_rx_snapshot *p,
            !nas_user_prepare_write(p->user_ptr,sizeof(p->msg)))
             return (uint64_t)-EFAULT;
         if(p->msg.iovlen>32)return (uint64_t)-EMSGSIZE;
-        for(unsigned i=0;i<p->msg.iovlen;i++) {
-            if(p->msg.iov>UINT64_MAX-(uint64_t)i*sizeof(p->iov[i]) ||
-               !nas_user_read_bytes(p->msg.iov+(uint64_t)i*sizeof(p->iov[i]),
-                                    (uint8_t *)&p->iov[i],sizeof(p->iov[i])))
-                return (uint64_t)-EFAULT;
-            unsigned room=NAS_NETLINK_MAX_DATAGRAM-p->capacity;
-            if(p->iov[i].length<room)room=(unsigned)p->iov[i].length;
-            if(room && !nas_user_prepare_write(p->iov[i].base,room))
-                return (uint64_t)-EFAULT;
-            p->capacity+=room;
+        /* One copied, immutable vector survives a Task park; a later
+         * scheduler resume must never reload foreign userspace iovecs. */
+        int rc=nas_fs_io_vectors_import_datagram(p->slot,p->msg.iov,
+                                                 p->msg.iovlen,false,&p->vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        p->capacity=p->vectors.total>NAS_NETLINK_MAX_DATAGRAM ?
+                    NAS_NETLINK_MAX_DATAGRAM:(unsigned)p->vectors.total;
+        if(nas_fs_io_vectors_accessible_prefix(&p->vectors,p->capacity,
+                                                false)!=p->capacity) {
+            nas_fs_io_vectors_release(&p->vectors);
+            return (uint64_t)-EFAULT;
         }
         const uint32_t name_room=p->msg.namelen>NAS_NETLINK_SOCKADDR_SIZE ?
                               NAS_NETLINK_SOCKADDR_SIZE:p->msg.namelen;
         if(p->msg.name && name_room &&
-           !nas_user_prepare_write(p->msg.name,name_room))
+           !nas_user_prepare_write(p->msg.name,name_room)) {
+            nas_fs_io_vectors_release(&p->vectors);
             return (uint64_t)-EFAULT;
+        }
     } else {
         /* musl getifaddrs() calls recvfrom(..., MSG_DONTWAIT) with no
          * sockaddr. Preserve optional sockaddr/len preflight in full. */
@@ -1085,14 +1106,10 @@ static uint64_t netlink_rx_execute(const struct nas_netlink_rx_snapshot *p) {
     if(got<0)return (uint64_t)got;
     unsigned copied=(uint64_t)got<p->capacity?(unsigned)got:p->capacity;
     if(p->message) {
-        unsigned off=0;
-        for(unsigned i=0;i<p->msg.iovlen && off<copied;i++) {
-            unsigned n=p->iov[i].length>copied-off ?
-                       copied-off:(unsigned)p->iov[i].length;
-            if(n && !nas_user_write_bytes(p->iov[i].base,packet+off,n))
-                return (uint64_t)-EFAULT;
-            off+=n;
-        }
+        uint64_t transferred=0;
+        if(!nas_fs_io_vectors_copyout(&p->vectors,packet,copied,
+                                       &transferred))
+            return (uint64_t)-EFAULT;
         struct nas_msghdr msg=p->msg;
         if(msg.name) {
             uint32_t n=msg.namelen<source_length?msg.namelen:source_length;
@@ -1122,7 +1139,10 @@ static uint64_t sys_netlink_recvmsg(uint64_t fd,uint64_t user_message,
     uint64_t args[]={0,fd,user_message,flags,0,0,0};
     struct nas_netlink_rx_snapshot current;
     uint64_t rc=netlink_rx_import(&current,NAS_SC_recvmsg,args);
-    return (int64_t)rc<0 ? rc:netlink_rx_execute(&current);
+    if((int64_t)rc<0)return rc;
+    rc=netlink_rx_execute(&current);
+    nas_fs_io_vectors_release(&current.vectors);
+    return rc;
 }
 static uint64_t sys_netlink_recvfrom(uint64_t fd,uint64_t user_buffer,
                                      uint64_t length,uint64_t flags,
@@ -1132,7 +1152,10 @@ static uint64_t sys_netlink_recvfrom(uint64_t fd,uint64_t user_buffer,
                      user_source_length};
     struct nas_netlink_rx_snapshot current;
     uint64_t rc=netlink_rx_import(&current,NAS_SC_recvfrom,args);
-    return (int64_t)rc<0 ? rc:netlink_rx_execute(&current);
+    if((int64_t)rc<0)return rc;
+    rc=netlink_rx_execute(&current);
+    nas_fs_io_vectors_release(&current.vectors);
+    return rc;
 }
 void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
                                   struct nas_netlink_receive_attempt *out) {
@@ -1145,6 +1168,7 @@ void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
     if((int64_t)rc<0){out->result=rc;return;}
     out->slot=current.slot;
     if(!nas_fd_hold_description(current.slot)) {
+        nas_fs_io_vectors_release(&current.vectors);
         out->result=(uint64_t)-EBADF;return;
     }
     rc=netlink_rx_execute(&current);
@@ -1157,6 +1181,7 @@ void nas_fs_netlink_receive_start(enum nas_syscall_op op,const uint64_t *args,
         }
         rc=(uint64_t)-ENOMEM;
     }
+    nas_fs_io_vectors_release(&current.vectors);
     nas_fs_drop_kernel_description(current.slot);
     out->result=rc;
 }
@@ -1165,7 +1190,10 @@ uint64_t nas_fs_netlink_receive_resume(void *pending) {
                      (uint64_t)-EINVAL;
 }
 void nas_fs_netlink_receive_release(void *pending) {
-    if(pending)(void)nas_heap_free(pending);
+    if(!pending)return;
+    struct nas_netlink_rx_snapshot *snapshot=pending;
+    nas_fs_io_vectors_release(&snapshot->vectors);
+    (void)nas_heap_free(snapshot);
 }
 static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
                                        uint64_t option,uint64_t value,
@@ -1193,6 +1221,16 @@ static uint64_t sys_netlink_getsockopt(uint64_t fd,uint64_t level,
         break;
     }
     case 39:answer=16;break;/* SO_DOMAIN: AF_NETLINK */
+    case 16: { /* SO_PASSCRED: credential ancillary-data subscription */
+        if(nas_netlink_core_protocol(TASK.fds->entries[fd].slot)!=15)
+            return (uint64_t)-ENOPROTOOPT;
+        bool enabled=false;
+        int rc=nas_netlink_kobject_get_passcred(TASK.fds->entries[fd].slot,
+                                                 &enabled);
+        if(rc)return (uint64_t)(int64_t)rc;
+        answer=enabled?1U:0U;
+        break;
+    }
     default:return (uint64_t)-ENOPROTOOPT;
     }
     uint32_t length;
@@ -1210,7 +1248,9 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
                                       uint64_t option,uint64_t value,
                                       uint64_t length) {
     if(!netlink_fd(fd))return (uint64_t)-EBADF;
-    if(level!=1 || (option!=7 && option!=8))
+    if(level!=1 || (option!=7 && option!=8 && option!=16))
+        return (uint64_t)-ENOPROTOOPT;
+    if(option==16 && nas_netlink_core_protocol(TASK.fds->entries[fd].slot)!=15)
         return (uint64_t)-ENOPROTOOPT;
     if(length<4)return (uint64_t)-EINVAL;
     if(!value)return (uint64_t)-EFAULT;
@@ -1220,7 +1260,8 @@ static uint64_t sys_netlink_setsockopt(uint64_t fd,uint64_t level,
     if(requested<0)return (uint64_t)-EINVAL;
     unsigned slot=TASK.fds->entries[fd].slot;
     int rc=option==7 ? nas_netlink_core_set_sndbuf(slot,(uint32_t)requested) :
-                        nas_netlink_core_set_rcvbuf(slot,(uint32_t)requested);
+           option==8 ? nas_netlink_core_set_rcvbuf(slot,(uint32_t)requested) :
+                       nas_netlink_kobject_set_passcred(slot,requested!=0);
     return (uint64_t)(int64_t)rc;
 }
 /* Linux LP64 cmsghdr (16 bytes) + struct in_pktinfo (12 bytes).
@@ -1277,6 +1318,19 @@ int nas_fs_socket_tcp_sendmsg_iov(uint64_t fd,uint64_t address,
     *count=msg.iovlen;
     return 1;
 }
+/* Linux MSG_DONTWAIT is per-call: do not change a dup/fork-shared
+ * open description's O_NONBLOCK state. Pipe-backed AF_UNIX streams use
+ * -EOPNOTSUPP solely as their internal "would block" sentinel when the
+ * File is blocking. Translate that sentinel only while the corresponding
+ * direction is genuinely not ready; preserve all real provider errors. */
+static uint64_t unix_msg_dontwait_result(uint64_t result,uint64_t flags,
+                                         unsigned slot,bool receiving) {
+    if((flags&0x40ULL) && (int64_t)result==-EOPNOTSUPP &&
+       !(receiving ? nas_pipe_read_ready(slot) :
+                     nas_pipe_write_ready(slot)))
+        return (uint64_t)-EAGAIN;
+    return result;
+}
 static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
     if(!unix_fd(fd))return (uint64_t)-EBADF;
     if(flags & ~(0x4000ULL|0x40ULL))return (uint64_t)-EOPNOTSUPP;
@@ -1296,19 +1350,39 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         memcpy(&cmsglen,control,8);
         uint32_t level,type;
         memcpy(&level,control+8,4);memcpy(&type,control+12,4);
-        if(cmsglen<16 || cmsglen>msg.controllen || level!=1 || type!=1 ||
+        if(cmsglen<16 || cmsglen>msg.controllen || level!=1 ||
            (cmsglen-16)%4)return (uint64_t)-EOPNOTSUPP;
-        rights_count=(unsigned)((cmsglen-16)/4);
-        if(!rights_count || rights_count>NAS_UNIX_MAX_RIGHTS)
-            return (uint64_t)-EINVAL;
-        for(unsigned i=0;i<rights_count;i++) {
-            int32_t transferred;
-            memcpy(&transferred,control+16+i*4,4);
-            if(transferred<0 || transferred>=NAS_FD_LIMIT ||
-               TASK.fds->entries[transferred].kind==FD_CLOSED)return (uint64_t)-EBADF;
-            kinds[i]=TASK.fds->entries[transferred].kind;
-            slots[i]=TASK.fds->entries[transferred].slot;
-        }
+        if(type==2) { /* SCM_CREDENTIALS: Linux struct ucred (3 x u32). */
+            if(cmsglen!=28 || msg.controllen>32)return (uint64_t)-EINVAL;
+            uint32_t identity[3];
+            memcpy(identity,control+16,sizeof(identity));
+            const struct nas_credentials *actual=&TASK.credentials;
+            /* Do not let the sender forge another process or identity.
+             * CAP_SYS_ADMIN/CAP_SETUID/CAP_SETGID are not granted by
+             * NaSeed's intentionally narrow capability implementation. */
+            if(identity[0]!=(uint32_t)TASK.tgid ||
+               (identity[1]!=actual->ruid && identity[1]!=actual->euid &&
+                identity[1]!=actual->suid) ||
+               (identity[2]!=actual->rgid && identity[2]!=actual->egid &&
+                identity[2]!=actual->sgid))
+                return (uint64_t)-EPERM;
+            /* Valid credentials are accepted for the stream write.
+             * Ancillary receipt additionally requires SO_PASSCRED; do not
+             * fabricate per-message credentials on an unsubscribed peer. */
+        } else if(type==1) { /* SCM_RIGHTS: owned File descriptions. */
+            rights_count=(unsigned)((cmsglen-16)/4);
+            if(!rights_count || rights_count>NAS_UNIX_MAX_RIGHTS)
+                return (uint64_t)-EINVAL;
+            for(unsigned i=0;i<rights_count;i++) {
+                int32_t transferred;
+                memcpy(&transferred,control+16+i*4,4);
+                if(transferred<0 || transferred>=NAS_FD_LIMIT ||
+                   TASK.fds->entries[transferred].kind==FD_CLOSED)
+                    return (uint64_t)-EBADF;
+                kinds[i]=TASK.fds->entries[transferred].kind;
+                slots[i]=TASK.fds->entries[transferred].slot;
+            }
+        } else return (uint64_t)-EOPNOTSUPP;
     }
     struct nas_unix_rights_transfer transfer={0};
     if(rights_count) {
@@ -1323,7 +1397,8 @@ static uint64_t sys_unix_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
         if((int64_t)wrote>0)nas_unix_rights_commit(&transfer);
         else nas_unix_rights_cancel(&transfer);
     }
-    return wrote;
+    return unix_msg_dontwait_result(wrote,flags,
+                                     TASK.fds->entries[fd].slot,false);
 }
 static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
                                     uint64_t flags,unsigned receiver_slot) {
@@ -1346,7 +1421,8 @@ static uint64_t unix_recvmsg_pinned(uint64_t fd,uint64_t address,
         msg.control,16ULL+(uint64_t)capacity*4ULL))
         return (uint64_t)-EFAULT;
     uint64_t received=nas_fs_fd_readv(fd,msg.iov,msg.iovlen);
-    if((int64_t)received<0)return received;
+    if((int64_t)received<0)
+        return unix_msg_dontwait_result(received,flags,receiver_slot,true);
     /* Rights may arrive while readv parks. Inspect the pinned endpoint,
      * not the original integer FD, which another task may have reused. */
     unsigned pending=nas_unix_rights_count(receiver_slot);
@@ -1441,23 +1517,22 @@ static uint64_t sys_ipv4_sendmsg(uint64_t fd,uint64_t address,uint64_t flags) {
             if(rc)return (uint64_t)(int64_t)rc;
             destination=lwip_address(ep);
         }
-        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
-        size_t total=0;
-        for(unsigned i=0;i<msg.iovlen;i++) {
-            struct nas_iovec v;
-            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(v) ||
-               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(v),
-                                    (uint8_t *)&v,sizeof(v)))
-                return (uint64_t)-EFAULT;
-            if(v.length>NAS_LWIP_BRIDGE_DATA-total)
-                return (uint64_t)-EMSGSIZE;
-            if(v.length && !nas_user_read_bytes(v.base,packet+total,v.length))
-                return (uint64_t)-EFAULT;
-            total+=(size_t)v.length;
+        /* Import the complete Linux iovec through the same File-owned path
+         * as writev. No second hand-rolled range or overflow validator. */
+        struct nas_fs_io_vectors vectors={0};
+        int rc=nas_fs_io_vectors_import(slot,msg.iov,msg.iovlen,true,&vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        if(vectors.total>NAS_LWIP_BRIDGE_DATA) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)-EMSGSIZE;
         }
-        return (uint64_t)nas_lwip_socket_sendto_pktinfo(slot,packet,
-                    (uint16_t)total,destination,
-                    ancillary ? &pktinfo:NULL);
+        uint8_t packet[NAS_LWIP_BRIDGE_DATA];
+        bool copied=nas_fs_io_vectors_copyin(&vectors,packet,vectors.total);
+        uint16_t bytes=(uint16_t)vectors.total;
+        nas_fs_io_vectors_release(&vectors);
+        if(!copied)return (uint64_t)-EFAULT;
+        return (uint64_t)nas_lwip_socket_sendto_pktinfo(slot,packet,bytes,
+                    destination,ancillary ? &pktinfo:NULL);
     }
     return (uint64_t)-EBADF;
 }
@@ -1474,47 +1549,56 @@ static uint64_t sys_ipv4_recvmsg(uint64_t fd,uint64_t address,uint64_t flags) {
            !nas_user_prepare_write(address,sizeof(msg)))
             return (uint64_t)-EFAULT;
         if(msg.iovlen>32)return (uint64_t)-EMSGSIZE;
-        struct nas_iovec iov[32];
-        uint64_t capacity=0;
-        for(unsigned i=0;i<msg.iovlen;i++) {
-            if(msg.iov>UINT64_MAX-(uint64_t)i*sizeof(iov[i]) ||
-               !nas_user_read_bytes(msg.iov+(uint64_t)i*sizeof(iov[i]),
-                                    (uint8_t *)&iov[i],sizeof(iov[i])))
-                return (uint64_t)-EFAULT;
-            uint64_t budget=NAS_LWIP_BRIDGE_DATA-capacity;
-            if(iov[i].length<budget)budget=iov[i].length;
-            if(budget && !nas_user_prepare_write(iov[i].base,budget))
-                return (uint64_t)-EFAULT;
-            capacity+=budget;
+        /* Import the whole iovec using the canonical File-owned validator.
+         * Preflight the bounded RX payload before consuming the datagram;
+         * unrelated trailing iovecs cannot escape checked user ranges. */
+        struct nas_fs_io_vectors vectors={0};
+        int rc=nas_fs_io_vectors_import_datagram(slot,msg.iov,msg.iovlen,
+                                                false,&vectors);
+        if(rc)return (uint64_t)(int64_t)rc;
+        uint64_t capacity=vectors.total;
+        if(capacity>NAS_LWIP_BRIDGE_DATA)capacity=NAS_LWIP_BRIDGE_DATA;
+        bool writable=nas_fs_io_vectors_accessible_prefix(&vectors,capacity,
+                                                            false)==capacity;
+        if(!writable) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)-EFAULT;
         }
         unsigned name_capacity=msg.namelen>16?16U:msg.namelen;
         if(msg.name && name_capacity &&
-           !nas_user_prepare_write(msg.name,name_capacity))
+           !nas_user_prepare_write(msg.name,name_capacity)) {
+            nas_fs_io_vectors_release(&vectors);
             return (uint64_t)-EFAULT;
+        }
         bool enabled=false;
         int option=socket_type==NAS_LWIP_BRIDGE_UDP ?
             nas_lwip_socket_ip_pktinfo(slot,false,&enabled):0;
-        if(option)return (uint64_t)(int64_t)option;
+        if(option) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)(int64_t)option;
+        }
         /* Preflight ancillary output BEFORE consuming the datagram. */
         unsigned control_bytes=enabled && msg.control && msg.controllen>=28 ?
                                (msg.controllen>=32 ? 32U:28U):0U;
-        if(control_bytes && !nas_user_prepare_write(msg.control,control_bytes))
+        if(control_bytes && !nas_user_prepare_write(msg.control,control_bytes)) {
+            nas_fs_io_vectors_release(&vectors);
             return (uint64_t)-EFAULT;
+        }
         uint8_t packet[NAS_LWIP_BRIDGE_DATA];
         struct nas_lwip_bridge_address source={0};
         struct nas_lwip_bridge_pktinfo info={0};
         bool truncated=false;
         int64_t received=nas_lwip_socket_recvfrom(slot,packet,
             (uint16_t)capacity,&source,&truncated,&info);
-        if(received<0)return (uint64_t)received;
-        unsigned offset=0;
-        for(unsigned i=0;i<msg.iovlen && offset<(unsigned)received;i++) {
-            uint64_t count=iov[i].length;
-            if(count>(uint64_t)received-offset)count=(uint64_t)received-offset;
-            if(count && !nas_user_write_bytes(iov[i].base,packet+offset,count))
-                return (uint64_t)-EFAULT;
-            offset+=(unsigned)count;
+        if(received<0) {
+            nas_fs_io_vectors_release(&vectors);
+            return (uint64_t)received;
         }
+        uint64_t copied=0;
+        bool scattered=nas_fs_io_vectors_copyout(&vectors,packet,
+                                                (uint64_t)received,&copied);
+        nas_fs_io_vectors_release(&vectors);
+        if(!scattered)return (uint64_t)-EFAULT;
         if(msg.name) {
             uint8_t bytes[16];
             ipv4_sockaddr((struct nas_ipv4_endpoint){source.ipv4,
@@ -1657,7 +1741,7 @@ static uint64_t sys_ipv4_recvfrom(uint64_t fd,uint64_t buffer,
     return (uint64_t)-EBADF;
 }
 static uint64_t sys_socket_shutdown(uint64_t fd,uint64_t how) {
-    if(!unix_fd(fd) && !inet_fd(fd))return (uint64_t)-EBADF;
+    if(!unix_fd(fd) && !lwip_fd(fd))return (uint64_t)-EBADF;
     if(how>2ULL)return (uint64_t)-EINVAL;
     if(lwip_fd(fd))return lwip_control_result(nas_lwip_socket_shutdown(
         TASK.fds->entries[fd].slot,(unsigned)how));
@@ -1741,41 +1825,50 @@ struct nas_fs_result nas_fs_socket_syscall(enum nas_syscall_op op,
     }
     switch (op) {
     case NAS_SC_socket: SOCKET_RESULT(sys_socket(args[1],args[2],args[3]));
-    case NAS_SC_bind: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_bind: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_bind(args[1],args[2],args[3]) :
         sys_unix_bind(args[1],args[2],args[3]));
-    case NAS_SC_listen: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_listen: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_listen(args[1],args[2]) : sys_unix_listen(args[1],args[2]));
-    case NAS_SC_connect: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_connect: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_connect(args[1],args[2],args[3]) :
         sys_unix_connect(args[1],args[2],args[3]));
     case NAS_SC_accept: SOCKET_RESULT(sys_socket_accept_fd(
         args[1],args[2],args[3],0));
     case NAS_SC_accept4: SOCKET_RESULT(sys_socket_accept_fd(
         args[1],args[2],args[3],args[4]));
-    case NAS_SC_getsockname: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_getsockname: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_name(args[1],args[2],args[3],false) :
         sys_unix_name(args[1],args[2],args[3],false));
-    case NAS_SC_getpeername: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_getpeername: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_name(args[1],args[2],args[3],true) :
         sys_unix_name(args[1],args[2],args[3],true));
     case NAS_SC_getsockopt:
-        SOCKET_RESULT(inet_fd(args[1]) ?
+        SOCKET_RESULT(lwip_fd(args[1]) ?
             sys_ipv4_getsockopt(args[1],args[2],args[3],args[4],args[5]) :
             sys_unix_getsockopt(args[1],args[2],args[3],args[4],args[5]));
-    case NAS_SC_setsockopt: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_setsockopt: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_setsockopt(args[1],args[2],args[3],args[4],args[5]) :
-        (uint64_t)-ENOPROTOOPT);
-    case NAS_SC_sendmsg: SOCKET_RESULT(inet_fd(args[1]) ?
+        sys_unix_setsockopt(args[1],args[2],args[3],args[4],args[5]));
+    case NAS_SC_sendmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_sendmsg(args[1],args[2],args[3]) :
         sys_unix_sendmsg(args[1],args[2],args[3]));
-    case NAS_SC_recvmsg: SOCKET_RESULT(inet_fd(args[1]) ?
+    case NAS_SC_recvmsg: SOCKET_RESULT(lwip_fd(args[1]) ?
         sys_ipv4_recvmsg(args[1],args[2],args[3]) :
         sys_unix_recvmsg(args[1],args[2],args[3]));
-    case NAS_SC_sendto: SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],
-                                                       args[4],args[5],args[6]));
-    case NAS_SC_recvfrom: SOCKET_RESULT(sys_ipv4_recvfrom(args[1],args[2],args[3],
-                                                           args[4],args[5],args[6]));
+    /* Connected UNIX send/recv without ancillary addresses uses the common
+     * parked File path in dispatch.c; do not misreport unsupported forms
+     * as an invalid IPv4 descriptor. */
+    case NAS_SC_sendto:
+        if(unix_fd(args[1]))SOCKET_RESULT((uint64_t)(
+            nas_unix_socket_connected(TASK.fds->entries[args[1]].slot) ?
+            -EOPNOTSUPP : -ENOTCONN));
+        SOCKET_RESULT(sys_ipv4_sendto(args[1],args[2],args[3],args[4],args[5],args[6]));
+    case NAS_SC_recvfrom:
+        if(unix_fd(args[1]))SOCKET_RESULT((uint64_t)(
+            nas_unix_socket_connected(TASK.fds->entries[args[1]].slot) ?
+            -EOPNOTSUPP : -ENOTCONN));
+        SOCKET_RESULT(sys_ipv4_recvfrom(args[1],args[2],args[3],args[4],args[5],args[6]));
     case NAS_SC_shutdown: SOCKET_RESULT(sys_socket_shutdown(args[1],args[2]));
     default: return (struct nas_fs_result){ .handled=false, .value=0 };
     }

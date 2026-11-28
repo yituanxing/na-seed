@@ -37,11 +37,13 @@
 #include "../fs/syscall.h"
 #include "../fs/user_broker.h"
 #include "../fs/socket_syscall.h"
+#include "../fs/unix_socket.h"
 #include "../fs/memfd.h"
 #include "../../ports/lwip/socket_port.h"
 #include "../fs/epoll.h"
 #include "../platform/platform.h"
 #include "../drivers/serial.h"
+#include "../lib/string.h"
 #include "../drivers/tty.h"
 #include "../panic.h"
 #include "../uts.h"
@@ -431,14 +433,15 @@ static uint64_t task_pipe_io(uint64_t *frame, uint64_t nr,
  * it must reach the same held-description Task wait used by write(), while
  * MSG_NOSIGNAL suppresses SIGPIPE without changing the shared File flags.
  * Do not use this path for UDP, addressed sendto or any other MSG flags. */
-static bool native_tcp_send_nosignal_wait(enum nas_syscall_op nr,
+static bool stream_send_nosignal_wait(enum nas_syscall_op nr,
                                          const uint64_t *args) {
     if(nr!=NAS_SC_sendto || args[4]!=0x4000ULL || args[5] || args[6] ||
        args[1]>=NAS_FD_LIMIT ||
        TASK.fds->entries[args[1]].kind!=FD_SOCKET)return false;
     unsigned slot=TASK.fds->entries[args[1]].slot;
-    return nas_lwip_socket_is_slot(slot) &&
-           nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP;
+    return nas_unix_socket_connected(slot) ||
+           (nas_lwip_socket_is_slot(slot) &&
+            nas_lwip_socket_type(slot)==NAS_LWIP_BRIDGE_TCP);
 }
 static uint64_t task_socket_accept(uint64_t *frame,enum nas_syscall_op nr,
                                    const uint64_t *args,uint64_t result) {
@@ -508,6 +511,30 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
+    /* Temporary cross-ISA diagnostic: identify what upstream Openbox
+     * actually reads from fd 6 after publishing EWMH. Filename is copied
+     * from its own live user VM only after a successful openat. No syscall
+     * result, file offset, or ABI behavior is modified. */
+    if(original && nas_current_task==original &&
+       !strcmp(original->comm,"openbox")) {
+        static unsigned fd6_opens, fd6_reads;
+        if(args[0]==56U && (int64_t)result==6 && fd6_opens++<100U) {
+            char name[128]={0};
+            for(unsigned i=0;i<sizeof(name)-1;i++) {
+                if(!nas_user_read_bytes(args[2]+i,(uint8_t *)&name[i],1))
+                    break;
+                if(!name[i])break;
+            }
+            nas_print("[OPENBOX FD6] open path=");nas_print(name);
+            nas_print("\n");
+        }
+        if(args[0]==63U && args[1]==6U &&
+           (fd6_reads++<25U || (fd6_reads%128U)==0U)) {
+            nas_print("[OPENBOX FD6] read asked=");nas_dec(args[3]);
+            nas_print(" returned=");nas_dec((uint64_t)(int64_t)result);
+            nas_print("\n");
+        }
+    }
     /* ptrace fork/exec event logic has already emitted its required
      * syscall-exit stop. The suspended native C continuation now returns
      * through this original gate: do not manufacture a second exit stop. */
@@ -564,6 +591,24 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     nas_task_cpu_account_switch(nas_current_task);
     const uint64_t raw_nr = args[0];
     enum nas_syscall_op nr = nas_linux_decode_call(args);
+    /* Low-frequency Openbox syscall sampling across the full original X11
+     * session. Its startup already exceeds 850 calls before MapRequest.
+     * Sample every 128th entry (and first 100), retaining exact order and
+     * real args without perturbing scheduling or creating fake user events. */
+    static uint64_t openbox_call_index;
+    if(nas_current_task && !strcmp(TASK.comm,"openbox")) {
+        uint64_t idx=++openbox_call_index;
+        if(idx<=100U || (idx<=200000U && (idx%128U)==0U)) {
+            nas_print("[OPENBOX CALL] index=");nas_dec(idx);
+            nas_print(" pid=");nas_dec(TASK.pid);
+            nas_print(" nr=");nas_dec(raw_nr);
+            nas_print(" op=");nas_dec(nr);
+            nas_print(" a1=");nas_hex(args[1]);
+            nas_print(" a2=");nas_hex(args[2]);
+            nas_print(" a3=");nas_hex(args[3]);
+            nas_print("\n");
+        }
+    }
 #ifdef NASEED_SYSCALL_TRACE
     /* M110 diagnostic: log the actual rejected Linux clone ABI on all three
      * ISAs, without broadening accepted flags or changing the -ENOSYS path.
@@ -618,7 +663,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
     if (nr == NAS_SC_capset) return nas_sys_capabilities(true,args[1],args[2]);
     if(nr==NAS_SC_shmget)return nas_sysvipc_call(NAS_SYSVIPC_SHM,0,args[1],args[2],args[3],0);
     if(nr==NAS_SC_shmctl)return nas_sysvipc_call(NAS_SYSVIPC_SHM,1,args[1],args[2],args[3],0);
-    if(nr==NAS_SC_shmat || nr==NAS_SC_shmdt)return (uint64_t)-ENOSYS;
+    if(nr==NAS_SC_shmat)return nas_sysvipc_call(NAS_SYSVIPC_SHM,2,args[1],args[2],args[3],0);
+    if(nr==NAS_SC_shmdt)return nas_sysvipc_call(NAS_SYSVIPC_SHM,3,args[1],0,0,0);
     if(nr==NAS_SC_semget)return nas_sysvipc_call(NAS_SYSVIPC_SEM,0,args[1],args[2],args[3],0);
     if(nr==NAS_SC_semctl)return nas_sysvipc_call(NAS_SYSVIPC_SEM,1,args[1],args[2],args[3],args[4]);
     if(nr==NAS_SC_semop)return (uint64_t)-ENOSYS;
@@ -774,6 +820,8 @@ uint64_t syscall_dispatch(const uint64_t *args) {
         return result;
     }
     if (nr == NAS_SC_munmap) return nas_vm_munmap(args[1], args[2]);
+    if (nr == NAS_SC_mremap)
+        return nas_vm_mremap(args[1],args[2],args[3],args[4],args[5]);
     if (nr == NAS_SC_msync)
         return nas_vm_msync(args[1],args[2],args[3]);
     if (nr == NAS_SC_madvise)
@@ -950,15 +998,15 @@ uint64_t syscall_dispatch(const uint64_t *args) {
            NAS_LWIP_BRIDGE_TCP)
         return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_recvfrom,
                             args[1],args[2],args[3],false);
-    /* Connected send()/recv() with zero flags, plus TCP MSG_NOSIGNAL send,
+    /* Connected send()/recv() with zero flags, plus stream MSG_NOSIGNAL send,
      * use the held-OpenFile wait path. Unsupported per-call flags and all
      * addressed sendto requests stay on the strict socket ABI path. */
-    const bool send_nosignal_wait=native_tcp_send_nosignal_wait(nr,args);
+    const bool send_nosignal_wait=stream_send_nosignal_wait(nr,args);
     if((nr==NAS_SC_sendto || nr==NAS_SC_recvfrom) &&
        (!args[4] || send_nosignal_wait) &&
        args[1]<NAS_FD_LIMIT && TASK.fds->entries[args[1]].kind==FD_SOCKET &&
-       nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot)
-       ) {
+       (nas_lwip_socket_is_slot(TASK.fds->entries[args[1]].slot) ||
+        nas_unix_socket_connected(TASK.fds->entries[args[1]].slot))) {
         if(nr==NAS_SC_sendto && !args[5] && !args[6])
             return task_pipe_io((uint64_t *)(uintptr_t)args,NAS_SC_write,
                                 args[1],args[2],args[3],send_nosignal_wait);

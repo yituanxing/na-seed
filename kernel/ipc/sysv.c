@@ -1,8 +1,16 @@
-/* Genuine kernel-owned SysV IPC identifiers and Linux LP64 metadata ABI.
- * Allocation reserves a typed IPC object; it does not pretend shared
- * attachments, semaphore operations or messages are already supported. */
+/* Kernel-owned SysV IPC objects and Linux LP64 metadata ABI.
+ * SHM attaches real shared PMM frames to each process via the same
+ * refcounted VMA provider used by ordinary device-backed mappings.
+ * Semaphore waits and message payload operations remain unsupported. */
 #include "sysv.h"
 #include "../task.h"
+#include "../mm/vm.h"
+#include "../mm/mm.h"
+#include "../mm/frame.h"
+#include "../mm/heap.h"
+#include "../mm/device_backing.h"
+#include "../mm/anon_regions.h"
+#include "../mm/prot.h"
 #include "../errno.h"
 #include "../mm/usercopy.h"
 #include "../time/clock.h"
@@ -26,6 +34,9 @@
 #define SEM_SETVAL 16U
 #define SEM_SETALL 17U
 #define SEM_VALUE_MAX 32767U
+#define SHM_RDONLY 010000U
+#define SHM_RND 020000U
+#define SHM_PAGE_SIZE 4096ULL
 
 struct ipc_perm_lp64 {
     int32_t key;
@@ -65,7 +76,12 @@ struct ipc_object {
     uint32_t id;
     int32_t key;
     uint32_t mode,creator_pid;
-    uint64_t count,ctime;
+    uint64_t count,ctime,atime,dtime;
+    uint32_t refs,creator_uid,creator_gid,last_pid;
+    bool deleted;
+    uint64_t *shm_frames;
+    uint64_t shm_page_count;
+    struct nas_vm_device shm_device;
     /* Actual per-semaphore values, not fabricated GETVAL results. Semop's
      * waiting/undo semantics remain unsupported until implemented. */
     uint16_t sem_values[256];
@@ -92,7 +108,9 @@ static uint64_t now_seconds(void) {
     return nas_time_realtime_ns(&realtime) ? realtime/1000000000ULL : 0;
 }
 static void metadata(const struct ipc_object *item,struct ipc_perm_lp64 *out) {
-    *out=(struct ipc_perm_lp64){.key=item->key,.mode=item->mode};
+    *out=(struct ipc_perm_lp64){.key=item->key,.mode=item->mode,
+        .uid=item->creator_uid,.gid=item->creator_gid,
+        .cuid=item->creator_uid,.cgid=item->creator_gid};
 }
 
 bool nas_sysvipc_snapshot(enum nas_sysvipc_kind kind,unsigned ordinal,
@@ -112,6 +130,116 @@ bool nas_sysvipc_snapshot(enum nas_sysvipc_kind kind,unsigned ordinal,
     }
     return false;
 }
+/* The physical-frame array belongs to a segment, not to one process.
+ * Each user leaf takes its own PMM owner via the normal MM fault handler.
+ * IPC_RMID hides the key immediately, but existing attachments keep
+ * the segment alive; a late attach by id is supported while still pinned. */
+static void shm_destroy(struct ipc_object *p) {
+    if(!p || p->refs)__builtin_trap();
+    for(uint64_t i=0;i<p->shm_page_count;i++)
+        if(p->shm_frames && p->shm_frames[i] &&
+           !nas_frame_put(p->shm_frames[i]))__builtin_trap();
+    if(p->shm_frames && !nas_heap_free(p->shm_frames))__builtin_trap();
+    *p=(struct ipc_object){0};
+}
+static bool shm_get(void *context) {
+    struct ipc_object *p=context;
+    if(!p || !p->used || p->refs==UINT32_MAX)return false;
+    ++p->refs;
+    return true;
+}
+static void shm_put(void *context) {
+    struct ipc_object *p=context;
+    if(!p || !p->used || !p->refs)__builtin_trap();
+    if(!--p->refs && p->deleted)shm_destroy(p);
+}
+static int shm_page(void *context,uint64_t offset,uint64_t *frame) {
+    struct ipc_object *p=context;
+    if(!frame)return -EINVAL;
+    *frame=0;
+    if(!p || !p->used || !p->shm_frames ||
+       (offset&(SHM_PAGE_SIZE-1)) || offset>=p->count)
+        return -EINVAL;
+    uint64_t index=offset/SHM_PAGE_SIZE;
+    if(index>=p->shm_page_count)return -EINVAL;
+    if(!p->shm_frames[index]) {
+        uint64_t physical=nas_frame_alloc();
+        if(!physical)return -ENOMEM;
+        memset((void *)(uintptr_t)(nas_hhdm_offset()+physical),
+               0,SHM_PAGE_SIZE);
+        p->shm_frames[index]=physical;
+    }
+    *frame=p->shm_frames[index]; /* borrowed, MM obtains its own ref */
+    return 0;
+}
+static bool shm_access_allowed(const struct ipc_object *p,bool writable) {
+    const struct nas_credentials *c=&nas_current_task->credentials;
+    if(c->euid==0)return true;
+    unsigned shift=0;
+    if(c->euid==p->creator_uid)shift=6;
+    else {
+        bool group=c->egid==p->creator_gid;
+        for(uint32_t i=0;i<c->group_count && !group;i++)
+            group=c->groups[i]==p->creator_gid;
+        if(group)shift=3;
+    }
+    unsigned rights=(p->mode>>shift)&7U;
+    return (rights&4U) && (!writable || (rights&2U));
+}
+static uint64_t shm_attach(uint64_t id,uint64_t requested,uint64_t flags) {
+    struct ipc_object *p=by_id(shared,id);
+    if(!p || (flags & ~(uint64_t)(SHM_RDONLY|SHM_RND)))
+        return (uint64_t)-EINVAL;
+    if(!shm_access_allowed(p,!(flags&SHM_RDONLY)))
+        return (uint64_t)-EACCES;
+    uint64_t bytes=(p->count+SHM_PAGE_SIZE-1)&~(SHM_PAGE_SIZE-1);
+    uint64_t map_flags=1U; /* MAP_SHARED, never an anonymous private copy */
+    if(requested) {
+        if(requested&(SHM_PAGE_SIZE-1)) {
+            if(!(flags&SHM_RND))return (uint64_t)-EINVAL;
+            requested&=~(SHM_PAGE_SIZE-1);
+        }
+        if(!nas_anon_fixed_range_allowed(requested,bytes))
+            return (uint64_t)-EINVAL;
+        if(nas_anon_intersects(&nas_current_task->mm->mmap_vmas,
+                               requested,bytes))
+            return (uint64_t)-EINVAL; /* shmat cannot replace a live VMA */
+        map_flags|=0x10U; /* MAP_FIXED, after independent overlap preflight */
+    }
+    if(!p->shm_device.get(p))return (uint64_t)-ENOMEM;
+    /* Always consumes the preceding get, including on mapping failure. */
+    uint64_t result=nas_vm_map_owned_device(requested,p->count,
+           NAS_VM_READ|((flags&SHM_RDONLY)?0U:NAS_VM_WRITE),
+           map_flags,&p->shm_device);
+    if((int64_t)result>=0) {
+        p->atime=now_seconds();
+        p->last_pid=(uint32_t)nas_current_task->tgid;
+    }
+    return result;
+}
+static uint64_t shm_detach(uint64_t addr) {
+    if(!addr || (addr&(SHM_PAGE_SIZE-1)))return (uint64_t)-EINVAL;
+    struct nas_anon_regions *regions=&nas_current_task->mm->mmap_vmas;
+    for(unsigned i=0;i<regions->capacity;i++) {
+        const struct nas_anon_region *v=&regions->slots[i];
+        if(!v->end || v->start!=addr ||
+           v->kind!=NAS_VMA_DEVICE_SHARED || !v->device ||
+           v->device->page!=shm_page)continue;
+        struct ipc_object *p=v->device->context;
+        uint64_t bytes=v->end-v->start;
+        /* Retain one owner until the unmap commits; IPC_RMID may already
+         * have been issued and the last VMA put may otherwise destroy p. */
+        if(!p->shm_device.get(p))return (uint64_t)-EINVAL;
+        uint64_t result=nas_vm_munmap(addr,bytes);
+        if((int64_t)result>=0) {
+            p->dtime=now_seconds();
+            p->last_pid=(uint32_t)nas_current_task->tgid;
+        }
+        p->shm_device.put(p);
+        return result;
+    }
+    return (uint64_t)-EINVAL;
+}
 static uint64_t allocate(enum nas_sysvipc_kind kind,uint64_t key,
                          uint64_t count,uint64_t flags) {
     struct ipc_object *items=table(kind);
@@ -125,7 +253,7 @@ static uint64_t allocate(enum nas_sysvipc_kind kind,uint64_t key,
         return (uint64_t)-EINVAL;
     if(signed_key!=IPC_PRIVATE)for(unsigned i=0;i<IPC_MAX_OBJECTS;i++) {
         struct ipc_object *p=&items[i];
-        if(!p->used || p->key!=signed_key)continue;
+        if(!p->used || p->deleted || p->key!=signed_key)continue;
         if((flags & (IPC_CREAT|IPC_EXCL))==(IPC_CREAT|IPC_EXCL))
             return (uint64_t)-EEXIST;
         if(kind==NAS_SYSVIPC_SHM && count>p->count)
@@ -144,8 +272,25 @@ static uint64_t allocate(enum nas_sysvipc_kind kind,uint64_t key,
         *p=(struct ipc_object){.used=true,.id=(*counter)++, .key=signed_key,
                                .mode=(uint32_t)(flags&0777U),
                                .creator_pid=(uint32_t)nas_current_task->tgid,
+                               .creator_uid=nas_current_task->credentials.euid,
+                               .creator_gid=nas_current_task->credentials.egid,
                                .count=kind==NAS_SYSVIPC_MSG?16384U:count,
                                .ctime=now_seconds()};
+        if(kind==NAS_SYSVIPC_SHM) {
+            uint64_t pages=(count+SHM_PAGE_SIZE-1)/SHM_PAGE_SIZE;
+            if(pages>SIZE_MAX/sizeof(uint64_t)) {
+                *p=(struct ipc_object){0};return (uint64_t)-ENOMEM;
+            }
+            p->shm_frames=nas_heap_calloc((size_t)pages,sizeof(uint64_t));
+            if(!p->shm_frames) {
+                *p=(struct ipc_object){0};return (uint64_t)-ENOMEM;
+            }
+            p->shm_page_count=pages;
+            p->shm_device=(struct nas_vm_device){
+                .context=p,.extent_bytes=count,
+                .get=shm_get,.put=shm_put,.page=shm_page
+            };
+        }
         return p->id;
     }
     return (uint64_t)-ENOSPC;
@@ -156,7 +301,13 @@ static uint64_t control(enum nas_sysvipc_kind kind,uint64_t id,uint64_t cmd,
     if(!p)return (uint64_t)-EINVAL;
     unsigned operation=(unsigned)cmd & ~IPC_64;
     if((cmd & ~(uint64_t)(IPC_64|0xffU)))return (uint64_t)-EINVAL;
-    if(operation==IPC_RMID) {*p=(struct ipc_object){0};return 0;}
+    if(operation==IPC_RMID) {
+        if(kind!=NAS_SYSVIPC_SHM){*p=(struct ipc_object){0};return 0;}
+        p->deleted=true; /* no new lookup by key; existing id stays live */
+        p->key=IPC_PRIVATE;
+        if(!p->refs)shm_destroy(p);
+        return 0;
+    }
     if(operation==IPC_SET)return (uint64_t)-EOPNOTSUPP;
     if(operation!=IPC_STAT)return (uint64_t)-EINVAL;
     if(!buffer)return (uint64_t)-EFAULT;
@@ -164,7 +315,10 @@ static uint64_t control(enum nas_sysvipc_kind kind,uint64_t id,uint64_t cmd,
         struct shmid_ds_lp64 ds={0};
         metadata(p,&ds.perm);
         ds.size=p->count;ds.ctime=p->ctime;
+        ds.atime=p->atime;ds.dtime=p->dtime;
+        ds.nattch=p->refs;
         ds.cpid=(int32_t)p->creator_pid;
+        ds.lpid=(int32_t)p->last_pid;
         return nas_user_write_bytes(buffer,(const uint8_t *)&ds,sizeof(ds)) ?
                0 : (uint64_t)-EFAULT;
     }
@@ -236,6 +390,10 @@ uint64_t nas_sysvipc_call(enum nas_sysvipc_kind kind,unsigned operation,
     if(operation==1) {
         if(kind==NAS_SYSVIPC_SEM)return semaphore_control(a,b,c,d);
         return control(kind,a,b,c);
+    }
+    if(kind==NAS_SYSVIPC_SHM) {
+        if(operation==2)return shm_attach(a,b,c);
+        if(operation==3)return shm_detach(a);
     }
     return (uint64_t)-ENOSYS;
 }

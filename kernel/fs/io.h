@@ -18,6 +18,11 @@ struct nas_fs_io_vectors {
 };
 int nas_fs_io_vectors_import(unsigned slot,uint64_t user_iov,uint64_t count,
                              bool writing,struct nas_fs_io_vectors *out);
+/* Datagram socket syscalls validate File read/write access and iovec
+ * ranges without requiring a scalar FileOps callback (protocol owns I/O). */
+int nas_fs_io_vectors_import_datagram(unsigned slot,uint64_t user_iov,
+                                      uint64_t count,bool writing,
+                                      struct nas_fs_io_vectors *out);
 uint64_t nas_fs_io_vectors_accessible_prefix(
     const struct nas_fs_io_vectors *vectors,uint64_t requested,bool writing);
 bool nas_fs_io_vectors_copyin(const struct nas_fs_io_vectors *vectors,
@@ -69,7 +74,7 @@ int64_t nas_fs_mmap_read(uint64_t fd, uint64_t offset,
 /* Tri-state device mapping probe: 0 ordinary FD, 1 pinned device owner,
  * negative errno for an invalid or unsupported character-device mapping.
  * The caller must put() the returned owner after ledger insertion or abort. */
-int nas_fs_mmap_device_pin(uint64_t fd,bool writable,
+int nas_fs_mmap_device_pin(uint64_t fd,bool writable,uint64_t offset,
                            struct nas_vm_device **out);
 /* 1 iff an open readable regular file's bytes cannot change in this boot;
  * 0 for mutable/dynamic sources, negative errno for an invalid descriptor.

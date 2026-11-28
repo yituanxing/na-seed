@@ -25,6 +25,8 @@
 #define NAS_VT_PROCESS 1U
 #define NAS_KD_TEXT 0U
 #define NAS_KD_GRAPHICS 1U
+#define NAS_K_XLATE 1U
+#define NAS_K_OFF 4U
 #define NAS_VT_ACKACQ 2U
 
 /* Linux include/uapi/linux/vt.h; 8 byte structure on every target ISA. */
@@ -52,6 +54,10 @@ static struct {
 static void feed_input(void);
 static void push_byte(uint8_t b);
 static void fbcon_report(const uint8_t *bytes,uint64_t length);
+static void activate_text(void) {
+    nas_fbcon_activate(true);
+    (void)nas_fbcon_dimensions(&vt.cols,&vt.rows);
+}
 
 static struct nas_chrdev_node vt_nodes[]={
     { .path="/dev/tty0", .info={.fd_kind=23,.unit=0,.dev=2,
@@ -80,19 +86,11 @@ static void reset_graphics_ownership(void) {
     vt.mode=(struct nas_linux_vt_mode){0};
     vt.mode_owner_pid=0;
     vt.kd_mode=NAS_KD_TEXT;
-    vt.keyboard_mode=1; /* Linux K_XLATE, never pretend raw scancode output. */
+    vt.keyboard_mode=NAS_K_XLATE;
 }
 static void default_termios(void) {
-    memset(&vt.termios,0,sizeof(vt.termios));
+    nas_termios_defaults(&vt.termios,NAS_TERMIOS_CONSOLE_CFLAG);
     vt.raw_owner_pid=0;
-    vt.termios.iflag=0000400U; /* ICRNL */
-    vt.termios.oflag=0000001U|0000004U;
-    vt.termios.cflag=0000060U|0000200U|0004000U|0000017U;
-    vt.termios.lflag=0000001U|0000002U|0000010U;
-    vt.termios.cc[0]=3;vt.termios.cc[1]=28;
-    vt.termios.cc[2]=127;vt.termios.cc[3]=21;
-    vt.termios.cc[4]=4;vt.termios.cc[6]=1;
-    vt.termios.cc[10]=26;vt.termios.cc[14]=23;
 }
 void nas_vt_init(void) {
     memset(&vt,0,sizeof(vt));
@@ -121,7 +119,7 @@ void nas_vt_open_session(uint64_t flags) {
     vt.sid=task->sid;
     vt.pgid=task->pgid;
     reset_input();
-    nas_fbcon_activate(true);
+    activate_text();
 }
 static uint64_t copy_pid(uint64_t arg,uint64_t pid) {
     uint32_t n=(uint32_t)pid;
@@ -189,9 +187,15 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         return nas_user_write_bytes(arg,(const uint8_t *)&mode,sizeof(mode))?
             0:(uint64_t)-EFAULT;
     }
-    case 0x4b45U: /* KDSKBMODE: only supported translated key mode */
-        if(arg!=1U)return (uint64_t)-EOPNOTSUPP;
+    case 0x4b45U: /* KDSKBMODE: translated console or keyboard disabled */
+        if(arg!=NAS_K_XLATE && arg!=NAS_K_OFF)
+            return (uint64_t)-EOPNOTSUPP;
         vt.keyboard_mode=(unsigned)arg;
+        /* Drop queued terminal bytes on a mode change. Keep physical
+         * modifier state and the independent evdev event stream intact. */
+        nas_ldisc_reset(&vt.ldisc);
+        vt.head=vt.count=0;
+        vt.rx_overflow=false;
         return 0;
     case 0x5401U: /* TCGETS */
         return nas_user_write_bytes(arg,(const uint8_t *)&vt.termios,36)?
@@ -230,7 +234,7 @@ uint64_t nas_vt_ioctl(uint64_t cmd,uint64_t arg) {
         bool new_owner=vt.sid!=task->sid;
         if(vt.sid && new_owner)reset_input();
         vt.sid=task->sid;vt.pgid=task->pgid;
-        if(new_owner)nas_fbcon_activate(true);
+        if(new_owner)activate_text();
         return 0;
     }
     case 0x5422U: /* TIOCNOTTY */
@@ -467,12 +471,14 @@ void nas_tty_vt_key_event(uint16_t code,bool pressed) {
         vt.alt=vt.alt_bits!=0;return;
     }
     case 58:
-        if(pressed&&!vt.caps_down)vt.caps=!vt.caps;
+        if(pressed&&!vt.caps_down&&vt.keyboard_mode!=NAS_K_OFF)
+            vt.caps=!vt.caps;
         vt.caps_down=pressed;
         return;
     default:break;
     }
-    if(!pressed)return;
+    /* K_OFF disables VT translation, not the physical input core or evdev. */
+    if(!pressed || vt.keyboard_mode==NAS_K_OFF)return;
     switch(code){
     case 103:emit_bytes("\x1b[A");break;
     case 108:emit_bytes("\x1b[B");break;

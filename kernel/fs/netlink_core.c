@@ -5,6 +5,7 @@
 #include "netlink_route.h"
 #include "netlink_filter.h"
 #include "netlink_generic.h"
+#include "netlink_kobject.h"
 #include "../errno.h"
 
 _Static_assert(NAS_NETLINK_ROUTE_SOCKADDR_SIZE==NAS_NETLINK_SOCKADDR_SIZE,
@@ -64,6 +65,12 @@ static const struct netlink_provider providers[]={
       nas_netlink_generic_set_sndbuf,nas_netlink_generic_get_sndbuf,
       nas_netlink_generic_set_rcvbuf,nas_netlink_generic_get_rcvbuf,
       nas_netlink_generic_sendto,nas_netlink_generic_recvmsg },
+    { NAS_NETLINK_KOBJECT_PROTOCOL, nas_netlink_kobject_is_slot,
+      nas_netlink_kobject_open,nas_netlink_kobject_ops,nas_netlink_kobject_protocol,
+      nas_netlink_kobject_bind,nas_netlink_kobject_getsockname,
+      nas_netlink_kobject_set_sndbuf,nas_netlink_kobject_get_sndbuf,
+      nas_netlink_kobject_set_rcvbuf,nas_netlink_kobject_get_rcvbuf,
+      nas_netlink_kobject_sendto,nas_netlink_kobject_recvmsg },
 };
 
 static const struct netlink_provider *by_protocol(unsigned protocol) {

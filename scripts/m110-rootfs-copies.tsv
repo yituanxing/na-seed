@@ -1,2 +1,0 @@
-# Only the immutable guest-side oracle; all APK resolution remains host-side.
-tests/m110-batch-run.sh	tests/m110-batch-run.sh

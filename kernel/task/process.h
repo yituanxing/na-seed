@@ -35,6 +35,8 @@ void nas_process_robust_exit(struct nas_task *thread);
  * no other CPU may run a sibling before old page-table destruction.
  * Does not touch the thread-group leader's task slot: exec.c adopts it. */
 void nas_process_exec_quiesce_siblings(void);
+void nas_process_release_siblings(struct nas_task *caller,
+                                  struct nas_task *leader,bool cancel_first);
 void nas_process_clear_tid_on_exit(void);
 /* The caller's current VM must be identical to the target thread's VM. */
 void nas_process_clear_tid_for_exit(struct nas_task *thread);
@@ -52,6 +54,8 @@ bool nas_process_wait_owner(const struct nas_task *child,
                             const struct nas_task *waiter);
 bool nas_process_waitable(const struct nas_task *child,uint64_t options,
                           const struct nas_task *waiter);
+bool nas_process_wait4_ready(const struct nas_task *waiter,uint64_t desired,
+                             uint64_t options);
 uint64_t nas_process_wait4(uint64_t pid, uint64_t status, uint64_t options, uint64_t rusage);
 /* Linux waitid: validated idtype and WEXITED/WSTOPPED/WCONTINUED selection,
  * 128-byte siginfo_t and WNOWAIT observation without consuming a child. */

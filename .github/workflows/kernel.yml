@@ -1,0 +1,71 @@
+name: Kernel baseline
+# Push is the authoritative head check: a same-repository PR would otherwise
+# run an identical push and pull_request matrix for the exact same SHA.
+on:
+  push:
+  workflow_dispatch:
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, riscv64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select weekly apt cache
+        id: apt-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore signed Ubuntu package downloads
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: naseed-apt-noble-${{ runner.arch }}-kernel-${{ matrix.arch }}-${{ steps.apt-week.outputs.week }}-${{ hashFiles('.github/workflows/kernel.yml') }}
+          restore-keys: |
+            naseed-apt-noble-${{ runner.arch }}-kernel-${{ matrix.arch }}-
+            naseed-apt-noble-${{ runner.arch }}-
+      - name: Install compiler and target tools
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p "$HOME/.cache/naseed-apt"
+          sudo apt-get update -o Acquire::Retries=3
+          set -- clang lld binutils curl make
+          if [ "$TARGET_ARCH" = x86_64 ]; then set -- "$@" xorriso ovmf qemu-system-x86; fi
+          # Keep apt's _apt download sandbox and normal signature validation.
+          find "$HOME/.cache/naseed-apt" -maxdepth 1 -name '*.deb' -exec sudo cp -t /var/cache/apt/archives -- {} +
+          sudo apt-get -o Acquire::Retries=3 -o APT::Keep-Downloaded-Packages=true install -y --download-only --no-install-recommends "$@"
+          find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -t "$HOME/.cache/naseed-apt" -- {} +
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends "$@"
+      - name: Save downloaded packages before running tests
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+      - name: Validate shell entry points
+        run: |
+          for script in scripts/*.sh tests/*.sh; do sh -n "$script"; done
+      - name: Build kernel
+        run: make ARCH=${{ matrix.arch }} kernel
+      - name: Build native DT VirtIO variant
+        if: matrix.arch != 'x86_64'
+        run: make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_NET=1 kernel
+      - name: Display host contract
+        if: matrix.arch == 'x86_64'
+        run: make check-host
+      - name: Build uACPI hardware discovery kernel
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 OUT=build/h0 NAS_ENABLE_H0_HARDWARE_DISCOVERY=1 kernel
+      - name: Build UEFI ISO
+        if: matrix.arch == 'x86_64'
+        run: make iso
+      - name: Boot smoke
+        if: matrix.arch == 'x86_64'
+        run: make smoke

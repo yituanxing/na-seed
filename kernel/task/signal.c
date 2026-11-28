@@ -26,13 +26,6 @@ extern void nas_x86_debug_recent_syscalls(uint64_t pid);
  * A signal stack is per TID; saved signal dispositions remain per sighand.
  * SS_AUTODISARM is intentionally rejected until switching away from signal
  * handlers is supported, never reported as a feature that silently fails. */
-struct nas_sigaltstack_wire {
-    uint64_t sp;
-    uint32_t flags, padding;
-    uint64_t size;
-};
-_Static_assert(sizeof(struct nas_sigaltstack_wire)==24,
-               "Linux LP64 stack_t ABI");
 
 uint32_t nas_signal_altstack_flags(const struct nas_task *task,
                                   uint64_t user_sp) {
@@ -41,6 +34,14 @@ uint32_t nas_signal_altstack_flags(const struct nas_task *task,
        user_sp-task->signal_stack_sp<task->signal_stack_size)
         return NAS_SS_ONSTACK;
     return 0;
+}
+
+struct nas_sigaltstack_wire nas_signal_stack_snapshot(const struct nas_task *task,
+                                                       uint64_t user_sp) {
+    return (struct nas_sigaltstack_wire){
+        .sp=task->signal_stack_sp,.flags=nas_signal_altstack_flags(task,user_sp),
+        .size=task->signal_stack_size
+    };
 }
 
 uint64_t nas_signal_handler_stack_top(const struct nas_task *task,
@@ -74,12 +75,7 @@ uint64_t nas_signal_sigaltstack(uint64_t new_ptr,uint64_t old_ptr) {
         }
     }
     if(old_ptr) {
-        struct nas_sigaltstack_wire previous={
-            .sp=task->signal_stack_sp,
-            .flags=state,
-            .padding=0,
-            .size=task->signal_stack_size,
-        };
+        struct nas_sigaltstack_wire previous=nas_signal_stack_snapshot(task,user_sp);
         if(!nas_user_write_bytes(old_ptr,(const uint8_t *)&previous,
                                  sizeof(previous)))return (uint64_t)-EFAULT;
     }

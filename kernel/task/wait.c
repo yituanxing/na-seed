@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../errno.h"
-#include "../syscall/ops.h"
+#include "../syscall/poll_wait_policy.h"
 #include "../task.h"
 #include "../fd.h"
 #include "../pipe.h"
@@ -10,7 +10,6 @@
 #include "../drivers/tty.h"
 #include "../drivers/pty.h"
 #include "process.h"
-#include "wait_pid.h"
 #include "signal.h"
 #include "../time/clock.h"
 #include "../fs/epoll.h"
@@ -27,18 +26,6 @@ static bool task_io_ready(const struct nas_task *task) {
     /* A blocked syscall retains a File reference even if CLONE_FILES
      * siblings close or dup2 its original integer fd. */
     return nas_fs_io_ready(task->wait.pending_io,task);
-}
-static bool task_wait_ready(const struct nas_task *task) {
-    uint64_t desired = task->wait.blocked_args[0];
-    for (unsigned slot = 0; slot < NAS_TASK_LIMIT; slot++) {
-        struct nas_task *child=nas_task_at(slot);
-        if(child->state==NAS_TASK_FREE)continue;
-        if(!nas_process_wait_owner(child,task))continue;
-        if (!nas_wait_pid_matches(desired,child->pid,
-                                  task->pgid,child->pgid)) continue;
-        if (nas_process_waitable(child,task->wait.blocked_args[2],task)) return true;
-    }
-    return false;
 }
 bool nas_task_wait_ready(const struct nas_task *task) {
     if (task->state != NAS_TASK_BLOCKED || !task->resume_valid ||
@@ -74,29 +61,19 @@ bool nas_task_wait_ready(const struct nas_task *task) {
     if (task->wait.blocked_op == NAS_SC_nanosleep ||
         task->wait.blocked_op == NAS_SC_clock_nanosleep) return false;
     if (task->wait.blocked_op == NAS_SC_futex) return task->wait.futex_woken;
-    if (task->wait.blocked_op == NAS_SC_wait4) return task_wait_ready(task);
+    if (task->wait.blocked_op == NAS_SC_wait4)
+        return nas_process_wait4_ready(task,task->wait.blocked_args[0],
+                                       task->wait.blocked_args[2]);
     if (task->wait.blocked_op == NAS_SC_waitid)
         return nas_process_waitid_ready(task,task->wait.blocked_args[0],
                 task->wait.blocked_args[1],task->wait.blocked_args[3]);
-    if(task->wait.blocked_op==NAS_SC_epoll_wait ||
-       task->wait.blocked_op==NAS_SC_epoll_pwait)
-        return nas_epoll_task_ready(task);
-    if(task->wait.blocked_op==NAS_SC_bind ||
-       task->wait.blocked_op==NAS_SC_connect ||
-       task->wait.blocked_op==NAS_SC_listen ||
-       task->wait.blocked_op==NAS_SC_setsockopt ||
-       task->wait.blocked_op==NAS_SC_getsockopt ||
-       task->wait.blocked_op==NAS_SC_shutdown ||
-       task->wait.blocked_op==NAS_SC_getsockname ||
-       task->wait.blocked_op==NAS_SC_getpeername)
+    switch(nas_poll_wait_kind(task->wait.blocked_op)) {
+    case NAS_POLL_WAIT_EPOLL: return nas_epoll_task_ready(task);
+    case NAS_POLL_WAIT_SOCKET:
         return nas_fs_socket_control_ready(task->wait.description_slot);
-    if(task->wait.blocked_op==NAS_SC_accept ||
-       task->wait.blocked_op==NAS_SC_accept4)
-        return nas_fs_poll_ready(task); /* original listener description */
-    if (task->wait.blocked_op == NAS_SC_poll ||
-        (task->wait.blocked_op == NAS_SC_ppoll ||
-         (task->wait.blocked_op == NAS_SC_pselect6 || task->wait.blocked_op == NAS_SC_select)))
-        return nas_fs_poll_ready(task);
+    case NAS_POLL_WAIT_FDS: return nas_fs_poll_ready(task);
+    default: break;
+    }
     if (task->wait.blocked_op == NAS_SC_read ||
         task->wait.blocked_op == NAS_SC_readv ||
         task->wait.blocked_op == NAS_SC_recvfrom || /* TCP MSG_PEEK */

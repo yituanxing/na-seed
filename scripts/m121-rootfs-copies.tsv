@@ -1,3 +1,0 @@
-# All PDF test programs run prebuilt; fixture PDFs are created by Linux host.
-tests/m121-batch-run.sh	tests/m121-batch-run.sh
-tests/m121-attachment.txt	tests/m121-attachment.txt

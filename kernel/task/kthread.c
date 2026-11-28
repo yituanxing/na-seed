@@ -38,6 +38,16 @@ static void stack_guard_check(const struct nas_kthread *worker) {
         if(worker->stack[i]!=(uint8_t)(0xa5U^(i*37U)))
             nas_fail("M179 kernel worker stack overflow into guard");
 }
+/* Retire a detached worker without resetting its generation-qualified handle. */
+static void worker_release(struct nas_kthread *w) {
+    nas_kernel_execution_reset(&w->exec);
+    w->entry=0;
+    w->argument=0;
+    w->deadline_ns=0;
+    w->deadline_active=false;
+    w->timed_out=false;
+    w->state=KTHREAD_FREE;
+}
 static void kthread_start(void) {
     struct nas_kthread *self=active;
     if(!self || self->state!=KTHREAD_RUNNING || !self->entry)
@@ -56,13 +66,7 @@ void nas_kthread_system_init(void) {
     for(unsigned i=0;i<NAS_KTHREAD_LIMIT;i++) {
         if(workers[i].exec.wait.queue)
             nas_fail("M95 cannot reinitialize armed kernel worker");
-        workers[i].state=KTHREAD_FREE;
-        nas_kernel_execution_reset(&workers[i].exec);
-        workers[i].entry=0;
-        workers[i].argument=0;
-        workers[i].deadline_ns=0;
-        workers[i].deadline_active=false;
-        workers[i].timed_out=false;
+        worker_release(&workers[i]);
     }
     nas_kernel_context_reset(&caller_context);
     next_slot=0;
@@ -199,13 +203,7 @@ bool nas_kthread_cancel(struct nas_kthread_handle handle) {
     if(!w || (w->state!=KTHREAD_WAITING && w->state!=KTHREAD_READY))
         return false;
     (void)nas_wait_queue_remove(&w->exec.wait);
-    nas_kernel_execution_reset(&w->exec);
-    w->deadline_active=false;
-    w->deadline_ns=0;
-    w->timed_out=false;
-    w->entry=0;
-    w->argument=0;
-    w->state=KTHREAD_FREE;
+    worker_release(w);
     return true;
 }
 unsigned nas_kthread_run(unsigned budget) {
@@ -235,13 +233,7 @@ unsigned nas_kthread_run(unsigned budget) {
         if(chosen->state==KTHREAD_DONE) {
             if(chosen->exec.wait.queue)
                 nas_fail("M95 freeing queued worker");
-            chosen->state=KTHREAD_FREE;
-            chosen->deadline_active=false;
-            chosen->deadline_ns=0;
-            chosen->timed_out=false;
-            nas_kernel_execution_reset(&chosen->exec);
-            chosen->entry=0;
-            chosen->argument=0;
+            worker_release(chosen);
         }
         ++runs;
     }

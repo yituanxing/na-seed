@@ -1,0 +1,89 @@
+name: Native RISC-V64 / AArch64 boot acceptance
+on:
+  push:
+    branches: [refactor/naseed-cleanup-01-20261124]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-boot-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actual cross-architecture emulator and firmware
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            clang lld make binutils curl python3 \
+            qemu-system-arm qemu-system-misc \
+            qemu-efi-aarch64 qemu-efi-riscv64 ipxe-qemu \
+            dosfstools mtools cpio e2fsprogs openssl python3-pexpect
+      - name: Check boot scripts
+        run: |
+          python3 -m py_compile tests/native-boot.py
+          python3 -m py_compile tests/native-gui-roundtrip.py
+          python3 -m py_compile tests/native-drm.py
+          sh -n tests/native-boot.sh
+          sh -n tests/native-alpine.sh
+          sh -n tests/native-root.sh
+          sh -n tests/native-openrc.sh
+          sh -n tests/native-desktop.sh
+          sh -n tests/native-xorg.sh
+      - name: Build actual full native kernel and user ELF
+        run: make ARCH=${{ matrix.arch }} kernel
+      - name: Boot original full kernel through Limine and execute native user ELF
+        run: sh tests/native-boot.sh "${{ matrix.arch }}"
+      - name: Boot verified upstream Alpine musl/BusyBox through native syscalls
+        run: sh tests/native-alpine.sh "${{ matrix.arch }}"
+      - name: Link full Alpine ext4, VirtIO GPU, DRM/GEM/KMS and evdev profile
+        env:
+          NAS_ENABLE_LWEXT4: "1"
+          NAS_ENABLE_VIRTIO_BLK: "1"
+          NAS_ENABLE_VIRTIO_GPU: "1"
+          NAS_ENABLE_VIRTIO_INPUT: "1"
+          NAS_ENABLE_M191_ALPINE_ROOT: "1"
+        run: make ARCH=${{ matrix.arch }} kernel
+      - name: Boot real writable Alpine ext4 root with native VirtIO block
+        run: sh tests/native-root.sh "${{ matrix.arch }}"
+      - name: Build native real OpenRC PID1 shutdown profile
+        env:
+          NAS_ENABLE_LWEXT4: "1"
+          NAS_ENABLE_VIRTIO_BLK: "1"
+          NAS_ENABLE_VIRTIO_GPU: "1"
+          NAS_ENABLE_VIRTIO_INPUT: "1"
+          NAS_ENABLE_M191_ALPINE_ROOT: "1"
+          NAS_M241_PLATFORM_POWERDOWN: "1"
+        run: make ARCH=${{ matrix.arch }} kernel
+      - name: Boot original Alpine OpenRC and physical UART login
+        run: sh tests/native-openrc.sh "${{ matrix.arch }}"
+      - name: Boot unmodified Alpine Weston DRM, Thunar and real GPU
+        run: sh tests/native-desktop.sh "${{ matrix.arch }}"
+      - name: Preserve real native QEMU serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}-serial
+          path: |
+            build/native-boot/${{ matrix.arch }}/serial.log
+            build/native-boot/${{ matrix.arch }}/alpine-serial.log
+            build/native-boot/${{ matrix.arch }}/root-serial.log
+            build/native-boot/${{ matrix.arch }}/openrc-serial.log
+            build/native-boot/${{ matrix.arch }}/desktop-serial.log
+            build/native-boot/${{ matrix.arch }}/*-desktop-frame.ppm
+            build/native-boot/${{ matrix.arch }}/gui-*.log
+            build/native-boot/${{ matrix.arch }}/gui-*.ppm
+            build/native-boot/${{ matrix.arch }}/gui-note.txt
+            build/native-boot/${{ matrix.arch }}/drm-serial.log
+            build/native-boot/${{ matrix.arch }}/drm-*.ppm
+            build/native-boot/${{ matrix.arch }}/xorg-serial.log
+            build/native-boot/${{ matrix.arch }}/drm-xorg-*.ppm
+            build/native-boot/${{ matrix.arch }}/gui-archive.txt
+          if-no-files-found: ignore

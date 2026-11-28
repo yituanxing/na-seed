@@ -1,3 +1,0 @@
-WARN delta
-INFO ignored-one
-WARN alpha

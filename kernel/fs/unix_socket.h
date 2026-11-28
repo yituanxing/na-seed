@@ -5,8 +5,9 @@
 #include "vfs.h"
 /* In-kernel AF_UNIX SOCK_STREAM endpoint ownership. The actual byte queues
  * are the same refcounted bidirectional pipes used by socketpair(). */
-void nas_unix_socket_init(unsigned slot);
-void nas_unix_socket_pair_ready(unsigned first,unsigned second);
+int nas_unix_socket_init(unsigned slot);
+int nas_unix_socket_reuseaddr(unsigned slot,bool set,bool value);
+int nas_unix_socket_pair_ready(unsigned first,unsigned second);
 void nas_unix_socket_release(unsigned slot);
 /* Bind through one VFS-owned parent Path; the socket open description keeps
  * the returned positive inode Path until its FINAL close. Display text is
@@ -14,13 +15,16 @@ void nas_unix_socket_release(unsigned slot);
 int nas_unix_socket_bind(unsigned slot,const struct nas_vfs_path *parent,
                          const char *leaf,uint32_t mode,
                          const char *display_name);
+int nas_unix_socket_bind_abstract(unsigned slot,const uint8_t *name,unsigned length);
+int nas_unix_socket_connect_abstract(unsigned slot,const uint8_t *name,unsigned length);
 int nas_unix_socket_listen(unsigned slot,unsigned backlog);
 /* target is a BORROWED positive Path held by the syscall namei owner. */
 int nas_unix_socket_connect(unsigned slot,const struct nas_vfs_path *target);
 int nas_unix_socket_accept(unsigned slot,unsigned *peer_slot);
+bool nas_unix_socket_connected(unsigned slot);
 bool nas_unix_socket_listening(unsigned slot);
 bool nas_unix_socket_readable(unsigned slot);
-const char *nas_unix_socket_name(unsigned slot);
+unsigned nas_unix_socket_name(unsigned slot,bool peer,uint8_t out[108]);
 /* Linux SO_PEERCRED: connection-time credentials, never the caller's. */
 int nas_unix_socket_peercred(unsigned slot,uint32_t credentials[3]);
 #define NAS_UNIX_MAX_RIGHTS 12U

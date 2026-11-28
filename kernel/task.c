@@ -49,6 +49,21 @@ void nas_task_set_commandline(struct nas_task *task,
     }
     task->commandline_bytes=(uint16_t)used;
 }
+static void task_clear_ptrace_state(struct nas_task *task) {
+    task->ptrace_tracer_pid = 0;
+    task->ptrace_options=0;
+    task->ptrace_phase=0;
+    task->ptrace_trace_syscalls=false;
+    task->ptrace_skip_entry_once=false;
+    task->ptrace_event=0;
+    task->ptrace_event_message=0;
+    task->ptrace_exec_pending_exit=false;
+    task->ptrace_exit_event_sent=false;
+    task->ptrace_child_initial_stop=false;
+    task->ptrace_fork_pending_exit=false;
+    task->ptrace_event_exit_published=false;
+    task->ptrace_single_step=false;
+}
 struct nas_task *nas_current_task;
 
 void nas_task_boot_init(void) {
@@ -84,10 +99,6 @@ void nas_task_boot_init(void) {
     nas_current_task->state = NAS_TASK_RUNNING;
 }
 struct nas_task *nas_task_current(void) { return nas_current_task; }
-const struct nas_task *nas_task_find(uint64_t pid) {
-    /* All callers share the single mutable/const PID lookup owner. */
-    return nas_task_by_pid(pid);
-}
 
 /* Reuse slots, NEVER PID identities. FD tables are copied, but
  * shared open-file references are adjusted after a successful VM fork.
@@ -155,19 +166,7 @@ struct nas_task *nas_task_fork_slot(void) {
         child->stop_report_pending = false;
         child->continue_report_pending = false;
         child->stop_signal = 0;
-        child->ptrace_tracer_pid = 0;
-        child->ptrace_options=0;
-        child->ptrace_phase=0;
-        child->ptrace_trace_syscalls=false;
-        child->ptrace_skip_entry_once=false;
-        child->ptrace_event=0;
-        child->ptrace_event_message=0;
-        child->ptrace_exec_pending_exit=false;
-        child->ptrace_exit_event_sent=false;
-        child->ptrace_child_initial_stop=false;
-        child->ptrace_fork_pending_exit=false;
-        child->ptrace_event_exit_published=false;
-        child->ptrace_single_step=false;
+        task_clear_ptrace_state(child);
         child->resume_valid = false;
         /* Fork inherits resources, never pending waits or device watches. */
         nas_task_wait_reset(child);
@@ -268,19 +267,7 @@ void nas_task_release(struct nas_task *task) {
     task->stop_report_pending = false;
     task->continue_report_pending = false;
     task->stop_signal = 0;
-    task->ptrace_tracer_pid = 0;
-    task->ptrace_options=0;
-    task->ptrace_phase=0;
-    task->ptrace_trace_syscalls=false;
-    task->ptrace_skip_entry_once=false;
-    task->ptrace_event=0;
-    task->ptrace_event_message=0;
-    task->ptrace_exec_pending_exit=false;
-    task->ptrace_exit_event_sent=false;
-    task->ptrace_child_initial_stop=false;
-    task->ptrace_fork_pending_exit=false;
-    task->ptrace_event_exit_published=false;
-    task->ptrace_single_step=false;
+    task_clear_ptrace_state(task);
     task->pending_signals = 0;
     task->vfork_child_pid = task->vfork_parent_pid = 0;
     task->vfork_shared_vm = false;
@@ -298,20 +285,7 @@ uint64_t nas_task_page_root(const struct nas_task *task) {
 uint64_t nas_task_tls_base(const struct nas_task *task) {
     return task ? nas_arch_context_tls_base(&task->arch) : 0;
 }
-struct nas_task *nas_task_child_at(uint64_t parent_pid, unsigned slot) {
-    if (slot >= NAS_TASK_LIMIT || !parent_pid) return NULL;
-    struct nas_task *task = &task_table[slot];
-    if (task->state == NAS_TASK_FREE || (task->ppid != parent_pid || task->is_thread))
-        return NULL;
-    return task;
-}
 
 struct nas_task *nas_task_at(unsigned slot) {
     return slot < NAS_TASK_LIMIT ? &task_table[slot] : NULL;
-}
-uint8_t nas_task_fd_kind(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds->entries[fd].kind : 0;
-}
-unsigned nas_task_fd_slot(const struct nas_task *task, uint64_t fd) {
-    return task && fd < NAS_FD_LIMIT ? task->fds->entries[fd].slot : NAS_OPEN_FILE_LIMIT;
 }

@@ -15,6 +15,7 @@ struct nas_chrdev_node;
 /* System-wide open descriptions, independent of per-process FD count. */
 #define NAS_OPEN_FILE_LIMIT 128
 #define NAS_FD_LIMIT 64
+#define NAS_FILE_ORIGIN_LIMIT 256U
 /* Shared FD kind identities until the file-object refactor. */
 enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_BOOTFS = 4, FD_ARCHIVE = 5, FD_DIR = 6,
@@ -24,7 +25,7 @@ enum { FD_CLOSED = 0, FD_UART = 1, FD_NULL = 2, FD_ZERO = 3,
        FD_RANDOM = 17, FD_SIGNALFD = 18, FD_PIDFD = 19,
        FD_FRAMEBUFFER = 20, FD_EVDEV = 21, FD_INOTIFY = 22,
        FD_VT = 23, FD_TIMERFD = 24, FD_FIFO_RDWR = 25,
-       FD_USB_SERIAL = 26 };
+       FD_USB_SERIAL = 26, FD_DRM = 27 };
 /* Descriptor-local entry. The open-file description is a separate
  * refcounted object: dup/fork share its offset, not the CLOEXEC bit. */
 struct nas_fd_entry {
@@ -113,7 +114,27 @@ bool nas_fd_slot_lease_cancel(struct nas_fd_slot_lease lease);
  * fixed-capacity object table for now, not a heap allocator or full VFS. */
 struct limine_file;
 struct bootfs_entry;
+/* Scalar provider state belongs to its shared File, not parallel slot tables.
+ * These providers are mutually exclusive, and File installation/finalization
+ * initialize and clear this storage as part of the ordinary lifetime. */
+struct nas_timerfd_state {
+    uint64_t deadline_ns,interval_ns,expirations;
+    uint32_t clockid;
+    bool armed;
+};
+struct ep_state;
+struct in_instance;
+union nas_file_private {
+    struct ep_state *epoll;
+    struct in_instance *inotify;
+    void *provider; /* Opaque File-owned heap state; validated by FileOps. */
+    struct { uint64_t counter; bool semaphore; } eventfd;
+    struct nas_timerfd_state timerfd;
+    uint64_t pidfd_target;
+    uint64_t signalfd_mask;
+};
 struct nas_open_file {
+    union nas_file_private private;
     uint16_t refcount;
     /* Nonzero only while this OpenFile is a kernel-owned pending lease.
      * The token cannot be confused with the protocol stack's own handle. */
@@ -142,8 +163,13 @@ struct nas_open_file {
     /* Legacy procfs shadow PID/TGID/FD fields and bootfs entry pointer
      * were removed: all mounted File identities live in vnode+mount.
      * Keep only the non-VFS Limine module's opaque boot_file pointer. */
-    /* Canonical path of the open description, shared by dup/fork. */
-    char origin_path[256];
+    /* Diagnostic-only open-time hint for procfs fd symlinks. The VFS Dentry is
+     * authoritative. This heap string is optional on allocation failure,
+     * shared across dup/fork and freed exactly once at File final close. */
+    char *origin_path;
 };
 extern struct nas_open_file nas_open_files[NAS_OPEN_FILE_LIMIT];
+static inline bool nas_file_slot_live(unsigned slot) {
+    return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
+}
 #endif

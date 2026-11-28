@@ -10,6 +10,13 @@ uint64_t nas_vm_anon_mmap(uint64_t hint, uint64_t length,
  * mappings. MAP_FIXED replaces only an allowed owned user range. */
 uint64_t nas_vm_file_mmap(uint64_t hint, uint64_t length, uint64_t prot,
                           uint64_t flags, uint64_t fd, uint64_t offset);
+/* Map a shared PMM-backed provider (SysV IPC or another kernel object).
+ * Caller transfers ONE get() owner pin; this function always puts it.
+ * The VMA keeps independent get()/put() refs through fork/munmap/exit. */
+struct nas_vm_device;
+uint64_t nas_vm_map_owned_device(uint64_t hint,uint64_t length,
+                                  uint64_t prot,uint64_t flags,
+                                  struct nas_vm_device *device);
 uint64_t nas_vm_msync(uint64_t addr,uint64_t length,uint64_t flags);
 /* Linux mincore: report real resident PTEs and inode-owned cache pages
  * without making the queried memory resident. */
@@ -23,6 +30,8 @@ void nas_vm_invalidate_file(const struct nas_fs_node *node,uint64_t new_size);
  * timestamps merely because an application called sync. */
 void nas_vm_rearm_file(const struct nas_fs_node *node);
 uint64_t nas_vm_munmap(uint64_t addr, uint64_t length);
+uint64_t nas_vm_mremap(uint64_t old_addr,uint64_t old_size,
+                        uint64_t new_size,uint64_t flags,uint64_t new_addr);
 uint64_t nas_vm_madvise(uint64_t addr, uint64_t length, uint64_t advice);
 uint64_t nas_vm_brk(uint64_t want);
 uint64_t nas_vm_mprotect(uint64_t addr, uint64_t length, uint64_t prot);
@@ -30,9 +39,6 @@ struct nas_task;
 /* Logical VMA enumeration includes reserved PROT_NONE and nonresident pages.
  * Callers must check target Task lifetime/authorization first. */
 bool nas_vm_walk_task_vmas(const struct nas_task *,nas_vma_visit,void *ctx);
-/* Low-level resident PTE traversal retained for diagnostics only. */
-bool nas_vm_walk_task_pages(const struct nas_task *task,
-                             nas_mmu_user_visit callback,void *ctx);
 /* INTERNAL, unprivileged callers forbidden until ptrace authorization.
  * Returns bytes copied, -EFAULT with zero progress, -ESRCH for dead Task. */
 int64_t nas_vm_read_task_bytes(const struct nas_task *task,uint64_t va,

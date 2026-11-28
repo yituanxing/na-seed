@@ -3,6 +3,7 @@
 #include "../arch/arch.h"
 #include "../errno.h"
 #include "../fd.h"
+#include "../lib/endian.h"
 #include "../mm/usercopy.h"
 #include "../task.h"
 #include "../time/clock.h"
@@ -20,15 +21,6 @@
 #define POLLIN 0x0001U
 #define POLLRDNORM 0x0040U
 
-struct timerfd_state {
-    uint64_t deadline_ns;
-    uint64_t interval_ns;
-    uint64_t expirations;
-    uint32_t clockid;
-    bool armed;
-};
-static struct timerfd_state timers[NAS_OPEN_FILE_LIMIT];
-
 static bool timerfd_now(uint32_t clockid,uint64_t *out) {
     if(clockid==1U || clockid==7U) {
         *out=nas_arch_monotonic_ns();
@@ -36,21 +28,16 @@ static bool timerfd_now(uint32_t clockid,uint64_t *out) {
     }
     return clockid==0U && nas_time_realtime_ns(out);
 }
-static bool timerfd_live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && nas_open_files[slot].refcount;
-}
 static bool timerfd_fd(uint64_t fd,unsigned *slot) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_TIMERFD)return false;
-    unsigned s=nas_current_task->fds->entries[fd].slot;
-    if(!timerfd_live(s))return false;
-    *slot=s;
+    const struct nas_fd_entry *entry=nas_task_fd_entry(nas_current_task,fd);
+    if(!entry || entry->kind!=FD_TIMERFD)return false;
+    *slot=entry->slot;
     return true;
 }
 /* Advance one periodic timer mathematically even if the kernel was not
  * scheduled at each expiration. Poll/read sees a precise accumulated count. */
 static void timerfd_advance(unsigned slot) {
-    struct timerfd_state *t=&timers[slot];
+    struct nas_timerfd_state *t=&nas_open_files[slot].private.timerfd;
     if(!t->armed)return;
     uint64_t now;
     if(!timerfd_now(t->clockid,&now) || now<t->deadline_ns)return;
@@ -82,16 +69,16 @@ uint64_t nas_timerfd_create(uint64_t raw_clock,uint64_t flags) {
     int rc=nas_fd_reserve(nas_current_task,0,1,fds,slots,"timerfd_create");
     if(rc)return (uint64_t)(int64_t)rc;
     unsigned slot=slots[0];
-    timers[slot]=(struct timerfd_state){.clockid=(uint32_t)raw_clock};
     if(!nas_fd_install_new(nas_current_task,fds[0],slot,FD_TIMERFD,
                            2ULL|(flags&TFD_NONBLOCK),
                            (flags&TFD_CLOEXEC)!=0))
         return (uint64_t)-EBADF;
+    nas_open_files[slot].private.timerfd.clockid=(uint32_t)raw_clock;
     return fds[0];
 }
 
 static uint64_t timerfd_snapshot(unsigned slot,uint64_t dst) {
-    struct timerfd_state *t=&timers[slot];
+    struct nas_timerfd_state *t=&nas_open_files[slot].private.timerfd;
     timerfd_advance(slot);
     uint64_t now,left=0;
     if(!timerfd_now(t->clockid,&now))return (uint64_t)-EOPNOTSUPP;
@@ -123,7 +110,7 @@ uint64_t nas_timerfd_settime(uint64_t fd,uint64_t flags,
        !nas_time_duration_ns(spec[2],spec[3],&start))
         return (uint64_t)-EINVAL;
     uint64_t now;
-    struct timerfd_state *t=&timers[slot];
+    struct nas_timerfd_state *t=&nas_open_files[slot].private.timerfd;
     if(!timerfd_now(t->clockid,&now))return (uint64_t)-EOPNOTSUPP;
     if(old_value) {
         uint64_t rc=timerfd_snapshot(slot,old_value);
@@ -138,10 +125,10 @@ uint64_t nas_timerfd_settime(uint64_t fd,uint64_t flags,
 }
 
 uint64_t nas_timerfd_read_plan(unsigned slot,uint64_t count) {
-    if(!timerfd_live(slot))return (uint64_t)-EBADF;
+    if(!nas_file_slot_live(slot))return (uint64_t)-EBADF;
     if(count<8)return (uint64_t)-EINVAL;
     timerfd_advance(slot);
-    if(!timers[slot].expirations)
+    if(!nas_open_files[slot].private.timerfd.expirations)
         return (nas_open_files[slot].status_flags&TFD_NONBLOCK)?
             (uint64_t)-EAGAIN:(uint64_t)-EOPNOTSUPP;
     return 8;
@@ -151,24 +138,20 @@ uint64_t nas_timerfd_read(unsigned slot,uint8_t *dst,uint64_t count) {
     uint64_t planned=nas_timerfd_read_plan(slot,count);
     if((int64_t)planned<0)return planned;
     if(!dst)return (uint64_t)-EFAULT;
-    uint64_t n=timers[slot].expirations;
-    for(unsigned i=0;i<8;i++)dst[i]=(uint8_t)(n>>(i*8U));
-    timers[slot].expirations=0;
+    uint64_t n=nas_open_files[slot].private.timerfd.expirations;
+    nas_put_le64(dst,n);
+    nas_open_files[slot].private.timerfd.expirations=0;
     return 8;
 }
 
 uint16_t nas_timerfd_poll_slot(unsigned slot,uint16_t events) {
-    if(!timerfd_live(slot))return 0;
+    if(!nas_file_slot_live(slot))return 0;
     timerfd_advance(slot);
-    return (events&POLLIN) && timers[slot].expirations ?
+    return (events&POLLIN) && nas_open_files[slot].private.timerfd.expirations ?
            POLLIN|POLLRDNORM:0;
 }
 
-uint16_t nas_timerfd_poll_fd(uint64_t fd,uint16_t events) {
-    unsigned slot;
-    return timerfd_fd(fd,&slot)?nas_timerfd_poll_slot(slot,events):0;
-}
 
 void nas_timerfd_release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)timers[slot]=(struct timerfd_state){0};
+    if(slot<NAS_OPEN_FILE_LIMIT)nas_open_files[slot].private.timerfd=(struct nas_timerfd_state){0};
 }

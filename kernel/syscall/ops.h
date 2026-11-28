@@ -129,6 +129,7 @@ enum nas_syscall_op {
     NAS_SC_mknod,
     NAS_SC_mknodat,
     NAS_SC_mmap,
+    NAS_SC_mremap,
     NAS_SC_mount,
     NAS_SC_memfd_create,
     NAS_SC_mincore,

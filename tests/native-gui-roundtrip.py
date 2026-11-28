@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""Native RV64/ARM64 original Alpine GUI edit/save/reboot acceptance.
+
+All Thunar navigation, Mousepad opening, editing and closing are real QMP
+input-send-event -> VirtIO-MMIO -> evdev -> Weston/Wayland -> GTK actions.
+Serial commands observe file contents and power off; never edit or open GUI.
+Requires an already provisioned and booted native-desktop.sh ext4 image.
+"""
+import json
+import pathlib
+import pexpect
+import socket
+import sys
+import time
+
+if len(sys.argv) != 3 or sys.argv[1] not in ("riscv64", "aarch64"):
+    raise SystemExit("usage: native-gui-roundtrip.py <riscv64|aarch64> <edit|reopen>")
+arch, phase = sys.argv[1:]
+if phase not in ("edit", "reopen", "fileops", "fileops-reopen"):
+    raise SystemExit("unknown phase: " + phase)
+work = pathlib.Path("build/native-boot") / arch
+efi, disk = work / "desktop-efi.img", work / "desktop.ext4"
+assert efi.is_file() and disk.is_file()
+sockpath = str((work / f"gui-{phase}-qmp.sock").resolve())
+firmware = {
+    "riscv64": "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
+    "aarch64": "/usr/share/AAVMF/AAVMF_CODE.fd",
+}[arch]
+args = [
+    "-machine", "virt,acpi=off" if arch == "riscv64" else "virt",
+    "-m", "1024M", "-smp", "1", "-display", "none", "-monitor", "none",
+    "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
+    "-global", "virtio-mmio.force-legacy=false",
+    "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
+    "-drive", f"if=none,id=bootdisk,format=raw,file={efi.resolve()},readonly=on",
+    "-device", "virtio-blk-pci,drive=bootdisk",
+    "-drive", f"if=none,id=root,format=raw,file={disk.resolve()}",
+    "-device", "virtio-blk-device,drive=root",
+    "-device", "virtio-gpu-device",
+    "-device", "virtio-keyboard-device",
+    "-device", "virtio-mouse-device",
+    "-qmp", f"unix:{sockpath},server=on,wait=off",
+    "-cpu", "rv64" if arch == "riscv64" else "cortex-a72",
+]
+if arch == "aarch64":
+    args.extend(["-semihosting-config", "enable=on,target=native"])
+
+
+def qmp(command):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(20)
+        sock.connect(sockpath)
+        with sock.makefile("rwb") as io:
+            greeting = json.loads(io.readline())
+            assert "QMP" in greeting, greeting
+            for request in ({"execute": "qmp_capabilities"}, command):
+                io.write(json.dumps(request).encode() + b"\n")
+                io.flush()
+                while True:
+                    msg = json.loads(io.readline())
+                    if "event" in msg:
+                        continue
+                    if "error" in msg:
+                        raise RuntimeError(f"QMP error: {msg}")
+                    if "return" in msg:
+                        break
+
+
+def scanout(label):
+    path = (work / f"gui-{phase}-{label}.ppm").resolve()
+    qmp({"execute": "screendump", "arguments": {"filename": str(path)}})
+    magic, w, h, maximum, frame = path.read_bytes().split(None, 4)
+    if magic != b"P6" or maximum != b"255":
+        raise RuntimeError(f"bad real GPU PPM: {path}")
+    w, h = int(w), int(h)
+    if len(frame) != w * h * 3:
+        raise RuntimeError(f"truncated GPU PPM: {path}")
+    return w, h, frame
+
+
+def input_events(events):
+    qmp({"execute": "input-send-event", "arguments": {"events": events}})
+    time.sleep(0.045)
+
+
+def rel(dx, dy):
+    events = []
+    if dx:
+        events.append({"type": "rel", "data": {"axis": "x", "value": dx}})
+    if dy:
+        events.append({"type": "rel", "data": {"axis": "y", "value": dy}})
+    if events:
+        input_events(events)
+
+
+def move_to(x, y):
+    # Native ARM64/RV64 QEMU VirtIO-MMIO + libinput acceleration differs
+    # from x86 PCI. Both real failing screenshots independently measured
+    # requested (330,230) -> actual pointer (~490,350), and
+    # requested (520,340) -> (~763,521). Use screenshot-calibrated physical
+    # QMP REL deltas, not a fabricated absolute-pointer position.
+    for _ in range(24):
+        rel(-50, -50)
+    dx, dy = round(x * 0.60), round(y * 0.56)
+    while dx or dy:
+        sx, sy = min(35, dx), min(35, dy)
+        rel(sx, sy)
+        dx -= sx
+        dy -= sy
+    time.sleep(0.35)
+
+
+def click():
+    for down in (True, False):
+        input_events([{"type": "btn", "data": {"button": "left", "down": down}}])
+
+
+def double_click():
+    click()
+    time.sleep(0.07)
+    click()
+    time.sleep(1.4)
+
+
+def key(code, down):
+    input_events([{"type": "key", "data": {
+        "key": {"type": "qcode", "data": code}, "down": down}}])
+
+
+def chord(*keys):
+    for code in keys:
+        key(code, True)
+    for code in reversed(keys):
+        key(code, False)
+    time.sleep(0.4)
+
+
+def type_text(value):
+    for char in value:
+        code = {" ": "spc", "\n": "ret", ".": "dot"}.get(char, char)
+        key(code, True)
+        key(code, False)
+        time.sleep(0.06)
+
+
+def pixels_changed(a, b):
+    assert len(a) == len(b)
+    return sum(a[i:i+3] != b[i:i+3] for i in range(0, len(a), 3))
+
+
+def pixels_changed_rect(a, b, width, x0, y0, x1, y1):
+    return sum(a[(y*width+x)*3:(y*width+x+1)*3] !=
+               b[(y*width+x)*3:(y*width+x+1)*3]
+               for y in range(y0, y1) for x in range(x0, x1))
+
+
+def terminal_cover_ratio(frame, width):
+    # Real previous RV64/ARM64 native CI scanouts show Weston's terminal
+    # completely covering Thunar (black area x=38..767, y=116..509).
+    # Only dismiss that foreground terminal via the genuine compositor UI.
+    n = black = 0
+    for y in range(160, 490, 10):
+        for x in range(110, 700, 10):
+            off = (y * width + x) * 3
+            n += 1
+            black += max(frame[off:off+3]) < 20
+    return black / n
+
+
+def expose_thunar():
+    w, h, frame = scanout("before-terminal-focus")
+    if terminal_cover_ratio(frame, w) > 0.83:
+        chord("alt", "f4")
+        time.sleep(1.5)
+        _, _, frame = scanout("terminal-alt-f4")
+        if terminal_cover_ratio(frame, w) > 0.83:
+            # Weston desktop-shell close button, a physical mouse click.
+            move_to(754, 102)
+            click()
+            time.sleep(1.5)
+            _, _, frame = scanout("terminal-close-button")
+        if terminal_cover_ratio(frame, w) > 0.83:
+            raise RuntimeError(
+                f"{arch} terminal covers Thunar after actual GUI close")
+        print(f"PASS: {arch} original terminal dismissed via physical GUI, "
+              "Thunar now exposed", flush=True)
+    return frame
+
+
+def observed(guest, condition, mark, attempts=15):
+    # Guest shell is read-only: only GUI QMP input may change the note.
+    cmd = (f'for i in $(seq 1 {attempts}); do {condition} && break; '
+           f'sleep 1; done; if {condition}; then echo {mark}_PASS; '
+           f'else echo {mark}_FAIL; fi')
+    guest.sendline(cmd)
+    idx = guest.expect([r"\r*\n" + mark + r"_PASS\r*\n",
+                        r"\r*\n" + mark + r"_FAIL\r*\n"],
+                       timeout=attempts + 65)
+    guest.expect(r"# ", timeout=30)
+    if idx:
+        raise RuntimeError(f"{arch}: real GUI {mark} not observed")
+    print(f"PASS: {arch} {phase} {mark} (read-only guest inspection)", flush=True)
+
+
+def fileops_observe(guest, expr, marker, retries=15):
+    # The native harness already has the same strict read-only observer.
+    return observed(guest, expr, marker, attempts=retries)
+
+
+def thunar_window_count(guest):
+    guest.sendline(
+        'printf "THUNAR_TOPLEVELS=%s\\n" '
+        '"$(grep -c get_toplevel /var/log/naseed-desktop/thunar.log 2>/dev/null || :)"'
+    )
+    guest.expect(r"\r*\nTHUNAR_TOPLEVELS=([0-9]+)\r*\n", timeout=30)
+    count = int(guest.match.group(1))
+    guest.expect(r"# ")
+    return count
+
+
+def fileops_navigate(phase, baseline, w, to_documents):
+    """Screen-path proof prevents selection-only false positives."""
+    move_to(330, 230)
+    double_click()
+    _, _, after = scanout("fileops-documents" if to_documents else "fileops-root")
+    address_change = pixels_changed_rect(baseline, after, w, 360, 131, 520, 154)
+    if address_change < 80:
+        raise RuntimeError(f"Thunar fileops navigation did not change location: "
+                           f"address_pixels={address_change}")
+    print(f"PASS: GUI fileops navigated {'documents' if to_documents else 'root'} "
+          f"by physical input, address_pixels={address_change}", flush=True)
+    return after
+
+
+def fileops_select_last():
+    # End is handled by the original Thunar icon view, not the guest shell.
+    chord("end")
+    time.sleep(0.3)
+
+
+def fileops_mousepad(guest, baseline):
+    fileops_select_last()
+    chord("ret")
+    editor = None
+    changed = 0
+    for _ in range(55):
+        time.sleep(0.7)
+        _, _, sample = scanout("fileops-reopened-editor")
+        changed = pixels_changed(baseline, sample)
+        if changed > 18000:
+            editor = sample
+            break
+    guest.sendline(
+        'if pidof mousepad >/dev/null; then echo FILEOPS_EDITOR_ALIVE; '
+        'else echo FILEOPS_EDITOR_MISSING; fi'
+    )
+    alive = guest.expect([r"\r*\nFILEOPS_EDITOR_ALIVE\r*\n",
+                          r"\r*\nFILEOPS_EDITOR_MISSING\r*\n"],
+                         timeout=35) == 0
+    guest.expect(r"# ")
+    if not alive or editor is None:
+        raise RuntimeError(f"GUI reopen of renamed persisted file failed: "
+                           f"mousepad_alive={alive} changed_pixels={changed}")
+    print(f"PASS: restarted Thunar opened renamed file in original Mousepad, "
+          f"visible_pixels={changed}", flush=True)
+    chord("ctrl", "w")
+    time.sleep(0.5)
+
+
+def run_fileops(guest, phase, root_frame, w, h):
+    assert (w, h) == (800, 600)
+    saved = 'test "$(cat /root/desktop/documents/note.txt)" = "naseed gui roundtrip"'
+    archived = 'test "$(cat /root/desktop/archived.txt)" = "naseed gui roundtrip"'
+    absent = 'test ! -e /root/desktop/note.txt'
+    fileops_observe(guest, saved, "ORIGINAL_INTACT", retries=1)
+    if phase == "fileops-reopen":
+        # A completely fresh QEMU boot: the retained copy exists, but the
+        # permanently deleted second copy must remain absent.
+        fileops_observe(guest, archived, "ARCHIVE_SURVIVED_REBOOT", retries=1)
+        fileops_observe(guest, absent, "DELETE_SURVIVED_REBOOT", retries=1)
+        fileops_mousepad(guest, root_frame)
+        fileops_observe(guest, archived, "ARCHIVE_REOPEN_CONTENT", retries=1)
+        print("PASS: GUI fileops second independent boot reopened renamed file; "
+              "permanent deletion survived", flush=True)
+        return
+
+    # 1. Original Thunar: real double-click and real Ctrl+C / Alt+Up / Ctrl+V.
+    documents = fileops_navigate(phase, root_frame, w, True)
+    move_to(330, 230)
+    click()
+    chord("ctrl", "c")
+    chord("alt", "up")
+    time.sleep(0.8)
+    _, _, parent = scanout("fileops-parent")
+    assert pixels_changed_rect(documents, parent, w, 360, 131, 520, 154) > 80, (
+        "Thunar Alt+Up failed to navigate to parent folder")
+    chord("ctrl", "v")
+    fileops_observe(guest,
+                    'test "$(cat /root/desktop/note.txt)" = "naseed gui roundtrip"',
+                    "COPY_TO_DESKTOP")
+    scanout("fileops-copied")
+
+    # 2. Rename the copied file in Thunar; original source is untouched.
+    fileops_select_last()
+    chord("f2")
+    time.sleep(0.65)
+    scanout("fileops-rename-dialog")
+    chord("ctrl", "a")
+    type_text("archived.txt")
+    chord("ret")
+    fileops_observe(guest, archived + ' && ' + absent, "RENAME")
+    scanout("fileops-renamed")
+
+    # 3. Open a second original Thunar window (not another app). Its
+    # xdg_toplevel must be a genuinely new Wayland request, then give it
+    # physical focus. The old Thunar window remains open underneath.
+    before_windows = thunar_window_count(guest)
+    chord("ctrl", "n")
+    time.sleep(2.0)
+    after_windows = thunar_window_count(guest)
+    if after_windows <= before_windows:
+        scanout("fileops-second-window-failed")
+        raise RuntimeError(f"Thunar Ctrl+N failed to create second Wayland window: "
+                           f"{before_windows=} {after_windows=}")
+    move_to(520, 340)
+    click()
+    time.sleep(0.65)
+    _, _, new_window = scanout("fileops-second-window")
+    print(f"PASS: second independent Thunar Wayland toplevel via QMP Ctrl+N: "
+          f"{before_windows=} {after_windows=}", flush=True)
+
+    # 4. Create a second copy via the new window; then permanently delete
+    # THAT copy via Shift+Delete (not rm, unlink, or a guest shell command).
+    new_documents = fileops_navigate(phase, new_window, w, True)
+    move_to(330, 230)
+    click()
+    chord("ctrl", "c")
+    chord("alt", "up")
+    time.sleep(0.8)
+    _, _, second_parent = scanout("fileops-second-parent")
+    assert pixels_changed_rect(new_documents, second_parent, w, 360, 131, 520, 154) > 80, (
+        "Second Thunar window Alt+Up failed")
+    chord("ctrl", "v")
+    fileops_observe(guest,
+                    'test "$(cat /root/desktop/note.txt)" = "naseed gui roundtrip"',
+                    "SECOND_COPY")
+    fileops_select_last()
+    chord("shift", "delete")
+    time.sleep(0.85)
+    scanout("fileops-delete-confirmation")
+    # Depending on the original Thunar preferences Shift+Delete may show a
+    # confirmation dialog or immediately remove the file. Observe only.
+    guest.sendline('if test -e /root/desktop/note.txt; then echo DELETE_NEEDS_CONFIRM; '
+                   'else echo DELETE_ALREADY_DONE; fi')
+    confirm = guest.expect([r"\r*\nDELETE_NEEDS_CONFIRM\r*\n",
+                            r"\r*\nDELETE_ALREADY_DONE\r*\n"], timeout=25) == 0
+    guest.expect(r"# ")
+    if confirm:
+        chord("ret")
+    fileops_observe(guest, absent + ' && ' + archived, "PERMANENT_DELETE")
+    scanout("fileops-deleted")
+    chord("ctrl", "w")
+    time.sleep(0.6)
+    fileops_observe(guest, archived + ' && ' + absent + ' && ' + saved,
+                    "TWO_WINDOWS_CLOSED_SAFELY", retries=1)
+    print("PASS: original Thunar copy, rename, two-window copy/delete via "
+          "real QMP mouse and keyboard; source and archived copy preserved", flush=True)
+
+with (work / f"gui-{phase}.log").open("w") as outfile:
+    guest = pexpect.spawn(f"qemu-system-{arch}", args, encoding="utf-8",
+                          codec_errors="replace", timeout=260)
+    guest.logfile_read = outfile
+    success = False
+    try:
+        guest.expect("login:", timeout=240)
+        guest.sendline("root")
+        guest.expect("Password:")
+        guest.sendline("naseed-ci-only")
+        guest.expect(r"# ")
+        guest.sendline(
+            "for i in $(seq 1 110); do "
+            "test -S /run/user/0/wayland-0 && pidof thunar >/dev/null && "
+            "grep -q get_toplevel /var/log/naseed-desktop/thunar.log "
+            "2>/dev/null && break; sleep 1; done; "
+            "if test -S /run/user/0/wayland-0 && pidof thunar >/dev/null && "
+            "grep -q get_toplevel /var/log/naseed-desktop/thunar.log; then "
+            "echo GUI_READY; else echo GUI_NOT_READY; fi"
+        )
+        if guest.expect([r"\r*\nGUI_READY\r*\n",
+                         r"\r*\nGUI_NOT_READY\r*\n"], timeout=235):
+            raise RuntimeError(f"{arch} original OpenRC/Thunar desktop not ready")
+        guest.expect(r"# ")
+        steady = False
+        last = None
+        for _ in range(75):
+            time.sleep(1)
+            w, h, frame = scanout("files-root")
+            visible = sum(max(frame[i:i+3]) > 20 for i in range(0, len(frame), 3))
+            drift = pixels_changed(last, frame) if last is not None else w*h
+            if (w, h) == (800, 600) and visible > 70000 and drift < 3000:
+                steady = True
+                break
+            last = frame
+        if not steady:
+            raise RuntimeError(f"{arch} Thunar screen not stable: {visible=} {drift=}")
+        # Both authentic native screenshots show the maximized black
+        # Weston Terminal in front of Thunar; x86 GUI test expects Thunar
+        # to be frontmost. Correct focus only through genuine QMP UI.
+        expose_thunar()
+        move_to(520, 340)
+        click()
+        time.sleep(0.7)
+        _, _, root = scanout("files-focused")
+        # Selection alone can change thousands of pixels; verify the REAL
+        # Thunar location bar changed, not just the selected folder icon.
+        if phase in ("fileops", "fileops-reopen"):
+            run_fileops(guest, phase, root, w, h)
+        else:
+            address_delta = 0
+            for attempt in range(1, 4):
+                move_to(330, 230)
+                double_click()
+                _, _, documents = scanout(f"documents-attempt-{attempt}")
+                address_delta = pixels_changed_rect(root, documents, w, 360, 131, 520, 154)
+                if address_delta > 80:
+                    break
+            else:
+                raise RuntimeError(f"{arch} Thunar real double-click did not enter "
+                                   f"documents: address_pixels={address_delta}")
+            print(f"PASS: {arch} Thunar navigated using real QMP mouse", flush=True)
+            move_to(330, 230)
+            double_click()
+            delta, opened = 0, False
+            for _ in range(60):
+                time.sleep(0.7)
+                _, _, editor = scanout("editor-open")
+                delta = pixels_changed(documents, editor)
+                if delta > 18000:
+                    opened = True
+                    break
+            guest.sendline("if pidof mousepad >/dev/null; then echo GUI_MOUSEPAD_LIVE; "
+                           "else echo GUI_MOUSEPAD_MISSING; fi")
+            alive = guest.expect([r"\r*\nGUI_MOUSEPAD_LIVE\r*\n",
+                                  r"\r*\nGUI_MOUSEPAD_MISSING\r*\n"], timeout=45) == 0
+            guest.expect(r"# ")
+            if not (alive and opened):
+                raise RuntimeError(f"{arch} real Thunar could not open Mousepad: "
+                                   f"{alive=} {delta=}")
+            print(f"PASS: {arch} original GTK Mousepad opened through real Thunar", flush=True)
+            target = 'test "$(cat /root/desktop/documents/note.txt)" = "naseed gui roundtrip"'
+            if phase == "edit":
+                move_to(240, 180)
+                click()
+                chord("ctrl", "a")
+                type_text("naseed gui roundtrip\n")
+                chord("ctrl", "s")
+                time.sleep(1.2)
+                scanout("editor-saved")
+                observed(guest, target, "NATIVE_GUI_SAVED", attempts=18)
+            else:
+                observed(guest, target, "NATIVE_GUI_REOPENED", attempts=1)
+            chord("ctrl", "w")
+            time.sleep(0.7)
+            scanout("editor-closed")
+        guest.sendline("poweroff")
+        guest.expect(r"\[ALPINE POWER_OFF\] original BusyBox; durable ext4 unmount",
+                     timeout=220)
+        guest.expect(r"\[PASS\] cmdline userspace exit 0", timeout=90)
+        success = True
+    finally:
+        if guest.isalive():
+            guest.terminate(force=True)
+        guest.close()
+if not success:
+    raise RuntimeError(f"{arch} native GUI {phase} failed")
+serial = (work / f"gui-{phase}.log").read_text(errors="replace")
+for marker in ("[M191 ROOT] original Alpine PID1 from mounted ext4: /sbin/init",
+               "[LWEXT4 GUEST] clean upstream unmount and durable flush",
+               "[ALPINE POWER_OFF] original BusyBox; durable ext4 unmount"):
+    if marker not in serial:
+        raise RuntimeError(f"{arch} GUI {phase} did not reach clean shutdown: {marker}")
+if "[FAIL]" in serial:
+    raise RuntimeError(f"{arch} GUI {phase} kernel failure marker")
+print(f"PASS: {arch} genuine Thunar -> Mousepad GUI {phase} -> "
+      "clean shutdown and durable ext4", flush=True)

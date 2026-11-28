@@ -1,4 +1,6 @@
 #include "readonly.h"
+#include "../port/mmio.h"
+#include "../../lib/endian.h"
 #include "../../errno.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -53,27 +55,14 @@ static void copy_bytes(void *destination,const void *source,uint32_t count) {
     const uint8_t *s=(const uint8_t *)source;
     for(uint32_t i=0;i<count;i++)d[i]=s[i];
 }
-static uint16_t le16(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0]|((uint16_t)p[1]<<8));
-}
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
-           ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
-}
-static void put32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);
-    p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);
-}
 static int io_read(struct nas_ahci_ro_session *s,uint32_t off,uint32_t *v) {
     if(!s || !s->io || !s->io->read32 || !v ||
-       (off&3U) || off>s->io->mmio_bytes ||
-       s->io->mmio_bytes-off<4U)return -EINVAL;
+       !nas_mmio_u32_valid(s->io->mmio_bytes,off))return -EINVAL;
     return s->io->read32(s->io->context,off,v);
 }
 static int io_write(struct nas_ahci_ro_session *s,uint32_t off,uint32_t v) {
     if(!s || !s->io || !s->io->write32 ||
-       (off&3U) || off>s->io->mmio_bytes ||
-       s->io->mmio_bytes-off<4U)return -EINVAL;
+       !nas_mmio_u32_valid(s->io->mmio_bytes,off))return -EINVAL;
     return s->io->write32(s->io->context,off,v);
 }
 static int port_read(struct nas_ahci_ro_session *s,uint32_t off,uint32_t *v) {
@@ -170,15 +159,15 @@ static int issue(struct nas_ahci_ro_session *s,uint8_t opcode,
     zero_bytes(table,144U);
     /* DW0: FIS length=5 DWords, W=0 (device-to-host), PRDTL=1.
      * DW2/3: one 128-byte-aligned command table. */
-    put32(header,5U|(1U<<16));
-    put32(header+8U,(uint32_t)s->cmd_table.bus_address);
-    put32(header+12U,(uint32_t)(s->cmd_table.bus_address>>32));
+    nas_put_le32(header,5U|(1U<<16));
+    nas_put_le32(header+8U,(uint32_t)s->cmd_table.bus_address);
+    nas_put_le32(header+12U,(uint32_t)(s->cmd_table.bus_address>>32));
     /* One PRDT: 512 bytes, byte count is zero based, no IOC interrupt.
      * Polling uses PxCI and TFES; hardware never writes guest kernel memory
      * except the controller-owned command FIS/PRDBC and this bounce page. */
-    put32(table+128U,(uint32_t)s->bounce.bus_address);
-    put32(table+132U,(uint32_t)(s->bounce.bus_address>>32));
-    put32(table+140U,bytes-1U);
+    nas_put_le32(table+128U,(uint32_t)s->bounce.bus_address);
+    nas_put_le32(table+132U,(uint32_t)(s->bounce.bus_address>>32));
+    nas_put_le32(table+140U,bytes-1U);
 
     /* 20-byte command-register FIS (H2D): 48-bit LBA, LBA mode,
      * ATA IDENTIFY or READ DMA EXT. Always one sector/command. */
@@ -217,7 +206,7 @@ static int issue(struct nas_ahci_ro_session *s,uint8_t opcode,
         rc=nas_dma_lease_sync(&s->lease,&s->cmd_list,0U,32U,
                               NAS_DMA_FROM_DEVICE);
         if(rc)return rc;
-        if(le32(header+4U)!=bytes)return -EIO; /* PRDBC */
+        if(nas_get_le32(header+4U)!=bytes)return -EIO; /* PRDBC */
         return nas_dma_lease_sync(&s->lease,&s->bounce,0U,bytes,
                                   NAS_DMA_FROM_DEVICE);
     }
@@ -368,15 +357,15 @@ int nas_ahci_ro_open(const struct nas_ahci_io *io,
     rc=issue(s,AHCI_ATA_IDENTIFY,0U,1U,AHCI_DATA_BYTES);
     if(rc)goto failed;
     const uint8_t *identify=(const uint8_t *)s->bounce.cpu;
-    const uint16_t features=le16(identify+83U*2U);
-    const uint16_t sector_info=le16(identify+106U*2U);
-    uint64_t sectors=(uint64_t)le16(identify+100U*2U)|
-                     ((uint64_t)le16(identify+101U*2U)<<16)|
-                     ((uint64_t)le16(identify+102U*2U)<<32)|
-                     ((uint64_t)le16(identify+103U*2U)<<48);
+    const uint16_t features=nas_get_le16(identify+83U*2U);
+    const uint16_t sector_info=nas_get_le16(identify+106U*2U);
+    uint64_t sectors=(uint64_t)nas_get_le16(identify+100U*2U)|
+                     ((uint64_t)nas_get_le16(identify+101U*2U)<<16)|
+                     ((uint64_t)nas_get_le16(identify+102U*2U)<<32)|
+                     ((uint64_t)nas_get_le16(identify+103U*2U)<<48);
     /* AHCI uses one 512-byte PRDT bounce. A disk advertising a larger
      * logical sector via word 106 needs a separate supported LBA format. */
-    if((le16(identify)&(1U<<15)) ||
+    if((nas_get_le16(identify)&(1U<<15)) ||
        ((sector_info&(1U<<14)) && (sector_info&(1U<<12))) ||
        !(features&(1U<<10)) || sectors<16384U ||
        (sectors>>48)!=0U){rc=-EOPNOTSUPP;goto failed;}

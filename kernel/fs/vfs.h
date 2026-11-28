@@ -302,11 +302,11 @@ int nas_vfs_create_anonymous(const struct nas_vfs_type *type,uint64_t mode,
 /* Builtin tmpfs provider chooses an existing live writable tmpfs mount;
  * this does not construct a private hidden shmem superblock. */
 int nas_vfs_create_anonymous_tmpfs(uint64_t mode,struct nas_fs_node *owned);
-int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 /* One canonical path component. VFS uses the pinned parent Mount/Dentry
  * for crossings and the one CPIO covered-underlay fallback; providers see
  * only (parent inode, basename). The absolute spelling is a bounded
  * bootstrap/overlay compatibility input and is NEVER passed to them. */
+int nas_vfs_lookup(const char *absolute, struct nas_fs_node *node);
 int nas_vfs_lookup_step(const struct nas_fs_node *parent,const char *absolute,
                          const char *name,struct nas_fs_node *out);
 int nas_vfs_readlink(const struct nas_fs_node *node,char target[256]);
@@ -350,10 +350,6 @@ int nas_vfs_mkdir_child(const struct nas_vfs_path *parent,
                         const char *leaf,uint64_t mode);
 int nas_vfs_unlink_child(const struct nas_vfs_path *parent,
                          const char *leaf,uint64_t flags);
-int nas_vfs_rename_child(const struct nas_vfs_path *old_parent,
-                         const char *old_name,
-                         const struct nas_vfs_path *new_parent,
-                         const char *new_name,uint64_t flags);
 int nas_vfs_rename_child_with_intent(const struct nas_vfs_path *old_parent,
                                      const char *old_name,
                                      const struct nas_vfs_path *new_parent,
@@ -388,6 +384,4 @@ int nas_vfs_sync_all(void);
 int nas_vfs_mkdir(const char *absolute,uint64_t mode);
 int nas_vfs_unlink(const char *absolute,uint64_t flags);
 int nas_vfs_rename(const char *old_absolute,const char *new_absolute,uint64_t flags);
-int nas_vfs_link(const char *old_absolute,const char *new_absolute);
-int nas_vfs_symlink(const char *target,const char *absolute);
 #endif

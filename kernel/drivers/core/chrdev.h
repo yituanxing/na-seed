@@ -15,6 +15,8 @@ struct nas_chrdev_info {
     uint8_t fd_kind;
     unsigned unit;
     uint64_t dev, ino, rdev, mode, size;
+    /* Mutable devfs inode metadata, not part of the device rdev identity. */
+    uint32_t uid, gid;
 };
 struct nas_chrdev_provider {
     const char *name;

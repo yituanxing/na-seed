@@ -1,4 +1,5 @@
 #include "partition.h"
+#include "../lib/endian.h"
 #include "../errno.h"
 #include "../lib/string.h"
 #include <stdint.h>
@@ -8,13 +9,6 @@
  * device. The caller can choose among at most 128 GPT entries.
  * The 4KiB scratch belongs to this invocation, never a static global
  * shared by unrelated drivers or CPUs. */
-static uint32_t le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1]<<8) |
-           ((uint32_t)b[2]<<16) | ((uint32_t)b[3]<<24);
-}
-static uint64_t le64(const uint8_t *b) {
-    return (uint64_t)le32(b) | ((uint64_t)le32(b+4)<<32);
-}
 static uint32_t crc_step(uint32_t state,uint8_t value) {
     state^=value;
     for(unsigned b=0;b<8;b++)
@@ -27,19 +21,19 @@ static int probe_gpt(struct nas_block_device *disk,unsigned index,
     int rc=nas_block_read(disk,1,1,sector);
     if(rc)return rc;
     if(memcmp(sector,"EFI PART",8))return -EINVAL;
-    if(le32(sector+8)!=0x00010000U)return -EOPNOTSUPP;
-    uint32_t header_bytes=le32(sector+12);
+    if(nas_get_le32(sector+8)!=0x00010000U)return -EOPNOTSUPP;
+    uint32_t header_bytes=nas_get_le32(sector+12);
     if(header_bytes<92 || header_bytes>disk->sector_bytes ||
-       le32(sector+20) || le64(sector+24)!=1)return -EINVAL;
-    uint32_t header_crc=le32(sector+16),state=~0U;
+       nas_get_le32(sector+20) || nas_get_le64(sector+24)!=1)return -EINVAL;
+    uint32_t header_crc=nas_get_le32(sector+16),state=~0U;
     for(uint32_t i=0;i<header_bytes;i++)
         state=crc_step(state,i>=16 && i<20 ? 0 : sector[i]);
     if((~state)!=header_crc)return -EIO;
-    uint64_t backup_lba=le64(sector+32);
-    uint64_t first_usable=le64(sector+40),last_usable=le64(sector+48);
-    uint64_t entries_lba=le64(sector+72);
-    uint32_t entry_count=le32(sector+80),entry_bytes=le32(sector+84);
-    uint32_t entries_crc=le32(sector+88);
+    uint64_t backup_lba=nas_get_le64(sector+32);
+    uint64_t first_usable=nas_get_le64(sector+40),last_usable=nas_get_le64(sector+48);
+    uint64_t entries_lba=nas_get_le64(sector+72);
+    uint32_t entry_count=nas_get_le32(sector+80),entry_bytes=nas_get_le32(sector+84);
+    uint32_t entries_crc=nas_get_le32(sector+88);
     if(backup_lba<=1 || backup_lba>=disk->sectors ||
        first_usable<2 || last_usable>=backup_lba ||
        first_usable>last_usable || !entry_count ||
@@ -78,8 +72,8 @@ static int probe_gpt(struct nas_block_device *disk,unsigned index,
             for(unsigned b=0;b<16;b++)
                 if(record[b]) {used=true;break;}
             if(!used)continue;
-            uint64_t first=le64(record+32);
-            uint64_t last=le64(record+40);
+            uint64_t first=nas_get_le64(record+32);
+            uint64_t last=nas_get_le64(record+40);
             if(first<first_usable || last>last_usable || first>last)
                 return -EINVAL;
             /* End-inclusive ranges overlap unless strictly disjoint.
@@ -135,7 +129,7 @@ int nas_partition_probe(struct nas_block_device *disk,unsigned index,
         uint8_t type=entry[4];
         if(!type)continue;
         if(entry[0]!=0 && entry[0]!=0x80)return -EINVAL;
-        uint64_t first=le32(entry+8),size=le32(entry+12);
+        uint64_t first=nas_get_le32(entry+8),size=nas_get_le32(entry+12);
         if(!first || !size || first>=disk->sectors ||
            size>disk->sectors-first)return -EINVAL;
         for(unsigned k=0;k<n;k++)

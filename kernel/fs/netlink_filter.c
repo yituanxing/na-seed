@@ -4,6 +4,7 @@
  * chains/rules/sets and foreign nfnetlink subsystems return explicit errors.
  * The socket adapter owns all userspace copies and FD lifetime. */
 #include "netlink_filter.h"
+#include "netlink_common.h"
 #include "file_ops.h"
 #include "../fd.h"
 #include "../task.h"
@@ -51,11 +52,6 @@
 #define NFPROTO_BRIDGE 7U
 #define NFPROTO_IPV6 10U
 #define AF_NETLINK 16U
-#define MSG_PEEK 2U
-#define MSG_TRUNC 32U
-#define MSG_DONTWAIT 64U
-#define PORT_POLLIN 1U
-#define PORT_POLLOUT 4U
 #define PORT_POLLERR 8U
 #define NF_TABLE_LIMIT 16U
 #define NF_TABLE_NAME_BYTES 256U
@@ -86,12 +82,13 @@ struct nf_batch {
     struct nf_batch_operation operations[NF_BATCH_OPS];
 };
 struct nf_socket {
-    bool owned,bound;
-    uint32_t owner_pid,port_id,send_quota,recv_quota;
-    uint8_t head,count;
+    struct nas_nl_endpoint ep;
     struct nf_reply replies[NF_REPLY_LIMIT];
 };
-static struct nf_socket sockets[NAS_OPEN_FILE_LIMIT];
+static const struct nas_file_ops ops;
+static struct nf_socket *socket_at(unsigned slot) {
+    return (struct nf_socket *)nas_nl_private(slot,&ops);
+}
 /* nfnetlink batches never span skb/sendmsg. NaSeed currently executes one
  * non-preemptible syscall in its kernel at a time, so this scratch storage
  * is reused per call; storing an entire 4-KiB staging snapshot per possible
@@ -108,90 +105,45 @@ static uint32_t next_port_id=UINT32_C(0x50000000);
  * on genuine QEMU without dumping kernel or userspace memory. */
 static unsigned rejected_noent_traces;
 
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((unsigned)p[0]|((unsigned)p[1]<<8));
-}
-static uint32_t rd32(const uint8_t *p) {
-    return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
-           ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
-}
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|
-           ((uint32_t)p[2]<<8)|p[3];
-}
-static void wr16(uint8_t *p,uint16_t v) {p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
-static void wr32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);
-    p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);
-}
-static void wb32(uint8_t *p,uint32_t v) {
-    p[0]=(uint8_t)(v>>24);p[1]=(uint8_t)(v>>16);
-    p[2]=(uint8_t)(v>>8);p[3]=(uint8_t)v;
-}
-static void wb64(uint8_t *p,uint64_t v) {
-    wb32(p,(uint32_t)(v>>32));
-    wb32(p+4,(uint32_t)v);
-}
-static unsigned align4(unsigned n) {return (n+3U)&~3U;}
 static bool valid_family(uint8_t family) {
     return family==NFPROTO_INET || family==NFPROTO_IPV4 ||
            family==NFPROTO_IPV6 || family==NFPROTO_ARP ||
            family==NFPROTO_BRIDGE || family==NFPROTO_NETDEV;
 }
 static struct nf_socket *live(unsigned slot) {
-    return slot<NAS_OPEN_FILE_LIMIT && sockets[slot].owned &&
-           nas_open_files[slot].refcount ? &sockets[slot]:NULL;
+    struct nf_socket *s=socket_at(slot);
+    return s && nas_nl_live(slot,&s->ep) ? s:NULL;
 }
 bool nas_netlink_filter_is_slot(unsigned slot) {return live(slot)!=NULL;}
 int nas_netlink_filter_open(unsigned slot,uint32_t owner_pid) {
-    if(slot>=NAS_OPEN_FILE_LIMIT || !nas_open_files[slot].refcount)return -EBADF;
-    if(sockets[slot].owned)return -EBUSY;
-    sockets[slot]=(struct nf_socket){.owned=true,.owner_pid=owner_pid,
+    void *memory=NULL;
+    int rc=nas_nl_socket_alloc(slot,&ops,sizeof(struct nf_socket),&memory);
+    if(rc)return rc;
+    struct nf_socket *s=(struct nf_socket *)memory;
+    *s=(struct nf_socket){.ep={.owned=true,.owner_pid=owner_pid,
         .send_quota=NAS_NETLINK_FILTER_MAX_DATAGRAM,
-        .recv_quota=NF_REPLY_LIMIT*NF_REPLY_BYTES};
+        .receive_quota=NF_REPLY_LIMIT*NF_REPLY_BYTES}};
     return 0;
 }
 int nas_netlink_filter_protocol(unsigned slot) {
     return live(slot) ? (int)NAS_NETLINK_FILTER_PROTOCOL:-EBADF;
 }
-static bool port_used(uint32_t pid) {
+static bool port_used(uint32_t pid,unsigned protocol) {
+    (void)protocol;
     for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT;i++)
-        if(sockets[i].owned && sockets[i].bound &&
-           sockets[i].port_id==pid)return true;
+        { struct nf_socket *s=socket_at(i);
+          if(s && s->ep.owned && s->ep.bound && s->ep.port_id==pid)return true; }
     return false;
 }
 static int autobind(struct nf_socket *s,uint32_t requested) {
-    if(s->bound)return -EINVAL;
-    uint32_t port=requested?requested:s->owner_pid;
-    if(!port || port_used(port)) {
-        if(requested)return -EADDRINUSE;
-        bool found=false;
-        for(unsigned i=0;i<NAS_OPEN_FILE_LIMIT+1U;i++) {
-            port=next_port_id++;
-            if(port && !port_used(port)){found=true;break;}
-        }
-        if(!found)return -EADDRINUSE;
-    }
-    s->port_id=port;s->bound=true;
-    return 0;
-}
-static int parse_sockaddr(const uint8_t *a,unsigned length,
-                          uint32_t *port,uint32_t *groups) {
-    if(!a || length<NAS_NETLINK_FILTER_SOCKADDR_SIZE)return -EINVAL;
-    if(rd16(a)!=AF_NETLINK)return -EAFNOSUPPORT;
-    if(rd16(a+2))return -EINVAL;
-    *port=rd32(a+4);*groups=rd32(a+8);
-    return 0;
-}
-static void make_sockaddr(uint8_t *a,uint32_t port) {
-    memset(a,0,NAS_NETLINK_FILTER_SOCKADDR_SIZE);
-    wr16(a,AF_NETLINK);wr32(a+4,port);
+    return nas_nl_bind_port(&s->ep.bound,&s->ep.port_id,s->ep.owner_pid,requested,
+                            &next_port_id,0,port_used);
 }
 int nas_netlink_filter_bind(unsigned slot,const uint8_t *address,unsigned length) {
     struct nf_socket *s=live(slot);
     if(!s)return -EBADF;
     uint32_t port,groups;
-    int rc=parse_sockaddr(address,length,&port,&groups);
+    int rc=nas_nl_parse_address(address,length,&port,&groups);
     if(rc)return rc;
     /* Multicast events are not delivered, so subscribing cannot succeed. */
     if(groups)return -EOPNOTSUPP;
@@ -199,72 +151,50 @@ int nas_netlink_filter_bind(unsigned slot,const uint8_t *address,unsigned length
 }
 int nas_netlink_filter_getsockname(unsigned slot,uint8_t address[12]) {
     struct nf_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!address)return -EINVAL;
-    make_sockaddr(address,s->bound?s->port_id:0);
-    return 0;
+    return nas_nl_name(s?&s->ep:NULL,address,0);
 }
 int nas_netlink_filter_set_sndbuf(unsigned slot,uint32_t requested) {
     struct nf_socket *s=live(slot);
-    if(!s)return -EBADF;
-    uint64_t amount=(uint64_t)requested*2U;
-    if(amount<NF_SNDBUF_MIN)amount=NF_SNDBUF_MIN;
-    if(amount>NF_SNDBUF_MAX)amount=NF_SNDBUF_MAX;
-    s->send_quota=(uint32_t)amount;
-    return 0;
+    return nas_nl_set_quota(s?&s->ep:NULL,false,requested,NF_SNDBUF_MIN,NF_SNDBUF_MAX);
 }
 int nas_netlink_filter_get_sndbuf(unsigned slot,uint32_t *bytes) {
     struct nf_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->send_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,false,bytes);
 }
 int nas_netlink_filter_set_rcvbuf(unsigned slot,uint32_t requested) {
     struct nf_socket *s=live(slot);
-    if(!s)return -EBADF;
-    uint64_t amount=(uint64_t)requested*2U;
-    if(amount<NF_REPLY_BYTES)amount=NF_REPLY_BYTES;
-    if(amount>NF_REPLY_LIMIT*NF_REPLY_BYTES)
-        amount=NF_REPLY_LIMIT*NF_REPLY_BYTES;
-    s->recv_quota=(uint32_t)amount;
-    return 0;
+    return nas_nl_set_quota(s?&s->ep:NULL,true,requested,
+                            NF_REPLY_BYTES,NF_REPLY_LIMIT*NF_REPLY_BYTES);
 }
 int nas_netlink_filter_get_rcvbuf(unsigned slot,uint32_t *bytes) {
     struct nf_socket *s=live(slot);
-    if(!s)return -EBADF;
-    if(!bytes)return -EINVAL;
-    *bytes=s->recv_quota;
-    return 0;
+    return nas_nl_get_quota(s?&s->ep:NULL,true,bytes);
 }
 
 static bool room(const struct nf_socket *s,unsigned needed) {
-    return (unsigned)s->count+needed<=NF_REPLY_LIMIT &&
-           ((uint64_t)s->count+needed)*NF_REPLY_BYTES<=s->recv_quota;
+    return nas_nl_room(&s->ep,needed,NF_REPLY_LIMIT,NF_REPLY_BYTES);
 }
 static struct nf_reply *new_reply(struct nf_socket *s) {
-    struct nf_reply *r=&s->replies[(s->head+s->count)%NF_REPLY_LIMIT];
-    memset(r,0,sizeof(*r));s->count++;
+    struct nf_reply *r=&s->replies[(s->ep.head+s->ep.count)%NF_REPLY_LIMIT];
+    memset(r,0,sizeof(*r));s->ep.count++;
     return r;
 }
 static struct nf_reply *header(struct nf_socket *s,unsigned bytes,
                                 uint16_t type,uint16_t flags,uint32_t seq) {
     struct nf_reply *r=new_reply(s);
     r->len=(uint16_t)bytes;
-    wr32(r->data,bytes);wr16(r->data+4,type);wr16(r->data+6,flags);
-    /* Linux nft reply nlmsghdr.nlmsg_pid addresses the requesting socket;
-     * the enclosing recvmsg sockaddr_nl remains the kernel's port zero. */
-    wr32(r->data+8,seq);wr32(r->data+12,s->port_id);
+    /* nlmsg_pid addresses the requesting socket, while sockaddr_nl is kernel port zero. */
+    nas_nl_header(r->data,bytes,type,flags,seq,s->ep.port_id);
     return r;
 }
 static void ack(struct nf_socket *s,const uint8_t original[16],int error) {
-    struct nf_reply *r=header(s,36,NLMSG_ERROR,0,rd32(original+8));
-    wr32(r->data+16,(uint32_t)(int32_t)error);
+    struct nf_reply *r=header(s,36,NLMSG_ERROR,0,nas_nl_rd32(original+8));
+    nas_nl_wr32(r->data+16,(uint32_t)(int32_t)error);
     memcpy(r->data+20,original,16); /* struct nlmsgerr.msg */
 }
 static void done(struct nf_socket *s,uint32_t seq) {
     struct nf_reply *r=header(s,20,NLMSG_DONE,NLM_F_MULTI,seq);
-    wr32(r->data+16,0);
+    nas_nl_wr32(r->data+16,0);
 }
 static void gen_reply(struct nf_socket *s,uint32_t seq) {
     /* Linux GETGEN's reply is NEWGEN, with the generation in both the
@@ -273,13 +203,13 @@ static void gen_reply(struct nf_socket *s,uint32_t seq) {
     r->data[16]=NFPROTO_UNSPEC;
     r->data[18]=(uint8_t)(global_generation>>8);
     r->data[19]=(uint8_t)global_generation;
-    wr16(r->data+20,8);wr16(r->data+22,NFATTR_GEN_ID);
-    wb32(r->data+24,global_generation);
+    nas_nl_wr16(r->data+20,8);nas_nl_wr16(r->data+22,NFATTR_GEN_ID);
+    nas_put_be32(r->data+24,global_generation);
 }
 static void table_reply(struct nf_socket *s,uint32_t seq,
                         const struct nf_table *t,bool multi,uint16_t op) {
     const unsigned name_bytes=(unsigned)strlen(t->name)+1U;
-    const unsigned n=align4(4U+name_bytes);
+    const unsigned n=nas_nl_align4(4U+name_bytes);
     const unsigned total=20U+n+28U;
     struct nf_reply *r=header(s,total,(NFNL_NFTABLES<<8)|op,
                                multi ? NLM_F_MULTI:0,seq);
@@ -288,19 +218,19 @@ static void table_reply(struct nf_socket *s,uint32_t seq,
      * the same live generation returned by NFT_MSG_NEWGEN. */
     r->data[18]=(uint8_t)(global_generation>>8);
     r->data[19]=(uint8_t)global_generation;
-    wr16(r->data+20,(uint16_t)(4U+name_bytes));
-    wr16(r->data+22,NFATTR_TABLE_NAME);
+    nas_nl_wr16(r->data+20,(uint16_t)(4U+name_bytes));
+    nas_nl_wr16(r->data+22,NFATTR_TABLE_NAME);
     memcpy(r->data+24,t->name,name_bytes);
     const unsigned off=20U+n;
     /* Linux nf_tables_fill_table_info emits NAME, USE, HANDLE, FLAGS in
      * that order.  A stable nonzero handle belongs to each registered
      * table and is not invented separately when userspace reads it. */
-    wr16(r->data+off,8);wr16(r->data+off+2,NFATTR_TABLE_USE);
-    wb32(r->data+off+4,0); /* zero chains, genuinely no references */
-    wr16(r->data+off+8,12);wr16(r->data+off+10,NFATTR_TABLE_HANDLE);
-    wb64(r->data+off+12,t->handle);
-    wr16(r->data+off+20,8);wr16(r->data+off+22,NFATTR_TABLE_FLAGS);
-    wb32(r->data+off+24,0); /* zero flags: no table hooks configured */
+    nas_nl_wr16(r->data+off,8);nas_nl_wr16(r->data+off+2,NFATTR_TABLE_USE);
+    nas_put_be32(r->data+off+4,0); /* zero chains, genuinely no references */
+    nas_nl_wr16(r->data+off+8,12);nas_nl_wr16(r->data+off+10,NFATTR_TABLE_HANDLE);
+    nas_put_be64(r->data+off+12,t->handle);
+    nas_nl_wr16(r->data+off+20,8);nas_nl_wr16(r->data+off+22,NFATTR_TABLE_FLAGS);
+    nas_put_be32(r->data+off+24,0); /* zero flags: no table hooks configured */
 }
 static int locate(const struct nf_table *tables,unsigned count,
                   uint8_t family,const char *name) {
@@ -317,8 +247,8 @@ static int read_table_attrs(const uint8_t *data,unsigned size,
     unsigned off=0;
     while(off<size) {
         if(size-off<4)return -EINVAL;
-        unsigned length=rd16(data+off);
-        unsigned type=rd16(data+off+2)&0x3fffU;
+        unsigned length=nas_nl_rd16(data+off);
+        unsigned type=nas_nl_rd16(data+off+2)&0x3fffU;
         if(length<4 || length>size-off)return -EINVAL;
         if(type==NFATTR_TABLE_NAME) {
             unsigned text_len=length-4U;
@@ -334,9 +264,9 @@ static int read_table_attrs(const uint8_t *data,unsigned size,
             if(length!=8)return -EINVAL;
             /* Dormant, owner and persistence all require semantics this
              * bounded model cannot yet provide; do not silently ignore. */
-            if(be32(data+off+4))return -EOPNOTSUPP;
+            if(nas_get_be32(data+off+4))return -EOPNOTSUPP;
         } else return -EOPNOTSUPP;
-        off+=align4(length);
+        off+=nas_nl_align4(length);
         if(off>size)return -EINVAL;
     }
     return 0;
@@ -347,13 +277,13 @@ static int read_batch_genid(const uint8_t *data,unsigned size,
     unsigned off=0;
     while(off<size) {
         if(size-off<4)return -EINVAL;
-        unsigned length=rd16(data+off);
-        unsigned type=rd16(data+off+2)&0x3fffU;
+        unsigned length=nas_nl_rd16(data+off);
+        unsigned type=nas_nl_rd16(data+off+2)&0x3fffU;
         if(length<4 || length>size-off)return -EINVAL;
         if(type!=NFATTR_BATCH_GENID || length!=8)return -EINVAL;
         if(*expected)return -EINVAL;
-        *expected=be32(data+off+4);
-        off+=align4(length);
+        *expected=nas_get_be32(data+off+4);
+        off+=nas_nl_align4(length);
         if(off>size)return -EINVAL;
     }
     return 0;
@@ -383,8 +313,8 @@ static int read_empty_dump_attrs(const uint8_t *data,unsigned size,
     unsigned off=0;
     while(off<size) {
         if(size-off<4)return -EINVAL;
-        const unsigned length=rd16(data+off);
-        const unsigned type=rd16(data+off+2)&0x3fffU;
+        const unsigned length=nas_nl_rd16(data+off);
+        const unsigned type=nas_nl_rd16(data+off+2)&0x3fffU;
         if(length<4 || length>size-off)return -EINVAL;
         if(type==1U || (second && type==second)) {
             bool *seen=type==1U?&seen_table:&seen_second;
@@ -400,10 +330,10 @@ static int read_empty_dump_attrs(const uint8_t *data,unsigned size,
             /* NFTA_OBJ_TYPE is a network-order U32.  Unknown selectors
              * must not be silently treated as an empty successful dump. */
             if(seen_number || length!=8U)return -EINVAL;
-            if(be32(data+off+4)>10U)return -EOPNOTSUPP;
+            if(nas_get_be32(data+off+4)>10U)return -EOPNOTSUPP;
             seen_number=true;
         } else return -EOPNOTSUPP;
-        off+=align4(length);
+        off+=nas_nl_align4(length);
         if(off>size)return -EINVAL;
     }
     return 0;
@@ -450,17 +380,17 @@ static bool admin_allowed(void) {
 static void trace_noent(const uint8_t *message,bool in_batch) {
     if(rejected_noent_traces>=8U)return;
     rejected_noent_traces++;
-    const uint32_t n=rd32(message);
-    nas_print("[NFT ENOENT] type=");nas_dec(rd16(message+4));
-    nas_print(" flags=");nas_dec(rd16(message+6));
+    const uint32_t n=nas_nl_rd32(message);
+    nas_print("[NFT ENOENT] type=");nas_dec(nas_nl_rd16(message+4));
+    nas_print(" flags=");nas_dec(nas_nl_rd16(message+6));
     nas_print(" family=");nas_dec(n>=20U?message[16]:255U);
     nas_print(" batch=");nas_dec(in_batch?1U:0U);
     nas_print(" length=");nas_dec(n);
-    nas_print(" attr=");nas_dec(n>=24U?rd16(message+22)&0x3fffU:0U);
+    nas_print(" attr=");nas_dec(n>=24U?nas_nl_rd16(message+22)&0x3fffU:0U);
     nas_print(" name=");
-    if(n>=26U && rd16(message+20)>=6U &&
-       rd16(message+20)<=n-20U && rd16(message+22)==NFATTR_TABLE_NAME) {
-        const unsigned limit=rd16(message+20)-4U;
+    if(n>=26U && nas_nl_rd16(message+20)>=6U &&
+       nas_nl_rd16(message+20)<=n-20U && nas_nl_rd16(message+22)==NFATTR_TABLE_NAME) {
+        const unsigned limit=nas_nl_rd16(message+20)-4U;
         for(unsigned i=0;i<limit && i<32U && message[24+i];i++) {
             const uint8_t c=message[24+i];
             nas_putchar(c>=32U && c<127U?(char)c:'?');
@@ -479,10 +409,10 @@ static bool batch_subsystem(const uint8_t *message) {
 static int handle_nft(struct nf_socket *s,const uint8_t *message,
                       uint32_t length,uint16_t type,uint16_t flags) {
     const uint16_t operation=(uint16_t)(type&255U);
-    const uint32_t seq=rd32(message+8);
+    const uint32_t seq=nas_nl_rd32(message+8);
     struct nf_batch *batch=&batch_scratch;
     if((type>>8)!=NFNL_NFTABLES)return -EOPNOTSUPP;
-    if(length<20 || message[17]!=0 || rd16(message+18)!=0)return -EINVAL;
+    if(length<20 || message[17]!=0 || nas_nl_rd16(message+18)!=0)return -EINVAL;
     const uint8_t family=message[16];
     if(operation==NFT_GETGEN) {
         if(length!=20 || family!=NFPROTO_UNSPEC)return -EINVAL;
@@ -585,7 +515,7 @@ static int handle_nft(struct nf_socket *s,const uint8_t *message,
 static int finish_batch(struct nf_socket *s,bool commit,
                         const uint8_t *end_header) {
     struct nf_batch *b=&batch_scratch;
-    unsigned responses=end_header && (rd16(end_header+6)&NLM_F_ACK) ? 1U:0U;
+    unsigned responses=end_header && (nas_nl_rd16(end_header+6)&NLM_F_ACK) ? 1U:0U;
     for(unsigned i=0;i<b->count;i++)
         if(b->operations[i].ack || b->operations[i].error ||
            b->failed)responses++;
@@ -608,7 +538,7 @@ static int finish_batch(struct nf_socket *s,bool commit,
         if(op->ack || op->error)
             ack(s,op->original_header,op->error);
     }
-    if(end_header && (rd16(end_header+6)&NLM_F_ACK))
+    if(end_header && (nas_nl_rd16(end_header+6)&NLM_F_ACK))
         ack(s,end_header,b->failed?-ECANCELED:0);
     memset(b,0,sizeof(*b));
     return 0;
@@ -620,12 +550,12 @@ int64_t nas_netlink_filter_sendto(unsigned slot,const uint8_t *bytes,
     struct nf_socket *s=live(slot);
     if(!s)return -EBADF;
     if(!bytes || length<16)return -EINVAL;
-    if(length>NAS_NETLINK_FILTER_MAX_DATAGRAM || length>s->send_quota)
+    if(length>NAS_NETLINK_FILTER_MAX_DATAGRAM || length>s->ep.send_quota)
         return -EMSGSIZE;
     uint32_t target=0,groups=0;
     int rc=0;
     if(destination)
-        rc=parse_sockaddr(destination,destination_length,&target,&groups);
+        rc=nas_nl_parse_address(destination,destination_length,&target,&groups);
     else if(destination_length)rc=-EINVAL;
     if(rc)return rc;
     if(target || groups)return -EOPNOTSUPP;
@@ -633,9 +563,9 @@ int64_t nas_netlink_filter_sendto(unsigned slot,const uint8_t *bytes,
     unsigned count=0;
     for(unsigned pos=0;pos<length;) {
         if(length-pos<16)return -EINVAL;
-        unsigned n=rd32(bytes+pos);
+        unsigned n=nas_nl_rd32(bytes+pos);
         if(n<16 || n>length-pos)return -EINVAL;
-        unsigned step=align4(n);
+        unsigned step=nas_nl_align4(n);
         if(step>length-pos)return -EINVAL;
         pos+=step;
         if(++count>NF_REPLY_LIMIT)return -EMSGSIZE;
@@ -643,22 +573,22 @@ int64_t nas_netlink_filter_sendto(unsigned slot,const uint8_t *bytes,
     if(!admin_allowed()) {
         if(!room(s,count))return -EAGAIN;
         for(unsigned pos=0;pos<length;) {
-            const unsigned n=rd32(bytes+pos);
+            const unsigned n=nas_nl_rd32(bytes+pos);
             ack(s,bytes+pos,-EPERM);
-            pos+=align4(n);
+            pos+=nas_nl_align4(n);
         }
         return length;
     }
-    if(!s->bound) {
+    if(!s->ep.bound) {
         rc=autobind(s,0);
         if(rc)return rc;
     }
     memset(&batch_scratch,0,sizeof(batch_scratch));
     for(unsigned pos=0;pos<length;) {
         const uint8_t *msg=bytes+pos;
-        const unsigned n=rd32(msg);
-        const uint16_t type=rd16(msg+4),flags=rd16(msg+6);
-        pos+=align4(n);
+        const unsigned n=nas_nl_rd32(msg);
+        const uint16_t type=nas_nl_rd16(msg+4),flags=nas_nl_rd16(msg+6);
+        pos+=nas_nl_align4(n);
         if(!(flags&NLM_F_REQUEST))rc=-EINVAL;
         else if(type==NFNL_BATCH_BEGIN) {
             if(batch_scratch.active || n<20 || msg[17] || !batch_subsystem(msg))
@@ -720,28 +650,14 @@ int64_t nas_netlink_filter_recvmsg(unsigned slot,uint8_t *destination,
                                   uint32_t *msg_flags) {
     struct nf_socket *s=live(slot);
     if(!s)return -EBADF;
-    if(flags&~(MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT))return -EOPNOTSUPP;
-    if(capacity && !destination)return -EINVAL;
-    if(!s->count)return -EAGAIN;
-    struct nf_reply *r=&s->replies[s->head];
-    unsigned actual=r->len,copy=capacity<actual?capacity:actual;
-    if(copy)memcpy(destination,r->data,copy);
-    if(source)make_sockaddr(source,0);
-    if(source_length)*source_length=NAS_NETLINK_FILTER_SOCKADDR_SIZE;
-    if(msg_flags)*msg_flags=copy<actual?MSG_TRUNC:0;
-    if(!(flags&MSG_PEEK)) {
-        s->head=(uint8_t)((s->head+1U)%NF_REPLY_LIMIT);
-        s->count--;
-    }
-    return (flags&MSG_TRUNC)?actual:copy;
+    struct nf_reply *r=&s->replies[s->ep.head];
+    return nas_nl_receive_checked(&s->ep,NF_REPLY_LIMIT,destination,capacity,
+        r->data,r->len,flags,source,0,source_length,msg_flags,NULL);
 }
 static uint64_t read_plan(unsigned slot,uint64_t requested) {
     struct nf_socket *s=live(slot);
     if(!s)return (uint64_t)-EBADF;
-    if(!requested)return 0;
-    if(!s->count)return (uint64_t)-EAGAIN;
-    return requested<s->replies[s->head].len ? requested:
-           s->replies[s->head].len;
+    return nas_nl_read_plan(&s->ep,requested,s->replies[s->ep.head].len);
 }
 static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
     return (uint64_t)nas_netlink_filter_recvmsg(slot,out,(unsigned)count,
@@ -749,24 +665,14 @@ static uint64_t read_bytes(unsigned slot,uint8_t *out,uint64_t count) {
 }
 static uint16_t poll_description(unsigned slot,uint16_t events) {
     struct nf_socket *s=live(slot);
-    if(!s)return PORT_POLLERR;
-    uint16_t ready=0;
-    if(s->count)ready|=PORT_POLLIN;
-    if(room(s,1))ready|=PORT_POLLOUT;
-    return (uint16_t)(ready&events);
-}
-static uint16_t poll_fd(uint64_t fd,uint16_t events) {
-    if(!nas_current_task || !nas_current_task->fds || fd>=NAS_FD_LIMIT ||
-       nas_current_task->fds->entries[fd].kind!=FD_SOCKET)return 0;
-    return poll_description(nas_current_task->fds->entries[fd].slot,events);
+    return s?nas_nl_poll(&s->ep,events,room(s,1),false):PORT_POLLERR;
 }
 static void release(unsigned slot) {
-    if(slot<NAS_OPEN_FILE_LIMIT)
-        sockets[slot]=(struct nf_socket){0};
+    nas_nl_socket_release(slot,&ops);
 }
 static const struct nas_file_ops ops={
     .read_plan=read_plan,.read=read_bytes,
     .io_wait_flags=NAS_IO_WAIT_INITIAL|NAS_IO_WAIT_RETRY,
-    .poll=poll_fd,.poll_description=poll_description,.release=release
+    .poll_description=poll_description,.release=release
 };
 const struct nas_file_ops *nas_netlink_filter_ops(void){return &ops;}

@@ -1,0 +1,101 @@
+name: Alpine distribution acceptance
+on:
+  push:
+    branches: [refactor/naseed-cleanup-01-20261124]
+    paths-ignore:
+      - "tests/native-*.sh"
+      - "tests/native-*.py"
+      - ".github/workflows/native-boot.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alpine-root-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  alpine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate acceptance scripts before long QEMU run
+        run: |
+          python3 -m py_compile tests/alpine-desktop-gui.py
+          sh -n tests/alpine-root.sh
+      - name: Select weekly apt cache
+        id: apt-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore signed Ubuntu package downloads
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: naseed-apt-noble-${{ runner.arch }}-alpine-${{ steps.apt-week.outputs.week }}-${{ hashFiles('.github/workflows/alpine-root.yml') }}
+          restore-keys: |
+            naseed-apt-noble-${{ runner.arch }}-alpine-
+            naseed-apt-noble-${{ runner.arch }}-
+      - name: Install build and QEMU tools
+        run: |
+          mkdir -p "$HOME/.cache/naseed-apt"
+          sudo apt-get update -o Acquire::Retries=3
+          # Keep apt's _apt download sandbox and normal signature validation.
+          find "$HOME/.cache/naseed-apt" -maxdepth 1 -name '*.deb' -exec sudo cp -t /var/cache/apt/archives -- {} +
+          sudo apt-get -o Acquire::Retries=3 -o APT::Keep-Downloaded-Packages=true install -y --download-only --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+          find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -t "$HOME/.cache/naseed-apt" -- {} +
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends clang lld binutils curl make cmake g++ xorriso ovmf qemu-system-x86 cpio e2fsprogs fdisk python3-pexpect
+      - name: Save downloaded packages before running tests
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/naseed-apt/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+      - name: Build and boot original Alpine
+        run: sh tests/alpine-root.sh
+      - name: Preserve real serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-root-serial
+          path: |
+            build/alpine-root/shell.log
+            build/alpine-root/init.log
+            build/alpine-root/second-boot.log
+            build/alpine-root/desktop-boot.log
+            build/alpine-root/desktop-boot-before.ppm
+            build/alpine-root/desktop-boot-mousepad.ppm
+            build/alpine-root/gui-*.log
+            build/alpine-root/gui-*.ppm
+            build/alpine-root/gui-note.txt
+            build/alpine-root/kms-before.ppm
+            build/alpine-root/kms-modetest.ppm
+            build/alpine-root/kms-pageflip.ppm
+            build/alpine-root/native-weston-before.ppm
+            build/alpine-root/native-weston-simple-shm.ppm
+            build/alpine-root/native-weston-terminal.ppm
+            build/alpine-root/native-weston-terminal-focused.ppm
+            build/alpine-root/native-weston-two-terminals.ppm
+            build/alpine-root/native-weston-beta-focused.ppm
+            build/alpine-root/native-weston-survivor.ppm
+            build/alpine-root/native-gtk-mousepad.ppm
+            build/alpine-root/native-gtk-thunar.ppm
+            build/alpine-root/native-gtk-*-before.ppm
+            build/alpine-root/xorg.ppm
+            build/alpine-root/x11-apps.ppm
+            build/alpine-root/x11-keyboard.ppm
+            build/alpine-root/x11-input.ppm
+            build/alpine-root/x11-xeyes.ppm
+            build/alpine-root/x11-xcalc.ppm
+            build/alpine-root/openbox-before.ppm
+            build/alpine-root/openbox-managed.ppm
+            build/alpine-root/openbox-closed.ppm
+            build/alpine-root/wayland-before.ppm
+            build/alpine-root/wayland-weston.ppm
+            build/alpine-root/wayland-simple-shm.ppm
+            build/alpine-root/wayland-terminal.ppm
+            build/alpine-root/wayland-two-terminals.ppm
+            build/alpine-root/wayland-survivor.ppm
+            build/alpine-root/wayland-client.trace
+            build/alpine-root/wayland-traced-info.log
+            build/alpine-root/desktop-*.ppm
+            build/alpine-root/desktop-note.txt
+          if-no-files-found: ignore
