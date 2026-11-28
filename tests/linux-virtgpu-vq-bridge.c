@@ -85,6 +85,11 @@ static int check_bridge(void) {
     CHECK(nas_linux_virtgpu_vq_reclaim(&bridge,&returned,&used)==0);
     CHECK(returned==&token1 && used==23U && q.free_count==16U);
 
+    nas_linux_virtgpu_vq_disable_callbacks(&bridge);
+    CHECK(q.ring.avail->flags & VRING_AVAIL_F_NO_INTERRUPT);
+    CHECK(nas_linux_virtgpu_vq_enable_callbacks(&bridge));
+    CHECK(!(q.ring.avail->flags & VRING_AVAIL_F_NO_INTERRUPT));
+
     /* NO_NOTIFY is a real VirtIO device hint, not a failed submission. */
     q.ring.used->flags=VRING_USED_F_NO_NOTIFY;
     CHECK(nas_linux_virtgpu_vq_submit(&bridge,segs,2,&token3)==0);
@@ -94,7 +99,12 @@ static int check_bridge(void) {
     q.ring.used->ring[2].id=head3;
     q.ring.used->ring[2].len=19U;
     q.ring.used->idx=3U;
+    /* A completion arrived while callbacks were suppressed: enable must
+     * return false and force the Linux driver to drain before sleeping. */
+    nas_linux_virtgpu_vq_disable_callbacks(&bridge);
+    CHECK(!nas_linux_virtgpu_vq_enable_callbacks(&bridge));
     CHECK(nas_linux_virtgpu_vq_reclaim(&bridge,&returned,&used)==0);
+    CHECK(nas_linux_virtgpu_vq_enable_callbacks(&bridge));
     CHECK(returned==&token3 && used==19U && q.free_count==16U);
 
     /* Existing block/input/GPU eager-submit semantics remain unchanged. */
