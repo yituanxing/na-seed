@@ -42,6 +42,31 @@ int nas_linux_virtgpu_vq_submit(struct nas_linux_virtgpu_vq_bridge *b,
     b->cookies[head]=cookie;
     return 0;
 }
+int nas_linux_virtgpu_vq_submit_mapped(struct nas_linux_virtgpu_vq_bridge *b,
+                                      const struct nas_linux_virtgpu_dma_sg *sg,
+                                      unsigned count, void *cookie) {
+    if (!b || !b->queue || !sg || !cookie || !count ||
+        count>NAS_VRING_MAX_DESC)return -EINVAL;
+    struct nas_vring_segment segments[NAS_VRING_MAX_DESC];
+    /* Validate the WHOLE chain before publishing ANY descriptor. A map
+     * represents a separately pinned page: the queue's cookie release and
+     * the provider's unmap are different ownership transitions. */
+    for (unsigned i=0;i<count;i++) {
+        if (!sg[i].map || !sg[i].map->active ||
+            sg[i].map->provider!=b->queue->transport->dma)return -EINVAL;
+        uint64_t bus=0;
+        int rc=nas_dma_mapped_slice(sg[i].map,sg[i].offset,
+                                    sg[i].length,&bus);
+        if (rc)return rc;
+        segments[i]=(struct nas_vring_segment){
+            .bus_address=bus,.length=sg[i].length,
+            .device_writes=sg[i].device_writes};
+    }
+    /* Strictly fail until a provider implements the right IOMMU/CPU
+     * coherency policy; borrowed-frame mapping currently requires coherent. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return nas_linux_virtgpu_vq_submit(b,segments,count,cookie);
+}
 int nas_linux_virtgpu_vq_reclaim(struct nas_linux_virtgpu_vq_bridge *b,
                                 void **cookie, uint32_t *used_bytes) {
     if (!cookie || !used_bytes)return -EINVAL;
