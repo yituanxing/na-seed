@@ -357,6 +357,13 @@ static uint64_t render_resource_create(unsigned slot,uint64_t arg) {
         return (uint64_t)-EFAULT;
     if(!nas_user_prepare_write(arg,sizeof(req)))
         return (uint64_t)-EFAULT;
+    /* Match upstream TGOSKits axdrm: GEM allocations are page rounded,
+     * with a minimum one-page backing even when a texture asks size=0. */
+    uint64_t bytes=req.size;
+    if(bytes<4096U)bytes=4096U;
+    bytes=(bytes+4095U)&~UINT64_C(4095);
+    if(bytes>32ULL*1024ULL*1024ULL)return (uint64_t)-EINVAL;
+    req.size=(uint32_t)bytes;
     uint32_t handle=0,resource=0;
     int rc=nas_tgos_original_gpu_render_resource_create((uint32_t)slot,
                                                     &req,&handle,&resource);
