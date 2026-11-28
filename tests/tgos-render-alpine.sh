@@ -11,7 +11,7 @@ if [ "$mesa_mode" = "1" ]; then
     guest_script=tgos-mesa-guest.py
     extra_packages="mesa-dri-gallium mesa-egl mesa-gbm mesa-gles"
     memory=2048M
-    timeout_seconds=110
+    timeout_seconds=45
 else
     work="$PWD/build/tgos-render-alpine"
     guest_script=tgos-render-guest.py
