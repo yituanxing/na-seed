@@ -1,0 +1,63 @@
+name: VirtIO-GPU VirGL host protocol acceptance
+on:
+  push:
+    branches: [refactor/naseed-cleanup-01-20261124]
+    paths:
+      - "kernel/drivers/display/virtio_gpu.c"
+      - "kernel/drivers/display/virtio_gpu.h"
+      - "tests/native-virgl-probe.py"
+      - ".github/workflows/gpu3d-probe.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: virgl-host-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  virgl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, riscv64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install unmodified QEMU VirGL host, software GL and native firmware
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            clang lld make binutils curl python3 \
+            qemu-system-arm qemu-system-misc qemu-system-x86 qemu-system-gui \
+            qemu-efi-aarch64 qemu-efi-riscv64 ovmf xorriso \
+            libvirglrenderer1 libgl1-mesa-dri libegl1 \
+            xvfb xauth dosfstools mtools
+      - name: Build native shared GPU driver for RV64 and AArch64
+        if: matrix.arch != 'x86_64'
+        run: make ARCH=${{ matrix.arch }} NAS_ENABLE_VIRTIO_GPU=1 kernel
+      - name: Build real x86-64 UEFI ISO with modern VirtIO GPU class
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 iso
+      - name: Smoke-boot real native Limine and NaSeed
+        if: matrix.arch != 'x86_64'
+        run: sh tests/native-boot.sh ${{ matrix.arch }}
+      - name: Smoke-boot real x86-64 UEFI ISO
+        if: matrix.arch == 'x86_64'
+        run: make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 smoke
+      - name: Verify real VirGL feature and GET_CAPSET_INFO on QEMU GPU
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python3 -m py_compile tests/native-virgl-probe.py
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
+            python3 tests/native-virgl-probe.py ${{ matrix.arch }}
+      - name: Preserve actual QEMU host and guest protocol log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: virgl-${{ matrix.arch }}-serial
+          path: |
+            build/native-boot/${{ matrix.arch }}/virgl-probe.log
+            build/native-boot/${{ matrix.arch }}/serial.log
+          if-no-files-found: ignore
