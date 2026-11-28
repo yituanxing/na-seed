@@ -1,0 +1,49 @@
+name: Real Alpine Mesa EGL/GLES2 VirGL application (experimental)
+on:
+  push:
+    branches: [experiment/tgoskits-gpu-owner-20261128]
+    paths:
+      - "ports/tgoskits-drm-ffi/**"
+      - "kernel/fs/drm_chrdev.c"
+      - "kernel/fs/drm_gem.c"
+      - "tests/tgos-mesa-guest.py"
+      - "tests/tgos-render-alpine.sh"
+      - "tests/tgos-render-guest.py"
+      - "Makefile"
+      - ".github/workflows/tgoskits-mesa-real-app.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tgos-original-actual-mesa-pixels
+  cancel-in-progress: true
+jobs:
+  alpine-original-mesa-gbm-egl-gles2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host QEMU VirGL, original kernel, Alpine package tools
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends \
+            clang lld make binutils curl cpio xorriso ovmf \
+            qemu-system-x86 qemu-system-gui libvirglrenderer1 \
+            libegl1 libgl1-mesa-dri xvfb xauth
+          rustup toolchain install nightly-2026-11-13 --profile minimal \
+            --component rust-src --target x86_64-unknown-none
+          docker info >/dev/null
+      - name: Syntax check the genuine original-Mesa GPU application
+        run: |
+          sh -n tests/tgos-render-alpine.sh
+          python3 -m py_compile tests/tgos-mesa-guest.py
+          python3 -m py_compile tests/tgos-render-guest.py
+      - name: Run ORIGINAL Alpine Mesa/EGL/GLES2 and compare GL-read pixels
+        run: TGOS_MESA_PROBE=1 sh tests/tgos-render-alpine.sh
+      - name: Preserve real Mesa output, kernel errors and QEMU traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-alpine-mesa-gl-pixels-serial
+          path: build/tgos-mesa-alpine/serial.log
+          if-no-files-found: ignore
