@@ -23,6 +23,10 @@ CFLAGS := --target=x86_64-unknown-none-elf -std=c11 -O2 -g -Wall -Wextra -Werror
  -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
  -fno-pic -fno-pie -mcmodel=kernel -mno-red-zone -mno-sse -mno-mmx \
  -I $(OUT)/deps -I kernel -I third_party/unikraft/include -I ports/unikraft/include
+# Exercise a real VirGL context lifecycle only in the explicit GPU 3D CI.
+ifeq ($(NAS_ENABLE_GPU3D_CONTEXT_PROBE),1)
+CFLAGS += -DNAS_ENABLE_GPU3D_CONTEXT_PROBE=1
+endif
 # Physical-machine H0 is a separate read-only firmware/PCI discovery image.
 # It deliberately stops before userspace, VirtIO, DMA, IRQ setup or disk I/O.
 ifeq ($(NAS_ENABLE_H0_HARDWARE_DISCOVERY),1)
