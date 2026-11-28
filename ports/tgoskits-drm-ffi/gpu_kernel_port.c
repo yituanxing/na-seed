@@ -198,9 +198,9 @@ static int probe(struct nas_bus_device *dev) {
     }
     gpu_owner=dev;
     gpu_claimed=true;
-    nas_print("[TGOS ORIGINAL GPU CAPSET PASS] capset_id=");
+    nas_print("[TGOS ORIGINAL GPU 3D RESOURCE FENCE PASS] capset_id=");
     nas_dec(capset_id);
-    nas_print(" original-ctx-create/destroy-used=1 render-node=absent\n");
+    nas_print(" original-res3d-submit3d-fence=1 render-node=absent\n");
     return 0;
 }
 static int remove_gpu(struct nas_bus_device *dev) {
