@@ -16,6 +16,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#if defined(NAS_EXPERIMENT_TGOS_DRM_FFI)
+/* The source of this symbol is ORIGINAL TGOSKits DRM code called through
+ * a Rust/C staticlib bridge, not a self-written alternate DRM driver. */
+extern int nas_tgos_drm_check_original_abi(void);
+#endif
+
 #define NAS_DRM_IOCTL_VERSION UINT32_C(0xc0406400)
 #define NAS_DRM_IOCTL_GET_CAP UINT32_C(0xc010640c)
 #define NAS_DRM_IOCTL_GEM_CLOSE UINT32_C(0x40086409)
@@ -63,6 +69,13 @@ static struct nas_chrdev_node drm_node={
     .present=drm_present,.provider=&drm_provider
 };
 int nas_drm_chrdev_init(void) {
+#if defined(NAS_EXPERIMENT_TGOS_DRM_FFI)
+    /* This opt-in experiment must execute real original upstream Rust
+     * symbols IN the NaSeed kernel. Refuse DRM publication on mismatch.
+     * It does not provide a new GPU owner, render node or 3D ioctl. */
+    int abi_rc=nas_tgos_drm_check_original_abi();
+    if(abi_rc)return abi_rc;
+#endif
     return nas_chrdev_node_register(&drm_node);
 }
 static int copy_string(uint64_t user_addr,uint64_t capacity,
