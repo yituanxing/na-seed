@@ -4,7 +4,21 @@
 set -eu
 [ "$#" -eq 0 ] || { echo "usage: sh tests/tgos-render-alpine.sh" >&2; exit 2; }
 
-work="$PWD/build/tgos-render-alpine"
+mesa_mode="${TGOS_MESA_PROBE:-0}"
+[ "$mesa_mode" = "0" ] || [ "$mesa_mode" = "1" ] || exit 2
+if [ "$mesa_mode" = "1" ]; then
+    work="$PWD/build/tgos-mesa-alpine"
+    guest_script=tgos-mesa-guest.py
+    extra_packages="mesa-dri-gallium mesa-egl mesa-gbm mesa-gles"
+    memory=2048M
+    timeout_seconds=300
+else
+    work="$PWD/build/tgos-render-alpine"
+    guest_script=tgos-render-guest.py
+    extra_packages=""
+    memory=1024M
+    timeout_seconds=190
+fi
 out="$work/kernel"
 root="$work/rootfs"
 version=3.23.7
@@ -22,15 +36,15 @@ sudo mkdir -p "$root"
 sudo tar --numeric-owner -xzf "$work/$archive" -C "$root"
 # Genuine signed Alpine Python and libdrm. The test file is only a workload;
 # these shared libraries and the libc are not modified.
-docker run --rm -v "$root:/target" alpine:3.23 sh -ec '
+docker run --rm -v "$root:/target" -e "MESA_EXTRA_PACKAGES=$extra_packages" alpine:3.23 sh -ec '
     cp -a /target/etc/apk/keys/. /etc/apk/keys/
     apk --arch x86_64 --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
       -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
       -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
-      add python3 libdrm
+      add python3 libdrm $MESA_EXTRA_PACKAGES
 '
 sudo mkdir -p "$root/root" "$root/dev" "$root/proc" "$root/tmp"
-sudo cp tests/tgos-render-guest.py "$root/root/tgos-render-guest.py"
+sudo cp "tests/$guest_script" "$root/root/$guest_script"
 test -x "$root/usr/bin/python3"
 test -e "$root/usr/lib/libdrm.so.2"
 test -e "$root/lib/ld-musl-x86_64.so.1"
@@ -39,12 +53,12 @@ test -e "$root/lib/ld-musl-x86_64.so.1"
 test -s "$work/rootfs.cpio"
 
 cp "$work/rootfs.cpio" "$out/iso/boot/rootfs.cpio"
-cat > "$out/iso/boot/limine/limine.conf" <<'LIMINE'
+cat > "$out/iso/boot/limine/limine.conf" <<LIMINE
 timeout: 0
 /NaSeed
     protocol: limine
     path: boot():/boot/kernel
-    cmdline: naseed.argv=/usr/bin/python3 /root/tgos-render-guest.py
+    cmdline: naseed.argv=/usr/bin/python3 /root/$guest_script
     module_path: boot():/boot/rootfs.cpio
 LIMINE
 xorriso -as mkisofs -R -r -J \
@@ -59,8 +73,8 @@ done
 test -n "$ovmf"
 rc=0
 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-timeout 190s xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
-    qemu-system-x86_64 -M q35 -m 1024M -cpu qemu64 \
+timeout "${timeout_seconds}s" xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
+    qemu-system-x86_64 -M q35 -m "$memory" -cpu qemu64 \
     -display sdl,gl=on -monitor none -serial stdio -no-reboot -no-shutdown -nic none \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive "if=pflash,unit=0,format=raw,file=$ovmf,readonly=on" \
@@ -74,6 +88,20 @@ cat "$work/serial.log"
     echo "FAIL: actual Alpine userspace did not exit 0, qemu=$rc" >&2
     exit 1
 }
+if [ "$mesa_mode" = "1" ]; then
+    for marker in \
+        "TGOS_MESA_GBM_RENDER_NODE_PASS" \
+        "TGOS_MESA_EGL_INITIALIZE_PASS" \
+        "TGOS_MESA_VIRGL_RENDERER_PASS" \
+        "TGOS_MESA_GL_CLEAR_PIXELS_PASS" \
+        "TGOS_MESA_REAL_APPLICATION_PASS" \
+        "[PASS] cmdline userspace exit 0"; do
+        grep -Fq "$marker" "$work/serial.log" || {
+            echo "FAIL: genuine Mesa EGL app missing marker $marker" >&2
+            exit 1
+        }
+    done
+else
 for marker in \
     "TGOS_ALPINE_LIBDRM_RENDER_OPEN_PASS" \
     "TGOS_ALPINE_GETPARAM_INT_ABI_PASS" \
@@ -99,9 +127,14 @@ for marker in \
         exit 1
     }
 done
+fi
 if grep -Fq "[FAIL]" "$work/serial.log"; then
     echo "FAIL: NaSeed kernel printed failure" >&2
     exit 1
 fi
-echo "PASS: unmodified Alpine libdrm invoked NaSeed renderD128 and got actual QEMU capset"
-echo "Genuine Alpine mmap -> QEMU 3D texture upload -> host DMA readback verified. Mesa rendering, scanout and glmark2 remain."
+if [ "$mesa_mode" = "1" ]; then
+    echo "PASS: original Alpine Mesa/EGL/GLES2 rendered verified pixels through QEMU VirGL"
+else
+    echo "PASS: unmodified Alpine libdrm invoked NaSeed renderD128 and got actual QEMU capset"
+    echo "Genuine Alpine mmap -> QEMU 3D texture upload -> host DMA readback verified."
+fi
