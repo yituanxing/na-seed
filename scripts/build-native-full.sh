@@ -43,6 +43,10 @@ case "$port" in
         [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && flags="$flags -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1 -I third_party/unikraft/include -I ports/unikraft/include"
         ;;
 esac
+if [ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ]; then
+    # The same upstream Linux v6.14 GPU UAPI is compiled on RV64/AArch64.
+    flags="$flags -I ports/linux-virtgpu/include -I third_party/linux-virtgpu/include/uapi"
+fi
 if [ "${NAS_ENABLE_M179_FS_IRQ:-0}" = 1 ]; then
     [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ] && [ "${NAS_ENABLE_LWEXT4:-0}" = 1 ] ||
       { echo '[M179] async block and lwext4 gates required' >&2; exit 1; }
