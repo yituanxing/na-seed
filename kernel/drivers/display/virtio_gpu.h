@@ -25,6 +25,12 @@ struct nas_virtio_gpu_3d_caps {
     uint32_t capset_count,virgl_capset_id,virgl_capset_version,virgl_capset_size;
 };
 void nas_virtio_gpu_get_3d_caps(struct nas_virtio_gpu_3d_caps *);
+/* Read-only snapshot of REAL GET_CAPSET bytes taken before userspace starts.
+ * Never initiate synchronous VirtIO GPU traffic from an ioctl handler.
+ * The pointer is borrowed; callers must copy it without retaining it. */
+int nas_virtio_gpu_capset_snapshot(uint32_t id,uint32_t version,
+                                   const uint8_t **payload,uint32_t *bytes);
+uint64_t nas_virtio_gpu_capset_mask(void);
 /* Read-only completion state. displayed_serial advances only after the
  * actual VirtIO resource-flush response is consumed in deferred context. */
 struct nas_virtio_gpu_scanout_state {
