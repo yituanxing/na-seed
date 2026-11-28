@@ -130,8 +130,10 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
         libdrm.drmFreeVersion(version)
     print("TGOS_ALPINE_LIBDRM_RENDER_OPEN_PASS", flush=True)
 
-    # Before GEM/EXECBUFFER is integrated, do not lie about usable 3D.
-    assert getparam(fd, 1) == 0, "driver falsely advertises userspace 3D"
+    # 3D is now explicitly enabled ONLY in the experimental QEMU owner:
+    # original VirGL commands, GEM backing, MAP and WAIT have real drivers.
+    # The later unmodified Mesa EGL app is the decisive renderer test.
+    assert getparam(fd, 1) == 1, "real QEMU VirGL feature not advertised"
     assert getparam(fd, 2) == 1, "GET_CAPS implementation not advertised"
     assert getparam(fd, 3) == 0, "blob interface is not wired"
     mask = getparam(fd, 7)
