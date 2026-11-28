@@ -200,16 +200,66 @@ def run_original_xorg(guest):
            'DISPLAY=:0 xsetroot -solid red >/dev/null 2>&1; '
            'echo XORG_DIRECT_CLEAN_PASS',
            'XORG_DIRECT_CLEAN', timeout=45)
+    # An EWMH manager must actually own the root session before we
+    # diagnose its MapRequest/reparent flow. A process ID alone is not proof.
     guest.sendline(
-        'DISPLAY=:0 openbox --sm-disable >/root/native-openbox.log 2>&1 & wm=$!; '
-        'sleep 2; DISPLAY=:0 xterm -T NASEED-NATIVE-XTERM '
-        '-geometry 52x12+40+50 -bg white -fg black -fn fixed '
-        '-e /bin/sh -i >/root/native-xterm.log 2>&1 & xt=$!; '
-        'DISPLAY=:0 xeyes -title NASEED-NATIVE-XEYES '
-        '-geometry 150x110+580+350 >/root/native-xeyes.log 2>&1 & xe=$!; '
-        'sleep 3; echo XORG_APPS_LAUNCHED')
-    guest.expect(r'\r*\nXORG_APPS_LAUNCHED\r*\n', timeout=65)
+        'DISPLAY=:0 openbox --sm-disable >/root/native-openbox.log 2>&1 & '
+        'wm=$!; echo XORG_WM_LAUNCHED')
+    guest.expect(r'\r*\nXORG_WM_LAUNCHED\r*\n', timeout=35)
     guest.expect(r'# ')
+    verify(guest,
+           'for i in $(seq 1 45); do '
+           'DISPLAY=:0 xprop -root _NET_SUPPORTING_WM_CHECK '
+           '>/root/native-wm-property.log 2>&1; '
+           'grep -q "window id" /root/native-wm-property.log && break; '
+           'sleep 2; done; '
+           'if grep -q "window id" /root/native-wm-property.log; '
+           'then echo XORG_WM_READY_PASS; else '
+           'cat /root/native-wm-property.log; '
+           'tail -50 /root/native-openbox.log; '
+           'echo XORG_WM_READY_FAIL; fi',
+           'XORG_WM_READY', timeout=210)
+    # Keep PTY/xterm out of this first test: Openbox must map an ordinary
+    # X11 Xaw application before terminal ownership semantics are examined.
+    guest.sendline(
+        'DISPLAY=:0 xeyes -title NASEED-NATIVE-XEYES '
+        '-geometry 150x110+580+350 >/root/native-xeyes.log 2>&1 & '
+        'xe=$!; echo XORG_WM_EYES_LAUNCHED')
+    guest.expect(r'\r*\nXORG_WM_EYES_LAUNCHED\r*\n', timeout=35)
+    guest.expect(r'# ')
+    verify(guest,
+           'for i in $(seq 1 45); do '
+           'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XEYES -stats '
+           '>/root/native-xeyes-window.log 2>&1; '
+           'grep -q "Map State: IsViewable" /root/native-xeyes-window.log '
+           '&& break; sleep 2; done; '
+           'if grep -q "Map State: IsViewable" /root/native-xeyes-window.log; '
+           'then echo XORG_WM_EYES_MAP_PASS; else '
+           'cat /root/native-xeyes-window.log; '
+           'cat /root/native-wm-property.log; '
+           'tail -40 /root/native-openbox.log /root/native-xeyes.log; '
+           'echo XORG_WM_EYES_MAP_FAIL; fi',
+           'XORG_WM_EYES_MAP', timeout=210)
+    wm_eyes_delta = 0
+    for _ in range(15):
+        _, _, wm_eyes_frame = scanout('xorg-openbox-xeyes')
+        wm_eyes_delta = changed(painted, wm_eyes_frame)
+        if wm_eyes_delta >= 5000:
+            break
+        time.sleep(2)
+    if wm_eyes_delta < 5000:
+        raise RuntimeError(f'{arch}: Openbox-mapped xeyes has no '
+                           f'genuine GPU scanout: {wm_eyes_delta}')
+    print(f'PASS: {arch} real Openbox X11 xeyes mapped '
+          f'and GPU pixels changed={wm_eyes_delta}', flush=True)
+    guest.sendline(
+        'DISPLAY=:0 xterm -T NASEED-NATIVE-XTERM '
+        '-geometry 52x12+40+50 -bg white -fg black -fn fixed '
+        '-e /bin/sh -i >/root/native-xterm.log 2>&1 & '
+        'xt=$!; echo XORG_APPS_LAUNCHED')
+    guest.expect(r'\r*\nXORG_APPS_LAUNCHED\r*\n', timeout=35)
+    guest.expect(r'# ')
+
     verify(guest,
            'for i in $(seq 1 45); do '
            'DISPLAY=:0 xwininfo -name NASEED-NATIVE-XTERM -stats '
