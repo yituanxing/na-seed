@@ -191,7 +191,9 @@ ifeq ($(NAS_ENABLE_VIRTIO_INPUT),1)
 CFLAGS += -DNAS_ENABLE_VIRTIO_INPUT=1
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_GPU),1)
-CFLAGS += -DNAS_ENABLE_VIRTIO_GPU=1
+# Canonical upstream v6.14 VirtIO-GPU UAPI: 2D protocol definitions are no
+# longer copied by hand into the live NaSeed GPU driver.
+CFLAGS += -DNAS_ENABLE_VIRTIO_GPU=1 -I ports/linux-virtgpu/include -I third_party/linux-virtgpu/include/uapi
 endif
 ifeq ($(NAS_ENABLE_VIRTIO_BLK_ASYNC),1)
 CFLAGS += -DNAS_ENABLE_VIRTIO_BLK_ASYNC=1
