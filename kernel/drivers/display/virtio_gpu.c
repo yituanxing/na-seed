@@ -496,7 +496,7 @@ static int runtime_start_3d_context(struct gpu_device *g) {
         .context_init=0,.debug_name="naseed-runtime"
     };
     create.hdr.ctx_id=little32(GPU_CTX_PROBE_ID);
-    return runtime_submit(g,&create,sizeof(create),GPU_RUNTIME_3D_CTX_CREATE);
+    return runtime_submit(g,&create.hdr,sizeof(create),GPU_RUNTIME_3D_CTX_CREATE);
 }
 #endif
 
