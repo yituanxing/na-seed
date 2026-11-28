@@ -82,6 +82,8 @@ for marker in \
     "TGOS_ALPINE_NONEMPTY_EXECBUFFER_FENCE_PASS" \
     "TGOS_ALPINE_REAL_RESOURCE_CREATE_INFO_EXEC_PASS" \
     "TGOS_ALPINE_REAL_BO_MMAP_PAGE_ISOLATION_PASS" \
+    "TGOS_ALPINE_GPU_HOST_DMA_ROUNDTRIP_PASS" \
+    "TGOS_ALPINE_GPU_TRANSFER_BOUNDS_PASS" \
     "TGOS_ALPINE_GEM_CLOSE_LIVE_VMA_PASS" \
     "TGOS_ALPINE_RESOURCE_FILE_ISOLATION_PASS" \
     "TGOS_ALPINE_GEM_CLOSE_DEVICE_RELEASE_PASS" \
@@ -101,4 +103,4 @@ if grep -Fq "[FAIL]" "$work/serial.log"; then
     exit 1
 fi
 echo "PASS: unmodified Alpine libdrm invoked NaSeed renderD128 and got actual QEMU capset"
-echo "Real QEMU GPU resources + mapped GEM PMM pages + BO-aware fence passed; host transfers, Mesa 3D, scanout and glmark2 remain."
+echo "Genuine Alpine mmap -> QEMU 3D texture upload -> host DMA readback verified. Mesa rendering, scanout and glmark2 remain."
