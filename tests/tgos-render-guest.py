@@ -84,6 +84,16 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     assert any(raw), "guest received all-zero/fabricated capset"
     print(f"TGOS_ALPINE_REAL_GETCAPS_PASS capset={ids[0]}", flush=True)
 
+    # The original TGOSKits axdrm GET_CAPS API permits a short destination.
+    # Require byte-for-byte agreement with the REAL full QEMU capset, rather
+    # than treating a shorter valid user buffer as EINVAL.
+    short = ctypes.create_string_buffer(32)
+    request_short = struct.pack("=IIQII", ids[0], 0,
+                                ctypes.addressof(short), len(short), 0)
+    fcntl.ioctl(fd, GET_CAPS, request_short)
+    assert short.raw == raw[:len(short)], "truncated host capset data differs"
+    print("TGOS_ALPINE_GETCAPS_SHORT_BUFFER_PASS", flush=True)
+
     # This read-only render node must FAIL unknown 3D command submission,
     # rather than silently claim it succeeded.
     try:
