@@ -511,6 +511,30 @@ uint64_t nas_ptrace_syscall_dispatch(uint64_t *args) {
         return nas_arch_saved_return(original);
     }
     uint64_t result=syscall_dispatch(args);
+    /* Temporary cross-ISA diagnostic: identify what upstream Openbox
+     * actually reads from fd 6 after publishing EWMH. Filename is copied
+     * from its own live user VM only after a successful openat. No syscall
+     * result, file offset, or ABI behavior is modified. */
+    if(original && nas_current_task==original &&
+       !strcmp(original->comm,"openbox")) {
+        static unsigned fd6_opens, fd6_reads;
+        if(args[0]==56U && (int64_t)result==6 && fd6_opens++<100U) {
+            char name[128]={0};
+            for(unsigned i=0;i<sizeof(name)-1;i++) {
+                if(!nas_user_read_bytes(args[2]+i,(uint8_t *)&name[i],1))
+                    break;
+                if(!name[i])break;
+            }
+            nas_print("[OPENBOX FD6] open path=");nas_print(name);
+            nas_print("\\n");
+        }
+        if(args[0]==63U && args[1]==6U &&
+           (fd6_reads++<25U || (fd6_reads%128U)==0U)) {
+            nas_print("[OPENBOX FD6] read asked=");nas_dec(args[3]);
+            nas_print(" returned=");nas_dec((uint64_t)(int64_t)result);
+            nas_print("\\n");
+        }
+    }
     /* ptrace fork/exec event logic has already emitted its required
      * syscall-exit stop. The suspended native C continuation now returns
      * through this original gate: do not manufacture a second exit stop. */
