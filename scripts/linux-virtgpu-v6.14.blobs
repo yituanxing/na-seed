@@ -20,5 +20,8 @@ f92133a01195a95f9a2bd386a8aee78fd718de08	third_party/linux-virtgpu/drivers/gpu/d
 227bf0ae7ed53170febae9514f6163e3ea356c9b	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_trace.h
 ad91624df42dd9a7f1a74da9be5f0a444c3bdc73	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_vq.c
 25df81c027837c248a746e41856b5aa7e216b8d5	third_party/linux-virtgpu/drivers/gpu/drm/virtio/virtgpu_vram.c
+e3290a5824c901a43c0332e0d7e06dbda6428f9d	third_party/linux-virtgpu/include/uapi/asm-generic/ioctl.h
+c082810c08a8b234ef2672ecf54fc8c05ddc2bd3	third_party/linux-virtgpu/include/uapi/drm/drm_mode.h
+7fba37b94401a6d5663b79f3890eb980969bc999	third_party/linux-virtgpu/include/uapi/drm/drm.h
 c2ce71987e9bb816d13a300679336cb756f1cbcf	third_party/linux-virtgpu/include/uapi/drm/virtgpu_drm.h
 bf2c9cabd20793e3851e749baadf210341445501	third_party/linux-virtgpu/include/uapi/linux/virtio_gpu.h
