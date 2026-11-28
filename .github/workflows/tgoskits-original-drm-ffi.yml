@@ -1,0 +1,104 @@
+name: TGOSKits ORIGINAL DRM Rust to NaSeed kernel ABI (experimental)
+on:
+  pull_request:
+    branches: [port/linux-virtgpu-v6.14-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/fs/drm_chrdev.c'
+      - 'kernel/init/main.c'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-drm-ffi.yml'
+  push:
+    branches: [experiment/tgoskits-drm-ffi-20261128]
+    paths:
+      - 'ports/tgoskits-drm-ffi/**'
+      - 'scripts/build-tgoskits-drm-ffi.sh'
+      - 'kernel/fs/drm_chrdev.c'
+      - 'kernel/init/main.c'
+      - 'Makefile'
+      - '.github/workflows/tgoskits-original-drm-ffi.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tgos-drm-original-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  original-source-real-kernel-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install freestanding C/Rust link tools
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends clang lld make git binutils curl
+          rustup toolchain install nightly-2026-11-13 --profile minimal --component rust-src --target x86_64-unknown-none
+          cargo +nightly-2026-11-13 --version
+          rustc +nightly-2026-11-13 --version
+      - name: Build unchanged pinned TGOSKits kdrm-core + drm-kapi with native NaSeed TLSF adapter
+        run: |
+          sh -n scripts/build-tgoskits-drm-ffi.sh
+          sh scripts/build-tgoskits-drm-ffi.sh
+      - name: Link ACTUAL NaSeed x86-64 kernel and call ORIGINAL Rust DRM functions at DRM node registration
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 NAS_EXPERIMENT_TGOS_DRM_FFI=1 kernel
+          test -s build/kernel.elf
+          readelf -h build/kernel.elf | grep -q 'Machine:.*Advanced Micro Devices X86-64'
+          for sym in nas_tgos_drm_check_original_abi nas_tgos_original_drm_ffi_selftest drm_mode_legacy_fb_format drm_format_info; do
+            readelf -Ws build/kernel.elf | grep -Eq "[[:space:]]${sym}$" || {
+              echo "HARD FAIL: missing original Rust/C symbol ${sym} in REAL NaSeed kernel"
+              exit 1
+            }
+          done
+          echo 'PASS: original upstream DRM Rust objects are linked into the real NaSeed kernel'
+          echo 'PASS: direct original DRM code symbols retained in real NaSeed kernel.'
+      - name: Validate freestanding Rust GOT relocation resolved by true high-half kernel linker
+        run: |
+          echo '=== Rust GOT must exist in a loadable native kernel section ==='
+          readelf -W -S build/kernel.elf | grep -Fq ' .got ' || {
+            echo 'HARD FAIL: original Rust GOTPCREL calls could dereference address zero'
+            exit 1
+          }
+          readelf -x .got build/kernel.elf | head -n 24
+          echo '=== Linked native libc memset and upstream Rust ABI symbols ==='
+          nm -n build/kernel.elf | grep -E ' (memset|nas_tgos_free_aligned|nas_tgos_original_drm_ffi_selftest)$'
+      - name: Install real x86-64 UEFI QEMU and VirGL host for executable-ABI boot acceptance
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-gui ovmf xorriso \
+            libvirglrenderer1 libgl1-mesa-dri libegl1 xvfb xauth
+      - name: Boot TRUE NaSeed kernel and prove it actually executes original TGOSKits DRM Rust functions
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 NAS_EXPERIMENT_TGOS_DRM_FFI=1 iso
+          sh tests/boot-smoke.sh build/naseed.iso
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
+            python3 tests/native-virgl-probe.py x86_64
+          grep -Fq '[TGOS ORIGINAL DRM ABI PASS]' build/native-boot/x86_64/virgl-probe.log || {
+            echo 'HARD FAIL: imported upstream Rust DRM ABI never EXECUTED inside QEMU NaSeed kernel'
+            tail -n 110 build/native-boot/x86_64/virgl-probe.log
+            exit 1
+          }
+          echo 'PASS: original TGOSKits DRM executes INSIDE real NaSeed QEMU x86-64 kernel'
+          echo 'This is only the Rust/C DRM ABI link-and-boot gate, NOT VirGL EXECBUFFER / Mesa 3D.'
+      - name: Non-experimental x86-64 GPU build and native UEFI smoke must remain unchanged
+        run: |
+          make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 OUT=build/baseline iso
+          test -s build/baseline/kernel.elf
+          if nm build/baseline/kernel.elf | grep -Eq ' (nas_tgos_original_drm_ffi_selftest|nas_tgos_alloc_aligned)$'; then
+            echo 'HARD FAIL: experimental Rust FFI leaked into default C GPU kernel'
+            exit 1
+          fi
+          sh tests/boot-smoke.sh build/baseline/naseed.iso
+          echo 'PASS: normal GPU 2D x86-64 C kernel and userland boot independently, with no Rust FFI'
+      - name: Upload real QEMU guest serial for audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgos-original-ffi-x86_64-serial
+          path: build/native-boot/x86_64/virgl-probe.log
+          if-no-files-found: ignore

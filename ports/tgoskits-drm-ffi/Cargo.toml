@@ -1,0 +1,22 @@
+[package]
+name = "naseed-tgoskits-drm-ffi"
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+
+# This is a system-boundary adapter, not a rewrite of the upstream DRM.
+# Both upstream crates are fetched at an exact commit by
+# scripts/build-tgoskits-drm-ffi.sh and remain UNMODIFIED.
+[dependencies]
+kdrm-core = { path = "../../build/tgos-upstream/components/kdrm-core" }
+drm-kapi = { path = "../../build/tgos-upstream/components/drm-kapi" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
