@@ -7,6 +7,7 @@ on:
       - "kernel/fs/drm_chrdev.c"
       - "kernel/fs/drm_gem.c"
       - "kernel/fs/vfs_providers.c"
+      - "kernel/lib/string.c"
       - "tests/tgos-mesa-guest.py"
       - "tests/tgos-render-alpine.sh"
       - "tests/tgos-render-guest.py"
@@ -51,8 +52,11 @@ jobs:
             if [ -n "$rip" ]; then
               echo "Kernel fault source at $rip:"
               addr2line -f -C -e "$elf" "$rip"
-              printf 'Closest available symbols: '
-              nm -n "$elf" | grep -i ' [tT] ' | tail -n 5 || :
+            fi
+            caller=$(sed -n 's/.*\\[TGOS NULL STRLEN CALLER\\] \\(0x[0-9a-f]*\\).*/\\1/p' "$serial" | tail -1 || :)
+            if [ -n "$caller" ]; then
+              echo "Original libdrm sysfs failure was called from:"
+              addr2line -f -C -e "$elf" "$caller"
             fi
           fi
       - name: Preserve real Mesa output, kernel errors and QEMU traces
