@@ -45,7 +45,7 @@ same thing as having linked Linux's complete 3D driver.
 
 | Original Linux dependency | Real NaSeed implementation today | Required port boundary / gap |
 |---|---|---|
-| `virtio_driver`, `virtio_device`, `virtqueue` & feature negotiation | `kernel/drivers/core/bus.h`, `kernel/drivers/virtio/transport.h`, `ports/unikraft/split_queue.h`, `ports/linux-virtgpu/virtqueue_bridge.[ch]` | Built: batched submit/kick, token-to-used-head mapping, callback re-arm with used-index check. Missing: original Linux `struct virtqueue` binding, scatterlist/DMA mapping, feature/device registration and real driver control-queue linkage |
+| `virtio_driver`, `virtio_device`, `virtqueue` & feature negotiation | `kernel/drivers/core/bus.h`, `kernel/drivers/virtio/transport.h`, `ports/unikraft/split_queue.h`, `ports/linux-virtgpu/virtqueue_bridge.[ch]`, `virtqueue_api_port.[ch]` | Built: Linux-named submit/get_buf/kick/notify/callback API on real NaSeed queue; canonical LP64 SG layout and proven DMA pin registry. Missing: mapping arbitrary Linux SG buffer addresses, indirect descriptors, complete `virtio_device` registration and driver/workqueue lifecycle |
 | `drm_device`, `drm_driver`, `drm_file`, DRM ioctl dispatch | `kernel/fs/drm_chrdev.c` supports primary node and partial KMS | Linux DRM core, file lifetime, master/render-node semantics not present in equivalent form |
 | `drm_gem_shmem_object`, `drm_gem_object`, `dma_resv` | `kernel/fs/drm_gem.c` has per-OpenFile RAM GEM dumb buffers | Existing GEM cannot be passed as Linux shmem BO without implementing reference counts, shared placement, reservations and mmap lifetime |
 | `dma_fence`, `dma_fence_chain`, sync_file, `drm_syncobj` | NaSeed has IRQ/fence IDs in its 2D VirtIO command path | Proper asynchronous fence completion and syncobj FD semantics must be provided; do not signal early |
@@ -80,13 +80,56 @@ until the existing split queue has reset the transport and retired ring DMA.
 This behavior is covered by an explicit failure-injection test. The port
 MUST not synthesize a GPU completion or signal a fence on an error alone.
 
-**Critical missing boundary:** the original `virtgpu_vq.c` is still
-unmodified but NOT compiled or linked. Its `virtqueue_add_sgs` call
-accepts Linux `scatterlist` and `dma_map_sg` ownership, not NaSeed's
-pre-mapped `nas_vring_segment`. The bridge is consequently not a
-drop-in implementation of `struct virtqueue`. Next: map Linux SG to
-existing NaSeed DMA provider without inventing a new VirtIO-GPU engine;
-then resolve dequeue-work lifecycle and `virtio_find_vqs` wiring.
+**The first Linux-shaped queue interface is now available** above it,
+but the original GPU source is still not a NaSeed-linked object.
+Do not confuse the `virtqueue_*` interface test with an original
+`virtgpu_vq.c` unit build or a userspace `EXECBUFFER` acceptance.
+
+## Linux virtqueue API adapter — validated interface, not a native GPU object
+
+`ports/linux-virtgpu/virtqueue_api_port.[ch]` now compiles and links in the
+GPU kernel on x86-64, RV64 and AArch64. It supplies the **Linux v6.14
+function names and call signatures actually used by the original
+`virtgpu_vq.c`**: `virtqueue_add_sgs`, `virtqueue_get_buf`,
+`virtqueue_kick_prepare`, `virtqueue_notify`,
+`virtqueue_disable_cb`, `virtqueue_enable_cb`. These call the
+**existing NaSeed Unikraft split-ring implementation** and maintain the
+Linux-visible `vq->num_free` count; they do not implement any separate
+GPU rendering commands. No Linux upstream source files were edited.
+
+`ports/linux-virtgpu/include/linux/scatterlist.h` keeps the **exact
+Linux v6.14 LP64 `struct scatterlist` field layout**, checked with
+compile-time size and offset assertions. A queue-local side table records
+the physical-frame DMA pin for each SG during submission. The provider's
+mapped **bus address** is validated at submission time; a raw or stale
+Linux SG, missing pin, stale bus address, or noncoherent mapping is
+rejected before posting descriptors. The short-lived SG registry is
+consumed on each `virtqueue_add_sgs` attempt, including failures, to
+avoid reusing stale C-stack SG addresses. `SG_CHAIN` and `SG_END`
+traversal are tested against the real queue; no general Linux SG
+allocator is claimed.
+
+The Linux SG API here is **deliberately incomplete**. The original GPU
+driver's calls to `sg_init_one`, `sg_alloc_table`, `sg_set_page`,
+DMA map/unmap for arbitrary kmalloc/vmalloc buffers, indirect descriptors
+and Linux workqueue callbacks are NOT yet safely implemented. Unlike
+Linux's full virtqueue core, this bounded adapter requires pre-mapped,
+provider-pinned SG pages. No unpinned Linux virtual pointer gets converted
+to a guessed physical address. Linux `virtio_device` registration,
+`virtio_find_vqs`, and the rest of DRM/GEM/Fence still need real
+porting. In particular **the original 1,340-line `virtgpu_vq.c` remains
+unmodified and is not itself compiled/linked into NaSeed**. Do not
+advertise a functional DRM render node or Mesa 3D acceleration.
+
+Validation: the `scripts/check-linux-virtgpu-vq-bridge.sh` native host
+suite now calls original Linux `virtqueue_*` symbols with SG-list
+chains, mapped bus addresses, out/in descriptor direction, NO_NOTIFY
+behavior, callback rearm, `num_free`, queue-full errors, and rejected
+unmapped/stale DMA. It also cross-compiles the actual port C object for
+three ISAs and uses the same object in the real GPU kernel builds.
+`virtgpu-upstream-port.yml` and the three-ISA QEMU VirGL host protocol
+probe passed on the preceding code head. These are **queue integration
+and host capability checks, not Mesa render/readback tests**.
 
 ## Real borrowed GEM page DMA mapping (next port boundary)
 
@@ -125,12 +168,13 @@ That host test emulates the external transport and GEM lookup only.
 test.** The final-head CI must pass before treating this increment
 as verified.
 
-The next missing boundary remains the **original Linux**
-`struct scatterlist`/`virtqueue_add_sgs` interface (including
-allocators and workqueue callbacks) and full Linux DRM
-`drm_gem_shmem_object`/`dma_resv`/fence ownership. A working
-NaSeed GEM DMA mapping does NOT make the original Linux
-`virtgpu_vq.c` object linkable by itself.
+The next missing boundary is the **ordinary Linux SG buffer-to-DMA
+mapping** (not the already-tested Linux-named queue API): original
+`sg_init_one`, vmalloc/sg_table, atomic-context mapping, indirect
+descriptors and callback/workqueue lifetime; then full
+`drm_gem_shmem_object`, `dma_resv`, `dma_fence`, syncobj and
+render-node semantics. Native upstream `virtgpu_vq.c` unit compilation
+and actual Mesa EXECBUFFER must remain explicit acceptance gates.
 
 ## Port acceptance sequence (non-negotiable)
 
