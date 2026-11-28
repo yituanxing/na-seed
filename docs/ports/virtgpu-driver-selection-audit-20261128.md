@@ -17,7 +17,9 @@
 |---|---|---|---|---|
 | **Linux v6.14 VirtIO-GPU DRM** | Linux + Mesa VirGL 是成熟栈；但 NaSeed **没有**原版对象编译/链接和 Mesa EXECBUFFER | 不适用：Linux 原生实现 | Linux DRM/GEM shmem/dma_resv/fences/syncobj, VMA, workqueue, virtio, uAPI, 许可证 | 成熟但跨内核移植代价较大；不应以持续编写零散 Linux shim 代替导入真实 DRM 设施 |
 | **FreeBSD drm-kmod PR #517** | 作者报告 UTM arm64 上的 sway GLES2、glmark2、EXECBUFFER 压测，amd64 有其他用户核实；**PR 尚未合并** | **否**：保留 Linux v6.14 驱动源码，依托 LinuxKPI + FreeBSD DRM | FreeBSD DRM、LinuxKPI、内核 VirtIO/virtqueue、vm/page APIs；PR 中 `linuxkpi_virtio.c` 本身 484 行不代表全部依赖只有 484 行 | 最好的完整 3D/DRM 验收参考；不能称作比 Linux 更小的独立驱动 |
-| **Haiku 原生 VirtIO-GPU + 第三方 3D 补丁** | 2026 年第三方项目 README 报告 UTM AArch64 Venus/Vulkan、WebGL 2/Zink、读回；是作者报告，**不是** NaSeed 验证或 Haiku 正式合并 | **是**：直接扩展 Haiku 自有 VirtIO-GPU C++ 驱动 | 3D 补丁约 **1,695 新增/117 删除，3 文件**，自定义 render node、buffer/blob、Fence、Haiku B_* VM/线程/IOCTL；用户态需 Mesa Venus 26.2.5 的 Haiku 专用补丁，QEMU `blob/hostmem/venus`；仅见其 AArch64 UTM 验收 | **优先做深入可移植性审查的非 Linux 候选**。不能直接替换 Linux DRM ABI，亦没有证实其 VirGL GL 以及三 ISA |
+| **Haiku 原生 VirtIO-GPU + 第三方 3D 补丁** | 作者报告 UTM AArch64 Venus/Vulkan、WebGL 2、Zink/GL 与像素读回；非 NaSeed 验证或正式 Haiku 合并 | **是**：Haiku C++ 原生驱动 | 补丁 **+1,695/-117，3 文件**；有 CONTEXT_INIT、RESOURCE_CREATE_BLOB、SUBMIT_3D、Fence，但未见 **RESOURCE_CREATE_3D / TRANSFER_*_HOST_3D** 的 VirGL 经典资源通道；还需 Haiku VM/线程/hostmem BAR、自定义 render ioctl + **修改 Mesa Venus**（其补丁新增 `vn_renderer_haiku.c` 约 851 行），实测 AArch64 UTM | **Venus 专用成熟性参考**，不是当前 VirGL/OpenGL + 原版 Alpine Mesa 的直接候选；除非决定切换整条图形栈 |
+| **rcore-os/virtio-drivers (Rust no_std)** | 源码包含 x86-64 QEMU 条件运行的 **15 步 VirGL 回归**，实际实现 CTX/3D Resource/Attach Backing/Transfer/SUBMIT_3D(Fence)；测试没有在 CLEAR 后再做逐像素断言，不能当作已验证的 glmark2 | **是**，独立 Rust 设备驱动，不使用 Linux DRM | `src/device/gpu/mod.rs` 约 **1,268 行**，`examples/x86_64/src/virgl.rs` 约 **312 行**；依赖整个 no_std `virtio-drivers`、Hal、Transport、VirtQueue，Rust cross-compile/FFI；不提供 Linux render node/Mesa API；MIT 许可 | **VirGL 协议/真实设备链路首选参考和候选最小 PoC**。不是可直接运行原版 Alpine Mesa 的替代 DRM |
+| **go-virtio/gpu (Go)** | 项目作者通过真实 virglrenderer `vtest` + **llvmpipe CPU 软件渲染器**验证 CLEAR、三角形、带纹理三角形的像素回读；独立 QEMU guest 的渲染/Alpine 支持仍未证实 | **是**，不使用 Linux DRM | pure-Go 及其 runtime/common transport，`gpu3d.go` 约 **392 行**仅含 fixed CLEAR 路径，其他源文件提供三角形；手工构造固定 TGSI/virgl 命令，不是完整 Mesa 驱动；BSD-3-Clause | 很好的**可比对字节序列与像素读回**测试语料；不是复用到 NaSeed C 内核的可直接链接驱动 |
 | **Windows/UTM viogpu3d WDDM** | UTM/项目作者报告真实 D3D11 device creation、Windows 3D；`viogpudo` 是另外一套 2D 驱动 | 是，Windows WDDM 驱动 + Mesa Neptune / Venus 用户态 | Windows dxgkrnl/WDDM、WDK、内核对象和 Direct3D UMD；和 Alpine Mesa/Linux DRM 不兼容 | 3D 设计参考，非 NaSeed 即插即用的移植基础 |
 | **NetBSD / OpenBSD viogpu** | NetBSD 正式 `viogpu(4)` 手册**明确否定 3D**，用于 wscons console；源自 OpenBSD 7.4 | 是 | 2D console / 虚拟 GPU 基础 | 只作 2D/设备发现参考，不能取代 3D 驱动 |
 | **SerenityOS VirtIO GPU** | 官方 graphics 文档列其为显示设备，但此次**没有核实到真实 VirGL 3D + Mesa 渲染证据** | 是 | SerenityOS 自有显示/VMObject APIs | 不按 3D 候选推进；只作为可能的 2D 架构参考 |
@@ -31,6 +33,48 @@
 4. [UTM Windows WDDM 虚拟 GPU](https://github.com/utmapp/viogpu-wddm)：独立 `viogpu3d` 3D 与 `viogpudo` 2D 路径，用户态 Neptune/Venus，依赖 Windows WDDM/WDK。
 5. [NetBSD viogpu 官方手册](https://man.netbsd.org/viogpu.4)：明确“does not provide access to the 3D functionality”。[SerenityOS 官方 graphics 文档](https://github.com/SerenityOS/serenity/blob/master/Documentation/Kernel/GraphicsSubsystem.md) 与 [Redox 驱动目录](https://github.com/redox-os/drivers) 目前仅作 2D 证据。
 6. [QEMU VirtIO-GPU 后端文档](https://www.qemu.org/docs/master/system/devices/virtio/virtio-gpu.html) 和 [Mesa VirGL 文档](https://docs.mesa3d.org/drivers/virgl.html)：VirGL 和 Venus 并非同一宿主特性要求或用户态通路，不能用 capset probe 替代真实渲染。
+
+## 深审结果：可复用源码与不可跳过的内核/用户态边界
+
+本节按实际**源码函数与验收程序**审查，避免只看 README。
+
+### Haiku 原生 3D 实现：有完成链路，缺标准 VirGL 的三类对象调用
+
+- 驱动基础：[Haiku `virtio_gpu.cpp`](https://github.com/haiku/haiku/blob/master/src/add-ons/kernel/drivers/graphics/virtio/virtio_gpu.cpp)，约 985 行，主职责 2D 和显示；3D 由 [第三方约 2,103 行 diff](https://github.com/bluevisor/haiku-arm64-chromium/blob/main/gpu/haiku-virtio_gpu-3d.diff) 补充。
+- 真实协议：`VIRTIO_GPU_CMD_SUBMIT_3D`、`RESOURCE_CREATE_BLOB`、`RESOURCE_MAP_BLOB`、`CTX_CREATE/DESTROY`、`CTX_ATTACH_RESOURCE` 与自有 fence id 的 `poll`/wait。异步 request 队列在完成线程中消费，直到 fence response 才通知用户，成功案例不是软件 framebuffer 伪装。
+- **已核验的缺项**：所审 diff 内不存在 `VIRTIO_GPU_CMD_RESOURCE_CREATE_3D`、`TRANSFER_TO_HOST_3D`、`TRANSFER_FROM_HOST_3D` 的调用。它实际服务 Venus/Blob，而非完整 VirGL 经典上下文；不能只因为有 `SUBMIT_3D` 就叫“可以直接跑 virgl Gallium”。
+- 用户态还需要 [Mesa 26.2.5 Haiku Venus patch](https://github.com/bluevisor/haiku-arm64-chromium/blob/main/gpu/mesa-26.2.5-haiku-venus.diff)，约 1,089 行 diff，关键新文件 `vn_renderer_haiku.c` **851 行**；Haiku `MAP` 与 `FENCE_BIND` 替代 Linux DRM `mmap/sync_file`。所以 kernel 3D 补丁行数**绝不代表整条适配成本**。
+- kernel 依赖分布：`get_memory_map_etc`/phys entries 组织 DMA、Haiku B_SYSTEM_TEAM 内核地址归属、`ConditionVariable` + completion thread、`vm_map_physical_memory`/B_SHARED_AREA、host-visible PCI SHM BAR、render file 的 Context/Handle/Blob 容器、select/poll。C++ 数据结构也要求 Haiku C++ runtime。NaSeed 目前没有这些“一比一兼容设施”。
+- **审查判决**：保留其异步 Fence/Blob 生命周期设计作参考，但不原样导入到 NaSeed 的标准 VirGL → 原版 Alpine Mesa 路线；否则需要再移植 Venus/Mesa 用户态，并不能更快实现原目标。
+
+### rcore-os 独立 Rust VirtIO-GPU 实现：目前最接近真正可重用的轻量 VirGL *协议驱动*
+
+- [GPU 原始实现](https://github.com/rcore-os/virtio-drivers/blob/master/src/device/gpu/mod.rs)（约 1,268 行）包含 `get_capset_info/get_capset`、`ctx_create/destroy`、`resource_create_3d`、`resource_attach_backing`、`transfer_{to,from}_host_3d`、`submit_3d`、`resource_create_blob`。由 `virtio-drivers` 的 `Hal`/`VirtQueue` 完成 DMA/Transport，GPU 层不重造完整队列。MIT。
+- [x86-64 测试原码](https://github.com/rcore-os/virtio-drivers/blob/master/examples/x86_64/src/virgl.rs)（约 312 行）**15 个步骤**：VIRGL 协商、capset、Context、3D resource + guest backing、传输、向绑定 surface 提交 CLEAR 和 fenced `SUBMIT_3D`、可选 Blob、detach/unref/destroy。README 的 `make qemu gl=on` 是项目提供的真实 GL QEMU 测试入口。
+- **证据边界**：测试在 CLEAR 前已经做 `TRANSFER_FROM_HOST_3D`，**并未在 CLEAR 后再次读回并断言预期像素**；“15 steps passed”验证的是控制/提交/资源生命期，不是最终像素正确性，更不是运行了 Mesa/glmark2。这里只核读了上游代码，NaSeed 还没有运行该上游 Rust test。
+- **移植边界**：Rust `no_std + alloc`、HAL trait、`virtio-drivers::Transport` 与 ring 所有权；NaSeed 现有 C split ring 并不自动满足 Rust trait。不能为了采用它就翻译成新 C 3D 代码——那又会回到自写驱动。若作为 PoC，应**保持原 Rust 源码**，以明确的 Rust build + FFI/平台 HAL 方案集成；这种语言边界需要独立验证和许可证审查。
+- **审查判决**：**首选最小 VirGL 真实设备协议验证的上游代码**，但不能自动生成 Linux DRM render node 或使 Alpine 原版 Mesa 能打开它。不得把 Rust PoC 完成宣称为完整 3D 软件兼容。
+
+### go-virtio/GPU：很好的真实渲染 oracle，不是目标内核驱动
+
+- [纯 Go 协议实现](https://github.com/go-virtio/gpu) 和 [`go-virtio/validate` 原始测试](https://github.com/go-virtio/validate/blob/main/README.md)：有真实 `SUBMIT_3D` VirGL 命令字节流、CLEAR/triangle/textured triangle 和 framebuffer 回读；使用真实 virglrenderer `vtest`，不是伪造响应。
+- **但验收是软件 `llvmpipe`** 的 host renderer，作者也明确区分另一条 **2D framebuffer + CPU 软件立方体** 验收，因此不能称之为“实际物理 GPU 硬件加速”或“Linux Mesa 应用已运行”。Go 代码还要 Go runtime、设备抽象，不满足 NaSeed C 内核直接移植。
+- **审查判决**：用其通过的 protocol bytes/readback 作为独立交叉比对用例，**不把手写固定 TGSI stream 当成可供真实应用使用的 Mesa 替代品**。
+
+### FreeBSD：真正跑过 glmark2，但全量依赖不小
+
+- [FreeBSD DRM-KMOD PR #517](https://github.com/freebsd/drm-kmod/pull/517) 当前仍为未合并 PR，审查到 **48 个变更文件**，其中包含 Linux 6.14 的 virtgpu 组件、GPL-2.0 的 843 行 `drm_gem_shmem_helper.c`，`drm_gem.c`/DRM core、`dma_fence`、`dma_resv` 相关头、LinuxKPI VirtIO、DMA/folio/pagemap、设备/irq 销毁以及 KMS 等。LinuxKPI 队列桥仅 484 行，绝不是总依赖体积。
+- 作者报告实际运行 sway GLES2、glmark2、`EXECBUFFER` 压力测试，且通过 arm64/aarch64 和 amd64 测试；但这些均在 FreeBSD 内核/LinuxKPI 现成设施上完成，**不是**在 NaSeed 当前核心上可直接复现的工具包。
+- **审查判决**：**原版 Alpine Mesa 对接首选的验证过的完整设计参考**。NaSeed 需要的是把成熟 DRM/GEM/Fence 核心作为一个受审查的集成单元，而不是再一个个追加缺失的 Linux headers。
+
+### 推荐验收路线（避免再陷入无尽外围兼容）
+
+| 验收关口 | 直接可用的来源 | 合格证据 | 禁止的替代“成功” |
+|---|---|---|---|
+| A：真实 VirGL 命令链 | rcore 上游 Rust 15 步测试 + go-virtio 的像素回读 oracle | 原始上游代码在目标 QEMU/VirGL 设备实际成功；最好要求渲染**后的**读回校验 | Capset probe、2D scanout、mock queue SUCCESS |
+| B：NaSeed 原版驱动集成 | Linux v6.14 源码，FreeBSD #517 证明的完整依赖拓扑 | **原始 virtgpu 源文件**被编译链接并作为 GPU owner 启动，真实 Context / Resource / Fence | 仅编译 ports/linux-virtgpu 下的自写兼容层 |
+| C：应用级 GPU 渲染 | 未修改 Alpine Mesa/virgl、`glmark2` 或明确的 GLES 测试 | `/dev/dri/renderD128`、真实 `EXECBUFFER`、GPU 完成、读回校验，三 ISA 逐步复制 | 运行作者修改过的 Venus-only 用户态然后称为原版 VirGL |
+| D：性能真实性 | 主机 virglrenderer renderer / QEMU host GPU 状态 | 记录实际 renderer，区分 GPU 设备加速 vs `llvmpipe` 软件渲染 | 仅看到 VirtIO-GPU 名字就写“物理 GPU 加速” |
 
 ## 根因分析：为何原版 Linux 3D 迟迟没有集成
 
@@ -48,4 +92,10 @@
 
 ### 审查时点结论
 
-以**直接运行未修改的 Alpine Mesa VirGL**为硬要求，Linux/FreeBSD 同源的 DRM uAPI 与成熟 Mesa 对接最明确，但其整个 Linux DRM 内核依赖仍很重。以**优先获得任何一条真实 3D 路径**为目标，Haiku 是值得优先深入审查的非 Linux 原生候选，但它依赖 Venus + 修改后的 Mesa，且三架构移植尚未证明。**此时不宜因为已经写了 Linux 适配层，就排除 Haiku 或仓促断言 Linux 最优。**
+**经本轮逐文件核读后的具体选择：**
+
+1. **最终产品路线选 Linux v6.14 原始 DRM VirtIO-GPU（参考 FreeBSD #517 的完整、已实际跑过 glmark2 的依赖拓扑）**，因为要求保持 Linux ioctl/render node ABI，直接运行**未修改的 Alpine Mesa**。但是冻结现有零散 Linux shim 的继续膨胀，先做完整 DRM/GEM/shmem/fence/virtio 依赖闭包与许可证审查；直接编译原版驱动对象是第一个硬门槛。
+2. **最小真实 VirGL 命令链和像素验收，独立借鉴 rcore-os/virtio-drivers（MIT, Rust no_std）与 go-virtio/validate（BSD-3, real vtest+llvmpipe pixel oracle）**。无需假装其 15 步测试能运行原版 Mesa，也不要翻译为一套自写 C GPU 3D 实现。若验证 Rust 源码跨语言嵌入，会在独立 PoC 分支处理，不污染 PR #155。
+3. **Haiku 第三方 3D 实现保留为 Venus/Blob/Fence 的经验证设计参考，不作为当前 VirGL 的主线候选**。缺少经典 ResourceCreate3D/Transfer 调用、需要 patch Mesa Vulkan backend 和 Haiku VM/线程栈，选择它会改变目标而非节约工作量。
+
+**停止编写无审查依据的单点兼容接口。审查材料和真实 3D 上游协议源代码，优先于“有多少 CI 显示绿色”。**
