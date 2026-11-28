@@ -128,6 +128,36 @@ void nas_vring_queue_notify(struct nas_vring_queue *q) {
     if (q && q->active && !q->poisoned)
         nas_virtio_notify(q->transport, q->queue_id);
 }
+/* Linux's dequeue loop suppresses callbacks while draining and re-arms
+ * them with a used-index recheck, so a completion cannot be lost between
+ * a final empty poll and enabling interrupts. This queue is coherent only;
+ * callback suppression uses the legacy split-ring avail flags (no EVENT_IDX).
+ */
+void nas_vring_queue_disable_callbacks(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned)return;
+    q->ring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_TO_DEVICE))
+        broken(q);
+}
+bool nas_vring_queue_enable_callbacks(struct nas_vring_queue *q) {
+    if (!q || !q->active || q->poisoned)return false;
+    q->ring.avail->flags &= (uint16_t)~VRING_AVAIL_F_NO_INTERRUPT;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_TO_DEVICE)) {
+        broken(q);
+        return false;
+    }
+    if (nas_dma_sync(q->transport->dma,&q->dma_page,0,
+                     q->dma_page.bytes,NAS_DMA_FROM_DEVICE)) {
+        broken(q);
+        return false;
+    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return q->ring.used->idx == q->last_used;
+}
 int nas_vring_queue_submit(struct nas_vring_queue *q,
                             const struct nas_vring_segment *segs, unsigned n,
                             uint16_t *out_head) {
