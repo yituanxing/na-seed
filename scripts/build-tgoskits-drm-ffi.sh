@@ -37,6 +37,6 @@ cargo +nightly-2026-11-13 build \
 test -s "$archive"
 # Validate the ORIGINAL DRM export and the NaSeed wrapper export are both
 # present; the full NaSeed kernel link is a DIFFERENT required CI gate.
-llvm-nm "$archive" | grep -Eq ' [TW] drm_mode_legacy_fb_format$'
-llvm-nm "$archive" | grep -Eq ' [TW] nas_tgos_original_drm_ffi_selftest$'
+nm "$archive" | grep -Eq ' [TW] drm_mode_legacy_fb_format$'
+nm "$archive" | grep -Eq ' [TW] nas_tgos_original_drm_ffi_selftest$'
 echo "ORIGINAL DRM static archive READY: $archive"
