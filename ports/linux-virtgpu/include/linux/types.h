@@ -17,4 +17,8 @@ typedef uint16_t __le16;
 typedef uint32_t __le32;
 typedef uint64_t __le64;
 typedef size_t __kernel_size_t;
+/* Sparse-only address-space qualifier: native compiler has no __user. */
+#ifndef __user
+#define __user
+#endif
 #endif
