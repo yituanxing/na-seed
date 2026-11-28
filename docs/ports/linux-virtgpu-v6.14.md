@@ -73,6 +73,13 @@ lost-callback re-arm, and original eager submission. **This test is a
 queue behavior contract, not an accelerated rendering or real-QEMU test.**
 The new CI gate must pass before this increment is marked verified.
 
+The adapter also records cookies on post-publication DMA-sync errors. Such
+requests remain device-owned even though submission returned an error:
+`nas_linux_virtgpu_vq_reap_after_reset` refuses to return those cookies
+until the existing split queue has reset the transport and retired ring DMA.
+This behavior is covered by an explicit failure-injection test. The port
+MUST not synthesize a GPU completion or signal a fence on an error alone.
+
 **Critical missing boundary:** the original `virtgpu_vq.c` is still
 unmodified but NOT compiled or linked. Its `virtqueue_add_sgs` call
 accepts Linux `scatterlist` and `dma_map_sg` ownership, not NaSeed's
