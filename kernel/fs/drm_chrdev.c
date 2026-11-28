@@ -12,6 +12,7 @@
 #include "../errno.h"
 #include "../mm/usercopy.h"
 #include "../lib/string.h"
+#include "../drivers/serial.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -131,6 +132,16 @@ static uint64_t dumb_create(unsigned slot,uint64_t arg) {
     struct nas_drm_gem_created new_object;
     int rc=nas_drm_gem_create(slot,req.width,req.height,req.bpp,
                               req.flags,&new_object);
+    /* Diagnose original Xorg allocator negotiation before treating the
+     * subsequent NULL dumb_bo as a caller or MM failure. Never fake IOCTL
+     * results, and retain normal GEM ownership and errno semantics. */
+    nas_print("[DRM DUMB] width=");nas_dec(req.width);
+    nas_print(" height=");nas_dec(req.height);
+    nas_print(" bpp=");nas_dec(req.bpp);
+    nas_print(" flags=");nas_dec(req.flags);
+    nas_print(" rc=");nas_dec(rc<0?(uint64_t)(-(int64_t)rc):0);
+    nas_print(" handle=");nas_dec(rc?0:new_object.handle);
+    nas_print("\n");
     if(rc)return (uint64_t)(int64_t)rc;
     req.handle=new_object.handle;
     req.pitch=new_object.pitch;
