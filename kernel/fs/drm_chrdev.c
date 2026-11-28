@@ -74,7 +74,13 @@ int nas_drm_chrdev_init(void) {
      * symbols IN the NaSeed kernel. Refuse DRM publication on mismatch.
      * It does not provide a new GPU owner, render node or 3D ioctl. */
     int abi_rc=nas_tgos_drm_check_original_abi();
-    if(abi_rc)return abi_rc;
+    if(abi_rc) {
+        nas_print("[TGOS ORIGINAL DRM ABI FAIL]\n");
+        return abi_rc;
+    }
+    /* Emitted AFTER the native C code has called and verified the actual
+     * original TGOSKits DRM FOURCC and DRM-KAPI provider-slot functions. */
+    nas_print("[TGOS ORIGINAL DRM ABI PASS]\n");
 #endif
     return nas_chrdev_node_register(&drm_node);
 }
