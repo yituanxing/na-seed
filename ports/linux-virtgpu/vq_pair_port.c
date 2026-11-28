@@ -79,7 +79,15 @@ int nas_linux_virtgpu_vq_pair_service(struct nas_linux_virtgpu_vq_pair *pair) {
         if(!ring->active || ring->poisoned)return -EIO;
         int rc=nas_dma_sync(ring->transport->dma,&ring->dma_page,0U,
                             ring->dma_page.bytes,NAS_DMA_FROM_DEVICE);
-        if(rc)return rc;
+        if(rc) {
+            /* A DMA synchronization failure can make used-ring contents
+             * unknowable. Never infer completion or lose IRQ and continue.
+             * Poison the real queue and require reset before retiring any
+             * command/cursor payloads or signalling upstream fences. */
+            ring->poisoned=true;
+            nas_virtio_fail(pair->transport);
+            return rc;
+        }
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         /* The Linux callback schedules process-context dequeue_work.
          * Never call it for an empty used ring, or in hard IRQ. */
