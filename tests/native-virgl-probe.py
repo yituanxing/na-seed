@@ -12,20 +12,31 @@ import subprocess
 import sys
 import time
 
-if len(sys.argv) != 2 or sys.argv[1] not in ("riscv64", "aarch64"):
-    raise SystemExit("usage: native-virgl-probe.py <riscv64|aarch64>")
+if len(sys.argv) != 2 or sys.argv[1] not in ("x86_64", "riscv64", "aarch64"):
+    raise SystemExit("usage: native-virgl-probe.py <x86_64|riscv64|aarch64>")
 arch = sys.argv[1]
 work = pathlib.Path("build/native-boot") / arch
-esp = (work / "efi.img").resolve()
+work.mkdir(parents=True, exist_ok=True)
+esp = (pathlib.Path("build/naseed.iso") if arch == "x86_64"
+       else work / "efi.img").resolve()
 log = work / "virgl-probe.log"
-firmware = pathlib.Path({
-    "riscv64": "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
-    "aarch64": "/usr/share/AAVMF/AAVMF_CODE.fd",
-}[arch])
+if arch == "x86_64":
+    firmware = next(
+        (pathlib.Path(p) for p in (
+            "/usr/share/OVMF/OVMF_CODE_4M.fd",
+            "/usr/share/OVMF/OVMF_CODE.fd",
+        ) if pathlib.Path(p).is_file()),
+        pathlib.Path("/missing-ovmf"),
+    )
+else:
+    firmware = pathlib.Path({
+        "riscv64": "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
+        "aarch64": "/usr/share/AAVMF/AAVMF_CODE.fd",
+    }[arch])
 for file in (esp, firmware):
     if not file.is_file():
         raise SystemExit(f"missing real boot input: {file}")
-gpu_device = "virtio-gpu-gl-device"
+gpu_device = "virtio-gpu-gl-pci" if arch == "x86_64" else "virtio-gpu-gl-device"
 qemu = f"qemu-system-{arch}"
 help_text = subprocess.run(
     [qemu, "-device", "help"], stdout=subprocess.PIPE,
@@ -33,21 +44,33 @@ help_text = subprocess.run(
 ).stdout
 if gpu_device not in help_text:
     raise SystemExit(f"{qemu} lacks real {gpu_device} host support")
-args = [
-    qemu,
-    "-machine", "virt,acpi=off" if arch == "riscv64" else "virt",
-    "-m", "1024M", "-smp", "1",
-    "-display", "sdl,gl=on", "-monitor", "none",
-    "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
-    "-global", "virtio-mmio.force-legacy=false",
-    "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
-    "-drive", f"if=none,id=bootdisk,format=raw,file={esp},readonly=on",
-    "-device", "virtio-blk-device,drive=bootdisk",
-    "-device", gpu_device,
-    "-cpu", "rv64" if arch == "riscv64" else "cortex-a72",
-]
-if arch == "aarch64":
-    args += ["-semihosting-config", "enable=on,target=native"]
+if arch == "x86_64":
+    # Real modern PCI VirtIO-GPU and the same UEFI/Limine ISO used by smoke.
+    args = [
+        qemu, "-M", "q35", "-m", "1024M", "-cpu", "qemu64",
+        "-display", "sdl,gl=on", "-monitor", "none",
+        "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
+        "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
+        "-cdrom", str(esp), "-vga", "none",
+        "-device", gpu_device + ",disable-legacy=on",
+    ]
+else:
+    args = [
+        qemu,
+        "-machine", "virt,acpi=off" if arch == "riscv64" else "virt",
+        "-m", "1024M", "-smp", "1",
+        "-display", "sdl,gl=on", "-monitor", "none",
+        "-serial", "stdio", "-no-reboot", "-no-shutdown", "-nic", "none",
+        "-global", "virtio-mmio.force-legacy=false",
+        "-drive", f"if=pflash,unit=0,format=raw,file={firmware},readonly=on",
+        "-drive", f"if=none,id=bootdisk,format=raw,file={esp},readonly=on",
+        "-device", "virtio-blk-device,drive=bootdisk",
+        "-device", gpu_device,
+        "-cpu", "rv64" if arch == "riscv64" else "cortex-a72",
+    ]
+    if arch == "aarch64":
+        args += ["-semihosting-config", "enable=on,target=native"]
 # Require the hardware capset response, not merely a -device switch or
 # an echoed command string. All checks are based on actual guest UART.
 capset = re.compile(
