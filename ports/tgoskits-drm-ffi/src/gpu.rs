@@ -7,14 +7,14 @@ use core::{
     ffi::c_void,
     mem::{size_of, MaybeUninit},
     ptr::{self, NonNull},
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 use virtio_drivers::{
     BufferDirection, Error as VirtIoError, Hal,
     transport::{DeviceStatus, DeviceType, InterruptStatus, Transport},
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes};
-use virtio_gpu::{BlobMemory, VirtIoGpu, ResourceCreate3d};
+use virtio_gpu::{BlobMemory, GpuBox, ResourceCreate3d, Transfer3d, VirtIoGpu};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 unsafe extern "C" {
@@ -227,6 +227,12 @@ static RENDER_CONTEXTS: [AtomicBool; RENDER_SLOTS] =
 const BO_PER_FILE: usize = 16;
 static RENDER_BO_SIZE: [AtomicU32; RENDER_SLOTS * BO_PER_FILE] =
     [const { AtomicU32::new(0) }; RENDER_SLOTS * BO_PER_FILE];
+// Keep shape facts for validating guest-supplied 3D transfers before
+// allowing the host to DMA into a pinned user-mappable GEM allocation.
+static RENDER_BO_WIDTH: [AtomicU32; RENDER_SLOTS * BO_PER_FILE] =
+    [const { AtomicU32::new(0) }; RENDER_SLOTS * BO_PER_FILE];
+static RENDER_BO_HEIGHT: [AtomicU32; RENDER_SLOTS * BO_PER_FILE] =
+    [const { AtomicU32::new(0) }; RENDER_SLOTS * BO_PER_FILE];
 #[repr(C)]
 pub struct GuestResource3d {
     target: u32, format: u32, bind: u32, width: u32, height: u32,
@@ -234,6 +240,19 @@ pub struct GuestResource3d {
     flags: u32, bo_handle: u32, res_handle: u32, size: u32, stride: u32,
 }
 const _: () = assert!(size_of::<GuestResource3d>() == 56);
+
+// Pinned upstream axdrm VirtGPU ioctl TRANSFER_*_HOST3D UAPI, 44 bytes.
+#[repr(C)]
+pub struct GuestTransfer3d {
+    bo_handle: u32,
+    box_: [u32; 6],
+    level: u32,
+    offset: u32,
+    stride: u32,
+    layer_stride: u32,
+}
+const _: () = assert!(size_of::<GuestTransfer3d>() == 44);
+
 
 fn bo_index(file: usize, handle: u32) -> Result<usize, i32> {
     if file >= RENDER_SLOTS || handle == 0 || handle > BO_PER_FILE as u32 {
@@ -331,6 +350,8 @@ pub extern "C" fn nas_tgos_original_gpu_render_close(slot: u32) -> i32 {
                 return Err(-5);
             }
             RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+            RENDER_BO_WIDTH[idx].store(0, Ordering::Release);
+            RENDER_BO_HEIGHT[idx].store(0, Ordering::Release);
         }
         gpu.ctx_destroy(render_ctx_id(index)).map_err(|_| -5)?;
         gpu.ctrl_notify();
@@ -410,6 +431,19 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_create(
             gpu.ctrl_notify();
             gpu.wait_idle().map_err(|_| -5)?;
             if !gpu_async_ok() { return Err(-5); }
+            // Only two-dimensional uncompressed BGRA8888 is currently
+            // admitted to GPU transfer IOCTLs. Other resource formats can
+            // still be created, but never DMA-transferred without layout
+            // validation against the pinned upstream axdrm buffer rules.
+            let transferable = req.target == 2 && req.format == 1 &&
+                req.depth == 1 && req.array_size == 1 &&
+                req.last_level == 0 && req.nr_samples == 0 &&
+                req.width.checked_mul(req.height)
+                    .and_then(|v| v.checked_mul(4)) == Some(req.size);
+            if transferable {
+                RENDER_BO_WIDTH[idx].store(req.width, Ordering::Release);
+                RENDER_BO_HEIGHT[idx].store(req.height, Ordering::Release);
+            }
             unsafe {
                 *out_handle = handle;
                 *out_resource = id;
@@ -468,10 +502,74 @@ pub extern "C" fn nas_tgos_original_gpu_render_resource_close(
             return Err(-5);
         }
         RENDER_BO_SIZE[idx].store(0, Ordering::Release);
+        RENDER_BO_WIDTH[idx].store(0, Ordering::Release);
+        RENDER_BO_HEIGHT[idx].store(0, Ordering::Release);
         Ok(())
     }) {
         Ok(()) => 0, Err(e) => e,
     }
+}
+
+// Transfer is a REAL host-DMA operation, implemented by the pinned ORIGINAL
+// upstream VirtIoGpu routines. This early gate allows a full-layer RGBA/BGRA
+// upload/readback only; partial boxes, compressed formats and arbitrary Mesa
+// resource layouts require the complete original axdrm adapter.
+#[unsafe(no_mangle)]
+pub extern "C" fn nas_tgos_original_gpu_render_transfer(
+    slot: u32, request: *const GuestTransfer3d, to_host: u32,
+) -> i32 {
+    if request.is_null() || to_host > 1 { return -22; }
+    let file = slot as usize;
+    if file >= RENDER_SLOTS || !RENDER_CONTEXTS[file].load(Ordering::Acquire) {
+        return -9;
+    }
+    let req = unsafe { &*request };
+    let outcome = with_device(|gpu| {
+        let idx = bo_index(file, req.bo_handle)?;
+        let width = RENDER_BO_WIDTH[idx].load(Ordering::Acquire);
+        let height = RENDER_BO_HEIGHT[idx].load(Ordering::Acquire);
+        let size = RENDER_BO_SIZE[idx].load(Ordering::Acquire);
+        if width == 0 || height == 0 || size == 0 { return Err(-95); }
+        let row = width.checked_mul(4).ok_or(-22)?;
+        if req.box_ != [0, 0, 0, width, height, 1] ||
+            req.level != 0 || req.offset != 0 ||
+            req.stride != row || req.layer_stride != size ||
+            row.checked_mul(height) != Some(size) {
+            return Err(-95);
+        }
+        if !gpu_async_ok() { return Err(-5); }
+        let params = Transfer3d {
+            ctx_id: render_ctx_id(file),
+            resource_id: bo_resource_id(file, req.bo_handle),
+            box_: GpuBox {
+                x: 0, y: 0, z: 0,
+                w: width, h: height, d: 1,
+            },
+            offset: 0,
+            level: 0,
+            stride: row,
+            layer_stride: size,
+        };
+        if to_host == 1 {
+            // Guest's CPU writes to mapped GEM pages must become globally
+            // visible before the direct-DMA QEMU device reads them.
+            fence(Ordering::SeqCst);
+            gpu.transfer_to_host_3d(params).map_err(|_| -5)?;
+            gpu.ctrl_notify();
+            gpu.wait_idle().map_err(|_| -5)?;
+        } else {
+            let completion = gpu.transfer_from_host_3d(params).map_err(|_| -5)?;
+            if completion == 0 { return Err(-5); }
+            gpu.ctrl_notify();
+            gpu.wait_fence(completion).map_err(|_| -5)?;
+            if !gpu.fence_completed(completion) { return Err(-5); }
+            // Host has completed the DMA write; user-mode may read now.
+            fence(Ordering::SeqCst);
+        }
+        if !gpu_async_ok() { return Err(-5); }
+        Ok(())
+    });
+    match outcome { Ok(()) => 0, Err(e) => e }
 }
 
 // Use the upstream TGOSKits VirtIoGpu queue implementation unchanged.
