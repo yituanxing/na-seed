@@ -81,7 +81,7 @@ if gpu_owner:
     # NOT a render node or Mesa/glmark2 result.
     capset = re.compile(
         r"\[TGOS ORIGINAL GPU 3D RESOURCE FENCE PASS\] capset_id=([12]) "
-        r"original-res3d-submit3d-fence=1 render-node=absent"
+        r"original-res3d-submit3d-fence=1 render-node=caps-only"
     )
     ready_marker = "[TGOS ORIGINAL DRM ABI PASS]"
 else:
