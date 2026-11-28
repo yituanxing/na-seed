@@ -1089,6 +1089,87 @@ static int sys_append_hex(char dst[256],unsigned *length,uint64_t val,
     dst[*length]=0;
     return 0;
 }
+
+#if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
+/* Native sysfs device projection: read current original GPU owner PCI data
+ * from the already-registered bus, NOT from a static QEMU test assumption.
+ * Use exactly the Linux paths and attrs consumed by libdrm drmGetDevice2. */
+static int sys_gpu_pci_name(unsigned id,char out[256]) {
+    struct nas_tgos_gpu_pci_identity pci;
+    if(nas_tgos_original_gpu_pci_identity(&pci))return -ESTALE;
+    unsigned n=0;out[0]=0;
+    if(id==SYS_GPU_PCI_ROOT) {
+        if(sys_append(out,&n,"pci") ||
+           sys_append_hex(out,&n,pci.domain,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.bus,2))return -ENAMETOOLONG;
+        return 0;
+    }
+    if(id!=SYS_GPU_PCI_DEVICE && id!=SYS_GPU_BUS_PCI_LINK)return -EINVAL;
+    if(sys_append_hex(out,&n,pci.domain,4) ||
+       sys_append(out,&n,":") ||
+       sys_append_hex(out,&n,pci.bus,2) ||
+       sys_append(out,&n,":") ||
+       sys_append_hex(out,&n,pci.slot,2) ||
+       sys_append(out,&n,".") ||
+       sys_append_uint(out,&n,pci.function))
+        return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_gpu_pci_text(unsigned id,char out[256]) {
+    struct nas_tgos_gpu_pci_identity pci;
+    if(nas_tgos_original_gpu_pci_identity(&pci))return -ESTALE;
+    unsigned n=0;out[0]=0;uint32_t value;
+    switch(id) {
+    case SYS_GPU_PCI_VENDOR:value=pci.vendor;break;
+    case SYS_GPU_PCI_DEVICE_ID:value=pci.device;break;
+    case SYS_GPU_PCI_SUBVENDOR:value=pci.subvendor;break;
+    case SYS_GPU_PCI_SUBDEVICE:value=pci.subdevice;break;
+    case SYS_GPU_PCI_REVISION:value=pci.revision;break;
+    case SYS_GPU_PCI_UEVENT: {
+        char bdf[256];
+        if(sys_gpu_pci_name(SYS_GPU_PCI_DEVICE,bdf) ||
+           sys_append(out,&n,"PCI_ID=") ||
+           sys_append_hex(out,&n,pci.vendor,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.device,4) ||
+           sys_append(out,&n,"\nPCI_SUBSYS_ID=") ||
+           sys_append_hex(out,&n,pci.subvendor,4) ||
+           sys_append(out,&n,":") ||
+           sys_append_hex(out,&n,pci.subdevice,4) ||
+           sys_append(out,&n,"\nPCI_SLOT_NAME=") ||
+           sys_append(out,&n,bdf) ||
+           sys_append(out,&n,"\n"))return -ENAMETOOLONG;
+        return 0;
+    }
+    default:return -EINVAL;
+    }
+    if(sys_append(out,&n,"0x") ||
+       sys_append_hex(out,&n,value,id==SYS_GPU_PCI_REVISION?2:4) ||
+       sys_append(out,&n,"\n"))return -ENAMETOOLONG;
+    return 0;
+}
+static int sys_gpu_link(unsigned id,char target[256]) {
+    unsigned n=0;target[0]=0;
+    if(id!=SYS_GPU_CLASS_LINK && id!=SYS_GPU_CHAR_LINK &&
+       id!=SYS_GPU_BUS_PCI_LINK)return -EINVAL;
+    char root[256],bdf[256];
+    if(sys_gpu_pci_name(SYS_GPU_PCI_ROOT,root) ||
+       sys_gpu_pci_name(SYS_GPU_PCI_DEVICE,bdf))return -ESTALE;
+    if(sys_append(target,&n,id==SYS_GPU_BUS_PCI_LINK?
+                  "../../../devices/":"../../devices/") ||
+       sys_append(target,&n,root) ||
+       sys_append(target,&n,"/") ||
+       sys_append(target,&n,bdf))return -ENAMETOOLONG;
+    if(id!=SYS_GPU_BUS_PCI_LINK &&
+       sys_append(target,&n,"/drm/renderD128"))return -ENAMETOOLONG;
+    return (int)n;
+}
+static bool sys_gpu_dynamic(unsigned id) {
+    return id==SYS_GPU_PCI_ROOT || id==SYS_GPU_PCI_DEVICE ||
+           id==SYS_GPU_BUS_PCI_LINK;
+}
+#endif
 static int sys_input_name(const char *prefix,unsigned index,char out[256]) {
     unsigned n=0;out[0]=0;
     return sys_append(out,&n,prefix) || sys_append_uint(out,&n,index)?
