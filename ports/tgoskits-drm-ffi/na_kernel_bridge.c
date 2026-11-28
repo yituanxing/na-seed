@@ -4,11 +4,19 @@
  * Ownership: NaSeed TLSF. The DRM Rust source remains unchanged. */
 #include "../../kernel/mm/heap.h"
 #include "../../kernel/errno.h"
+#include "../../kernel/drivers/serial.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdalign.h>
 
 static const uintptr_t nas_tgos_cookie=(uintptr_t)UINT64_C(0x44524d54474f534b);
+
+/* Temporary, serial-only failure localization; no allocations or fake APIs. */
+void nas_tgos_probe_stage(uint32_t stage) {
+    nas_print("[TGOS ABI STAGE] ");
+    nas_dec(stage);
+    nas_print("\n");
+}
 
 void *nas_tgos_alloc_aligned(size_t bytes,size_t alignment) {
     /* Rust layout alignment may exceed C max_align_t; never silently
