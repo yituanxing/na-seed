@@ -59,3 +59,9 @@ bool nas_linux_virtgpu_vq_kick_prepare(struct nas_linux_virtgpu_vq_bridge *b) {
 void nas_linux_virtgpu_vq_notify(struct nas_linux_virtgpu_vq_bridge *b) {
     if (b && b->queue) nas_vring_queue_notify(b->queue);
 }
+void nas_linux_virtgpu_vq_disable_callbacks(struct nas_linux_virtgpu_vq_bridge *b) {
+    if (b && b->queue) nas_vring_queue_disable_callbacks(b->queue);
+}
+bool nas_linux_virtgpu_vq_enable_callbacks(struct nas_linux_virtgpu_vq_bridge *b) {
+    return b && b->queue && nas_vring_queue_enable_callbacks(b->queue);
+}
