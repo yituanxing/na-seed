@@ -75,17 +75,7 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           make ARCH=x86_64 NAS_ENABLE_VIRTIO_GPU=1 NAS_EXPERIMENT_TGOS_DRM_FFI=1 iso
-          # This opt-in trace records REAL x86_64 CPU faults after the
-          # last emitted Rust ABI stage; never count a timed-out boot as pass.
-          if ! NAS_EXPERIMENT_TGOS_QEMU_TRACE=1 sh tests/boot-smoke.sh build/naseed.iso; then
-            echo '=== QEMU actual CPU exception/PC trace tail ==='
-            if [ -s build/tgos-qemu-exceptions.log ]; then
-              tail -n 135 build/tgos-qemu-exceptions.log
-            else
-              echo 'no QEMU fault log was recorded'
-            fi
-            exit 1
-          fi
+          sh tests/boot-smoke.sh build/naseed.iso
           xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX" \
             python3 tests/native-virgl-probe.py x86_64
           grep -Fq '[TGOS ORIGINAL DRM ABI PASS]' build/native-boot/x86_64/virgl-probe.log || {
@@ -100,7 +90,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tgos-original-ffi-x86_64-serial
-          path: |
-            build/native-boot/x86_64/virgl-probe.log
-            build/tgos-qemu-exceptions.log
+          path: build/native-boot/x86_64/virgl-probe.log
           if-no-files-found: ignore
