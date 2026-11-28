@@ -693,15 +693,17 @@ pub extern "C" fn nas_tgos_original_gpu_get_caps(
     match result { Ok(()) => 0, Err(e) => e }
 }
 
-/// Query only truthful, user-visible capabilities. The host has 3D support,
-/// but this early render-node stage DOES NOT expose GEM/EXECBUFFER to Mesa,
-/// so DRM_VIRTGPU_PARAM_3D_FEATURES must remain 0 until that ABI works.
+/// Experimental QEMU VirGL 3D capability gate: NaSeed now supports real
+/// host-backed GEM pages, map, full bounded original-Mesa EXECBUFFER streams,
+/// per-File Context, transfer, WAIT and fenced GPU completion. Advertising
+/// 3D here permits probing the actual unmodified Mesa driver; it does NOT
+/// assert that EGL, all GEM features or complete accelerated desktop work.
 #[unsafe(no_mangle)]
 pub extern "C" fn nas_tgos_original_gpu_get_param(param: u64, value: *mut u64) -> i32 {
     if value.is_null() { return -22; }
     let result = with_device(|gpu| {
         let answer = match param {
-            1 => 0,  // 3D_FEATURES: not yet usable from unmodified Mesa
+            1 => u64::from(gpu.has_virgl()), // guest can submit real VirGL
             2 => 1,  // CAPSET_QUERY_FIX: GET_CAPS returns the correct byte length
             3 => 0,  // RESOURCE_BLOB: no userspace GEM backing yet
             4 => 0,  // HOST_VISIBLE: not mapped to userspace
