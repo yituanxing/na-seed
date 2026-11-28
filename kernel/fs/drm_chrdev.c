@@ -32,6 +32,8 @@ extern int nas_tgos_drm_check_original_abi(void);
 #define NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER UINT32_C(0xc0406442)
 #define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_CREATE UINT32_C(0xc0386444)
 #define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO UINT32_C(0xc0106445)
+#define NAS_DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST UINT32_C(0xc02c6446)
+#define NAS_DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST UINT32_C(0xc02c6447)
 #define NAS_DRM_IOCTL_VIRTGPU_GETPARAM UINT32_C(0xc0106443)
 #define NAS_DRM_IOCTL_VIRTGPU_GET_CAPS UINT32_C(0xc0186449)
 #define NAS_TGOS_MAX_CAPSET_BYTES 65536U
@@ -48,6 +50,9 @@ extern int nas_tgos_original_gpu_render_resource_create(uint32_t slot,
 extern int nas_tgos_original_gpu_render_resource_info(uint32_t slot,
                    uint32_t handle,uint32_t *resource,uint32_t *size);
 extern int nas_tgos_original_gpu_render_resource_close(uint32_t slot,uint32_t handle);
+struct nas_drm_virtgpu_transfer;
+extern int nas_tgos_original_gpu_render_transfer(uint32_t slot,
+                   const struct nas_drm_virtgpu_transfer *request,uint32_t to_host);
 extern int nas_tgos_original_gpu_get_param(uint64_t param,uint64_t *value);
 extern int nas_tgos_original_gpu_get_caps(uint32_t id,uint32_t version,
                                           uint8_t *out,size_t size,size_t *written);
@@ -87,6 +92,14 @@ struct nas_drm_virtgpu_resource_create {
     uint32_t target,format,bind,width,height,depth,array_size,last_level;
     uint32_t nr_samples,flags,bo_handle,res_handle,size,stride;
 };
+struct nas_drm_virtgpu_box {uint32_t x,y,z,w,h,d;};
+struct nas_drm_virtgpu_transfer {
+    uint32_t bo_handle;
+    struct nas_drm_virtgpu_box box;
+    uint32_t level,offset,stride,layer_stride;
+};
+_Static_assert(sizeof(struct nas_drm_virtgpu_transfer)==44U,
+               "Linux VirtGPU TRANSFER 3D LP64 ABI");
 struct nas_drm_virtgpu_resource_info {
     uint32_t bo_handle,res_handle,size,blob_mem;
 };
@@ -364,6 +377,16 @@ static uint64_t render_resource_info(unsigned slot,uint64_t arg) {
     return nas_user_write_bytes(arg,(const uint8_t *)&req,sizeof(req))?
            0:(uint64_t)-EFAULT;
 }
+/* Standard VirtGPU host transfer ioctl. User-supplied fields are copied
+ * into a trusted stack struct; original Rust GPU driver checks the exact
+ * transfer extent against its file-owned BO before DMA is permitted. */
+static uint64_t render_transfer(unsigned slot,uint64_t arg,uint32_t to_host) {
+    struct nas_drm_virtgpu_transfer req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    return (uint64_t)(int64_t)
+        nas_tgos_original_gpu_render_transfer((uint32_t)slot,&req,to_host);
+}
 static uint64_t render_gem_close(unsigned slot,uint64_t arg) {
     struct nas_drm_gem_close req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
@@ -490,6 +513,10 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
             return render_resource_create(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO)
             return render_resource_info(slot,user_arg);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST)
+            return render_transfer(slot,user_arg,1U);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST)
+            return render_transfer(slot,user_arg,0U);
         if(request==NAS_DRM_IOCTL_GEM_CLOSE)
             return render_gem_close(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_GETPARAM)
