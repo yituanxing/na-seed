@@ -16,6 +16,7 @@ static unsigned callbacks_control,callbacks_cursor;
 static uint32_t status;
 static uint32_t irq_status;
 static bool fail_cursor_queue;
+static bool fail_next_ring_sync;
 static uint64_t feature_mask=NAS_VIRTIO_F_VERSION_1|1U;
 static void hw_reset(void *ctx) {(void)ctx;status=0U;resets++;}
 static uint32_t hw_status(void *ctx) {(void)ctx;return status;}
@@ -75,6 +76,7 @@ int nas_dma_sync(const struct nas_dma_provider *d,struct nas_dma_page *p,
     if(!d || !p || !p->cpu || !d->coherent || offset>p->bytes ||
        bytes>p->bytes-offset ||
        (dir!=NAS_DMA_TO_DEVICE && dir!=NAS_DMA_FROM_DEVICE))return -EINVAL;
+    if(fail_next_ring_sync){fail_next_ring_sync=false;return -EIO;}
     return 0;
 }
 static void on_control(struct virtqueue *vq) {
@@ -164,6 +166,15 @@ int main(void) {
     CHECK(nas_linux_virtgpu_sg_map(&pair.vqs[0],&cmd,&mapped,0U,16U)==0);
     CHECK(virtqueue_add_sgs(&pair.vqs[0].linux_vq,sgs,1U,0U,
                             &ctrl_cookie,0U)==0);
+    /* A fault reading the used ring poisons the device, NOT a synthetic
+     * completion. The request must remain alive until transport reset. */
+    irq_status=NAS_VIRTIO_IRQ_USED_BUFFER;
+    CHECK(nas_linux_virtgpu_vq_pair_irq_ack(&pair)==NAS_VIRTIO_IRQ_USED_BUFFER);
+    fail_next_ring_sync=true;
+    CHECK(nas_linux_virtgpu_vq_pair_service(&pair)==-EIO);
+    CHECK(pair.rings[0].poisoned);
+    CHECK(status & NAS_VIRTIO_STATUS_FAILED);
+    CHECK(callbacks_control==1U && callbacks_cursor==1U);
     CHECK(nas_linux_virtgpu_vq_pair_close(&pair)==0);
     CHECK(released==2U && !(status & NAS_VIRTIO_STATUS_DRIVER_OK));
     unsigned cursor=0U;void *abandoned=NULL;
