@@ -19,6 +19,8 @@ EXECBUFFER = 0xC0406442
 MAP = 0xC0106441
 RESOURCE_CREATE = 0xC0386444
 RESOURCE_INFO = 0xC0106445
+TRANSFER_FROM_HOST = 0xC02C6446
+TRANSFER_TO_HOST = 0xC02C6447
 GEM_CLOSE = 0x40086409
 
 def create_gpu_resource(fd):
@@ -47,6 +49,15 @@ def map_gpu_resource(fd, handle, bytes_count=16384):
     assert echoed == handle and pad == 0
     return mmap.mmap(fd, bytes_count, flags=mmap.MAP_SHARED,
                      prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=offset)
+
+def gpu_full_layer_transfer(fd, handle, to_host, stride=256):
+    # Real upstream Linux VirtGPU TRANSFER_{TO,FROM}_HOST_3D ABI (44 bytes).
+    # Box covers exactly one 64x64 uncompressed BGRA8888 image layer.
+    request = struct.pack("=11I", handle, 0, 0, 0, 64, 64, 1,
+                          0, 0, stride, 16384)
+    assert len(request) == 44
+    fcntl.ioctl(fd, TRANSFER_TO_HOST if to_host else TRANSFER_FROM_HOST,
+                request)
 
 def close_gpu_resource(fd, handle):
     fcntl.ioctl(fd, GEM_CLOSE, struct.pack("=II", handle, 0))
@@ -164,6 +175,28 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     mapped2[:len(sentinel)] = b"NaSeed-GPU-DMA-2"
     assert mapped1[:len(sentinel)] == sentinel
     print("TGOS_ALPINE_REAL_BO_MMAP_PAGE_ISOLATION_PASS", flush=True)
+
+    # Strict end-to-end *data* evidence: write 16 KiB through Alpine mmap,
+    # upload it to the actual QEMU VirGL texture using the original TGOSKits
+    # transfer routine, overwrite guest RAM, then download from the host.
+    # A fake/no-op GPU transfer would leave the RAM all-zero and fail.
+    texture = bytes((n * 37 + 19) & 255 for n in range(16384))
+    mapped1[:] = texture
+    gpu_full_layer_transfer(fd, bo1, True)
+    mapped1[:] = b"\0" * len(texture)
+    assert mapped1[:64] != texture[:64]
+    gpu_full_layer_transfer(fd, bo1, False)
+    assert mapped1[:] == texture, "QEMU 3D GPU upload/readback changed data"
+    print("TGOS_ALPINE_GPU_HOST_DMA_ROUNDTRIP_PASS", flush=True)
+    # Reject a mismatched 3D row stride: host must not DMA out of bounds.
+    try:
+        gpu_full_layer_transfer(fd, bo1, True, stride=257)
+    except OSError as exc:
+        assert exc.errno in (errno.EOPNOTSUPP, errno.EINVAL), exc
+    else:
+        raise AssertionError("unsafe VirGL transfer stride was accepted")
+    print("TGOS_ALPINE_GPU_TRANSFER_BOUNDS_PASS", flush=True)
+
     exec_with_bo(fd, ctypes.addressof(nop), bo1)
     exec_with_bo(fd, ctypes.addressof(nop), bo2)
     print("TGOS_ALPINE_REAL_RESOURCE_CREATE_INFO_EXEC_PASS", flush=True)
@@ -189,7 +222,7 @@ with os.fdopen(os.open(RENDER, os.O_RDWR | os.O_CLOEXEC), "rb", buffering=0) as 
     close_gpu_resource(fd, bo1)
     # The original GPU owner has detached and fenced host DMA, but this VMA
     # must continue owning the physical pages until last munmap.
-    assert mapped1[:len(sentinel)] == sentinel
+    assert mapped1[:] == texture
     mapped1.close()
     closed_info = bytearray(struct.pack("=4I", bo1, 0, 0, 0))
     try:
