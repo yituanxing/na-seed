@@ -49,15 +49,18 @@ __attribute__((noreturn)) void _start(void) {
     // No libc or forged output. NaSeed must resolve a real character inode.
     long fd=call4(__NR_openat,-100,(long)(uintptr_t)node,2,0);
     if(fd<0)goto fail;
-    uint64_t feature=~UINT64_C(0);
-    struct getparam p={.param=1,.value=(uint64_t)(uintptr_t)&feature};
-    // This experimental node must NOT advertise an unusable Mesa winsys.
+    struct {uint32_t value,guard;} feature={
+        .value=UINT32_MAX,.guard=UINT32_C(0xa5b4c3d2)
+    };
+    struct getparam p={.param=1,.value=(uint64_t)(uintptr_t)&feature.value};
+    // Linux's ioctl returns *int*, not u64; check both ABI and true status.
     if(call3(__NR_ioctl,fd,UINT32_C(0xc0106443),
-             (long)(uintptr_t)&p)!=0 || feature!=0)goto close_fail;
-    uint64_t mask=0;
+             (long)(uintptr_t)&p)!=0 || feature.value!=0 ||
+       feature.guard!=UINT32_C(0xa5b4c3d2))goto close_fail;
+    uint32_t mask=0;
     p.param=7;p.value=(uint64_t)(uintptr_t)&mask;
     if(call3(__NR_ioctl,fd,UINT32_C(0xc0106443),
-             (long)(uintptr_t)&p)!=0 || !(mask&(UINT64_C(1)<<1)))
+             (long)(uintptr_t)&p)!=0 || !(mask&(UINT32_C(1)<<1)))
         goto close_fail;
     uint8_t capset[4096];
     volatile uint8_t *initial=capset;
