@@ -21,9 +21,9 @@ test -e "$work/alpine-root/lib/ld-musl-$arch.so.1"
 # The host docker runs native apk and stages the target architecture's ELF.
 docker run --rm -v "$PWD/$work/alpine-root:/target" alpine:3.23 sh -ec "
     cp -a /target/etc/apk/keys/. /etc/apk/keys/
-    apk --arch $arch --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \\
-        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \\
-        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \\
+    apk --arch $arch --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \
         add python3
 "
 test -e "$work/alpine-root/usr/bin/python3"
@@ -50,11 +50,11 @@ case "$arch" in
         test -s "$work/virgl-alpine.iso"
         # Second independent QEMU boot uses original Python to exercise the
         # Linux DRM ioctl ABI on card0; it does not claim Mesa/GL readiness.
-        sed -i 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \\
+        sed -i 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \
             "$work/virgl-iso/boot/limine/limine.conf"
-        xorriso -as mkisofs -R -r -J \\
-            --efi-boot boot/limine/limine-uefi-cd.bin \\
-            --efi-boot-part --efi-boot-image \\
+        xorriso -as mkisofs -R -r -J \
+            --efi-boot boot/limine/limine-uefi-cd.bin \
+            --efi-boot-part --efi-boot-image \
             -o "$work/virgl-caps.iso" "$work/virgl-iso" >/dev/null 2>&1
         test -s "$work/virgl-caps.iso"
         ;;
@@ -66,9 +66,9 @@ case "$arch" in
         mcopy -o -i "$work/virgl-alpine-efi.img" "$work/virgl-alpine-limine.conf" ::/boot/limine/limine.conf
         test -s "$work/virgl-alpine-efi.img"
         cp "$work/virgl-alpine-efi.img" "$work/virgl-caps-efi.img"
-        sed 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \\
+        sed 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \
             "$work/virgl-alpine-limine.conf" > "$work/virgl-caps-limine.conf"
-        mcopy -o -i "$work/virgl-caps-efi.img" "$work/virgl-caps-limine.conf" \\
+        mcopy -o -i "$work/virgl-caps-efi.img" "$work/virgl-caps-limine.conf" \
             ::/boot/limine/limine.conf
         test -s "$work/virgl-caps-efi.img"
         ;;
