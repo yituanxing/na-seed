@@ -15,7 +15,7 @@ permissions:
   contents: read
 concurrency:
   group: tgos-original-real-alpine
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   original-alpine-userspace-to-original-rust-gpu:
     runs-on: ubuntu-24.04
