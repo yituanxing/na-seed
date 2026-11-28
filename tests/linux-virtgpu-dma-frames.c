@@ -130,7 +130,8 @@ static int test_mapping(void) {
           bus==fake_bus+4095U);
     fail_unmap=true;
     CHECK(nas_dma_unmap_borrowed_frame(&map)==-EIO);
-    CHECK(map.active && refs_a==2U);
+    CHECK(map.active && !map.usable && refs_a==2U);
+    CHECK(nas_dma_mapped_slice(&map,0U,1U,&bus)==-EINVAL);
     fail_unmap=false;
     CHECK(nas_dma_unmap_borrowed_frame(&map)==0 && refs_a==1U);
 
@@ -141,7 +142,8 @@ static int test_mapping(void) {
     /* When automatic unwind itself fails, retain ownership for retry. */
     fail_unmap=true;
     CHECK(nas_dma_map_borrowed_frame(&fake,FRAME_A,&map)==-EIO);
-    CHECK(map.active && refs_a==2U);
+    CHECK(map.active && !map.usable && refs_a==2U);
+    CHECK(nas_dma_mapped_slice(&map,0U,1U,&bus)==-EINVAL);
     fail_unmap=false;
     CHECK(nas_dma_unmap_borrowed_frame(&map)==0 && refs_a==1U);
     CHECK(fake_map_calls==3U && fake_unmap_calls==3U);
