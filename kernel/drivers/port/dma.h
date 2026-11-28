@@ -25,6 +25,20 @@ struct nas_dma_provider {
     int (*release_page)(void *, struct nas_dma_page *);
     int (*sync)(void *, struct nas_dma_page *, uint32_t offset,
                 uint32_t bytes, enum nas_dma_direction);
+    /* Optional ownership-safe map of a BORROWED physical frame.
+     * map_frame must acquire a page pin before returning the device bus
+     * address; unmap_frame releases it only after device quiescence.
+     * Never assume bus_address == frame_pa on a generic provider. */
+    int (*map_frame)(void *, uint64_t frame_pa, uint64_t *bus_address);
+    int (*unmap_frame)(void *, uint64_t frame_pa, uint64_t bus_address);
+};
+/* One borrowed page pin and DMA mapping. The map/unmap provider owns the
+ * pin, NOT the caller's original frame reference. This representation is
+ * deliberately separate from provider-allocated nas_dma_page ownership. */
+struct nas_dma_mapped_frame {
+    const struct nas_dma_provider *provider;
+    uint64_t frame_pa, bus_address;
+    bool active;
 };
 /* An explicit, bounded software ownership lease for one DMA-capable device.
  * A controller must arm the lease BEFORE a write that might enable bus
@@ -56,6 +70,15 @@ int nas_dma_alloc_page(const struct nas_dma_provider *, struct nas_dma_page *);
 int nas_dma_free_page(const struct nas_dma_provider *, struct nas_dma_page *);
 int nas_dma_sync(const struct nas_dma_provider *, struct nas_dma_page *,
                  uint32_t, uint32_t, enum nas_dma_direction);
+/* Borrowed-frame DMA mappings for GPU GEM/shmem pages. Require an explicit
+ * provider, coherent memory and valid managed frame pins; map must remain
+ * alive through all GPU fences / used-ring completions, or device reset.
+ * Noncoherent and IOMMU providers need their own correctly paired callbacks. */
+int nas_dma_map_borrowed_frame(const struct nas_dma_provider *, uint64_t frame_pa,
+                               struct nas_dma_mapped_frame *);
+int nas_dma_unmap_borrowed_frame(struct nas_dma_mapped_frame *);
+int nas_dma_mapped_slice(const struct nas_dma_mapped_frame *, uint32_t offset,
+                         uint32_t length, uint64_t *bus_address);
 /* QEMU virt direct DMA identity mapping + coherent emulated guest RAM.
  * Do not use as an implementation for real non-coherent physical hardware. */
 extern const struct nas_dma_provider nas_dma_qemu_coherent;
