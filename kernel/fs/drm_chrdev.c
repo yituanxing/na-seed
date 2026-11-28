@@ -28,6 +28,7 @@ extern int nas_tgos_drm_check_original_abi(void);
 /* Exact Linux UAPI ioctl numbers: /uapi/drm/virtgpu_drm.h.
  * Only original GPU capset discovery is implemented. There is deliberately
  * no fake GEM, EXECBUFFER, KMS or OpenGL 3D advertising. */
+#define NAS_DRM_IOCTL_VIRTGPU_MAP UINT32_C(0xc0106441)
 #define NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER UINT32_C(0xc0406442)
 #define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_CREATE UINT32_C(0xc0386444)
 #define NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO UINT32_C(0xc0106445)
@@ -76,6 +77,12 @@ struct nas_drm_virtgpu_execbuffer {
 };
 _Static_assert(sizeof(struct nas_drm_virtgpu_execbuffer)==64U,
                "Linux virtgpu EXECBUFFER LP64 ABI");
+struct nas_drm_virtgpu_map {
+    uint64_t offset;
+    uint32_t handle,pad;
+};
+_Static_assert(sizeof(struct nas_drm_virtgpu_map)==16U,
+               "Linux VirtGPU MAP LP64 ABI");
 struct nas_drm_virtgpu_resource_create {
     uint32_t target,format,bind,width,height,depth,array_size,last_level;
     uint32_t nr_samples,flags,bo_handle,res_handle,size,stride;
@@ -324,6 +331,23 @@ static uint64_t render_resource_create(unsigned slot,uint64_t arg) {
     (void)nas_tgos_original_gpu_render_resource_close((uint32_t)slot,handle);
     return (uint64_t)-EFAULT;
 }
+/* Exact Linux VirtGPU MAP ioctl; return EXISTING NaSeed GEM mmap
+ * cookie. The VMA's independent object refcount protects physical pages
+ * if the user closes the BO while a mapping is still live. */
+static uint64_t render_map(unsigned slot,uint64_t arg) {
+    struct nas_drm_virtgpu_map req;
+    if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    if(req.pad)return (uint64_t)-EINVAL;
+    if(!nas_user_prepare_write(arg,sizeof(req)))
+        return (uint64_t)-EFAULT;
+    uint64_t offset=0;
+    int rc=nas_drm_gem_map_offset(slot,req.handle,&offset);
+    if(rc)return (uint64_t)(int64_t)rc;
+    req.offset=offset;
+    return nas_user_write_bytes(arg,(const uint8_t *)&req,sizeof(req))?
+           0:(uint64_t)-EFAULT;
+}
 static uint64_t render_resource_info(unsigned slot,uint64_t arg) {
     struct nas_drm_virtgpu_resource_info req;
     if(!nas_user_read_bytes(arg,(uint8_t *)&req,sizeof(req)))
@@ -428,7 +452,8 @@ static uint64_t dumb_destroy(unsigned slot,uint64_t arg,bool gem_close) {
 int nas_drm_chrdev_mmap_pin(unsigned slot,uint64_t offset,
                             struct nas_vm_device **out) {
 #if defined(NAS_EXPERIMENT_TGOS_GPU_OWNER)
-    if(render_file(slot))return -EOPNOTSUPP; /* No GEM mmap in this gate. */
+    if(render_file(slot))
+        return nas_drm_gem_mmap_pin(slot,offset,out);
 #endif
     if(!drm_present(0))return -ENODEV;
     return nas_drm_gem_mmap_pin(slot,offset,out);
@@ -459,6 +484,8 @@ uint64_t nas_drm_chrdev_ioctl(uint64_t fd,uint64_t request,uint64_t user_arg) {
         if(request==NAS_DRM_IOCTL_GET_CAP)return drm_cap(user_arg,true);
         if(request==NAS_DRM_IOCTL_VIRTGPU_EXECBUFFER)
             return render_execbuffer(slot,user_arg);
+        if(request==NAS_DRM_IOCTL_VIRTGPU_MAP)
+            return render_map(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_RESOURCE_CREATE)
             return render_resource_create(slot,user_arg);
         if(request==NAS_DRM_IOCTL_VIRTGPU_RESOURCE_INFO)
