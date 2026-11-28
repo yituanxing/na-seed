@@ -105,7 +105,7 @@ if [ "${NAS_ENABLE_VIRTIO_GPU:-0}" = 1 ]; then
     # Native MMIO VirtIO-GPU must expose the SAME Linux DRM/GEM/KMS UAPI
     # implementations as x86-64. Merely linking the 2D GPU class driver
     # does not make /dev/dri/card0 or Weston usable.
-    arch="$arch kernel/drivers/display/virtio_gpu.c kernel/fs/drm_chrdev.c kernel/fs/drm_gem.c kernel/fs/drm_kms.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/gem_dma_port.c ports/linux-virtgpu/vbuf_dma_port.c"
+    arch="$arch kernel/drivers/display/virtio_gpu.c kernel/fs/drm_chrdev.c kernel/fs/drm_gem.c kernel/fs/drm_kms.c ports/linux-virtgpu/virtqueue_bridge.c ports/linux-virtgpu/virtqueue_api_port.c ports/linux-virtgpu/vq_pair_port.c ports/linux-virtgpu/gem_dma_port.c ports/linux-virtgpu/vbuf_dma_port.c"
 fi
 if [ "${NAS_ENABLE_VIRTIO_BLK_ASYNC:-0}" = 1 ]; then
     arch="$arch kernel/block/request.c ports/uboot/async_blk.c"
