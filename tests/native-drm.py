@@ -237,6 +237,13 @@ with (work / f"{mode}-serial.log").open("w") as log:
             time.sleep(9)
             _, _, flip_b = scanout("pageflip-active-b")
             page_delta = changed(flip_a, flip_b)
+            # The unmodified modetest pageflip stream can present one
+            # solid pixel pattern for many consecutive frames. QMP samples
+            # eight seconds apart may therefore be byte-identical even
+            # when genuine PAGE_FLIP_COMPLETE events continue arriving.
+            # Require a REAL QMP scanout transition from the preceding
+            # upstream modeset, independently of the strict event check.
+            phase_delta = changed(after, flip_a)
             verify(guest,
                    "wait \"$flip_pid\"; result=$?; "
                    "if test \"$result\" = 0 && "
@@ -245,11 +252,15 @@ with (work / f"{mode}-serial.log").open("w") as log:
                    "else tail -100 /root/drm-pageflip.log; "
                    "echo DRM_PAGEFLIP_EVENTS_FAIL; fi",
                    "DRM_PAGEFLIP_EVENTS", timeout=100)
-            if page_delta < 10000:
-                raise RuntimeError(f"{arch}: KMS page flipping did not change "
-                                   f"actual pixels between active frames: {page_delta}")
-            print(f"PASS: {arch} real DRM pageflips completed in original "
-                  f"modetest; QMP frames changed {page_delta} pixels", flush=True)
+            if max(page_delta, phase_delta) < 10000:
+                raise RuntimeError(
+                    f"{arch}: original modetest Page Flip had real events "
+                    f"but never changed actual VirtIO-GPU scanout: "
+                    f"phase={phase_delta}, between={page_delta}"
+                )
+            print(f"PASS: {arch} real DRM pageflip events and actual "
+                  f"QMP scanout transition: phase={phase_delta}, "
+                  f"between_samples={page_delta}", flush=True)
         guest.sendline("poweroff")
         guest.expect(r"\[LWEXT4 GUEST\] clean upstream unmount and durable flush",
                      timeout=180)
