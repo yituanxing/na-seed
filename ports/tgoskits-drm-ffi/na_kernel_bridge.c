@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdalign.h>
 
-static const uintptr_t nas_tgos_cookie=UINTPTR_C(0x44524d54474f534b);
+static const uintptr_t nas_tgos_cookie=(uintptr_t)UINT64_C(0x44524d54474f534b);
 
 void *nas_tgos_alloc_aligned(size_t bytes,size_t alignment) {
     /* Rust layout alignment may exceed C max_align_t; never silently
