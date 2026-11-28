@@ -40,4 +40,4 @@ cc -std=c11 -O2 -Wall -Wextra -Werror $inc \
     ports/linux-virtgpu/gem_dma_port.c \
     -o "$temp/gem-queue-e2e"
 "$temp/gem-queue-e2e"
-echo "PASS: production GEM pin -> DMA mapped scatterlist -> VirtIO used-ring -> safe release"
+echo "PASS: one-shot GEM DMA pin -> mapped vring -> used completion -> safe release"
