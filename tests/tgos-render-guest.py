@@ -20,13 +20,14 @@ EXECBUFFER = 0xC0406442
 class DrmVersion(ctypes.Structure):
     _fields_ = [
         ("major", ctypes.c_int), ("minor", ctypes.c_int),
-        ("patchlevel", ctypes.c_int), ("name_len", ctypes.c_size_t),
-        ("name", ctypes.c_void_p), ("date_len", ctypes.c_size_t),
-        ("date", ctypes.c_void_p), ("desc_len", ctypes.c_size_t),
+        ("patchlevel", ctypes.c_int), ("name_len", ctypes.c_int),
+        ("name", ctypes.c_void_p), ("date_len", ctypes.c_int),
+        ("date", ctypes.c_void_p), ("desc_len", ctypes.c_int),
         ("desc", ctypes.c_void_p),
     ]
 
 
+assert ctypes.sizeof(DrmVersion) == 56, "libdrm's public drmVersion ABI differs from kernel drm_version"
 libdrm = ctypes.CDLL("libdrm.so.2")
 libdrm.drmGetVersion.argtypes = [ctypes.c_int]
 libdrm.drmGetVersion.restype = ctypes.POINTER(DrmVersion)
