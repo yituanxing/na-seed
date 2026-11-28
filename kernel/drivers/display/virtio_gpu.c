@@ -48,48 +48,19 @@ extern void nas_dec(uint64_t);
 _Static_assert(GPU_PAGES == 469U, "800x600 DMA scatter page count");
 _Static_assert(GPU_ENTRY_PAGES == 2U, "attach command must cross a page");
 
-struct gpu_hdr {
-    uint32_t type, flags;
-    uint64_t fence_id;
-    uint32_t ctx_id, ring_idx;
-};
-struct gpu_rect {uint32_t x, y, width, height;};
-struct gpu_mode {struct gpu_rect r; uint32_t enabled, flags;};
-struct gpu_resp_info {struct gpu_hdr hdr; struct gpu_mode modes[16];};
-struct gpu_create {struct gpu_hdr hdr; uint32_t id, format, width, height;};
-struct gpu_attach {struct gpu_hdr hdr; uint32_t id, count;};
-struct gpu_scanout {struct gpu_hdr hdr; struct gpu_rect r; uint32_t scanout, id;};
-struct gpu_transfer {struct gpu_hdr hdr; struct gpu_rect r; uint64_t offset; uint32_t id, pad;};
-struct gpu_flush {struct gpu_hdr hdr; struct gpu_rect r; uint32_t id, pad;};
-struct gpu_entry {uint64_t address; uint32_t length, padding;};
-/* Linux virtio_gpu.h / VirtIO 1.2 wire layouts, without a second protocol. */
-struct gpu_capset_query {struct gpu_hdr hdr;uint32_t index,padding;};
-struct gpu_capset_reply {
-    struct gpu_hdr hdr;
-    uint32_t id,max_version,max_size,padding;
-};
-_Static_assert(sizeof(struct gpu_hdr)==24U, "virtio-gpu control header");
-_Static_assert(sizeof(struct gpu_resp_info)==408U, "virtio-gpu display info");
-_Static_assert(sizeof(struct gpu_create)==40U, "virtio-gpu create2d");
-_Static_assert(sizeof(struct gpu_attach)==32U, "virtio-gpu attach");
-_Static_assert(sizeof(struct gpu_scanout)==48U, "virtio-gpu scanout");
-_Static_assert(sizeof(struct gpu_transfer)==56U, "virtio-gpu transfer");
-_Static_assert(sizeof(struct gpu_flush)==48U, "virtio-gpu flush");
-_Static_assert(sizeof(struct gpu_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
-_Static_assert(sizeof(struct gpu_capset_query)==32U, "virtio-gpu capset query");
-_Static_assert(sizeof(struct gpu_capset_reply)==40U, "virtio-gpu capset reply");
-/* Reject any accidental drift from the actual vendored Linux protocol. */
-_Static_assert(sizeof(struct gpu_hdr)==sizeof(struct virtio_gpu_ctrl_hdr), "Linux header wire layout");
-_Static_assert(offsetof(struct gpu_hdr,ctx_id)==offsetof(struct virtio_gpu_ctrl_hdr,ctx_id), "Linux ctx offset");
-_Static_assert(offsetof(struct gpu_hdr,ring_idx)==offsetof(struct virtio_gpu_ctrl_hdr,ring_idx), "Linux ring offset");
-_Static_assert(sizeof(struct gpu_create)==sizeof(struct virtio_gpu_resource_create_2d), "Linux create2d");
-_Static_assert(sizeof(struct gpu_attach)==sizeof(struct virtio_gpu_resource_attach_backing), "Linux attach");
-_Static_assert(sizeof(struct gpu_scanout)==sizeof(struct virtio_gpu_set_scanout), "Linux scanout");
-_Static_assert(sizeof(struct gpu_transfer)==sizeof(struct virtio_gpu_transfer_to_host_2d), "Linux transfer");
-_Static_assert(sizeof(struct gpu_flush)==sizeof(struct virtio_gpu_resource_flush), "Linux flush");
-_Static_assert(sizeof(struct gpu_resp_info)==sizeof(struct virtio_gpu_resp_display_info), "Linux display info");
-_Static_assert(sizeof(struct gpu_capset_query)==sizeof(struct virtio_gpu_get_capset_info), "Linux capset request");
-_Static_assert(sizeof(struct gpu_capset_reply)==sizeof(struct virtio_gpu_resp_capset_info), "Linux capset reply");
+/* Use the exact original Linux v6.14 VirtIO-GPU wire structures.
+ * Absolute size checks catch accidental compiler/ABI drift on every ISA;
+ * no parallel NaSeed-local GPU command or response layouts remain. */
+_Static_assert(sizeof(struct virtio_gpu_ctrl_hdr)==24U, "virtio-gpu control header");
+_Static_assert(sizeof(struct virtio_gpu_resp_display_info)==408U, "virtio-gpu display info");
+_Static_assert(sizeof(struct virtio_gpu_resource_create_2d)==40U, "virtio-gpu create2d");
+_Static_assert(sizeof(struct virtio_gpu_resource_attach_backing)==32U, "virtio-gpu attach");
+_Static_assert(sizeof(struct virtio_gpu_set_scanout)==48U, "virtio-gpu scanout");
+_Static_assert(sizeof(struct virtio_gpu_transfer_to_host_2d)==56U, "virtio-gpu transfer");
+_Static_assert(sizeof(struct virtio_gpu_resource_flush)==48U, "virtio-gpu flush");
+_Static_assert(sizeof(struct virtio_gpu_mem_entry)==GPU_ENTRY_BYTES, "virtio-gpu mem entry");
+_Static_assert(sizeof(struct virtio_gpu_get_capset_info)==32U, "virtio-gpu capset query");
+_Static_assert(sizeof(struct virtio_gpu_resp_capset_info)==40U, "virtio-gpu capset reply");
 
 enum gpu_runtime_phase { GPU_RUNTIME_IDLE, GPU_RUNTIME_TRANSFER,
                          GPU_RUNTIME_FLUSH };
@@ -138,8 +109,8 @@ static uint64_t little64(uint64_t v) {
     return __builtin_bswap64(v);
 #endif
 }
-static struct gpu_hdr command_hdr(struct gpu_device *g,uint32_t type) {
-    return (struct gpu_hdr){.type=little32(type),.flags=little32(VIRTIO_GPU_FLAG_FENCE),
+static struct virtio_gpu_ctrl_hdr command_hdr(struct gpu_device *g,uint32_t type) {
+    return (struct virtio_gpu_ctrl_hdr){.type=little32(type),.flags=little32(VIRTIO_GPU_FLAG_FENCE),
                             .fence_id=little64(++g->next_fence)};
 }
 
@@ -184,9 +155,9 @@ static int command_submit(struct gpu_device *g,const void *request,
         entry_bytes-=bytes;
     }
     segments[n++]=(struct nas_vring_segment){g->response.bus_address,
-                              sizeof(struct gpu_resp_info),true};
+                              sizeof(struct virtio_gpu_resp_display_info),true};
     rc=nas_dma_sync(g->transport.dma,&g->response,0,
-                    sizeof(struct gpu_resp_info),NAS_DMA_FROM_DEVICE);
+                    sizeof(struct virtio_gpu_resp_display_info),NAS_DMA_FROM_DEVICE);
     if(rc)return rc;
     rc=nas_vring_queue_submit(&g->control,segments,n,submitted_head);
     if(rc)return rc;
@@ -194,19 +165,19 @@ static int command_submit(struct gpu_device *g,const void *request,
     return 0;
 }
 
-static int command_response(struct gpu_device *g,const struct gpu_hdr *question,
+static int command_response(struct gpu_device *g,const struct virtio_gpu_ctrl_hdr *question,
                             uint32_t expected_response,uint32_t response_bytes) {
-    if(response_bytes<sizeof(struct gpu_hdr) ||
-       response_bytes>sizeof(struct gpu_resp_info))return -EIO;
+    if(response_bytes<sizeof(struct virtio_gpu_ctrl_hdr) ||
+       response_bytes>sizeof(struct virtio_gpu_resp_display_info))return -EIO;
     int rc=nas_dma_sync(g->transport.dma,&g->response,0,response_bytes,
                         NAS_DMA_FROM_DEVICE);
     if(rc)return rc;
-    const struct gpu_hdr *answer=(const struct gpu_hdr *)g->response.cpu;
+    const struct virtio_gpu_ctrl_hdr *answer=(const struct virtio_gpu_ctrl_hdr *)g->response.cpu;
     if(little32(answer->type)!=expected_response ||
        !(little32(answer->flags)&VIRTIO_GPU_FLAG_FENCE) ||
        answer->fence_id!=question->fence_id)return -EIO;
     if(expected_response==VIRTIO_GPU_RESP_OK_DISPLAY_INFO &&
-       response_bytes<sizeof(struct gpu_resp_info))return -EIO;
+       response_bytes<sizeof(struct virtio_gpu_resp_display_info))return -EIO;
     ++g->completed;
     return 0;
 }
@@ -355,7 +326,7 @@ static int gpu_mmap_page(struct nas_display_device *display,uint64_t offset,
 
 /* Runtime used-ring processing is strictly IRQ driven. An acknowledged
  * interrupt permits one bounded drain, but no scheduler-stack busy wait. */
-static int runtime_submit(struct gpu_device *g,const struct gpu_hdr *request,
+static int runtime_submit(struct gpu_device *g,const struct virtio_gpu_ctrl_hdr *request,
                           uint32_t bytes,enum gpu_runtime_phase phase) {
     uint16_t head=0;
     int rc=command_submit(g,request,bytes,0,&head);
@@ -388,15 +359,15 @@ static int runtime_complete(struct gpu_device *g) {
     if(rc==-EAGAIN)return 0; /* No speculative retry without another IRQ. */
     if(rc || head!=g->runtime_head)
         return runtime_poison(g,rc ? rc : -EIO);
-    const struct gpu_hdr expected={.fence_id=g->runtime_fence};
+    const struct virtio_gpu_ctrl_hdr expected={.fence_id=g->runtime_fence};
     rc=command_response(g,&expected,VIRTIO_GPU_RESP_OK_NODATA,bytes);
     if(rc)return runtime_poison(g,rc);
     if(g->runtime_phase==GPU_RUNTIME_TRANSFER) {
         ++g->transfers;
-        struct gpu_rect rect={0,little32(g->epoch_first),little32(GPU_WIDTH),
+        struct virtio_gpu_rect rect={0,little32(g->epoch_first),little32(GPU_WIDTH),
                               little32(g->epoch_last-g->epoch_first)};
-        struct gpu_flush flush={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_FLUSH),
-                                .r=rect,.id=little32(GPU_RESOURCE_ID)};
+        struct virtio_gpu_resource_flush flush={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_FLUSH),
+                                .r=rect,.resource_id=little32(GPU_RESOURCE_ID)};
         rc=runtime_submit(g,&flush.hdr,sizeof(flush),GPU_RUNTIME_FLUSH);
         return rc ? runtime_poison(g,rc) : 0;
     }
@@ -436,11 +407,11 @@ static int gpu_present(struct nas_display_device *display) {
     g->epoch_first=first;g->epoch_last=last;
     g->epoch_serial=g->dirty_serial;
     g->dirty=false;
-    struct gpu_rect rect={0,little32(first),little32(GPU_WIDTH),
+    struct virtio_gpu_rect rect={0,little32(first),little32(GPU_WIDTH),
                           little32(last-first)};
-    struct gpu_transfer transfer={.hdr=command_hdr(g,VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+    struct virtio_gpu_transfer_to_host_2d transfer={.hdr=command_hdr(g,VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
         .r=rect,.offset=little64((uint64_t)first*GPU_PITCH),
-        .id=little32(GPU_RESOURCE_ID)};
+        .resource_id=little32(GPU_RESOURCE_ID)};
     rc=runtime_submit(g,&transfer.hdr,sizeof(transfer),GPU_RUNTIME_TRANSFER);
     return rc ? runtime_poison(g,rc) : 0;
 }
@@ -461,15 +432,15 @@ static int discover_3d_capsets(struct gpu_device *g,uint64_t features) {
     const uint32_t count=g->capset_count<GPU_CAPSET_PROBE_LIMIT ?
                          g->capset_count:GPU_CAPSET_PROBE_LIMIT;
     for(uint32_t i=0;i<count;i++) {
-        struct gpu_capset_query q={
+        struct virtio_gpu_get_capset_info q={
             .hdr=command_hdr(g,VIRTIO_GPU_CMD_GET_CAPSET_INFO),
-            .index=little32(i)};
+            .capset_index=little32(i)};
         int rc=command_sync(g,&q,sizeof(q),0,VIRTIO_GPU_RESP_OK_CAPSET_INFO);
         if(rc)return rc;
-        const struct gpu_capset_reply *a=g->response.cpu;
-        uint32_t id=little32(a->id);
-        uint32_t version=little32(a->max_version);
-        uint32_t size=little32(a->max_size);
+        const struct virtio_gpu_resp_capset_info *a=g->response.cpu;
+        uint32_t id=little32(a->capset_id);
+        uint32_t version=little32(a->capset_max_version);
+        uint32_t size=little32(a->capset_max_size);
         if((id==VIRTIO_GPU_CAPSET_VIRGL || id==VIRTIO_GPU_CAPSET_VIRGL2) &&
            version && size && id>g->virgl_capset_id) {
             g->virgl_capset_id=id;
@@ -525,22 +496,22 @@ static int setup_resource(struct gpu_device *g) {
     rc=discover_3d_capsets(g,features);
     if(rc)return rc;
 
-    struct gpu_hdr display_info=command_hdr(g,VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
+    struct virtio_gpu_ctrl_hdr display_info=command_hdr(g,VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
     rc=command_sync(g,&display_info,sizeof(display_info),0,
                     VIRTIO_GPU_RESP_OK_DISPLAY_INFO);
     if(rc)return rc;
-    const struct gpu_resp_info *answer=(const struct gpu_resp_info *)g->response.cpu;
+    const struct virtio_gpu_resp_display_info *answer=(const struct virtio_gpu_resp_display_info *)g->response.cpu;
     unsigned chosen=16U;
     for(unsigned i=0;i<16U;i++) {
-        const struct gpu_mode *mode=&answer->modes[i];
+        const struct virtio_gpu_display_one *mode=&answer->pmodes[i];
         if(little32(mode->enabled) &&
            little32(mode->r.width)>=GPU_WIDTH &&
            little32(mode->r.height)>=GPU_HEIGHT) {chosen=i;break;}
     }
     if(chosen==16U)return -EOPNOTSUPP;
     g->scanout=chosen;
-    struct gpu_create create={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
-        .id=little32(GPU_RESOURCE_ID),
+    struct virtio_gpu_resource_create_2d create={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
+        .resource_id=little32(GPU_RESOURCE_ID),
         .format=little32(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM),
         .width=little32(GPU_WIDTH),.height=little32(GPU_HEIGHT)};
     rc=command_sync(g,&create,sizeof(create),0,VIRTIO_GPU_RESP_OK_NODATA);
@@ -548,22 +519,22 @@ static int setup_resource(struct gpu_device *g) {
 
     for(unsigned i=0;i<GPU_PAGES;i++) {
         const unsigned per_page=NAS_DMA_PAGE_BYTES/GPU_ENTRY_BYTES;
-        struct gpu_entry *list=(struct gpu_entry *)g->entries[i/per_page].cpu;
-        struct gpu_entry *e=&list[i%per_page];
+        struct virtio_gpu_mem_entry *list=(struct virtio_gpu_mem_entry *)g->entries[i/per_page].cpu;
+        struct virtio_gpu_mem_entry *e=&list[i%per_page];
         const uint32_t length=(i+1U==GPU_PAGES) ?
             (uint32_t)(GPU_BYTES-(uint64_t)i*NAS_DMA_PAGE_BYTES) :
             NAS_DMA_PAGE_BYTES;
-        *e=(struct gpu_entry){little64(g->pixels[i].bus_address),
+        *e=(struct virtio_gpu_mem_entry){little64(g->pixels[i].bus_address),
                               little32(length),0};
     }
-    struct gpu_attach attach={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
-        .id=little32(GPU_RESOURCE_ID),.count=little32(GPU_PAGES)};
+    struct virtio_gpu_resource_attach_backing attach={.hdr=command_hdr(g,VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
+        .resource_id=little32(GPU_RESOURCE_ID),.nr_entries=little32(GPU_PAGES)};
     rc=command_sync(g,&attach,sizeof(attach),GPU_PAGES*GPU_ENTRY_BYTES,
                     VIRTIO_GPU_RESP_OK_NODATA);
     if(rc)return rc;
-    struct gpu_scanout scanout={.hdr=command_hdr(g,VIRTIO_GPU_CMD_SET_SCANOUT),
+    struct virtio_gpu_set_scanout scanout={.hdr=command_hdr(g,VIRTIO_GPU_CMD_SET_SCANOUT),
         .r={0,0,little32(GPU_WIDTH),little32(GPU_HEIGHT)},
-        .scanout=little32(g->scanout),.id=little32(GPU_RESOURCE_ID)};
+        .scanout_id=little32(g->scanout),.resource_id=little32(GPU_RESOURCE_ID)};
     rc=command_sync(g,&scanout,sizeof(scanout),0,VIRTIO_GPU_RESP_OK_NODATA);
     if(rc)return rc;
     g->display=(struct nas_display_device){
