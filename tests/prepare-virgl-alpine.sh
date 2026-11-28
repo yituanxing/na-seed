@@ -16,6 +16,18 @@ curl -fLsS --retry 3 -o "$work/upstream/$archive.sha256" "$url.sha256"
 tar -xzf "$work/upstream/$archive" -C "$work/alpine-root"
 test -s "$work/alpine-root/bin/busybox"
 test -e "$work/alpine-root/lib/ld-musl-$arch.so.1"
+# Real Alpine userspace ABI verifier: install the ORIGINAL signed Python3
+# package, rather than compiling a synthetic guest-side GPU executable.
+# The host docker runs native apk and stages the target architecture's ELF.
+docker run --rm -v "$PWD/$work/alpine-root:/target" alpine:3.23 sh -ec "
+    cp -a /target/etc/apk/keys/. /etc/apk/keys/
+    apk --arch $arch --root /target --keys-dir /etc/apk/keys --initdb --no-scripts \\
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/main \\
+        -X https://dl-cdn.alpinelinux.org/alpine/v3.23/community \\
+        add python3
+"
+test -e "$work/alpine-root/usr/bin/python3"
+cp tests/virtgpu-capset-abi.py "$work/alpine-root/root/virtgpu-capset-abi.py"
 # Preserve upstream ELF bytes; only package their verified minirootfs into
 # the existing Limine CPIO module transport used by NaSeed distro CI.
 (cd "$work/alpine-root" &&
@@ -36,6 +48,15 @@ case "$arch" in
             --efi-boot-part --efi-boot-image \
             -o "$work/virgl-alpine.iso" "$work/virgl-iso" >/dev/null 2>&1
         test -s "$work/virgl-alpine.iso"
+        # Second independent QEMU boot uses original Python to exercise the
+        # Linux DRM ioctl ABI on card0; it does not claim Mesa/GL readiness.
+        sed -i 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \\
+            "$work/virgl-iso/boot/limine/limine.conf"
+        xorriso -as mkisofs -R -r -J \\
+            --efi-boot boot/limine/limine-uefi-cd.bin \\
+            --efi-boot-part --efi-boot-image \\
+            -o "$work/virgl-caps.iso" "$work/virgl-iso" >/dev/null 2>&1
+        test -s "$work/virgl-caps.iso"
         ;;
     riscv64|aarch64)
         test -s "$work/efi.img" && test -s "$work/qemu-virt.dtb"
@@ -44,6 +65,12 @@ case "$arch" in
         printf 'timeout: 0\n/NaSeed\n    protocol: limine\n    path: boot():/boot/kernel\n    cmdline: naseed.argv=/bin/busybox sleep 8\n    module_path: boot():/boot/alpine.cpio\n    dtb_path: boot():/boot/qemu-virt.dtb\n' > "$work/virgl-alpine-limine.conf"
         mcopy -o -i "$work/virgl-alpine-efi.img" "$work/virgl-alpine-limine.conf" ::/boot/limine/limine.conf
         test -s "$work/virgl-alpine-efi.img"
+        cp "$work/virgl-alpine-efi.img" "$work/virgl-caps-efi.img"
+        sed 's|/bin/busybox sleep 8|/usr/bin/python3 /root/virtgpu-capset-abi.py|' \\
+            "$work/virgl-alpine-limine.conf" > "$work/virgl-caps-limine.conf"
+        mcopy -o -i "$work/virgl-caps-efi.img" "$work/virgl-caps-limine.conf" \\
+            ::/boot/limine/limine.conf
+        test -s "$work/virgl-caps-efi.img"
         ;;
 esac
-echo "PASS: prepared verified upstream Alpine $arch BusyBox for live GPU 3D IRQ acceptance"
+echo "PASS: prepared upstream Alpine $arch BusyBox and signed Python3 for real GPU ABI acceptance"
